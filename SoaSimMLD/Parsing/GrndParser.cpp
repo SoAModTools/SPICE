@@ -1,5 +1,6 @@
 #include "GrndParser.h"
 
+#include "../../SpiceCore/Binary/EndianReader.h"
 #include "../common/ByteUtils.h"
 
 #include <algorithm>
@@ -44,28 +45,14 @@ struct TriangleRefHash {
     }
 };
 
-[[nodiscard]] std::optional<std::uint16_t> readU16BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 2U > bytes.size()) {
-        return std::nullopt;
+[[nodiscard]] std::uint32_t readTag(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    if (offset + 4U > bytes.size()) {
+        return 0U;
     }
-    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8U) |
-        static_cast<std::uint16_t>(bytes[offset + 1U]));
-}
-
-[[nodiscard]] std::optional<std::int16_t> readI16BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    const auto value = readU16BE(bytes, offset);
-    if (!value.has_value()) {
-        return std::nullopt;
-    }
-    return static_cast<std::int16_t>(*value);
-}
-
-[[nodiscard]] std::optional<std::int32_t> readI32BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    const auto value = common::readU32AtBE(bytes, offset);
-    if (!value.has_value()) {
-        return std::nullopt;
-    }
-    return static_cast<std::int32_t>(*value);
+    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
+        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
+        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
+        static_cast<std::uint32_t>(bytes[offset + 3U]);
 }
 
 [[nodiscard]] std::optional<std::size_t> addRelativeOffset(
@@ -92,6 +79,7 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::optional<TriangleSet> readTriangleSet(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const std::size_t setOffset,
     const std::size_t nextSetOrBlockEnd,
     std::vector<std::string>& diagnostics) {
@@ -100,9 +88,10 @@ struct TriangleRefHash {
         return std::nullopt;
     }
 
-    const auto vertexRel = readI32BE(bytes, setOffset + 0x0CU);
-    const auto streamRel = readI32BE(bytes, setOffset + 0x10U);
-    const auto triangleCount = common::readU32AtBE(bytes, setOffset + 0x14U);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto vertexRel = reader.try_read_i32(setOffset + 0x0CU);
+    const auto streamRel = reader.try_read_i32(setOffset + 0x10U);
+    const auto triangleCount = reader.try_read_u32(setOffset + 0x14U);
     if (!vertexRel.has_value() || !streamRel.has_value() || !triangleCount.has_value()) {
         diagnostics.push_back("GRND triangle set header is truncated at " + hexOffset(setOffset) + ".");
         return std::nullopt;
@@ -132,14 +121,16 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::optional<StreamEntry> readStreamEntry(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const TriangleSet& set,
     const std::size_t index) {
     if (index >= set.streamEntryCount) {
         return std::nullopt;
     }
     const auto offset = set.triangleStreamOffset + (index * 4U);
-    const auto floatIndex = readU16BE(bytes, offset);
-    const auto flags = readI16BE(bytes, offset + 2U);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto floatIndex = reader.try_read_u16(offset);
+    const auto flags = reader.try_read_i16(offset + 2U);
     if (!floatIndex.has_value() || !flags.has_value()) {
         return std::nullopt;
     }
@@ -151,6 +142,7 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::optional<model::MeshVertex> readVertexForFloatIndex(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const TriangleSet& set,
     const std::uint16_t floatIndex) {
     const std::size_t offset = set.vertexBlockOffset + (static_cast<std::size_t>(floatIndex) * 4U);
@@ -158,12 +150,13 @@ struct TriangleRefHash {
         return std::nullopt;
     }
 
-    const auto px = common::readF32AtBE(bytes, offset);
-    const auto py = common::readF32AtBE(bytes, offset + 4U);
-    const auto pz = common::readF32AtBE(bytes, offset + 8U);
-    const auto nx = common::readF32AtBE(bytes, offset + 12U);
-    const auto ny = common::readF32AtBE(bytes, offset + 16U);
-    const auto nz = common::readF32AtBE(bytes, offset + 20U);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto px = reader.try_read_f32(offset);
+    const auto py = reader.try_read_f32(offset + 4U);
+    const auto pz = reader.try_read_f32(offset + 8U);
+    const auto nx = reader.try_read_f32(offset + 12U);
+    const auto ny = reader.try_read_f32(offset + 16U);
+    const auto nz = reader.try_read_f32(offset + 20U);
     if (!px.has_value() || !py.has_value() || !pz.has_value() ||
         !nx.has_value() || !ny.has_value() || !nz.has_value()) {
         return std::nullopt;
@@ -177,6 +170,7 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::uint32_t getOrCreateVertex(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const TriangleSet& set,
     const std::uint16_t floatIndex,
     std::unordered_map<std::uint64_t, std::uint32_t>& vertexIndexByKey,
@@ -187,7 +181,7 @@ struct TriangleRefHash {
         return found->second;
     }
 
-    const auto vertex = readVertexForFloatIndex(bytes, set, floatIndex);
+    const auto vertex = readVertexForFloatIndex(bytes, endian, set, floatIndex);
     if (!vertex.has_value()) {
         ++skippedReferenceCount;
         return std::numeric_limits<std::uint32_t>::max();
@@ -201,19 +195,20 @@ struct TriangleRefHash {
 
 } // namespace
 
-GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset) const {
+GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset, const spice::core::Endian endian) const {
     GrndDecodeResult result{};
     if (blockBytes.size() < 0x2CU) {
         result.diagnostics.push_back("GRND block at " + hexOffset(sourceOffset) + " is too small.");
         return result;
     }
 
-    if (common::readU32AtBE(blockBytes, 0U).value_or(0U) != kGrndTag) {
+    if (readTag(blockBytes, 0U) != kGrndTag) {
         result.diagnostics.push_back("GRND block at " + hexOffset(sourceOffset) + " does not start with GRND magic.");
         return result;
     }
 
-    const auto declaredSize = common::readU32AtBE(blockBytes, 4U);
+    const spice::core::EndianReader blockReader(blockBytes, endian);
+    const auto declaredSize = blockReader.try_read_u32(4U);
     if (!declaredSize.has_value() || *declaredSize < 0x2CU || *declaredSize > blockBytes.size()) {
         result.diagnostics.push_back("GRND block at " + hexOffset(sourceOffset) + " has an invalid declared size.");
         return result;
@@ -221,14 +216,15 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
 
     const auto bytes = blockBytes.first(static_cast<std::size_t>(*declaredSize));
     constexpr std::size_t innerHeader = 0x10U;
-    const auto relTriangleSets = readI32BE(bytes, innerHeader);
-    const auto relQuadRegistry = readI32BE(bytes, innerHeader + 4U);
-    const auto gridX = readU16BE(bytes, innerHeader + 0x10U);
-    const auto gridZ = readU16BE(bytes, innerHeader + 0x12U);
-    const auto cellSizeX = readU16BE(bytes, innerHeader + 0x14U);
-    const auto cellSizeZ = readU16BE(bytes, innerHeader + 0x16U);
-    const auto triangleSetCount = readU16BE(bytes, innerHeader + 0x18U);
-    const auto quadCellCount = readU16BE(bytes, innerHeader + 0x1AU);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto relTriangleSets = reader.try_read_i32(innerHeader);
+    const auto relQuadRegistry = reader.try_read_i32(innerHeader + 4U);
+    const auto gridX = reader.try_read_u16(innerHeader + 0x10U);
+    const auto gridZ = reader.try_read_u16(innerHeader + 0x12U);
+    const auto cellSizeX = reader.try_read_u16(innerHeader + 0x14U);
+    const auto cellSizeZ = reader.try_read_u16(innerHeader + 0x16U);
+    const auto triangleSetCount = reader.try_read_u16(innerHeader + 0x18U);
+    const auto quadCellCount = reader.try_read_u16(innerHeader + 0x1AU);
 
     if (!relTriangleSets.has_value() || !relQuadRegistry.has_value() ||
         !gridX.has_value() || !gridZ.has_value() || !cellSizeX.has_value() || !cellSizeZ.has_value() ||
@@ -263,7 +259,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
         const std::size_t nextSetOrBlockEnd = (setIndex + 1U < *triangleSetCount)
             ? *triangleSetsOffset + ((setIndex + 1U) * 0x18U)
             : bytes.size();
-        auto set = readTriangleSet(bytes, setOffset, nextSetOrBlockEnd, result.diagnostics);
+        auto set = readTriangleSet(bytes, endian, setOffset, nextSetOrBlockEnd, result.diagnostics);
         if (!set.has_value()) {
             continue;
         }
@@ -275,8 +271,8 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
 
     for (std::size_t quadIndex = 0; quadIndex < *quadCellCount; ++quadIndex) {
         const std::size_t quadOffset = quadTableOffset + (quadIndex * 8U);
-        const auto refCount = common::readU32AtBE(bytes, quadOffset);
-        const auto relRefList = readI32BE(bytes, quadOffset + 4U);
+        const auto refCount = reader.try_read_u32(quadOffset);
+        const auto relRefList = reader.try_read_i32(quadOffset + 4U);
         if (!refCount.has_value() || !relRefList.has_value()) {
             ++result.skippedReferenceCount;
             continue;
@@ -294,8 +290,8 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
 
         for (std::size_t refIndex = 0; refIndex < *refCount; ++refIndex) {
             const std::size_t refOffset = *refListOffset + (refIndex * 4U);
-            const auto setIndex = readU16BE(bytes, refOffset);
-            const auto triangleIndex = readU16BE(bytes, refOffset + 2U);
+            const auto setIndex = reader.try_read_u16(refOffset);
+            const auto triangleIndex = reader.try_read_u16(refOffset + 2U);
             if (!setIndex.has_value() || !triangleIndex.has_value()) {
                 ++result.skippedReferenceCount;
                 continue;
@@ -316,17 +312,17 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
 
             const auto& set = *triangleSets[*setIndex];
             const std::size_t streamIndex = *triangleIndex;
-            const auto e0 = readStreamEntry(bytes, set, streamIndex);
-            const auto e1 = readStreamEntry(bytes, set, streamIndex + 1U);
-            const auto e2 = readStreamEntry(bytes, set, streamIndex + 2U);
+            const auto e0 = readStreamEntry(bytes, endian, set, streamIndex);
+            const auto e1 = readStreamEntry(bytes, endian, set, streamIndex + 1U);
+            const auto e2 = readStreamEntry(bytes, endian, set, streamIndex + 2U);
             if (!e0.has_value() || !e1.has_value() || !e2.has_value()) {
                 ++result.skippedReferenceCount;
                 continue;
             }
 
-            const auto i0 = getOrCreateVertex(bytes, set, e0->floatIndex, vertexIndexByKey, result.mesh, result.skippedReferenceCount);
-            const auto i1 = getOrCreateVertex(bytes, set, e1->floatIndex, vertexIndexByKey, result.mesh, result.skippedReferenceCount);
-            const auto i2 = getOrCreateVertex(bytes, set, e2->floatIndex, vertexIndexByKey, result.mesh, result.skippedReferenceCount);
+            const auto i0 = getOrCreateVertex(bytes, endian, set, e0->floatIndex, vertexIndexByKey, result.mesh, result.skippedReferenceCount);
+            const auto i1 = getOrCreateVertex(bytes, endian, set, e1->floatIndex, vertexIndexByKey, result.mesh, result.skippedReferenceCount);
+            const auto i2 = getOrCreateVertex(bytes, endian, set, e2->floatIndex, vertexIndexByKey, result.mesh, result.skippedReferenceCount);
             if (i0 == std::numeric_limits<std::uint32_t>::max() ||
                 i1 == std::numeric_limits<std::uint32_t>::max() ||
                 i2 == std::numeric_limits<std::uint32_t>::max()) {

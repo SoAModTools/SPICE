@@ -1,9 +1,11 @@
 #pragma once
 
 #include "Export/BlenderIrJsonExporter.h"
+#include "Export/MldFileExporter.h"
 #include "Model/SearchWorldModel.h"
 #include "Model/BlenderIrModel.h"
 #include "Model/GeometryModel.h"
+#include "Model/MldFile.h"
 #include "Model/Types.h"
 #include "Model/WorldModel.h"
 #include "Parsing/EntryHandlers.h"

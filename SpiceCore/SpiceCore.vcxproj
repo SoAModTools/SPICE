@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</ProjectGuid>
-    <RootNamespace>SoaSimSCT</RootNamespace>
+    <ProjectGuid>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</ProjectGuid>
+    <RootNamespace>SpiceCore</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -57,19 +57,15 @@
   <ImportGroup Label="Shared" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\ThirdParty.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\ThirdParty.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\ThirdParty.props" />
   </ImportGroup>
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\ThirdParty.props" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -81,6 +77,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalIncludeDirectories>$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -94,32 +91,21 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalIncludeDirectories>$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="SoaSimSCT.h" />
-    <ClInclude Include="SctModel.h" />
-    <ClInclude Include="SctParser.h" />
-    <ClInclude Include="SctParseProbe.h" />
-    <ClInclude Include="SctOpcodeMetadata.h" />
-    <ClInclude Include="SctScptDecodeHelpers.h" />
+    <ClInclude Include="Binary\Alignment.h" />
+    <ClInclude Include="Binary\Endian.h" />
+    <ClInclude Include="Binary\EndianReader.h" />
+    <ClInclude Include="Binary\EndianWriter.h" />
+    <ClInclude Include="Binary\FourCC.h" />
+    <ClInclude Include="SpiceCore.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="SctParser.cpp" />
-    <ClCompile Include="SctParseProbe.cpp" />
-    <ClCompile Include="SctScptDecodeHelpers.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Compression\Compression.vcxproj">
-      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
-      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
-    </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="SALSA_default_instructions_reference.md" />
+    <ClCompile Include="SpiceCore.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
+

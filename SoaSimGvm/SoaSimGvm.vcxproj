@@ -108,6 +108,11 @@
     <ClCompile Include="Model\GvmTextureModel.cpp" />
     <ClCompile Include="Parsing\GvmParser.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

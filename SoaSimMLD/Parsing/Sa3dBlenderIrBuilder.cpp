@@ -621,7 +621,7 @@ void appendGobjTrees(
             continue;
         }
 
-        auto decoded = parser.decode(block.bytes, block.offset);
+        auto decoded = parser.decode(block.bytes, block.offset, block.endian);
         for (const auto& diagnostic : decoded.diagnostics) {
             out.diagnostics.push_back(diagnostic);
         }

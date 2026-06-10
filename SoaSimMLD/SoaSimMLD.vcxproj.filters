@@ -25,6 +25,9 @@
     <ClInclude Include="Export\BlenderIrJsonExporter.h">
       <Filter>Export</Filter>
     </ClInclude>
+    <ClInclude Include="Export\MldFileExporter.h">
+      <Filter>Export</Filter>
+    </ClInclude>
     <ClInclude Include="Model\IndexEntry.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -32,6 +35,9 @@
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\BlenderIrModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\MldFile.h">
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\MldTextureArchiveModel.h">
@@ -85,6 +91,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Export\BlenderIrJsonExporter.cpp">
+      <Filter>Export</Filter>
+    </ClCompile>
+    <ClCompile Include="Export\MldFileExporter.cpp">
       <Filter>Export</Filter>
     </ClCompile>
     <ClCompile Include="SoaSimMLD.cpp">

@@ -9,6 +9,8 @@
 #include "GrndParser.h"
 #include "MldTextureArchiveParser.h"
 
+#include "../../SpiceCore/Binary/EndianReader.h"
+
 #include <algorithm>
 #include <array>
 #include <filesystem>
@@ -30,6 +32,8 @@ using soasim::mld::model::GrndSurface;
 using soasim::mld::model::UnknownEntry;
 using soasim::mld::model::Vec3;
 using soasim::mld::model::WalkSurfaceNode;
+using spice::core::Endian;
+using spice::core::EndianReader;
 
 constexpr std::uint32_t makeTag(const char a, const char b, const char c, const char d) {
     return static_cast<std::uint32_t>(a) |
@@ -259,6 +263,75 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
     return tag;
 }
 
+[[nodiscard]] std::uint32_t readTagAt(std::span<const std::uint8_t> payload, const std::size_t offset) {
+    if (offset + 4U > payload.size()) {
+        return 0U;
+    }
+    return (static_cast<std::uint32_t>(payload[offset]) << 24U) |
+        (static_cast<std::uint32_t>(payload[offset + 1U]) << 16U) |
+        (static_cast<std::uint32_t>(payload[offset + 2U]) << 8U) |
+        static_cast<std::uint32_t>(payload[offset + 3U]);
+}
+
+[[nodiscard]] std::optional<model::MldHeader> tryReadMldHeader(
+    std::span<const std::uint8_t> payload,
+    const Endian endian) {
+    if (payload.size() < 0x14U) {
+        return std::nullopt;
+    }
+    const EndianReader reader(payload, endian);
+    auto entryCount = reader.try_read_u32(0x00U);
+    auto index = reader.try_read_u32(0x04U);
+    auto fxn = reader.try_read_u32(0x08U);
+    auto real = reader.try_read_u32(0x0CU);
+    auto texture = reader.try_read_u32(0x10U);
+    if (!entryCount.has_value() || !index.has_value() || !fxn.has_value() || !real.has_value() || !texture.has_value()) {
+        return std::nullopt;
+    }
+    return model::MldHeader{
+        .entryCount = *entryCount,
+        .indexTableOffset = *index,
+        .functionParametersOffset = *fxn,
+        .realDataOffset = *real,
+        .textureTableOffset = *texture,
+    };
+}
+
+[[nodiscard]] bool isPlausibleMldHeader(std::span<const std::uint8_t> payload, const model::MldHeader& header) {
+    constexpr std::size_t entrySize = 0x68U;
+    constexpr std::uint32_t hardEntryCap = 1U << 16U;
+    if (header.entryCount == 0U || header.entryCount > hardEntryCap) {
+        return false;
+    }
+    const auto tableOffset = static_cast<std::size_t>(header.indexTableOffset);
+    const auto count = static_cast<std::size_t>(header.entryCount);
+    if (tableOffset >= payload.size() || count > ((payload.size() - tableOffset) / entrySize)) {
+        return false;
+    }
+    return true;
+}
+
+[[nodiscard]] std::optional<Endian> detectMldEndian(std::span<const std::uint8_t> payload) {
+    const auto littleHeader = tryReadMldHeader(payload, Endian::Little);
+    const auto bigHeader = tryReadMldHeader(payload, Endian::Big);
+    const bool littleOk = littleHeader.has_value() && isPlausibleMldHeader(payload, *littleHeader);
+    const bool bigOk = bigHeader.has_value() && isPlausibleMldHeader(payload, *bigHeader);
+    if (littleOk && bigOk) {
+        return littleHeader->entryCount < bigHeader->entryCount ? Endian::Little : Endian::Big;
+    }
+    if (littleOk) {
+        return Endian::Little;
+    }
+    if (bigOk) {
+        return Endian::Big;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string endianName(const Endian endian) {
+    return endian == Endian::Little ? "little" : "big";
+}
+
 [[nodiscard]] std::string readFixedAsciiName(std::span<const std::uint8_t> bytes,
     const std::size_t offset,
     const std::size_t maxLength) {
@@ -282,7 +355,8 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
 }
 
 [[nodiscard]] std::vector<std::string> parseEntryTextureNames(std::span<const std::uint8_t> payload,
-    const std::uint32_t texturesPointer) {
+    const std::uint32_t texturesPointer,
+    const Endian endian) {
     constexpr std::uint32_t kNjtlTag = 0x4E4A544CU;
     constexpr std::uint32_t kGjtlTag = 0x474A544CU;
     constexpr std::size_t textureRecordStride = 12U;
@@ -292,15 +366,15 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
         return names;
     }
 
-    auto tag = common::readU32AtBE(payload, njtlOffset).value_or(0U);
+    const EndianReader reader(payload, endian);
+    auto tag = readTagAt(payload, njtlOffset);
     if (tag != kNjtlTag && tag != kGjtlTag) {
-        const auto count = common::readU32AtBE(payload, njtlOffset + 4U);
+        const auto count = reader.try_read_u32(njtlOffset + 4U);
         if (count.has_value() && *count <= 4096U &&
             njtlOffset + 8U + (static_cast<std::size_t>(*count) * textureRecordStride) <= payload.size()) {
             names.reserve(*count);
             for (std::uint32_t i = 0; i < *count; ++i) {
-                const auto namePointer = common::readU32AtBE(
-                    payload,
+                const auto namePointer = reader.try_read_u32(
                     njtlOffset + 8U + (static_cast<std::size_t>(i) * textureRecordStride));
                 if (!namePointer.has_value() || static_cast<std::size_t>(*namePointer) >= payload.size()) {
                     names.push_back({});
@@ -313,19 +387,19 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
     }
 
     if (tag != kNjtlTag && tag != kGjtlTag) {
-        const auto wrappedNjtlPointer = common::readU32AtBE(payload, njtlOffset + 0x08U).value_or(0U);
+        const auto wrappedNjtlPointer = reader.try_read_u32(njtlOffset + 0x08U).value_or(0U);
         if (wrappedNjtlPointer == 0U || static_cast<std::size_t>(wrappedNjtlPointer) + 16U > payload.size()) {
             return names;
         }
         njtlOffset = static_cast<std::size_t>(wrappedNjtlPointer);
-        tag = common::readU32AtBE(payload, njtlOffset).value_or(0U);
+        tag = readTagAt(payload, njtlOffset);
     }
     if (tag != kNjtlTag && tag != kGjtlTag) {
         return names;
     }
 
-    const auto blockSize = common::readU32AtBE(payload, njtlOffset + 4U);
-    const auto count = common::readU32AtBE(payload, njtlOffset + 12U);
+    const auto blockSize = reader.try_read_u32(njtlOffset + 4U);
+    const auto count = reader.try_read_u32(njtlOffset + 12U);
     if (!blockSize.has_value() || !count.has_value() || *count > 4096U) {
         return names;
     }
@@ -343,10 +417,11 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
         payload.data() + static_cast<std::ptrdiff_t>(payloadStart),
         payloadSize);
 
+    const EndianReader textureReader(texturePayload, endian);
     names.reserve(*count);
     for (std::uint32_t i = 0; i < *count; ++i) {
         const std::size_t recordOffset = textureRecordTableOffset + (static_cast<std::size_t>(i) * textureRecordSize);
-        const auto namePointer = common::readU32AtBE(texturePayload, recordOffset);
+        const auto namePointer = textureReader.try_read_u32(recordOffset);
         if (!namePointer.has_value() || static_cast<std::size_t>(*namePointer) >= texturePayload.size()) {
             names.push_back({});
             continue;
@@ -358,7 +433,8 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
 }
 
 [[nodiscard]] ParsedEntryListItem makeEntryListItem(std::span<const std::uint8_t> payload,
-    const model::IndexEntry& entry) {
+    const model::IndexEntry& entry,
+    const Endian endian) {
     ParsedEntryListItem item{};
     item.tableIndex = entry.tableIndex;
     item.entryId = entry.entryId;
@@ -374,7 +450,7 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
     item.objectAddresses = entry.objectAddresses ? entry.objectAddresses->values : std::vector<std::uint32_t>{};
     item.groundAddresses = entry.groundAddresses ? entry.groundAddresses->values : std::vector<std::uint32_t>{};
     item.motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{};
-    item.textureNames = parseEntryTextureNames(payload, entry.texturesPointer);
+    item.textureNames = parseEntryTextureNames(payload, entry.texturesPointer, endian);
     item.textureCount = item.textureNames.size();
     return item;
 }
@@ -561,6 +637,7 @@ void appendSpatialHeaderProbe(
 
 [[nodiscard]] std::vector<ExtractedMldSpatialBlock> buildExtractedSpatialBlocks(
     std::span<const std::uint8_t> payload,
+    const Endian endian,
     const std::unordered_set<std::uint32_t>& groundAddresses,
     const std::unordered_set<std::uint32_t>& objectAddresses,
     const std::unordered_set<std::uint32_t>& motionAddresses,
@@ -632,6 +709,7 @@ void appendSpatialHeaderProbe(
         ExtractedMldSpatialBlock block{};
         block.offset = offset;
         block.size = size;
+        block.endian = endian;
         block.tag = tag;
         block.sizeSource = sizeSource;
         if (tag == "GOBJ") {
@@ -723,7 +801,196 @@ public:
     }
 };
 
+void appendListIfPresent(model::MldFile& file, const std::unique_ptr<model::U32List>& list) {
+    if (!list) {
+        return;
+    }
+    const auto existing = std::find_if(file.u32Lists.begin(), file.u32Lists.end(), [&](const model::U32List& item) {
+        return item.pointer == list->pointer;
+    });
+    if (existing == file.u32Lists.end()) {
+        file.u32Lists.push_back(*list);
+    }
+}
+
+[[nodiscard]] model::MldRawDataBlock::Kind blockKindForTag(const std::string& tag) {
+    if (tag == "GRND") {
+        return model::MldRawDataBlock::Kind::Grnd;
+    }
+    if (tag == "GOBJ") {
+        return model::MldRawDataBlock::Kind::Gobj;
+    }
+    if (isNjLikeTag(tag)) {
+        return model::MldRawDataBlock::Kind::Ninja;
+    }
+    return model::MldRawDataBlock::Kind::Unknown;
+}
+
+void appendRawDataBlock(
+    model::MldFile& file,
+    std::span<const std::uint8_t> payload,
+    const std::uint32_t offset,
+    const Endian endian) {
+    if (offset == 0U || static_cast<std::size_t>(offset) >= payload.size()) {
+        return;
+    }
+    const auto existing = std::find_if(file.rawDataBlocks.begin(), file.rawDataBlocks.end(), [&](const model::MldRawDataBlock& item) {
+        return item.offset == offset;
+    });
+    if (existing != file.rawDataBlocks.end()) {
+        return;
+    }
+
+    const auto begin = static_cast<std::size_t>(offset);
+    const auto tag = asciiTagAt(payload, begin);
+    std::size_t size = 0U;
+    if (tag == "GRND" || tag == "GOBJ") {
+        const EndianReader reader(payload, endian);
+        const auto declaredSize = reader.try_read_u32(begin + 4U);
+        if (declaredSize.has_value() && isPlausibleBlockSize(payload, begin, *declaredSize)) {
+            size = static_cast<std::size_t>(*declaredSize);
+        }
+    }
+    if (size == 0U) {
+        size = std::min<std::size_t>(0x40U, payload.size() - begin);
+    }
+
+    model::MldRawDataBlock block{};
+    block.kind = blockKindForTag(tag);
+    block.offset = offset;
+    block.size = size;
+    block.tag = tag;
+    block.bytes.assign(
+        payload.begin() + static_cast<std::ptrdiff_t>(begin),
+        payload.begin() + static_cast<std::ptrdiff_t>(begin + size));
+    file.rawDataBlocks.push_back(std::move(block));
+}
+
+[[nodiscard]] model::MldFile parseMldFilePayload(
+    std::span<const std::uint8_t> payload,
+    const ParseOptions& options) {
+    model::MldFile file{};
+    file.originalBytes.assign(payload.begin(), payload.end());
+
+    if (payload.empty()) {
+        file.diagnostics.push_back("Input buffer is empty.");
+        return file;
+    }
+    if (payload.size() < 0x14U) {
+        file.diagnostics.push_back("MLD header too small.");
+        return file;
+    }
+
+    const auto endian = detectMldEndian(payload);
+    if (!endian.has_value()) {
+        file.diagnostics.push_back("Could not detect MLD endian from entry count and entry table bounds.");
+        return file;
+    }
+    file.endian = *endian;
+    file.sourcePlatform = *endian == Endian::Little
+        ? model::TargetPlatform::Dreamcast
+        : model::TargetPlatform::GameCube;
+    file.diagnostics.push_back("Detected " + endianName(*endian) + "-endian MLD.");
+
+    const auto header = tryReadMldHeader(payload, *endian);
+    if (!header.has_value() || !isPlausibleMldHeader(payload, *header)) {
+        file.diagnostics.push_back("MLD header failed validation after endian detection.");
+        return file;
+    }
+    file.header = *header;
+
+    constexpr std::size_t entrySize = 0x68U;
+    const auto entryTableOffset = static_cast<std::size_t>(file.header.indexTableOffset);
+    file.entries.reserve(file.header.entryCount);
+    for (std::size_t i = 0; i < file.header.entryCount; ++i) {
+        const auto entryOffset = entryTableOffset + (i * entrySize);
+        std::vector<std::string> warnings{};
+        auto entryOpt = model::parseIndexEntry(payload, i, entryOffset, *endian,
+            [&](const Vec3& value) {
+                return applyCoordinates(value, options.coordinates);
+            },
+            [&](const std::string& message) {
+                warnings.push_back(message);
+            });
+
+        for (const auto& warning : warnings) {
+            file.diagnostics.push_back(warning);
+        }
+        if (!entryOpt.has_value()) {
+            file.diagnostics.push_back("Entry " + std::to_string(i) + " malformed or truncated.");
+            continue;
+        }
+
+        const EndianReader reader(payload, *endian);
+        model::MldIndexEntryRecord record{};
+        record.groundLinksPointer = reader.read_u32(entryOffset + 0x08U);
+        record.paramList2Pointer = reader.read_u32(entryOffset + 0x0CU);
+        record.functionParametersPointer = reader.read_u32(entryOffset + 0x10U);
+        record.objectAddressesPointer = reader.read_u32(entryOffset + 0x14U);
+        record.groundAddressesPointer = reader.read_u32(entryOffset + 0x18U);
+        record.motionAddressesPointer = reader.read_u32(entryOffset + 0x1CU);
+        record.rawBytes.assign(
+            payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
+            payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize));
+        record.entry = std::move(*entryOpt);
+
+        appendListIfPresent(file, record.entry.groundLinks);
+        appendListIfPresent(file, record.entry.paramList2);
+        appendListIfPresent(file, record.entry.functionParameters);
+        appendListIfPresent(file, record.entry.objectAddresses);
+        appendListIfPresent(file, record.entry.groundAddresses);
+        appendListIfPresent(file, record.entry.motionAddresses);
+
+        if (record.entry.objectAddresses) {
+            for (const auto address : record.entry.objectAddresses->values) {
+                appendRawDataBlock(file, payload, address, *endian);
+            }
+        }
+        if (record.entry.groundAddresses) {
+            for (const auto address : record.entry.groundAddresses->values) {
+                appendRawDataBlock(file, payload, address, *endian);
+            }
+        }
+        if (record.entry.motionAddresses) {
+            for (const auto address : record.entry.motionAddresses->values) {
+                appendRawDataBlock(file, payload, address, *endian);
+            }
+        }
+        appendRawDataBlock(file, payload, record.entry.texturesPointer, *endian);
+
+        file.entries.push_back(std::move(record));
+    }
+
+    if (static_cast<std::size_t>(file.header.textureTableOffset) < payload.size()) {
+        file.textureArchive = parseMldTextureArchive(payload, static_cast<std::size_t>(file.header.textureTableOffset), *endian);
+    }
+
+    return file;
+}
+
 } // namespace
+
+model::MldFile MldParser::parseFile(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
+    std::vector<std::uint8_t> decoded;
+    std::span<const std::uint8_t> payload = mldBytes;
+    bool sourceWasCompressed = false;
+    if (soasim::compression::aklz::isAklz(mldBytes)) {
+        auto decodedResult = soasim::compression::aklz::decompress(mldBytes);
+        if (!decodedResult.ok()) {
+            model::MldFile failed{};
+            failed.sourceWasCompressedAklz = true;
+            failed.diagnostics.push_back("AKLZ decompression failed: " + std::string(soasim::compression::aklz::errorToString(decodedResult.error)));
+            return failed;
+        }
+        decoded = std::move(decodedResult.bytes);
+        payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
+        sourceWasCompressed = true;
+    }
+
+    auto file = parseMldFilePayload(payload, options);
+    file.sourceWasCompressedAklz = sourceWasCompressed;
+    return file;
+}
 
 ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
     std::cout << "[SoaSimMLD] Step 1/5: Starting parse (" << mldBytes.size() << " bytes).\n";
@@ -767,23 +1034,25 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         return result;
     }
 
-    const auto entryCountOpt = common::readU32AtBE(payload, 0x00);
-    const auto ptrIndexOpt = common::readU32AtBE(payload, 0x04);
-    const auto ptrFxnParamsOpt = common::readU32AtBE(payload, 0x08);
-    const auto ptrRealDataOpt = common::readU32AtBE(payload, 0x0C);
-    const auto ptrTextureTableOpt = common::readU32AtBE(payload, 0x10);
-    if (!entryCountOpt.has_value() || !ptrIndexOpt.has_value() || !ptrFxnParamsOpt.has_value() ||
-        !ptrRealDataOpt.has_value() || !ptrTextureTableOpt.has_value()) {
+    auto mldFile = parseMldFilePayload(payload, options);
+    for (const auto& diagnostic : mldFile.diagnostics) {
+        result.diagnostics.push_back(ParseDiagnostic{
+            .severity = ParseDiagnostic::Severity::Info,
+            .message = diagnostic,
+        });
+    }
+    if (mldFile.header.entryCount == 0U || mldFile.entries.empty()) {
         result.diagnostics.push_back(ParseDiagnostic{
             .severity = ParseDiagnostic::Severity::Error,
-            .message = "Failed to read required MLD header pointers.",
+            .message = "Failed to parse MLD file IR.",
         });
         return result;
     }
 
+    const auto selectedEndian = mldFile.endian;
     constexpr std::size_t entrySize = 0x68;
-    const std::size_t entryCount = static_cast<std::size_t>(*entryCountOpt);
-    const std::size_t entryTableOffset = static_cast<std::size_t>(*ptrIndexOpt);
+    const std::size_t entryCount = static_cast<std::size_t>(mldFile.header.entryCount);
+    const std::size_t entryTableOffset = static_cast<std::size_t>(mldFile.header.indexTableOffset);
     const std::size_t entryTableEnd = entryTableOffset + (entryCount * entrySize);
     if (entryTableOffset >= payload.size() || entryTableEnd > payload.size()) {
         result.diagnostics.push_back(ParseDiagnostic{
@@ -798,11 +1067,11 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         .severity = ParseDiagnostic::Severity::Info,
         .message = "Index-based parse: entries=" + std::to_string(entryCount) +
             ", entryTable=0x" + std::to_string(entryTableOffset) +
-            ", fxnParams=0x" + std::to_string(static_cast<std::size_t>(*ptrFxnParamsOpt)) +
-            ", realData=0x" + std::to_string(static_cast<std::size_t>(*ptrRealDataOpt)) +
-            ", textureTable=0x" + std::to_string(static_cast<std::size_t>(*ptrTextureTableOpt)),
+            ", fxnParams=0x" + std::to_string(static_cast<std::size_t>(mldFile.header.functionParametersOffset)) +
+            ", realData=0x" + std::to_string(static_cast<std::size_t>(mldFile.header.realDataOffset)) +
+            ", textureTable=0x" + std::to_string(static_cast<std::size_t>(mldFile.header.textureTableOffset)),
     });
-    result.textureArchive = parseMldTextureArchive(payload, static_cast<std::size_t>(*ptrTextureTableOpt));
+    result.textureArchive = std::move(mldFile.textureArchive);
     if (result.textureArchive.has_value()) {
         for (const auto& textureDiag : result.textureArchive->diagnostics) {
             result.diagnostics.push_back(ParseDiagnostic{
@@ -824,36 +1093,15 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     }
 
     std::vector<model::IndexEntry> entries{};
-    entries.reserve(entryCount);
+    entries.reserve(mldFile.entries.size());
     std::cout << "[SoaSimMLD] Step 3/5: Reading index entries (" << entryCount << " total)...\n";
-
-    for (std::size_t i = 0; i < entryCount; ++i) {
-        const std::size_t entryOffset = entryTableOffset + (i * entrySize);
-
-        auto entryOpt = model::parseIndexEntry(payload, i, entryOffset,
-            [&](const Vec3& value) {
-                return applyCoordinates(value, options.coordinates);
-            },
-            [&](const std::string& message) {
-                result.diagnostics.push_back(ParseDiagnostic{
-                    .severity = ParseDiagnostic::Severity::Warning,
-                    .message = message,
-                });
-            });
-        if (!entryOpt.has_value()) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = ParseDiagnostic::Severity::Warning,
-                .message = "Entry " + std::to_string(i) + " malformed or truncated.",
-            });
-            continue;
-        }
-
-        entries.push_back(std::move(*entryOpt));
+    for (const auto& record : mldFile.entries) {
+        entries.push_back(record.entry);
     }
 
     result.entryList.reserve(entries.size());
     for (const auto& entry : entries) {
-        result.entryList.push_back(makeEntryListItem(payload, entry));
+        result.entryList.push_back(makeEntryListItem(payload, entry, selectedEndian));
     }
 
     if (options.entryListOnly) {
@@ -1049,6 +1297,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
     if (options.extractGrndGobjBlocks || options.buildBlenderIntermediateIr) {
         result.extractedSpatialBlocks = buildExtractedSpatialBlocks(
             payload,
+            selectedEndian,
             uniqueGroundAddresses,
             uniqueObjectAddresses,
             uniqueMotionAddresses,
@@ -1071,11 +1320,12 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         if (grndOffset + 0x10U > payload.size()) {
             continue;
         }
-        if (common::readU32AtBE(payload, grndOffset).value_or(0U) != 0x47524E44U) {
+        if (readTagAt(payload, grndOffset) != 0x47524E44U) {
             continue;
         }
 
-        const auto declaredSize = common::readU32AtBE(payload, grndOffset + 4U);
+        const EndianReader grndHeaderReader(payload, selectedEndian);
+        const auto declaredSize = grndHeaderReader.try_read_u32(grndOffset + 4U);
         if (!declaredSize.has_value() || *declaredSize < 0x10U ||
             static_cast<std::size_t>(*declaredSize) > payload.size() - grndOffset) {
             result.diagnostics.push_back(ParseDiagnostic{
@@ -1085,7 +1335,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             continue;
         }
 
-        auto decoded = grndParser.decode(payload.subspan(grndOffset, static_cast<std::size_t>(*declaredSize)), groundAddress);
+        auto decoded = grndParser.decode(payload.subspan(grndOffset, static_cast<std::size_t>(*declaredSize)), groundAddress, selectedEndian);
         for (const auto& diagnostic : decoded.diagnostics) {
             result.diagnostics.push_back(ParseDiagnostic{
                 .severity = decoded.decoded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,

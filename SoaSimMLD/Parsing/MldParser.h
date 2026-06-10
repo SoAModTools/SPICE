@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Model/BlenderIrModel.h"
+#include "../Model/MldFile.h"
 #include "../Model/MldTextureArchiveModel.h"
 #include "../Model/SearchWorldModel.h"
 #include "../Model/WorldModel.h"
@@ -109,6 +110,7 @@ struct ExtractedMldSpatialBlock {
     Kind kind = Kind::UnknownObject;
     std::uint32_t offset = 0;
     std::size_t size = 0;
+    spice::core::Endian endian = spice::core::Endian::Big;
     std::string tag{};
     std::string sizeSource{};
     std::vector<BlockOwnerRef> owners{};
@@ -137,6 +139,9 @@ public:
     MldParser() = default;
 
     [[nodiscard]] ParseResult parse(std::span<const std::uint8_t> mldBytes,
+        const ParseOptions& options = {}) const;
+
+    [[nodiscard]] model::MldFile parseFile(std::span<const std::uint8_t> mldBytes,
         const ParseOptions& options = {}) const;
 
     [[nodiscard]] std::vector<ExtractedNjBlock> extractNjBlocks(

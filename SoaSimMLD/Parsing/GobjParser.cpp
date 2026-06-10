@@ -1,5 +1,6 @@
 #include "GobjParser.h"
 
+#include "../../SpiceCore/Binary/EndianReader.h"
 #include "../common/ByteUtils.h"
 
 #include <cmath>
@@ -48,6 +49,16 @@ struct GobjAttachLayout {
     return static_cast<std::int32_t>(*value);
 }
 
+[[nodiscard]] std::uint32_t readTag(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+    if (offset + 4U > bytes.size()) {
+        return 0U;
+    }
+    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
+        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
+        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
+        static_cast<std::uint32_t>(bytes[offset + 3U]);
+}
+
 [[nodiscard]] std::optional<std::uint32_t> addRelativeTarget(
     const std::uint32_t base,
     const std::int32_t relative,
@@ -73,6 +84,7 @@ struct GobjAttachLayout {
 
 [[nodiscard]] std::optional<GobjAttachLayout> readGobjAttachLayout(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const std::uint32_t attachOffset,
     std::vector<std::string>& diagnostics) {
     if (static_cast<std::size_t>(attachOffset) + kAttachPayloadOffset + 4U > bytes.size()) {
@@ -81,7 +93,8 @@ struct GobjAttachLayout {
     }
 
     const std::uint32_t payloadOffset = attachOffset + kAttachPayloadOffset;
-    const auto vertexRel = readI32BE(bytes, payloadOffset);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto vertexRel = reader.try_read_i32(payloadOffset);
     if (!vertexRel.has_value()) {
         diagnostics.push_back("GOBJ attach has no vertex pointer at " + hexOffset(attachOffset) + ".");
         return std::nullopt;
@@ -107,23 +120,25 @@ struct GobjAttachLayout {
     };
 }
 
-[[nodiscard]] float readBams32RadiansBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    return static_cast<float>(readI32BE(bytes, offset).value_or(0)) * (kTau / 65536.0F);
+[[nodiscard]] float readBams32Radians(std::span<const std::uint8_t> bytes, spice::core::Endian endian, const std::size_t offset) {
+    const spice::core::EndianReader reader(bytes, endian);
+    return static_cast<float>(reader.try_read_i32(offset).value_or(0)) * (kTau / 65536.0F);
 }
 
-[[nodiscard]] model::Vec3 readVec3F32BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+[[nodiscard]] model::Vec3 readVec3F32(std::span<const std::uint8_t> bytes, spice::core::Endian endian, const std::size_t offset) {
+    const spice::core::EndianReader reader(bytes, endian);
     return model::Vec3{
-        common::readF32AtBE(bytes, offset + 0U).value_or(0.0F),
-        common::readF32AtBE(bytes, offset + 4U).value_or(0.0F),
-        common::readF32AtBE(bytes, offset + 8U).value_or(0.0F),
+        reader.try_read_f32(offset + 0U).value_or(0.0F),
+        reader.try_read_f32(offset + 4U).value_or(0.0F),
+        reader.try_read_f32(offset + 8U).value_or(0.0F),
     };
 }
 
-[[nodiscard]] model::Vec3 readVec3Bams32BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
+[[nodiscard]] model::Vec3 readVec3Bams32(std::span<const std::uint8_t> bytes, spice::core::Endian endian, const std::size_t offset) {
     return model::Vec3{
-        readBams32RadiansBE(bytes, offset + 0U),
-        readBams32RadiansBE(bytes, offset + 4U),
-        readBams32RadiansBE(bytes, offset + 8U),
+        readBams32Radians(bytes, endian, offset + 0U),
+        readBams32Radians(bytes, endian, offset + 4U),
+        readBams32Radians(bytes, endian, offset + 8U),
     };
 }
 
@@ -145,12 +160,13 @@ struct GobjAttachLayout {
 
 [[nodiscard]] model::Transform readNodeTransform(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const std::uint32_t nodeOffset) {
     model::Transform result{};
-    result.position = readVec3F32BE(bytes, nodeOffset + 8U);
-    result.rotationRaw = readVec3Bams32BE(bytes, nodeOffset + 0x14U);
+    result.position = readVec3F32(bytes, endian, nodeOffset + 8U);
+    result.rotationRaw = readVec3Bams32(bytes, endian, nodeOffset + 0x14U);
     result.rotation = eulerRadiansToQuaternionXYZ(result.rotationRaw);
-    result.scale = readVec3F32BE(bytes, nodeOffset + 0x20U);
+    result.scale = readVec3F32(bytes, endian, nodeOffset + 0x20U);
     return result;
 }
 
@@ -163,6 +179,7 @@ struct GobjAttachLayout {
 
 [[nodiscard]] std::optional<model::MeshVertex> readGobjStreamVertex(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const std::uint32_t vertexOffset,
     const std::uint16_t floatIndex,
     const std::uint16_t vertexCount) {
@@ -178,21 +195,23 @@ struct GobjAttachLayout {
     }
 
     model::MeshVertex vertex{};
+    const spice::core::EndianReader reader(bytes, endian);
     vertex.position = model::Vec3{
-        common::readF32AtBE(bytes, positionOffset + 0U).value_or(0.0F),
-        common::readF32AtBE(bytes, positionOffset + 4U).value_or(0.0F),
-        common::readF32AtBE(bytes, positionOffset + 8U).value_or(0.0F),
+        reader.try_read_f32(positionOffset + 0U).value_or(0.0F),
+        reader.try_read_f32(positionOffset + 4U).value_or(0.0F),
+        reader.try_read_f32(positionOffset + 8U).value_or(0.0F),
     };
     vertex.normal = model::Vec3{
-        common::readF32AtBE(bytes, normalOffset + 0U).value_or(0.0F),
-        common::readF32AtBE(bytes, normalOffset + 4U).value_or(1.0F),
-        common::readF32AtBE(bytes, normalOffset + 8U).value_or(0.0F),
+        reader.try_read_f32(normalOffset + 0U).value_or(0.0F),
+        reader.try_read_f32(normalOffset + 4U).value_or(1.0F),
+        reader.try_read_f32(normalOffset + 8U).value_or(0.0F),
     };
     return vertex;
 }
 
 [[nodiscard]] model::MeshData readGobjTriangleStreamMesh(
     std::span<const std::uint8_t> bytes,
+    spice::core::Endian endian,
     const GobjAttachLayout& layout,
     std::vector<std::string>& diagnostics) {
     model::MeshData mesh{};
@@ -200,8 +219,9 @@ struct GobjAttachLayout {
         return mesh;
     }
 
-    const auto header1 = common::readU32AtBE(bytes, layout.vertexOffset);
-    const auto header2 = common::readU32AtBE(bytes, static_cast<std::size_t>(layout.vertexOffset) + 4U);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto header1 = reader.try_read_u32(layout.vertexOffset);
+    const auto header2 = reader.try_read_u32(static_cast<std::size_t>(layout.vertexOffset) + 4U);
     if (!header1.has_value() || !header2.has_value() || (*header1 & 0xFFU) != 0x29U) {
         diagnostics.push_back("GOBJ stream parser skipped unsupported vertex chunk at " + hexOffset(layout.vertexOffset) + ".");
         return mesh;
@@ -243,8 +263,8 @@ struct GobjAttachLayout {
     };
 
     for (std::size_t offset = layout.polyOffset; offset + 4U <= layout.vertexOffset; offset += 4U) {
-        const auto floatIndex = readU16BE(bytes, offset);
-        const auto flags = readU16BE(bytes, offset + 2U);
+        const auto floatIndex = reader.try_read_u16(offset);
+        const auto flags = reader.try_read_u16(offset + 2U);
         if (!floatIndex.has_value() || !flags.has_value()) {
             break;
         }
@@ -254,7 +274,7 @@ struct GobjAttachLayout {
             continue;
         }
 
-        const auto vertex = readGobjStreamVertex(bytes, layout.vertexOffset, *floatIndex, vertexCount);
+        const auto vertex = readGobjStreamVertex(bytes, endian, layout.vertexOffset, *floatIndex, vertexCount);
         if (!vertex.has_value()) {
             ++controlCount;
             appendRunTriangles();
@@ -281,6 +301,7 @@ struct GobjAttachLayout {
 
 struct WalkContext {
     std::span<const std::uint8_t> bytes{};
+    spice::core::Endian endian = spice::core::Endian::Big;
     GobjDecodeResult* result = nullptr;
     std::unordered_map<std::uint32_t, std::size_t> nodeIndexByOffset{};
     std::unordered_set<std::uint32_t> activeStack{};
@@ -306,14 +327,15 @@ struct WalkContext {
     GobjNode node{};
     node.sourceNodeOffset = nodeOffset;
     node.parentNodeIndex = parentIndex;
-    node.transform = readNodeTransform(context.bytes, nodeOffset);
+    node.transform = readNodeTransform(context.bytes, context.endian, nodeOffset);
 
-    const auto attachRel = readI32BE(context.bytes, nodeOffset);
+    const spice::core::EndianReader reader(context.bytes, context.endian);
+    const auto attachRel = reader.try_read_i32(nodeOffset);
     if (attachRel.has_value()) {
         if (const auto attachOffset = addRelativeTarget(nodeOffset, *attachRel, context.bytes.size())) {
-            if (const auto layout = readGobjAttachLayout(context.bytes, *attachOffset, context.result->diagnostics)) {
+            if (const auto layout = readGobjAttachLayout(context.bytes, context.endian, *attachOffset, context.result->diagnostics)) {
                 node.sourceAttachOffset = layout->attachOffset;
-                node.streamMesh = readGobjTriangleStreamMesh(context.bytes, *layout, context.result->diagnostics);
+                node.streamMesh = readGobjTriangleStreamMesh(context.bytes, context.endian, *layout, context.result->diagnostics);
             }
         }
     }
@@ -325,7 +347,7 @@ struct WalkContext {
         context.result->rootNodeIndices.push_back(nodeIndex);
     }
 
-    const auto childRel = readI32BE(context.bytes, nodeOffset + 0x2CU);
+    const auto childRel = reader.try_read_i32(nodeOffset + 0x2CU);
     if (childRel.has_value()) {
         if (const auto childOffset = addRelativeTarget(nodeOffset + 0x2CU, *childRel, context.bytes.size())) {
             if (const auto childIndex = walkNode(context, *childOffset, nodeIndex)) {
@@ -334,7 +356,7 @@ struct WalkContext {
         }
     }
 
-    const auto siblingRel = readI32BE(context.bytes, nodeOffset + 0x30U);
+    const auto siblingRel = reader.try_read_i32(nodeOffset + 0x30U);
     if (siblingRel.has_value()) {
         if (const auto siblingOffset = addRelativeTarget(nodeOffset + 0x2CU, *siblingRel, context.bytes.size())) {
             (void)walkNode(context, *siblingOffset, parentIndex);
@@ -347,7 +369,7 @@ struct WalkContext {
 
 } // namespace
 
-GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset) const {
+GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset, const spice::core::Endian endian) const {
     GobjDecodeResult result{};
     result.sourceOffset = sourceOffset;
 
@@ -356,12 +378,13 @@ GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, co
         return result;
     }
 
-    if (common::readU32AtBE(blockBytes, 0U).value_or(0U) != kGobjTag) {
+    if (readTag(blockBytes, 0U) != kGobjTag) {
         result.diagnostics.push_back("GOBJ block at " + hexOffset(sourceOffset) + " does not start with GOBJ magic.");
         return result;
     }
 
-    const auto declaredSize = common::readU32AtBE(blockBytes, 4U);
+    const spice::core::EndianReader reader(blockBytes, endian);
+    const auto declaredSize = reader.try_read_u32(4U);
     if (!declaredSize.has_value() || *declaredSize < kRootNodeOffset + kNodeSize || *declaredSize > blockBytes.size()) {
         result.diagnostics.push_back("GOBJ block at " + hexOffset(sourceOffset) + " has an invalid declared size.");
         return result;
@@ -370,6 +393,7 @@ GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, co
     const auto bytes = blockBytes.first(static_cast<std::size_t>(*declaredSize));
     WalkContext context{
         .bytes = bytes,
+        .endian = endian,
         .result = &result,
     };
 

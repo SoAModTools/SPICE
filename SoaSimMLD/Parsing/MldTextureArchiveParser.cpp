@@ -2,6 +2,7 @@
 
 #include "../../SoaSimGvm/SoaSimGvm.h"
 
+#include "../../SpiceCore/Binary/EndianReader.h"
 #include "../common/ByteUtils.h"
 
 #include <algorithm>
@@ -36,9 +37,11 @@ namespace {
 
 [[nodiscard]] std::vector<std::string> parseTextureArchiveNames(std::span<const std::uint8_t> bytes,
     const std::size_t textureTableOffset,
+    const spice::core::Endian endian,
     std::vector<std::string>& diagnostics) {
     std::vector<std::string> names{};
-    const auto count = common::readU32AtBE(bytes, textureTableOffset);
+    const spice::core::EndianReader reader(bytes, endian);
+    const auto count = reader.try_read_u32(textureTableOffset);
     if (!count.has_value()) {
         diagnostics.push_back("Texture archive name table count is unreadable.");
         return names;
@@ -70,10 +73,11 @@ namespace {
 } // namespace
 
 model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> bytes,
-    const std::size_t textureTableOffset) {
+    const std::size_t textureTableOffset,
+    const spice::core::Endian endian) {
     model::MldTextureArchive out{};
     out.tableOffset = textureTableOffset;
-    const auto archiveNames = parseTextureArchiveNames(bytes, textureTableOffset, out.diagnostics);
+    const auto archiveNames = parseTextureArchiveNames(bytes, textureTableOffset, endian, out.diagnostics);
 
     soasim::gvm::parsing::ParseOptions options{};
     options.decodeBaseLevel = true;

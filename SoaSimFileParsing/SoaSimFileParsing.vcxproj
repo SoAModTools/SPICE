@@ -142,6 +142,9 @@
     <ClCompile Include="SoaSimFileParsing.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SoaSimMLD\SoaSimMLD.vcxproj">
       <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
     </ProjectReference>

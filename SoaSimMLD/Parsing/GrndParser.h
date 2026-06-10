@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Model/Types.h"
+#include "../../SpiceCore/Binary/Endian.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +29,8 @@ struct GrndDecodeResult {
 class GrndParser {
 public:
     [[nodiscard]] GrndDecodeResult decode(std::span<const std::uint8_t> blockBytes,
-        std::uint32_t sourceOffset = 0) const;
+        std::uint32_t sourceOffset = 0,
+        spice::core::Endian endian = spice::core::Endian::Big) const;
 };
 
 } // namespace soasim::mld::parsing

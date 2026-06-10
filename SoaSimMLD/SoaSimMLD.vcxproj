@@ -99,9 +99,11 @@
   <ItemGroup>
     <ClInclude Include="common\ByteUtils.h" />
     <ClInclude Include="Export\BlenderIrJsonExporter.h" />
+    <ClInclude Include="Export\MldFileExporter.h" />
     <ClInclude Include="Model\IndexEntry.h" />
     <ClInclude Include="Model\GeometryModel.h" />
     <ClInclude Include="Model\BlenderIrModel.h" />
+    <ClInclude Include="Model\MldFile.h" />
     <ClInclude Include="Model\MldTextureArchiveModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
@@ -131,6 +133,7 @@
     <ClCompile Include="Parsing\MldParser.cpp" />
     <ClCompile Include="Parsing\Sa3dBlenderIrBuilder.cpp" />
     <ClCompile Include="Export\BlenderIrJsonExporter.cpp" />
+    <ClCompile Include="Export\MldFileExporter.cpp" />
     <ClCompile Include="SoaSimMLD.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -139,6 +142,9 @@
     </ProjectReference>
     <ProjectReference Include="..\Sa3Dport\Sa3Dport.vcxproj">
       <Project>{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SoaSimGvm\SoaSimGvm.vcxproj">
       <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>

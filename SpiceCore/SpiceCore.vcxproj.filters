@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Binary">
+      <UniqueIdentifier>{81F4670E-A0A2-4296-820E-472E643CB4E7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="EntryPoint">
+      <UniqueIdentifier>{A54A132F-3D04-4C35-9C78-75408D3E5F6C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Binary\Alignment.h">
+      <Filter>Binary</Filter>
+    </ClInclude>
+    <ClInclude Include="Binary\Endian.h">
+      <Filter>Binary</Filter>
+    </ClInclude>
+    <ClInclude Include="Binary\EndianReader.h">
+      <Filter>Binary</Filter>
+    </ClInclude>
+    <ClInclude Include="Binary\EndianWriter.h">
+      <Filter>Binary</Filter>
+    </ClInclude>
+    <ClInclude Include="Binary\FourCC.h">
+      <Filter>Binary</Filter>
+    </ClInclude>
+    <ClInclude Include="SpiceCore.h">
+      <Filter>EntryPoint</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="SpiceCore.cpp">
+      <Filter>EntryPoint</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
+

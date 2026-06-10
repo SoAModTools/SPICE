@@ -2,6 +2,7 @@
 #include "SctOpcodeMetadata.h"
 #include "SctScptDecodeHelpers.h"
 
+#include "../SpiceCore/Binary/EndianReader.h"
 #include "../Compression/Aklz.h"
 
 #include <algorithm>
@@ -25,26 +26,10 @@ constexpr std::size_t kIndexNameMaxLen = 0x10;
 constexpr std::uint32_t kMaxOpcodeProbe = 265;
 constexpr std::uint32_t kScptStopCode = 0x0000001d;
 
-enum class Endian {
-    Big,
-    Little,
-};
+using Endian = spice::core::Endian;
 
 [[nodiscard]] std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset, Endian endian) {
-    if (offset + sizeof(std::uint32_t) > bytes.size()) {
-        return 0;
-    }
-
-    const std::uint32_t b0 = bytes[offset + 0];
-    const std::uint32_t b1 = bytes[offset + 1];
-    const std::uint32_t b2 = bytes[offset + 2];
-    const std::uint32_t b3 = bytes[offset + 3];
-
-    if (endian == Endian::Big) {
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
-    }
-
-    return (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
+    return spice::core::EndianReader(bytes, endian).try_read_u32(offset).value_or(0U);
 }
 
 [[nodiscard]] std::string readIndexName(std::span<const std::uint8_t> bytes, std::size_t offset) {

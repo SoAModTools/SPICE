@@ -1,6 +1,7 @@
 #include "GvmParser.h"
 
 #include "../Decoding/GvrDecoder.h"
+#include "../../SpiceCore/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -24,37 +25,19 @@ constexpr std::uint32_t tagGvrt = makeTag('G', 'V', 'R', 'T');
 constexpr std::uint32_t tagGvmh = makeTag('G', 'V', 'M', 'H');
 
 [[nodiscard]] std::optional<std::uint32_t> readU32BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset > bytes.size() || bytes.size() - offset < 4U) {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
+    return spice::core::EndianReader(bytes, spice::core::Endian::Big).try_read_u32(offset);
 }
 
 [[nodiscard]] std::optional<std::uint32_t> readU32LE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset > bytes.size() || bytes.size() - offset < 4U) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint32_t>(bytes[offset]) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 8U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 3U]) << 24U);
+    return spice::core::EndianReader(bytes, spice::core::Endian::Little).try_read_u32(offset);
 }
 
 [[nodiscard]] std::optional<std::uint16_t> readU16BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset > bytes.size() || bytes.size() - offset < 2U) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8U) | bytes[offset + 1U]);
+    return spice::core::EndianReader(bytes, spice::core::Endian::Big).try_read_u16(offset);
 }
 
 [[nodiscard]] std::optional<std::uint16_t> readU16LE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset > bytes.size() || bytes.size() - offset < 2U) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint16_t>(bytes[offset] | (static_cast<std::uint16_t>(bytes[offset + 1U]) << 8U));
+    return spice::core::EndianReader(bytes, spice::core::Endian::Little).try_read_u16(offset);
 }
 
 [[nodiscard]] bool plausibleDimension(const std::uint16_t value) {
