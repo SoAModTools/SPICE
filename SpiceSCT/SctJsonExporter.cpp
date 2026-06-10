@@ -63,6 +63,26 @@ const char* toString(SctParameterValueKind value) {
     }
 }
 
+const char* toString(SctScptAstNodeKind value) {
+    switch (value) {
+    case SctScptAstNodeKind::Unknown: return "unknown";
+    case SctScptAstNodeKind::NoLoopValue: return "no_loop_value";
+    case SctScptAstNodeKind::RawValue: return "raw_value";
+    case SctScptAstNodeKind::FloatLiteral: return "float_literal";
+    case SctScptAstNodeKind::DecimalLiteral: return "decimal_literal";
+    case SctScptAstNodeKind::IntVariable: return "int_variable";
+    case SctScptAstNodeKind::FloatVariable: return "float_variable";
+    case SctScptAstNodeKind::BitVariable: return "bit_variable";
+    case SctScptAstNodeKind::ByteVariable: return "byte_variable";
+    case SctScptAstNodeKind::SecondaryValue: return "secondary_value";
+    case SctScptAstNodeKind::CompareOp: return "compare_op";
+    case SctScptAstNodeKind::ArithmeticOp: return "arithmetic_op";
+    case SctScptAstNodeKind::AssignmentOp: return "assignment_op";
+    case SctScptAstNodeKind::Stop: return "stop";
+    default: return "unknown";
+    }
+}
+
 const char* toString(SctEdgeType value) {
     switch (value) {
     case SctEdgeType::Fallthrough: return "fallthrough";
@@ -121,8 +141,26 @@ void writeAttributes(std::ostringstream& out, const std::map<std::string, std::s
     out << '}';
 }
 
+void writeScptAstNode(std::ostringstream& out, const SctScptAstNode& node) {
+    out << "{\"kind\":\"" << toString(node.kind)
+        << "\",\"display\":\"" << jsonEscape(node.display)
+        << "\",\"op\":\"" << jsonEscape(node.op)
+        << "\",\"rawWords\":";
+    writeU32Array(out, node.rawWords);
+    out << ",\"children\":[";
+    for (std::size_t i = 0; i < node.children.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        writeScptAstNode(out, node.children[i]);
+    }
+    out << "]}";
+}
+
 void writeExpression(std::ostringstream& out, const SctExpression& expression) {
-    out << "{\"display\":\"" << jsonEscape(expression.display) << "\",\"trace\":[";
+    out << "{\"display\":\"" << jsonEscape(expression.display)
+        << "\",\"hitStopCode\":" << (expression.hitStopCode ? "true" : "false")
+        << ",\"trace\":[";
     for (std::size_t i = 0; i < expression.trace.size(); ++i) {
         if (i != 0) {
             out << ',';
@@ -130,7 +168,13 @@ void writeExpression(std::ostringstream& out, const SctExpression& expression) {
         out << "{\"rawWord\":" << expression.trace[i].rawWord
             << ",\"interpretedValue\":\"" << jsonEscape(expression.trace[i].interpretedValue) << "\"}";
     }
-    out << "]}";
+    out << "],\"ast\":";
+    if (expression.ast.has_value()) {
+        writeScptAstNode(out, *expression.ast);
+    } else {
+        out << "null";
+    }
+    out << '}';
 }
 
 void writeParameter(std::ostringstream& out, const SctParameter& parameter) {

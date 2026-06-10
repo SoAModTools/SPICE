@@ -61,9 +61,36 @@ struct SctExpressionTraceEntry {
     std::string interpretedValue;
 };
 
+enum class SctScptAstNodeKind {
+    Unknown,
+    NoLoopValue,
+    RawValue,
+    FloatLiteral,
+    DecimalLiteral,
+    IntVariable,
+    FloatVariable,
+    BitVariable,
+    ByteVariable,
+    SecondaryValue,
+    CompareOp,
+    ArithmeticOp,
+    AssignmentOp,
+    Stop,
+};
+
+struct SctScptAstNode {
+    SctScptAstNodeKind kind = SctScptAstNodeKind::Unknown;
+    std::string display;
+    std::string op;
+    std::vector<std::uint32_t> rawWords;
+    std::vector<SctScptAstNode> children;
+};
+
 struct SctExpression {
     std::string display;
     std::vector<SctExpressionTraceEntry> trace;
+    bool hitStopCode = false;
+    std::optional<SctScptAstNode> ast;
 };
 
 struct SctParameter {
@@ -89,6 +116,7 @@ struct SctInstruction {
         bool hitStopCode = false;
         std::string resolvedValue;
         std::vector<ScptTraceEntry> evaluationTrace;
+        std::optional<SctScptAstNode> ast;
     };
 
     std::uint32_t offset = 0;

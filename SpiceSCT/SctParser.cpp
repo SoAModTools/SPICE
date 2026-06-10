@@ -171,6 +171,64 @@ struct DecodedInstruction {
     }
 }
 
+[[nodiscard]] SctScptAstNode makeScptNode(
+    SctScptAstNodeKind kind,
+    std::string display,
+    std::uint32_t rawWord,
+    std::string op = {})
+{
+    SctScptAstNode node{};
+    node.kind = kind;
+    node.display = std::move(display);
+    node.op = std::move(op);
+    node.rawWords.push_back(rawWord);
+    return node;
+}
+
+[[nodiscard]] SctScptAstNode makeUnknownScptNode() {
+    SctScptAstNode node{};
+    node.kind = SctScptAstNodeKind::Unknown;
+    node.display = "?";
+    return node;
+}
+
+[[nodiscard]] const SctScptAstNode* stackAstValue(
+    const std::array<std::optional<SctScptAstNode>, 20>& stack,
+    std::int32_t index)
+{
+    if (index < 0 || index >= static_cast<std::int32_t>(stack.size()) || !stack[index].has_value()) {
+        return nullptr;
+    }
+    return &*stack[index];
+}
+
+[[nodiscard]] SctScptAstNodeKind inputNodeKind(std::uint32_t action) {
+    switch (action) {
+    case 0x50000000:
+        return SctScptAstNodeKind::IntVariable;
+    case 0x40000000:
+        return SctScptAstNodeKind::FloatVariable;
+    case 0x20000000:
+        return SctScptAstNodeKind::BitVariable;
+    case 0x10000000:
+        return SctScptAstNodeKind::ByteVariable;
+    case 0x08000000:
+        return SctScptAstNodeKind::DecimalLiteral;
+    case 0x04000000:
+        return SctScptAstNodeKind::FloatLiteral;
+    default:
+        return SctScptAstNodeKind::RawValue;
+    }
+}
+
+void setScptStackNode(
+    std::array<std::optional<SctScptAstNode>, 20>& stack,
+    std::int32_t index,
+    SctScptAstNode node)
+{
+    stack[std::clamp<std::int32_t>(index, 0, 19)] = std::move(node);
+}
+
 [[nodiscard]] std::uint32_t consumeScptParameterWords(
     std::span<const std::uint8_t> sectionBytes,
     std::uint32_t wordOffset,
@@ -189,6 +247,11 @@ struct DecodedInstruction {
         if (record != nullptr) {
             record->resolvedValue = detail::toHexWord(firstWord);
             record->evaluationTrace.push_back({firstWord, record->resolvedValue});
+            record->hitStopCode = firstWord == kScptStopCode;
+            record->ast = makeScptNode(
+                record->hitStopCode ? SctScptAstNodeKind::Stop : SctScptAstNodeKind::NoLoopValue,
+                record->resolvedValue,
+                firstWord);
         }
         return 1;
     }
@@ -196,6 +259,7 @@ struct DecodedInstruction {
     std::uint32_t consumedWords = 0;
     std::uint32_t cursor = wordOffset;
     std::array<std::string, 20> resultStack{};
+    std::array<std::optional<SctScptAstNode>, 20> astStack{};
 
     // Mirror SALSA's _SCPT_analyze stack-driven loop semantics.
     // In Python this starts as `stack_index = 0`, `max_index = 18` and bails
@@ -218,8 +282,12 @@ struct DecodedInstruction {
                 record->hitStopCode = true;
                 if (!resultStack[2].empty()) {
                     record->resolvedValue = resultStack[2];
+                    if (astStack[2].has_value()) {
+                        record->ast = astStack[2];
+                    }
                 } else {
                     record->resolvedValue = "return values (0x1d)";
+                    record->ast = makeScptNode(SctScptAstNodeKind::Stop, record->resolvedValue, currentWord);
                 }
                 record->evaluationTrace.push_back({currentWord, "return values (0x1d)"});
             }
@@ -230,6 +298,21 @@ struct DecodedInstruction {
             const auto lhs = detail::stackValue(resultStack, stackIndex);
             const auto rhs = detail::stackValue(resultStack, stackIndex + 1);
             const auto expr = "(" + lhs + " " + detail::compareSymbol(currentWord) + " " + rhs + ")";
+            auto node = makeScptNode(
+                currentWord == 0x0000000au ? SctScptAstNodeKind::AssignmentOp : SctScptAstNodeKind::CompareOp,
+                expr,
+                currentWord,
+                detail::compareSymbol(currentWord));
+            if (const auto* lhsNode = stackAstValue(astStack, stackIndex)) {
+                node.children.push_back(*lhsNode);
+            } else {
+                node.children.push_back(makeUnknownScptNode());
+            }
+            if (const auto* rhsNode = stackAstValue(astStack, stackIndex + 1)) {
+                node.children.push_back(*rhsNode);
+            } else {
+                node.children.push_back(makeUnknownScptNode());
+            }
             std::int32_t nones = 0;
             if (lhs == "?") {
                 ++nones;
@@ -238,6 +321,7 @@ struct DecodedInstruction {
                 ++nones;
             }
             resultStack[std::clamp<std::int32_t>(stackIndex + nones, 0, 19)] = expr;
+            setScptStackNode(astStack, stackIndex + nones, std::move(node));
             if (record != nullptr) {
                 record->evaluationTrace.push_back({currentWord, expr});
             }
@@ -253,6 +337,17 @@ struct DecodedInstruction {
             const auto lhs = detail::stackValue(resultStack, stackIndex);
             const auto rhs = detail::stackValue(resultStack, stackIndex + 1);
             const auto expr = "(" + lhs + " " + detail::arithmeticSymbol(currentWord) + " " + rhs + ")";
+            auto node = makeScptNode(SctScptAstNodeKind::ArithmeticOp, expr, currentWord, detail::arithmeticSymbol(currentWord));
+            if (const auto* lhsNode = stackAstValue(astStack, stackIndex)) {
+                node.children.push_back(*lhsNode);
+            } else {
+                node.children.push_back(makeUnknownScptNode());
+            }
+            if (const auto* rhsNode = stackAstValue(astStack, stackIndex + 1)) {
+                node.children.push_back(*rhsNode);
+            } else {
+                node.children.push_back(makeUnknownScptNode());
+            }
             std::int32_t nones = 0;
             if (lhs == "?") {
                 ++nones;
@@ -261,6 +356,7 @@ struct DecodedInstruction {
                 ++nones;
             }
             resultStack[std::clamp<std::int32_t>(stackIndex + nones, 0, 19)] = expr;
+            setScptStackNode(astStack, stackIndex + nones, std::move(node));
             if (record != nullptr) {
                 record->evaluationTrace.push_back({currentWord, expr});
             }
@@ -280,6 +376,9 @@ struct DecodedInstruction {
                 const auto floatValue = detail::floatFromWordBits(floatPayload);
                 const auto value = std::string{detail::inputPrefix(action)} + std::to_string(floatValue);
                 resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
+                auto node = makeScptNode(SctScptAstNodeKind::FloatLiteral, value, currentWord);
+                node.rawWords.push_back(floatPayload);
+                setScptStackNode(astStack, stackIndex + 2, std::move(node));
                 if (record != nullptr) {
                     record->evaluationTrace.push_back({currentWord, detail::toHexWord(currentWord)});
                     record->evaluationTrace.push_back({floatPayload, value});
@@ -296,6 +395,7 @@ struct DecodedInstruction {
                     value = std::string{detail::inputPrefix(action)} + std::to_string(currentWord & 0x00ffffffu);
                 }
                 resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
+                setScptStackNode(astStack, stackIndex + 2, makeScptNode(inputNodeKind(action), value, currentWord));
                 if (record != nullptr) {
                     record->evaluationTrace.push_back({currentWord, value});
                 }
@@ -306,6 +406,9 @@ struct DecodedInstruction {
             auto value = detail::secondaryLabel(masked);
             if (value.empty()) {
                 value = std::string{detail::inputPrefix(action)} + std::to_string(masked);
+                setScptStackNode(astStack, stackIndex + 2, makeScptNode(SctScptAstNodeKind::IntVariable, value, currentWord));
+            } else {
+                setScptStackNode(astStack, stackIndex + 2, makeScptNode(SctScptAstNodeKind::SecondaryValue, value, currentWord));
             }
             resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
             if (record != nullptr) {
@@ -318,6 +421,9 @@ struct DecodedInstruction {
 
     if (record != nullptr && record->resolvedValue.empty() && !resultStack[2].empty()) {
         record->resolvedValue = resultStack[2];
+        if (astStack[2].has_value()) {
+            record->ast = astStack[2];
+        }
     }
     diagnostics.push_back({"SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
     return consumedWords;
@@ -510,9 +616,11 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
                 parameter.displayValue = scptRecord.resolvedValue;
                 SctExpression expression{};
                 expression.display = scptRecord.resolvedValue;
+                expression.hitStopCode = scptRecord.hitStopCode;
                 for (const auto& trace : scptRecord.evaluationTrace) {
                     expression.trace.push_back({trace.rawWord, trace.interpretedValue});
                 }
+                expression.ast = scptRecord.ast;
                 parameter.expression = std::move(expression);
                 decoded.inst.scptParameterValueRecords.push_back(std::move(scptRecord));
             } else if (!parameter.rawWords.empty()) {

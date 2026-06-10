@@ -8,8 +8,13 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
+
+constexpr std::size_t kHeaderSize = 12;
+constexpr std::size_t kIndexEntrySize = 0x14;
+constexpr std::size_t kIndexNameOffset = 4;
 
 spice::sct::SctInstruction instruction(
     std::uint32_t offset,
@@ -24,6 +29,83 @@ spice::sct::SctInstruction instruction(
     result.sizeBytes = sizeBytes;
     result.decodeOk = true;
     return result;
+}
+
+void writeU32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value)
+{
+    bytes[offset + 0u] = static_cast<std::uint8_t>((value >> 24u) & 0xffu);
+    bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 16u) & 0xffu);
+    bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 8u) & 0xffu);
+    bytes[offset + 3u] = static_cast<std::uint8_t>(value & 0xffu);
+}
+
+void appendU32(std::vector<std::uint8_t>& bytes, std::uint32_t value)
+{
+    const auto offset = bytes.size();
+    bytes.resize(offset + 4u);
+    writeU32(bytes, offset, value);
+}
+
+void writeName(std::vector<std::uint8_t>& bytes, std::size_t offset, std::string name)
+{
+    for (std::size_t i = 0; i < 16u; ++i) {
+        bytes[offset + i] = 0u;
+    }
+    for (std::size_t i = 0; i < name.size() && i < 16u; ++i) {
+        bytes[offset + i] = static_cast<std::uint8_t>(name[i]);
+    }
+}
+
+std::vector<std::uint8_t> makeSingleSectionSct(const std::vector<std::uint8_t>& section)
+{
+    std::vector<std::uint8_t> out(kHeaderSize + kIndexEntrySize, 0u);
+    writeU32(out, 8u, 1u);
+    writeName(out, kHeaderSize + kIndexNameOffset, "M00001");
+    out.insert(out.end(), section.begin(), section.end());
+    return out;
+}
+
+std::vector<std::uint8_t> makeScptAstFixture()
+{
+    std::vector<std::uint8_t> section{};
+
+    appendU32(section, 16u);
+    appendU32(section, 0x04000000u);
+    appendU32(section, 0x3f800000u);
+    appendU32(section, 0x04000000u);
+    appendU32(section, 0x40000000u);
+    appendU32(section, 0x00000015u);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x50000000u);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x5000000fu);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x40000002u);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x20000affu);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x10000003u);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x08000180u);
+    appendU32(section, 0x0000001du);
+
+    appendU32(section, 16u);
+    appendU32(section, 0x7fffffffu);
+
+    appendU32(section, 12u);
+    return makeSingleSectionSct(section);
 }
 
 spice::sct::SctParseResult makeLegacyStyleParseResult()
@@ -221,4 +303,72 @@ TEST(SctIr, SemanticComparerUsesSalsaParamPatternsForKnownOpcodeParameters)
     }
 
     EXPECT_GT(checkedOpcodes, 200u);
+}
+
+TEST(SctIr, ParserBuildsSalsaScptAstFamilies)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(makeScptAstFixture(), "scpt_ast.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(1u, parsed.file.sections.size());
+
+    const auto& instructions = parsed.file.sections.front().instructions;
+    ASSERT_GE(instructions.size(), 9u);
+
+    const auto& arithmetic = instructions[0].parameters.front().expression;
+    ASSERT_TRUE(arithmetic.has_value());
+    ASSERT_TRUE(arithmetic->ast.has_value());
+    EXPECT_TRUE(arithmetic->hitStopCode);
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::ArithmeticOp, arithmetic->ast->kind);
+    EXPECT_EQ("+", arithmetic->ast->op);
+    ASSERT_EQ(2u, arithmetic->ast->children.size());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatLiteral, arithmetic->ast->children[0].kind);
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatLiteral, arithmetic->ast->children[1].kind);
+
+    const auto& secondary = instructions[1].parameters.front().expression;
+    ASSERT_TRUE(secondary.has_value());
+    ASSERT_TRUE(secondary->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::SecondaryValue, secondary->ast->kind);
+    EXPECT_EQ("Gold", secondary->ast->display);
+
+    const auto& intVariable = instructions[2].parameters.front().expression;
+    ASSERT_TRUE(intVariable.has_value());
+    ASSERT_TRUE(intVariable->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::IntVariable, intVariable->ast->kind);
+
+    const auto& floatVariable = instructions[3].parameters.front().expression;
+    ASSERT_TRUE(floatVariable.has_value());
+    ASSERT_TRUE(floatVariable->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatVariable, floatVariable->ast->kind);
+
+    const auto& bitVariable = instructions[4].parameters.front().expression;
+    ASSERT_TRUE(bitVariable.has_value());
+    ASSERT_TRUE(bitVariable->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::BitVariable, bitVariable->ast->kind);
+
+    const auto& byteVariable = instructions[5].parameters.front().expression;
+    ASSERT_TRUE(byteVariable.has_value());
+    ASSERT_TRUE(byteVariable->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::ByteVariable, byteVariable->ast->kind);
+
+    const auto& decimal = instructions[6].parameters.front().expression;
+    ASSERT_TRUE(decimal.has_value());
+    ASSERT_TRUE(decimal->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::DecimalLiteral, decimal->ast->kind);
+    EXPECT_EQ("decimal: 1+128/256", decimal->ast->display);
+
+    const auto& noLoop = instructions[7].parameters.front().expression;
+    ASSERT_TRUE(noLoop.has_value());
+    ASSERT_TRUE(noLoop->ast.has_value());
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::NoLoopValue, noLoop->ast->kind);
+}
+
+TEST(SctIr, JsonExporterEmitsScptAst)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(makeScptAstFixture(), "scpt_ast.sct");
+    const auto json = spice::sct::SctJsonExporter{}.toJson(parsed);
+
+    EXPECT_NE(std::string::npos, json.find("\"hitStopCode\":true"));
+    EXPECT_NE(std::string::npos, json.find("\"kind\":\"arithmetic_op\""));
+    EXPECT_NE(std::string::npos, json.find("\"kind\":\"secondary_value\""));
+    EXPECT_NE(std::string::npos, json.find("\"kind\":\"decimal_literal\""));
 }
