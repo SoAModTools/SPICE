@@ -45,70 +45,132 @@ const spice::sct::SctInstruction* instructionAt(
     return it == section.instructions.end() ? nullptr : &*it;
 }
 
-ContentEdgeType edgeTypeForSuccessor(
-    const spice::sct::SctInstruction* lastInstruction,
-    std::size_t successorIndex,
-    std::uint32_t successorOffset,
-    std::uint32_t blockEndOffset) {
-    if (lastInstruction == nullptr) {
-        return successorOffset == blockEndOffset ? ContentEdgeType::Fallthrough : ContentEdgeType::Jump;
-    }
-    switch (lastInstruction->opcode) {
-    case 0:
-        return successorIndex == 0 ? ContentEdgeType::BranchFalse : ContentEdgeType::BranchTrue;
-    case 3:
+ContentEdgeType contentEdgeTypeForSctEdge(spice::sct::SctEdgeType type) {
+    switch (type) {
+    case spice::sct::SctEdgeType::Fallthrough:
+        return ContentEdgeType::Fallthrough;
+    case spice::sct::SctEdgeType::BranchTrue:
+        return ContentEdgeType::BranchTrue;
+    case spice::sct::SctEdgeType::BranchFalse:
+        return ContentEdgeType::BranchFalse;
+    case spice::sct::SctEdgeType::SwitchCase:
         return ContentEdgeType::SwitchCase;
-    case 10:
+    case spice::sct::SctEdgeType::Jump:
         return ContentEdgeType::Jump;
-    default:
-        return successorOffset == blockEndOffset ? ContentEdgeType::Fallthrough : ContentEdgeType::Jump;
+    case spice::sct::SctEdgeType::CallSubscript:
+        return ContentEdgeType::CallSubscript;
+    case spice::sct::SctEdgeType::Return:
+        return ContentEdgeType::Return;
+    case spice::sct::SctEdgeType::LoadsMld:
+        return ContentEdgeType::LoadsMld;
+    case spice::sct::SctEdgeType::LoadsScript:
+        return ContentEdgeType::LoadsScript;
+    case spice::sct::SctEdgeType::ReferencesString:
+        return ContentEdgeType::Jump;
     }
+    return ContentEdgeType::Jump;
 }
 
-bool isResourceLoadOpcode(std::uint16_t opcode) {
-    return opcode == 23 || opcode == 43 || opcode == 210 || opcode == 238 || opcode == 257;
+ContentConfidence contentConfidenceForSctEdge(spice::sct::SctSemanticConfidence confidence) {
+    switch (confidence) {
+    case spice::sct::SctSemanticConfidence::Known:
+        return ContentConfidence::Known;
+    case spice::sct::SctSemanticConfidence::Partial:
+        return ContentConfidence::Inferred;
+    case spice::sct::SctSemanticConfidence::Heuristic:
+        return ContentConfidence::Heuristic;
+    case spice::sct::SctSemanticConfidence::Unknown:
+        return ContentConfidence::Unresolved;
+    }
+    return ContentConfidence::Unresolved;
 }
 
-ContentEdgeType resourceEdgeType(std::uint16_t opcode) {
-    return opcode == 23 ? ContentEdgeType::LoadsMld : ContentEdgeType::LoadsScript;
+const spice::sct::SctEdge* findSctEdgeForSuccessor(
+    const spice::sct::SctSection& section,
+    const spice::sct::SctInstruction* lastInstruction,
+    std::uint32_t blockStartOffset,
+    std::uint32_t successorOffset) {
+    const auto fromOffset = lastInstruction == nullptr ? blockStartOffset : lastInstruction->offset;
+    const auto it = std::find_if(section.edges.begin(), section.edges.end(), [&](const auto& edge) {
+        return edge.fromOffset.has_value()
+            && *edge.fromOffset == fromOffset
+            && edge.toOffset.has_value()
+            && *edge.toOffset == successorOffset;
+    });
+    return it == section.edges.end() ? nullptr : &*it;
 }
 
-std::string resourceKind(std::uint16_t opcode) {
-    return opcode == 23 ? "mld" : "script";
+std::uint32_t firstOperandFromEdgeOrInstruction(
+    const spice::sct::SctEdge& edge,
+    const spice::sct::SctInstruction& instruction) {
+    const auto edgeOperand = edge.attributes.find("operand0");
+    if (edgeOperand != edge.attributes.end()) {
+        try {
+            return static_cast<std::uint32_t>(std::stoul(edgeOperand->second));
+        } catch (...) {
+        }
+    }
+    return instruction.operands.empty() ? 0u : instruction.operands.front();
 }
 
-void addResourceEdge(
+std::string resourceKind(spice::sct::SctEdgeType type) {
+    return type == spice::sct::SctEdgeType::LoadsMld ? "mld" : "script";
+}
+
+void addInstructionEdgeTarget(
     ContentGraph& graph,
     const std::string& sourcePath,
     const std::string& sectionName,
     const spice::sct::SctInstruction& instruction,
+    const spice::sct::SctEdge& sctEdge,
     const std::string& sourceNodeId) {
-    if (!isResourceLoadOpcode(instruction.opcode)) {
+    const auto contentType = contentEdgeTypeForSctEdge(sctEdge.type);
+    const auto operand = firstOperandFromEdgeOrInstruction(sctEdge, instruction);
+    std::string targetId{};
+    ContentNodeType targetType = ContentNodeType::UnknownTarget;
+    std::string targetLabel{};
+
+    if (sctEdge.type == spice::sct::SctEdgeType::LoadsMld || sctEdge.type == spice::sct::SctEdgeType::LoadsScript) {
+        const auto kind = resourceKind(sctEdge.type);
+        targetId = resourceRefNodeId(kind, sourcePath + ":" + sectionName + ":" + decimalString(instruction.offset)
+            + ":opcode:" + decimalString(instruction.opcode));
+        targetType = ContentNodeType::ResourceRef;
+        targetLabel = std::string("unresolved ") + kind + " load";
+    } else if (sctEdge.type == spice::sct::SctEdgeType::CallSubscript) {
+        targetId = unknownTargetNodeId(sourcePath, sectionName, instruction.offset, instruction.opcode);
+        targetLabel = "subscript target";
+    } else if (sctEdge.type == spice::sct::SctEdgeType::Return) {
+        targetId = unknownTargetNodeId(sourcePath, sectionName, instruction.offset, instruction.opcode);
+        targetLabel = "return target";
+    } else {
         return;
     }
 
-    const auto operand = instruction.operands.empty() ? 0u : instruction.operands.front();
-    const auto kind = resourceKind(instruction.opcode);
-    const auto targetId = resourceRefNodeId(kind, sourcePath + ":" + sectionName + ":" + decimalString(instruction.offset)
-        + ":opcode:" + decimalString(instruction.opcode));
     ContentNode target{};
     target.id = targetId;
-    target.type = ContentNodeType::ResourceRef;
-    target.label = std::string("unresolved ") + kind + " load";
+    target.type = targetType;
+    target.label = std::move(targetLabel);
     target.sourcePath = sourcePath;
-    target.attributes.emplace("resource_kind", kind);
+    if (targetType == ContentNodeType::ResourceRef) {
+        target.attributes.emplace("resource_kind", resourceKind(sctEdge.type));
+    }
     target.attributes.emplace("opcode", decimalString(instruction.opcode));
-    target.attributes.emplace("operand0", decimalString(operand));
+    target.attributes.emplace(sctEdge.type == spice::sct::SctEdgeType::CallSubscript ? "offset_operand" : "operand0",
+        decimalString(operand));
     graph.addNode(std::move(target));
 
     ContentEdge edge{};
     edge.from = sourceNodeId;
     edge.to = targetId;
-    edge.type = resourceEdgeType(instruction.opcode);
-    edge.confidence = ContentConfidence::Unresolved;
+    edge.type = contentType;
+    edge.confidence = sctEdge.type == spice::sct::SctEdgeType::LoadsMld || sctEdge.type == spice::sct::SctEdgeType::LoadsScript
+        ? ContentConfidence::Unresolved
+        : contentConfidenceForSctEdge(sctEdge.confidence);
     edge.attributes.emplace("opcode", decimalString(instruction.opcode));
-    edge.attributes.emplace("operand0", decimalString(operand));
-    edge.evidence.push_back(instructionEvidence(sourcePath, sectionName, instruction, "SCT resource-load opcode."));
+    edge.attributes.emplace(sctEdge.type == spice::sct::SctEdgeType::CallSubscript ? "offset_operand" : "operand0",
+        decimalString(operand));
+    edge.evidence.push_back(instructionEvidence(sourcePath, sectionName, instruction,
+        sctEdge.detail.empty() ? "SCT IR semantic edge." : sctEdge.detail));
     graph.addEdge(std::move(edge));
 }
 
@@ -145,64 +207,6 @@ void addFlagEdges(
     for (const auto flag : flags.flagsWritten) {
         addFlag(flag, ContentEdgeType::WritesFlag);
     }
-}
-
-void addSubscriptCallEdge(
-    ContentGraph& graph,
-    const std::string& sourcePath,
-    const std::string& sectionName,
-    const spice::sct::SctInstruction& instruction,
-    const std::string& sourceNodeId) {
-    if (instruction.opcode != 11) {
-        return;
-    }
-
-    const auto operand = instruction.operands.empty() ? 0u : instruction.operands.front();
-    const auto targetId = unknownTargetNodeId(sourcePath, sectionName, instruction.offset, instruction.opcode);
-    ContentNode target{};
-    target.id = targetId;
-    target.type = ContentNodeType::UnknownTarget;
-    target.label = "subscript target";
-    target.sourcePath = sourcePath;
-    target.attributes.emplace("opcode", decimalString(instruction.opcode));
-    target.attributes.emplace("offset_operand", decimalString(operand));
-    graph.addNode(std::move(target));
-
-    ContentEdge edge{};
-    edge.from = sourceNodeId;
-    edge.to = targetId;
-    edge.type = ContentEdgeType::CallSubscript;
-    edge.confidence = ContentConfidence::Heuristic;
-    edge.attributes.emplace("offset_operand", decimalString(operand));
-    edge.evidence.push_back(instructionEvidence(sourcePath, sectionName, instruction, "Opcode 11 loads a subscript and pushes a return position."));
-    graph.addEdge(std::move(edge));
-}
-
-void addReturnEdge(
-    ContentGraph& graph,
-    const std::string& sourcePath,
-    const std::string& sectionName,
-    const spice::sct::SctInstruction& instruction,
-    const std::string& sourceNodeId) {
-    if (instruction.opcode != 12) {
-        return;
-    }
-    const auto targetId = unknownTargetNodeId(sourcePath, sectionName, instruction.offset, instruction.opcode);
-    ContentNode target{};
-    target.id = targetId;
-    target.type = ContentNodeType::UnknownTarget;
-    target.label = "return target";
-    target.sourcePath = sourcePath;
-    target.attributes.emplace("opcode", decimalString(instruction.opcode));
-    graph.addNode(std::move(target));
-
-    ContentEdge edge{};
-    edge.from = sourceNodeId;
-    edge.to = targetId;
-    edge.type = ContentEdgeType::Return;
-    edge.confidence = ContentConfidence::Known;
-    edge.evidence.push_back(instructionEvidence(sourcePath, sectionName, instruction, "Opcode 12 returns from the current subscript stack."));
-    graph.addEdge(std::move(edge));
 }
 
 } // namespace
@@ -274,12 +278,18 @@ void SctGraphBuilder::addToGraph(ContentGraph& graph, const spice::sct::SctParse
                 ContentNode instructionNode{};
                 instructionNode.id = sourceNodeId;
                 instructionNode.type = ContentNodeType::Instruction;
-                instructionNode.label = section.id.name + " opcode " + std::to_string(instruction.opcode)
+                const auto instructionName = instruction.mnemonic.empty()
+                    ? std::string("opcode ") + std::to_string(instruction.opcode)
+                    : instruction.mnemonic;
+                instructionNode.label = section.id.name + " " + instructionName
                     + " @" + hexString(instruction.offset);
                 instructionNode.sourcePath = sourcePath;
                 instructionNode.offset = instruction.offset;
                 instructionNode.size = instruction.sizeBytes;
                 instructionNode.attributes.emplace("opcode", std::to_string(instruction.opcode));
+                if (!instruction.mnemonic.empty()) {
+                    instructionNode.attributes.emplace("mnemonic", instruction.mnemonic);
+                }
                 instructionNode.attributes.emplace("decode_ok", instruction.decodeOk ? "true" : "false");
                 graph.addNode(std::move(instructionNode));
 
@@ -295,11 +305,16 @@ void SctGraphBuilder::addToGraph(ContentGraph& graph, const spice::sct::SctParse
                 }
             }
 
-            if (options.includeResourceEdges) {
-                addResourceEdge(graph, sourcePath, section.id.name, instruction, sourceNodeId);
+            for (const auto& sctEdge : section.edges) {
+                if (!sctEdge.fromOffset.has_value() || *sctEdge.fromOffset != instruction.offset) {
+                    continue;
+                }
+                if (!options.includeResourceEdges
+                    && (sctEdge.type == spice::sct::SctEdgeType::LoadsMld || sctEdge.type == spice::sct::SctEdgeType::LoadsScript)) {
+                    continue;
+                }
+                addInstructionEdgeTarget(graph, sourcePath, section.id.name, instruction, sctEdge, sourceNodeId);
             }
-            addSubscriptCallEdge(graph, sourcePath, section.id.name, instruction, sourceNodeId);
-            addReturnEdge(graph, sourcePath, section.id.name, instruction, sourceNodeId);
         }
 
         if (options.detailLevel == ContentGraphDetailLevel::Sections) {
@@ -317,14 +332,16 @@ void SctGraphBuilder::addToGraph(ContentGraph& graph, const spice::sct::SctParse
                 if (targetIt == blockIdsByOffset.end()) {
                     continue;
                 }
+                const auto* sctEdge = findSctEdgeForSuccessor(section, lastInstruction, block.startOffset, successorOffset);
                 ContentEdge edge{};
                 edge.from = blockId;
                 edge.to = targetIt->second;
-                edge.type = edgeTypeForSuccessor(lastInstruction, i, successorOffset, block.endOffset);
-                edge.confidence = ContentConfidence::Known;
+                edge.type = sctEdge == nullptr ? ContentEdgeType::Jump : contentEdgeTypeForSctEdge(sctEdge->type);
+                edge.confidence = sctEdge == nullptr ? ContentConfidence::Known : contentConfidenceForSctEdge(sctEdge->confidence);
                 edge.attributes.emplace("target_offset", decimalString(successorOffset));
                 if (lastInstruction != nullptr) {
-                    edge.evidence.push_back(instructionEvidence(sourcePath, section.id.name, *lastInstruction, "SCT basic-block successor."));
+                    edge.evidence.push_back(instructionEvidence(sourcePath, section.id.name, *lastInstruction,
+                        sctEdge == nullptr || sctEdge->detail.empty() ? "SCT basic-block successor." : sctEdge->detail));
                 }
                 graph.addEdge(std::move(edge));
             }

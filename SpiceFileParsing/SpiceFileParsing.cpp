@@ -1982,8 +1982,9 @@ int main(int argc, char** argv) {
         if (extension == ".sct") {
             std::cout << "[SpiceFileParsing]   - Parsing SCT: " << entry.path().filename().string() << "\n";
             auto parsed = sctParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entry.path().string());
+            auto sctIr = spice::sct::SctIrBuilder{}.build(parsed);
             if (cliOptions->exportContentGraph) {
-                contentGraphInput.sctFiles.push_back({entry.path().string(), std::move(parsed)});
+                contentGraphInput.sctFiles.push_back({entry.path().string(), std::move(sctIr)});
                 ++filesProcessed;
                 continue;
             }
@@ -1993,7 +1994,8 @@ int main(int argc, char** argv) {
             out << summary.c_str();
 
             const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".sct.json");
-            writeSctDetailedJson(jsonOutPath, parsed);
+            std::ofstream jsonOut(jsonOutPath, std::ios::binary);
+            jsonOut << spice::sct::SctJsonExporter{}.toJson(sctIr);
             ++filesProcessed;
             continue;
         }

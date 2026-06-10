@@ -1,9 +1,45 @@
 #pragma once
+#include "SctModel.h"
+
 #include <array>
 #include <cstdint>
+#include <string_view>
 
 namespace spice::sct {
-struct SctOpcodeParamPattern { std::uint16_t paramCount; std::uint64_t scptAnalyzeMask; std::int8_t loopStartParam; std::int8_t loopEndParam; std::int8_t iterationCountParam; std::int8_t jumpParam; std::int8_t switchJumpParam; };
+enum class SctOpcodeControlRole {
+    None,
+    Branch,
+    Switch,
+    Jump,
+    CallSubscript,
+    Return,
+};
+
+enum class SctOpcodeResourceRole {
+    None,
+    LoadsScript,
+    LoadsMld,
+};
+
+struct SctOpcodeParamPattern {
+    std::uint16_t paramCount;
+    std::uint64_t scptAnalyzeMask;
+    std::int8_t loopStartParam;
+    std::int8_t loopEndParam;
+    std::int8_t iterationCountParam;
+    std::int8_t jumpParam;
+    std::int8_t switchJumpParam;
+};
+
+struct SctOpcodeSemanticMetadata {
+    std::uint16_t opcode = 0;
+    std::string_view mnemonic = {};
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+    SctOpcodeControlRole controlRole = SctOpcodeControlRole::None;
+    SctOpcodeResourceRole resourceRole = SctOpcodeResourceRole::None;
+    std::array<std::string_view, 8> parameterRoles{};
+};
+
 inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPatterns{{
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, -1, 1, -1}, // opcode 0
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 1
@@ -272,4 +308,82 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{8, 0xffull, -1, -1, -1, -1, -1}, // opcode 264
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, -1, -1, -1}, // opcode 265
 }};
+
+[[nodiscard]] inline SctOpcodeSemanticMetadata sctOpcodeMetadata(std::uint16_t opcode) {
+    SctOpcodeSemanticMetadata meta{};
+    meta.opcode = opcode;
+
+    switch (opcode) {
+    case 0:
+        meta.mnemonic = "If";
+        meta.confidence = SctSemanticConfidence::Known;
+        meta.controlRole = SctOpcodeControlRole::Branch;
+        meta.parameterRoles = {"condition", "falseOffset"};
+        break;
+    case 3:
+        meta.mnemonic = "Switch";
+        meta.confidence = SctSemanticConfidence::Known;
+        meta.controlRole = SctOpcodeControlRole::Switch;
+        meta.parameterRoles = {"choice", "caseCount", "caseValue", "caseOffset"};
+        break;
+    case 9:
+        meta.mnemonic = "LabelOrStringPrefix";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.parameterRoles = {"payload"};
+        break;
+    case 10:
+        meta.mnemonic = "Jump";
+        meta.confidence = SctSemanticConfidence::Known;
+        meta.controlRole = SctOpcodeControlRole::Jump;
+        meta.parameterRoles = {"offset"};
+        break;
+    case 11:
+        meta.mnemonic = "CallSubscript";
+        meta.confidence = SctSemanticConfidence::Known;
+        meta.controlRole = SctOpcodeControlRole::CallSubscript;
+        meta.parameterRoles = {"offset"};
+        break;
+    case 12:
+        meta.mnemonic = "Return";
+        meta.confidence = SctSemanticConfidence::Known;
+        meta.controlRole = SctOpcodeControlRole::Return;
+        break;
+    case 23:
+        meta.mnemonic = "LoadMld";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.resourceRole = SctOpcodeResourceRole::LoadsMld;
+        meta.parameterRoles = {"mldRef"};
+        break;
+    case 43:
+        meta.mnemonic = "LoadScript";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.parameterRoles = {"scriptRef"};
+        break;
+    case 210:
+        meta.mnemonic = "LoadScriptGameState12";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.parameterRoles = {"scriptRef"};
+        break;
+    case 238:
+        meta.mnemonic = "ReturnToOverworld";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.parameterRoles = {"scriptRef"};
+        break;
+    case 257:
+        meta.mnemonic = "LoadScriptGameState7";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.parameterRoles = {"scriptRef"};
+        break;
+    default:
+        meta.mnemonic = {};
+        meta.confidence = SctSemanticConfidence::Unknown;
+        break;
+    }
+
+    return meta;
+}
 } // namespace spice::sct

@@ -15,6 +15,9 @@
     <Filter Include="Reference">
       <UniqueIdentifier>{6F0AF9A2-748C-4620-A6F2-7D13385824B3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Export">
+      <UniqueIdentifier>{dd5829f4-8403-4472-9f7b-9b27bdbbb0d7}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SctModel.h">
@@ -35,6 +38,12 @@
     <ClInclude Include="SctScptDecodeHelpers.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctIrBuilder.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctJsonExporter.h">
+      <Filter>Export</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
@@ -45,6 +54,12 @@
     </ClCompile>
     <ClCompile Include="SctScptDecodeHelpers.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SctIrBuilder.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctJsonExporter.cpp">
+      <Filter>Export</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

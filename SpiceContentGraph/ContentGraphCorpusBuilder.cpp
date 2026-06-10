@@ -2,6 +2,8 @@
 
 #include "ContentGraphIds.h"
 
+#include "../SpiceSCT/SctIrBuilder.h"
+
 #include <unordered_map>
 
 namespace spice::contentgraph {
@@ -33,6 +35,7 @@ ContentGraph ContentGraphCorpusBuilder::build(const ContentGraphCorpusInput& inp
         if (parseResult.file.sourcePath.empty()) {
             parseResult.file.sourcePath = sct.sourcePath;
         }
+        parseResult = spice::sct::SctIrBuilder{}.build(parseResult);
         sctBuilder.addToGraph(graph, parseResult, options.sctOptions);
         sctByKey.try_emplace(scriptPairingKey(sct.sourcePath), &sct);
     }

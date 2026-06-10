@@ -64,6 +64,10 @@ struct DecodedInstruction {
     bool isSwitch = false;
 };
 
+[[nodiscard]] std::string fallbackMnemonic(std::uint16_t opcode) {
+    return "op_" + std::to_string(opcode);
+}
+
 [[nodiscard]] bool isOffsetInBounds(std::uint32_t offset, std::uint32_t sectionSize) {
     return offset < sectionSize && (offset % 4u == 0u);
 }
@@ -329,6 +333,77 @@ struct DecodedInstruction {
     return raw - (raw % 4u);
 }
 
+void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectionBytes, Endian endian) {
+    inst.rawWords.clear();
+    if (inst.sizeBytes == 0 || inst.offset >= sectionBytes.size()) {
+        return;
+    }
+
+    const auto end = std::min<std::uint32_t>(static_cast<std::uint32_t>(sectionBytes.size()), inst.offset + inst.sizeBytes);
+    for (std::uint32_t cursor = inst.offset; cursor + 4u <= end; cursor += 4u) {
+        inst.rawWords.push_back(readU32(sectionBytes, cursor, endian));
+    }
+}
+
+[[nodiscard]] std::string decimalString(std::uint32_t value) {
+    return std::to_string(value);
+}
+
+[[nodiscard]] SctEdgeType edgeTypeForSuccessor(
+    const SctInstruction& instruction,
+    std::size_t successorIndex,
+    std::uint32_t successorOffset) {
+    switch (instruction.opcode) {
+    case 0:
+        return successorIndex == 0 ? SctEdgeType::BranchFalse : SctEdgeType::BranchTrue;
+    case 3:
+        return SctEdgeType::SwitchCase;
+    case 10:
+        return SctEdgeType::Jump;
+    default:
+        return successorOffset == instruction.offset + instruction.sizeBytes ? SctEdgeType::Fallthrough : SctEdgeType::Jump;
+    }
+}
+
+void addInstructionSemanticEdges(SctSection& section, const SctInstruction& instruction) {
+    const auto metadata = sctOpcodeMetadata(instruction.opcode);
+    const auto operand = instruction.operands.empty() ? 0u : instruction.operands.front();
+
+    if (metadata.controlRole == SctOpcodeControlRole::CallSubscript) {
+        SctEdge edge{};
+        edge.type = SctEdgeType::CallSubscript;
+        edge.confidence = metadata.confidence;
+        edge.fromOffset = instruction.offset;
+        edge.toOffset = operand;
+        edge.opcode = instruction.opcode;
+        edge.detail = "Opcode calls a subscript target.";
+        edge.attributes.emplace("offset_operand", decimalString(operand));
+        section.edges.push_back(std::move(edge));
+    }
+
+    if (metadata.controlRole == SctOpcodeControlRole::Return) {
+        SctEdge edge{};
+        edge.type = SctEdgeType::Return;
+        edge.confidence = metadata.confidence;
+        edge.fromOffset = instruction.offset;
+        edge.opcode = instruction.opcode;
+        edge.detail = "Opcode returns from the current subscript stack.";
+        section.edges.push_back(std::move(edge));
+    }
+
+    if (metadata.resourceRole == SctOpcodeResourceRole::LoadsMld
+        || metadata.resourceRole == SctOpcodeResourceRole::LoadsScript) {
+        SctEdge edge{};
+        edge.type = metadata.resourceRole == SctOpcodeResourceRole::LoadsMld ? SctEdgeType::LoadsMld : SctEdgeType::LoadsScript;
+        edge.confidence = metadata.confidence;
+        edge.fromOffset = instruction.offset;
+        edge.opcode = instruction.opcode;
+        edge.detail = "Opcode references an external resource.";
+        edge.attributes.emplace("operand0", decimalString(operand));
+        section.edges.push_back(std::move(edge));
+    }
+}
+
 [[nodiscard]] DecodedInstruction decodeInstruction(
     std::span<const std::uint8_t> sectionBytes,
     std::uint32_t offset,
@@ -363,6 +438,9 @@ struct DecodedInstruction {
 
     const auto opcode = static_cast<std::uint16_t>(word & 0xffffu);
     decoded.inst.opcode = opcode;
+    const auto opcodeMetadata = sctOpcodeMetadata(opcode);
+    decoded.inst.mnemonic = opcodeMetadata.mnemonic.empty() ? fallbackMnemonic(opcode) : std::string(opcodeMetadata.mnemonic);
+    decoded.inst.semanticConfidence = opcodeMetadata.confidence;
     decoded.inst.decodeOk = opcode <= kMaxOpcodeProbe;
     decoded.inst.sizeBytes = 4;
 
@@ -399,19 +477,48 @@ struct DecodedInstruction {
                 iterations = readU32(sectionBytes, paramWordOffset, chosenEndian);
             }
 
+            SctParameter parameter{};
+            parameter.index = paramIndex;
+            if (paramIndex < opcodeMetadata.parameterRoles.size()) {
+                parameter.role = std::string(opcodeMetadata.parameterRoles[paramIndex]);
+            }
+            parameter.confidence = opcodeMetadata.confidence;
+            parameter.valueKind = isScptParam ? SctParameterValueKind::Expression : SctParameterValueKind::Integer;
+
+            if (!isScptParam && (parameter.role.find("offset") != std::string::npos
+                || parameter.role.find("Offset") != std::string::npos)) {
+                parameter.valueKind = SctParameterValueKind::Link;
+            }
+            if (!isScptParam && (opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsMld
+                || opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsScript)) {
+                parameter.valueKind = SctParameterValueKind::ResourceRef;
+            }
+
             for (std::uint32_t i = 0; i < wordsForParam; ++i) {
                 const auto operandOffset = paramWordOffset + (i * 4u);
                 if (operandOffset + 4u > sectionBytes.size()) {
                     diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
                     return false;
                 }
-                decoded.inst.operands.push_back(readU32(sectionBytes, operandOffset, chosenEndian));
+                const auto operand = readU32(sectionBytes, operandOffset, chosenEndian);
+                decoded.inst.operands.push_back(operand);
+                parameter.rawWords.push_back(operand);
             }
 
             consumedOperandWords += wordsForParam;
             if (isScptParam) {
+                parameter.displayValue = scptRecord.resolvedValue;
+                SctExpression expression{};
+                expression.display = scptRecord.resolvedValue;
+                for (const auto& trace : scptRecord.evaluationTrace) {
+                    expression.trace.push_back({trace.rawWord, trace.interpretedValue});
+                }
+                parameter.expression = std::move(expression);
                 decoded.inst.scptParameterValueRecords.push_back(std::move(scptRecord));
+            } else if (!parameter.rawWords.empty()) {
+                parameter.displayValue = std::to_string(parameter.rawWords.front());
             }
+            decoded.inst.parameters.push_back(std::move(parameter));
             return true;
         };
 
@@ -435,6 +542,7 @@ struct DecodedInstruction {
         }
 
         decoded.inst.sizeBytes = 4u + (consumedOperandWords * 4u);
+        populateRawWords(decoded.inst, sectionBytes, chosenEndian);
 
         if (opcode == 0 || opcode == 10 || opcode == 3) {
             decoded.blockTerminator = true;
@@ -465,6 +573,8 @@ struct DecodedInstruction {
                 }
             }
         }
+    } else {
+        populateRawWords(decoded.inst, sectionBytes, chosenEndian);
     }
 
     if (opcode == 12) {
@@ -512,6 +622,14 @@ void fillUnknownRegions(
             region.rawBytes.end(),
             sectionBytes.begin() + start,
             sectionBytes.begin() + std::min<std::size_t>(cursor, sectionBytes.size()));
+
+        SctRawSpan span{};
+        span.startOffset = region.startOffset;
+        span.endOffset = region.endOffset;
+        span.reason = SctRawSpanReason::Unreached;
+        span.rawBytes = region.rawBytes;
+        span.detail = region.reason;
+        section.rawSpans.push_back(std::move(span));
 
         section.unknownRegions.push_back(std::move(region));
     }
@@ -587,6 +705,8 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
     const auto indexEndian = detectIndexEndian(payload);
     const auto sectionCount = readU32(payload, 8, indexEndian);
     const std::size_t indexSize = static_cast<std::size_t>(sectionCount) * kIndexEntrySize;
+    result.file.detectedEndian = indexEndian == Endian::Big ? "big" : "little";
+    result.file.headerBytes.assign(payload.begin(), payload.begin() + kHeaderSize);
 
     if (kHeaderSize + indexSize > payload.size()) {
         result.diagnostics.push_back({"SCT parse failed: index table exceeds file bounds.", 8});
@@ -631,17 +751,27 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
         section.id.name = rows[i].name;
         section.startOffset = dataStart + sectionStart;
         section.endOffset = dataStart + sectionEnd;
+        section.kind = SctSectionKind::Script;
 
         const auto sectionBytes = dataBytes.subspan(sectionStart, sectionEnd - sectionStart);
         if (sectionBytes.empty()) {
+            section.kind = SctSectionKind::Unknown;
             result.file.sections.push_back(std::move(section));
             continue;
         }
 
         if (isStringSection(sectionBytes, indexEndian)) {
+            section.kind = SctSectionKind::String;
             section.isStringSection = true;
             section.heuristicEvidence.notes.push_back(
                 "Detected string section from SALSA-style pattern (9 ... 0x1d followed by non-opcode payload); skipped decode.");
+            SctRawSpan span{};
+            span.startOffset = 0;
+            span.endOffset = static_cast<std::uint32_t>(sectionBytes.size());
+            span.reason = SctRawSpanReason::StringPadding;
+            span.detail = "Raw string-section bytes preserved by SCT IR.";
+            span.rawBytes.insert(span.rawBytes.end(), sectionBytes.begin(), sectionBytes.end());
+            section.rawSpans.push_back(std::move(span));
             result.file.sections.push_back(std::move(section));
             continue;
         }
@@ -686,7 +816,9 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
                 instructionByOffset[cursor] = section.instructions.size();
                 visited.try_emplace(cursor, decoded.inst.sizeBytes);
                 section.instructions.push_back(decoded.inst);
+                const auto& storedInstruction = section.instructions.back();
                 block.instructionOffsets.push_back(cursor);
+                addInstructionSemanticEdges(section, storedInstruction);
 
                 if (decoded.touchesFlag) {
                     section.heuristicEvidence.touchesFlags = true;
@@ -704,6 +836,15 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
                 for (auto successor : decoded.successors) {
                     successor = clampToSection(successor, static_cast<std::uint32_t>(sectionBytes.size()));
                     block.successorOffsets.push_back(successor);
+                    SctEdge edge{};
+                    edge.type = edgeTypeForSuccessor(storedInstruction, block.successorOffsets.size() - 1, successor);
+                    edge.confidence = SctSemanticConfidence::Known;
+                    edge.fromOffset = storedInstruction.offset;
+                    edge.toOffset = successor;
+                    edge.opcode = storedInstruction.opcode;
+                    edge.detail = "Control-flow successor discovered during SCT parse.";
+                    edge.attributes.emplace("target_offset", decimalString(successor));
+                    section.edges.push_back(std::move(edge));
                     if (isOffsetInBounds(successor, static_cast<std::uint32_t>(sectionBytes.size())) && !enqueued.contains(successor)) {
                         worklist.push_back(successor);
                         enqueued.insert(successor);
