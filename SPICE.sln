@@ -8,17 +8,17 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceCore", "SpiceCore\Spic
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Sa3Dport", "Sa3Dport\Sa3Dport.vcxproj", "{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimGvm", "SoaSimGvm\SoaSimGvm.vcxproj", "{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceGvm", "SpiceGvm\SpiceGvm.vcxproj", "{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimSCT", "SoaSimSCT\SoaSimSCT.vcxproj", "{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceSCT", "SpiceSCT\SpiceSCT.vcxproj", "{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimMLD", "SoaSimMLD\SoaSimMLD.vcxproj", "{C44D37F8-61F5-4A1C-B983-16D79FBC9954}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceMLD", "SpiceMLD\SpiceMLD.vcxproj", "{C44D37F8-61F5-4A1C-B983-16D79FBC9954}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimContentGraph", "SoaSimContentGraph\SoaSimContentGraph.vcxproj", "{208F502E-EBB9-4AF0-A886-356757A46D41}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceContentGraph", "SpiceContentGraph\SpiceContentGraph.vcxproj", "{208F502E-EBB9-4AF0-A886-356757A46D41}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceTests", "SpiceTests\SpiceTests.vcxproj", "{D528E9A2-9713-40A7-A7A1-21AF843E559E}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SoaSimFileParsing", "SoaSimFileParsing\SoaSimFileParsing.vcxproj", "{5D3077BE-5394-4707-8080-378AB630E54D}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceFileParsing", "SpiceFileParsing\SpiceFileParsing.vcxproj", "{5D3077BE-5394-4707-8080-378AB630E54D}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SA3DRefRunner", "tools\sa3d_ref_runner\SA3DRefRunner.csproj", "{31E00E18-8936-0269-3A5A-6095F03E8447}"
 EndProject

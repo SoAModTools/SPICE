@@ -10,10 +10,10 @@
 
 namespace {
 
-using soasim::compression::aklz::AklzError;
-using soasim::compression::aklz::compress;
-using soasim::compression::aklz::decompress;
-using soasim::compression::aklz::isAklz;
+using spice::compression::aklz::AklzError;
+using spice::compression::aklz::compress;
+using spice::compression::aklz::decompress;
+using spice::compression::aklz::isAklz;
 
 std::uint32_t readBeU32(std::span<const std::uint8_t> bytes, const std::size_t offset) {
     return (std::uint32_t(bytes[offset + 0U]) << 24U) |
@@ -23,12 +23,12 @@ std::uint32_t readBeU32(std::span<const std::uint8_t> bytes, const std::size_t o
 }
 
 bool hasBackReference(std::span<const std::uint8_t> bytes) {
-    if (bytes.size() < soasim::compression::aklz::kHeaderSize) {
+    if (bytes.size() < spice::compression::aklz::kHeaderSize) {
         return false;
     }
 
-    const auto decompressedSize = readBeU32(bytes, soasim::compression::aklz::kMagicSize);
-    std::size_t cursor = soasim::compression::aklz::kHeaderSize;
+    const auto decompressedSize = readBeU32(bytes, spice::compression::aklz::kMagicSize);
+    std::size_t cursor = spice::compression::aklz::kHeaderSize;
     std::uint32_t produced = 0U;
     while (cursor < bytes.size() && produced < decompressedSize) {
         const auto flags = bytes[cursor++];
@@ -56,10 +56,10 @@ bool hasBackReference(std::span<const std::uint8_t> bytes) {
 
 void expectRoundTrip(std::span<const std::uint8_t> input) {
     const auto encoded = compress(input);
-    ASSERT_TRUE(encoded.ok()) << soasim::compression::aklz::errorToString(encoded.error);
+    ASSERT_TRUE(encoded.ok()) << spice::compression::aklz::errorToString(encoded.error);
     ASSERT_TRUE(isAklz(encoded.bytes));
     const auto decoded = decompress(encoded.bytes);
-    ASSERT_TRUE(decoded.ok()) << soasim::compression::aklz::errorToString(decoded.error);
+    ASSERT_TRUE(decoded.ok()) << spice::compression::aklz::errorToString(decoded.error);
     EXPECT_EQ(decoded.bytes, std::vector<std::uint8_t>(input.begin(), input.end()));
 }
 
@@ -69,9 +69,9 @@ TEST(AklzCompression, WritesHeaderMagicAndBigEndianSize) {
     const std::vector<std::uint8_t> input{ 0x10U, 0x20U, 0x30U, 0x40U };
     const auto encoded = compress(input);
     ASSERT_TRUE(encoded.ok());
-    ASSERT_GE(encoded.bytes.size(), soasim::compression::aklz::kHeaderSize);
+    ASSERT_GE(encoded.bytes.size(), spice::compression::aklz::kHeaderSize);
     EXPECT_TRUE(isAklz(encoded.bytes));
-    EXPECT_EQ(readBeU32(encoded.bytes, soasim::compression::aklz::kMagicSize), input.size());
+    EXPECT_EQ(readBeU32(encoded.bytes, spice::compression::aklz::kMagicSize), input.size());
 }
 
 TEST(AklzCompression, EmptyInputRoundTrips) {

@@ -1,4 +1,4 @@
-#include "../SoaSimContentGraph/SoaSimContentGraph.h"
+#include "../SpiceContentGraph/SpiceContentGraph.h"
 
 #include <gtest/gtest.h>
 
@@ -10,30 +10,30 @@
 
 namespace {
 
-using soasim::contentgraph::ContentEdge;
-using soasim::contentgraph::ContentEdgeType;
-using soasim::contentgraph::ContentGraph;
-using soasim::contentgraph::ContentGraphCorpusBuilder;
-using soasim::contentgraph::ContentGraphCorpusBuildOptions;
-using soasim::contentgraph::ContentGraphCorpusInput;
-using soasim::contentgraph::ContentGraphDetailLevel;
-using soasim::contentgraph::ContentGraphJsonExporter;
-using soasim::contentgraph::ContentGraphProjection;
-using soasim::contentgraph::ContentNodeType;
-using soasim::contentgraph::mldEntryNodeId;
-using soasim::contentgraph::mldFileNodeId;
-using soasim::contentgraph::scriptFileNodeId;
-using soasim::contentgraph::scriptSectionNodeId;
+using spice::contentgraph::ContentEdge;
+using spice::contentgraph::ContentEdgeType;
+using spice::contentgraph::ContentGraph;
+using spice::contentgraph::ContentGraphCorpusBuilder;
+using spice::contentgraph::ContentGraphCorpusBuildOptions;
+using spice::contentgraph::ContentGraphCorpusInput;
+using spice::contentgraph::ContentGraphDetailLevel;
+using spice::contentgraph::ContentGraphJsonExporter;
+using spice::contentgraph::ContentGraphProjection;
+using spice::contentgraph::ContentNodeType;
+using spice::contentgraph::mldEntryNodeId;
+using spice::contentgraph::mldFileNodeId;
+using spice::contentgraph::scriptFileNodeId;
+using spice::contentgraph::scriptSectionNodeId;
 
 constexpr const char* kScriptPath = "C:/fixtures/me017b.sct";
 constexpr const char* kMldPath = "C:/fixtures/a017b.mld";
 
-soasim::sct::SctInstruction instruction(std::uint32_t offset,
+spice::sct::SctInstruction instruction(std::uint32_t offset,
     std::uint16_t opcode,
     std::initializer_list<std::uint32_t> operands,
     std::uint32_t sizeBytes)
 {
-    soasim::sct::SctInstruction result{};
+    spice::sct::SctInstruction result{};
     result.offset = offset;
     result.opcode = opcode;
     result.operands = operands;
@@ -42,9 +42,9 @@ soasim::sct::SctInstruction instruction(std::uint32_t offset,
     return result;
 }
 
-soasim::sct::SctParseResult makeScriptParseResult()
+spice::sct::SctParseResult makeScriptParseResult()
 {
-    soasim::sct::SctSection section{};
+    spice::sct::SctSection section{};
     section.id.index = 0;
     section.id.name = "M04999";
     section.startOffset = 0;
@@ -60,27 +60,27 @@ soasim::sct::SctParseResult makeScriptParseResult()
     };
 
     section.blocks = {
-        soasim::sct::SctBasicBlock{ .startOffset = 0, .endOffset = 32, .instructionOffsets = { 0, 16 }, .successorOffsets = { 60, 32 } },
-        soasim::sct::SctBasicBlock{ .startOffset = 32, .endOffset = 40, .instructionOffsets = { 32 }, .successorOffsets = { 60 } },
-        soasim::sct::SctBasicBlock{ .startOffset = 40, .endOffset = 60, .instructionOffsets = { 40 }, .successorOffsets = { 60, 72 } },
-        soasim::sct::SctBasicBlock{ .startOffset = 60, .endOffset = 80, .instructionOffsets = { 60, 72 }, .successorOffsets = {} },
-        soasim::sct::SctBasicBlock{ .startOffset = 80, .endOffset = 88, .instructionOffsets = { 80 }, .successorOffsets = {} },
+        spice::sct::SctBasicBlock{ .startOffset = 0, .endOffset = 32, .instructionOffsets = { 0, 16 }, .successorOffsets = { 60, 32 } },
+        spice::sct::SctBasicBlock{ .startOffset = 32, .endOffset = 40, .instructionOffsets = { 32 }, .successorOffsets = { 60 } },
+        spice::sct::SctBasicBlock{ .startOffset = 40, .endOffset = 60, .instructionOffsets = { 40 }, .successorOffsets = { 60, 72 } },
+        spice::sct::SctBasicBlock{ .startOffset = 60, .endOffset = 80, .instructionOffsets = { 60, 72 }, .successorOffsets = {} },
+        spice::sct::SctBasicBlock{ .startOffset = 80, .endOffset = 88, .instructionOffsets = { 80 }, .successorOffsets = {} },
     };
 
     section.flagSummary.flagsRead = { 2815 };
     section.flagSummary.flagsWritten = { 2816 };
     section.flagSummary.flagsTested = { 2815 };
 
-    soasim::sct::SctParseResult result{};
+    spice::sct::SctParseResult result{};
     result.file.sourcePath = kScriptPath;
     result.file.sections.push_back(std::move(section));
     result.parseOk = true;
     return result;
 }
 
-soasim::mld::parsing::ParseResult makeMldParseResult()
+spice::mld::parsing::ParseResult makeMldParseResult()
 {
-    soasim::mld::parsing::ParsedEntryListItem entry{};
+    spice::mld::parsing::ParsedEntryListItem entry{};
     entry.tableIndex = 7;
     entry.entryId = 42;
     entry.tblId = 4999;
@@ -91,7 +91,7 @@ soasim::mld::parsing::ParseResult makeMldParseResult()
     entry.paramList2 = { 5, 6 };
     entry.textureNames = { "example" };
 
-    soasim::mld::parsing::ParseResult result{};
+    spice::mld::parsing::ParseResult result{};
     result.entryList.push_back(std::move(entry));
     return result;
 }

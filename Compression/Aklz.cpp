@@ -4,7 +4,7 @@
 #include <limits>
 #include <vector>
 
-namespace soasim::compression::aklz {
+namespace spice::compression::aklz {
 namespace {
 
 constexpr std::array<std::uint8_t, kMagicSize> kMagic = {
@@ -350,4 +350,4 @@ AklzEncodeResult compress(std::span<const std::uint8_t> input, std::uint32_t max
     return { .error = AklzError::Ok, .bytes = std::move(output) };
 }
 
-} // namespace soasim::compression::aklz
+} // namespace spice::compression::aklz

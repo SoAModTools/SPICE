@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-namespace soasim::compression::aklz {
+namespace spice::compression::aklz {
 
 enum class AklzError {
     Ok = 0,
@@ -56,4 +56,4 @@ struct AklzEncodeResult {
 [[nodiscard]] AklzEncodeResult compress(std::span<const std::uint8_t> input,
     std::uint32_t maxAllowedSize = kDefaultMaxDecompressedSize);
 
-} // namespace soasim::compression::aklz
+} // namespace spice::compression::aklz
