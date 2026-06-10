@@ -69,6 +69,8 @@ struct CliOptions {
     bool extractGrndGobjBlocks = false;
     bool exportMldEntryListOnly = false;
     bool parseSctOnly = false;
+    bool exportSctBinary = false;
+    bool exportSctBinaryCompressed = false;
     bool exportContentGraph = false;
     spice::contentgraph::ContentGraphProjection contentGraphProjection =
         spice::contentgraph::ContentGraphProjection::Full;
@@ -77,7 +79,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sct-only] [--content-graph] [--content-graph-projection full|sections|world]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sct-only] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SpiceFileParsing/inputs\n"
         << "  - output_dir defaults to SpiceFileParsing/parsed\n"
@@ -85,6 +87,8 @@ void printUsage() {
         << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
+        << "  - --export-sct-binary writes canonical parse/export SCT bytes and validates parse-equivalence.\n"
+        << "  - --export-sct-binary-compressed also AKLZ-compresses the canonical SCT export.\n"
         << "  - --content-graph parses .sct/.mld files and writes content_graph.json.\n"
         << "  - --content-graph-projection selects full, sections, or world graph JSON.\n"
         << "  - Bridge executable path is auto-discovered at <SpiceFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
@@ -133,6 +137,15 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.parseSctOnly = true;
             continue;
         }
+        if (arg == "--export-sct-binary" || arg == "--export-sct") {
+            options.exportSctBinary = true;
+            continue;
+        }
+        if (arg == "--export-sct-binary-compressed" || arg == "--export-sct-compressed") {
+            options.exportSctBinary = true;
+            options.exportSctBinaryCompressed = true;
+            continue;
+        }
         if (arg == "--content-graph" || arg == "--export-content-graph") {
             options.exportContentGraph = true;
             continue;
@@ -170,9 +183,13 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         std::cerr << "--sct-only cannot be combined with MLD-only or MLD A/B modes.\n";
         return std::nullopt;
     }
+    if (options.exportSctBinary && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
+        std::cerr << "--export-sct-binary cannot be combined with MLD-only or MLD A/B modes.\n";
+        return std::nullopt;
+    }
     if (options.exportContentGraph
-        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.parseSctOnly)) {
-        std::cerr << "--content-graph cannot be combined with MLD-only, SCT-only, or MLD A/B modes.\n";
+        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.parseSctOnly || options.exportSctBinary)) {
+        std::cerr << "--content-graph cannot be combined with MLD-only, SCT-only, SCT binary export, or MLD A/B modes.\n";
         return std::nullopt;
     }
 
@@ -1964,6 +1981,9 @@ int main(int argc, char** argv) {
         if (cliOptions->parseSctOnly && extension != ".sct") {
             continue;
         }
+        if (cliOptions->exportSctBinary && extension != ".sct") {
+            continue;
+        }
 
         const bool isSupportedExtension = extension == ".sct" || extension == ".mld";
         if (isSupportedExtension && spice::compression::aklz::isAklz(bytes)) {
@@ -1996,6 +2016,36 @@ int main(int argc, char** argv) {
             const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".sct.json");
             std::ofstream jsonOut(jsonOutPath, std::ios::binary);
             jsonOut << spice::sct::SctJsonExporter{}.toJson(sctIr);
+
+            if (cliOptions->exportSctBinary) {
+                spice::sct::SctExportOptions exportOptions{};
+                exportOptions.compressAklz = cliOptions->exportSctBinaryCompressed;
+                const auto exportedSct = spice::sct::SctBinaryExporter{}.exportFile(sctIr, exportOptions);
+                const auto exportedSctPath = outputDir / (entry.path().stem().string()
+                    + (cliOptions->exportSctBinaryCompressed ? ".canonical.aklz.sct" : ".canonical.sct"));
+                if (!writeAllBytes(exportedSctPath, std::span<const std::uint8_t>(exportedSct.data(), exportedSct.size()))) {
+                    std::cerr << "[SpiceFileParsing] WARNING: failed to write SCT binary export: "
+                              << exportedSctPath.string() << "\n";
+                }
+
+                const auto reparsed = sctParser.parse(
+                    std::span<const std::uint8_t>(exportedSct.data(), exportedSct.size()),
+                    exportedSctPath.string());
+                const auto comparison = spice::sct::SctSemanticComparer{}.compare(sctIr, reparsed);
+                const auto validationPath = outputDir / (entry.path().stem().string() + ".sct.roundtrip.txt");
+                std::ofstream validationOut(validationPath, std::ios::binary);
+                validationOut << "source=" << entry.path().string() << "\n";
+                validationOut << "export=" << exportedSctPath.string() << "\n";
+                validationOut << "reparseOk=" << (reparsed.parseOk ? "true" : "false") << "\n";
+                validationOut << "semanticEquivalent=" << (comparison.equivalent ? "true" : "false") << "\n";
+                for (const auto& difference : comparison.differences) {
+                    validationOut << "difference=" << difference << "\n";
+                }
+                if (!comparison.equivalent) {
+                    std::cerr << "[SpiceFileParsing] WARNING: SCT canonical export semantic comparison failed for "
+                              << entry.path().string() << "\n";
+                }
+            }
             ++filesProcessed;
             continue;
         }

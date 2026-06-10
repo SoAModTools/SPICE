@@ -66,6 +66,25 @@ std::vector<std::uint8_t> makeStringSection()
     return section;
 }
 
+std::vector<std::uint8_t> makeBranchAndSwitchScript()
+{
+    std::vector<std::uint8_t> section{};
+
+    appendU32(section, 0u);
+    appendU32(section, 0x1du);
+    appendU32(section, 8u);
+    appendU32(section, 12u);
+    appendU32(section, 3u);
+    appendU32(section, 0x1du);
+    appendU32(section, 2u);
+    appendU32(section, 111u);
+    appendU32(section, 0u);
+    appendU32(section, 222u);
+    appendU32(section, 4u);
+    appendU32(section, 12u);
+    return section;
+}
+
 std::vector<std::uint8_t> makeSct(std::span<const std::vector<std::uint8_t>> sections)
 {
     std::vector<std::uint8_t> out(kHeaderSize + (sections.size() * kIndexEntrySize), 0u);
@@ -143,6 +162,22 @@ TEST(SctRoundTrip, PreserveModeReturnsOriginalBytesForDiagnostics)
     const auto preserved = spice::sct::SctBinaryExporter{}.exportFile(original, options);
 
     EXPECT_EQ(originalBytes, preserved);
+}
+
+TEST(SctRoundTrip, CanonicalExportRewritesBranchAndSwitchTargetsSemantically)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeBranchAndSwitchScript(),
+    };
+    const auto original = spice::sct::SctParser{}.parse(makeSct(sections), "branch_switch.sct");
+    ASSERT_TRUE(original.parseOk);
+
+    const auto exported = spice::sct::SctBinaryExporter{}.exportFile(original);
+    const auto reparsed = spice::sct::SctParser{}.parse(exported, "branch_switch.exported.sct");
+    ASSERT_TRUE(reparsed.parseOk);
+
+    const auto comparison = spice::sct::SctSemanticComparer{}.compare(original, reparsed);
+    EXPECT_TRUE(comparison.equivalent);
 }
 
 TEST(SctRoundTrip, CompressedInputCanExportCanonicalUncompressedBytes)
