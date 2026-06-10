@@ -11,6 +11,7 @@ namespace soasim::compression::aklz {
 enum class AklzError {
     Ok = 0,
     InputTooSmall,
+    InputTooLarge,
     InvalidMagic,
     TruncatedHeader,
     DecompressedSizeTooLarge,
@@ -40,10 +41,19 @@ struct AklzDecodeResult {
     [[nodiscard]] bool ok() const { return error == AklzError::Ok; }
 };
 
+struct AklzEncodeResult {
+    AklzError error{ AklzError::Ok };
+    std::vector<std::uint8_t> bytes{};
+
+    [[nodiscard]] bool ok() const { return error == AklzError::Ok; }
+};
+
 [[nodiscard]] bool isAklz(std::span<const std::uint8_t> input);
 [[nodiscard]] AklzSizeResult getDecompressedSize(std::span<const std::uint8_t> input,
     std::uint32_t maxAllowedSize = kDefaultMaxDecompressedSize);
 [[nodiscard]] AklzDecodeResult decompress(std::span<const std::uint8_t> input,
+    std::uint32_t maxAllowedSize = kDefaultMaxDecompressedSize);
+[[nodiscard]] AklzEncodeResult compress(std::span<const std::uint8_t> input,
     std::uint32_t maxAllowedSize = kDefaultMaxDecompressedSize);
 
 } // namespace soasim::compression::aklz

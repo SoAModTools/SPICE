@@ -1,5 +1,6 @@
 #include "MldFileExporter.h"
 
+#include "../../Compression/Aklz.h"
 #include "../../SpiceCore/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -331,10 +332,6 @@ void convertRawDataBlocks(std::vector<std::uint8_t>& out, const model::MldFile& 
 std::vector<std::uint8_t> MldFileExporter::exportFile(
     const model::MldFile& file,
     const MldExportOptions& options) const {
-    if (options.compressAklz) {
-        throw std::runtime_error("AKLZ compression is not implemented yet.");
-    }
-
     auto out = file.originalBytes;
     if (out.empty()) {
         out.resize(kMldHeaderSize);
@@ -349,6 +346,17 @@ std::vector<std::uint8_t> MldFileExporter::exportFile(
         writeList(out, list, targetEndian);
     }
     convertRawDataBlocks(out, file, targetEndian);
+
+    if (options.compressAklz) {
+        if (options.platform != model::TargetPlatform::GameCube) {
+            throw std::runtime_error("AKLZ compression is GameCube-only");
+        }
+        auto compressed = soasim::compression::aklz::compress(out);
+        if (!compressed.ok()) {
+            throw std::runtime_error("AKLZ compression failed: " + std::string(soasim::compression::aklz::errorToString(compressed.error)));
+        }
+        return std::move(compressed.bytes);
+    }
 
     return out;
 }
