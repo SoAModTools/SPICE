@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -55,6 +56,78 @@ bool hasEdge(const spice::sct::SctSection& section, spice::sct::SctEdgeType type
 {
     return std::any_of(section.edges.begin(), section.edges.end(),
         [type](const auto& edge) { return edge.type == type; });
+}
+
+bool isControlTargetParam(const spice::sct::SctOpcodeParamPattern& pattern, std::size_t parameterIndex)
+{
+    if (pattern.jumpParam >= 0 && parameterIndex == static_cast<std::size_t>(pattern.jumpParam)) {
+        return true;
+    }
+    if (pattern.switchJumpParam < 0 || pattern.loopStartParam < 0 || pattern.loopEndParam < pattern.loopStartParam) {
+        return false;
+    }
+    const auto loopWidth = static_cast<std::size_t>(pattern.loopEndParam - pattern.loopStartParam + 1);
+    return parameterIndex >= static_cast<std::size_t>(pattern.switchJumpParam)
+        && ((parameterIndex - static_cast<std::size_t>(pattern.switchJumpParam)) % loopWidth) == 0u;
+}
+
+std::vector<spice::sct::SctParameter> parametersForPattern(
+    std::uint16_t opcode,
+    const spice::sct::SctOpcodeParamPattern& pattern)
+{
+    std::uint32_t totalSlots = pattern.paramCount;
+    if (pattern.loopStartParam >= 0 && pattern.loopEndParam >= pattern.loopStartParam
+        && pattern.iterationCountParam >= 0) {
+        const auto loopWidth = static_cast<std::uint32_t>(pattern.loopEndParam - pattern.loopStartParam + 1);
+        totalSlots += loopWidth;
+    }
+
+    std::vector<spice::sct::SctParameter> result{};
+    result.reserve(totalSlots);
+    for (std::uint32_t i = 0; i < totalSlots; ++i) {
+        spice::sct::SctParameter parameter{};
+        parameter.index = i;
+        parameter.valueKind = spice::sct::SctParameterValueKind::Integer;
+        parameter.rawWords.push_back(100000u + static_cast<std::uint32_t>(opcode) * 100u + i);
+        if (pattern.iterationCountParam >= 0 && i == static_cast<std::uint32_t>(pattern.iterationCountParam)) {
+            parameter.rawWords.front() = 2u;
+        }
+        result.push_back(std::move(parameter));
+    }
+    return result;
+}
+
+spice::sct::SctParseResult makeSingleInstructionParseResult(
+    std::uint16_t opcode,
+    std::vector<spice::sct::SctParameter> parameters)
+{
+    spice::sct::SctInstruction inst{};
+    inst.offset = 0;
+    inst.opcode = opcode;
+    inst.sizeBytes = static_cast<std::uint32_t>(4u + (parameters.size() * 4u));
+    inst.decodeOk = true;
+    inst.parameters = std::move(parameters);
+    inst.operands.reserve(inst.parameters.size());
+    inst.rawWords.push_back(opcode);
+    for (const auto& parameter : inst.parameters) {
+        const auto word = parameter.rawWords.empty() ? 0u : parameter.rawWords.front();
+        inst.operands.push_back(word);
+        inst.rawWords.push_back(word);
+    }
+
+    spice::sct::SctSection section{};
+    section.id.index = 0;
+    section.id.name = "M00001";
+    section.kind = spice::sct::SctSectionKind::Script;
+    section.startOffset = 0;
+    section.endOffset = inst.sizeBytes;
+    section.instructions.push_back(std::move(inst));
+
+    spice::sct::SctParseResult result{};
+    result.file.sourcePath = "C:/fixtures/opcode_table.sct";
+    result.file.sections.push_back(std::move(section));
+    result.parseOk = true;
+    return result;
 }
 
 } // namespace
@@ -114,4 +187,38 @@ TEST(SctIr, JsonExporterEmitsSharedSchemaAndSemanticFields)
     EXPECT_NE(std::string::npos, json.find("\"valueKind\":\"link\""));
     EXPECT_NE(std::string::npos, json.find("\"type\":\"loads_mld\""));
     EXPECT_NE(std::string::npos, json.find("\"reason\":\"unreached\""));
+}
+
+TEST(SctIr, SemanticComparerUsesSalsaParamPatternsForKnownOpcodeParameters)
+{
+    std::size_t checkedOpcodes = 0;
+    for (std::uint16_t opcode = 0; opcode < spice::sct::kSalsaOpcodeParamPatterns.size(); ++opcode) {
+        const auto& pattern = spice::sct::kSalsaOpcodeParamPatterns[opcode];
+        auto lhsParameters = parametersForPattern(opcode, pattern);
+        if (lhsParameters.empty()) {
+            continue;
+        }
+
+        std::optional<std::size_t> changedParameterIndex{};
+        for (std::size_t i = 0; i < lhsParameters.size(); ++i) {
+            if (!isControlTargetParam(pattern, lhsParameters[i].index)) {
+                changedParameterIndex = i;
+                break;
+            }
+        }
+        if (!changedParameterIndex.has_value()) {
+            continue;
+        }
+
+        auto rhsParameters = lhsParameters;
+        rhsParameters[*changedParameterIndex].rawWords.front() += 1u;
+
+        const auto lhs = makeSingleInstructionParseResult(opcode, std::move(lhsParameters));
+        const auto rhs = makeSingleInstructionParseResult(opcode, std::move(rhsParameters));
+        const auto comparison = spice::sct::SctSemanticComparer{}.compare(lhs, rhs);
+        EXPECT_FALSE(comparison.equivalent) << "opcode " << opcode;
+        ++checkedOpcodes;
+    }
+
+    EXPECT_GT(checkedOpcodes, 200u);
 }

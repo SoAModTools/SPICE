@@ -16,7 +16,7 @@ namespace {
 
 struct NormalizedInstruction {
     std::uint16_t opcode = 0;
-    std::vector<std::string> operands;
+    std::vector<std::string> parameters;
 };
 
 struct NormalizedSection {
@@ -76,52 +76,82 @@ std::string targetToken(
     return "target:" + std::to_string(it->second);
 }
 
-std::vector<std::string> normalizedOperands(
+SctEdgeType jumpEdgeTypeForOpcode(std::uint16_t opcode) {
+    switch (opcode) {
+    case 0:
+        return SctEdgeType::BranchFalse;
+    case 10:
+        return SctEdgeType::Jump;
+    default:
+        return SctEdgeType::Jump;
+    }
+}
+
+std::string rawWordsToken(const std::vector<std::uint32_t>& rawWords) {
+    std::string result{};
+    for (std::size_t i = 0; i < rawWords.size(); ++i) {
+        if (i != 0) {
+            result += ",";
+        }
+        result += std::to_string(rawWords[i]);
+    }
+    return result;
+}
+
+std::vector<SctParameter> fallbackParameters(const SctInstruction& instruction) {
+    std::vector<SctParameter> result{};
+    result.reserve(instruction.operands.size());
+    for (std::size_t i = 0; i < instruction.operands.size(); ++i) {
+        SctParameter parameter{};
+        parameter.index = static_cast<std::uint32_t>(i);
+        parameter.valueKind = SctParameterValueKind::Integer;
+        parameter.rawWords.push_back(instruction.operands[i]);
+        result.push_back(std::move(parameter));
+    }
+    return result;
+}
+
+std::vector<std::string> normalizedParameters(
     const SctSection& section,
     const SctInstruction& instruction,
     const std::unordered_map<std::uint32_t, std::size_t>& indexes) {
     std::vector<std::string> result{};
-    result.reserve(instruction.operands.size());
 
-    if (instruction.opcode == 0) {
-        for (std::size_t i = 0; i < instruction.operands.size(); ++i) {
-            if (i + 1u == instruction.operands.size()) {
-                result.push_back(targetToken(indexes, findEdge(section, instruction.offset, SctEdgeType::BranchFalse)));
-            } else {
-                result.push_back(std::to_string(instruction.operands[i]));
-            }
-        }
-        return result;
-    }
-
-    if (instruction.opcode == 10) {
-        result.push_back(targetToken(indexes, findEdge(section, instruction.offset, SctEdgeType::Jump)));
-        return result;
-    }
-
-    if (instruction.opcode != 3) {
+    if (instruction.opcode >= kSalsaOpcodeParamPatterns.size()) {
+        result.reserve(instruction.operands.size());
         for (const auto operand : instruction.operands) {
-            result.push_back(std::to_string(operand));
+            result.push_back("operand:" + std::to_string(operand));
         }
         return result;
     }
 
     const auto& pattern = kSalsaOpcodeParamPatterns[instruction.opcode];
+    const auto parameters = instruction.parameters.empty() ? fallbackParameters(instruction) : instruction.parameters;
+    result.reserve(parameters.size());
     std::size_t edgeOrdinal = 0;
     const auto loopWidth = pattern.loopStartParam >= 0 && pattern.loopEndParam >= pattern.loopStartParam
         ? static_cast<std::size_t>(pattern.loopEndParam - pattern.loopStartParam + 1)
         : 0u;
-    for (std::size_t i = 0; i < instruction.operands.size(); ++i) {
+
+    for (const auto& parameter : parameters) {
+        const auto parameterIndex = static_cast<std::size_t>(parameter.index);
+        const bool isJumpTarget = pattern.jumpParam >= 0 && parameterIndex == static_cast<std::size_t>(pattern.jumpParam);
         const bool isSwitchTarget = pattern.switchJumpParam >= 0
             && loopWidth > 0u
-            && i >= static_cast<std::size_t>(pattern.switchJumpParam)
-            && ((i - static_cast<std::size_t>(pattern.switchJumpParam)) % loopWidth) == 0u;
-        if (isSwitchTarget) {
-            result.push_back(targetToken(indexes, findEdge(section, instruction.offset, SctEdgeType::SwitchCase, edgeOrdinal++)));
+            && parameterIndex >= static_cast<std::size_t>(pattern.switchJumpParam)
+            && ((parameterIndex - static_cast<std::size_t>(pattern.switchJumpParam)) % loopWidth) == 0u;
+
+        std::string token = "p" + std::to_string(parameter.index) + ":";
+        if (isJumpTarget) {
+            token += targetToken(indexes, findEdge(section, instruction.offset, jumpEdgeTypeForOpcode(instruction.opcode)));
+        } else if (isSwitchTarget) {
+            token += targetToken(indexes, findEdge(section, instruction.offset, SctEdgeType::SwitchCase, edgeOrdinal++));
         } else {
-            result.push_back(std::to_string(instruction.operands[i]));
+            token += rawWordsToken(parameter.rawWords);
         }
+        result.push_back(std::move(token));
     }
+
     return result;
 }
 
@@ -158,7 +188,7 @@ NormalizedSection normalizeSection(const SctSection& section) {
     for (const auto* instruction : instructions) {
         result.instructions.push_back({
             instruction->opcode,
-            normalizedOperands(section, *instruction, indexes),
+            normalizedParameters(section, *instruction, indexes),
         });
     }
     return result;
@@ -223,8 +253,8 @@ SctSemanticCompareResult SctSemanticComparer::compare(
                 addDifference(result, instPrefix + "opcode differs");
                 continue;
             }
-            if (leftInst.operands != rightInst.operands) {
-                addDifference(result, instPrefix + "operands differ");
+            if (leftInst.parameters != rightInst.parameters) {
+                addDifference(result, instPrefix + "parameters differ");
             }
         }
     }
