@@ -173,6 +173,9 @@ struct SctSection {
 struct SctFile {
     std::string sourcePath;
     std::string detectedEndian;
+    bool originalCompressedAklz = false;
+    std::vector<std::uint8_t> originalBytes;
+    std::vector<std::uint8_t> originalPayloadBytes;
     std::vector<std::uint8_t> headerBytes;
     std::vector<SctSection> sections;
 };

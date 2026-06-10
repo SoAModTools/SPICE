@@ -98,8 +98,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="SpiceSCT.h" />
+    <ClInclude Include="SctBinaryExporter.h" />
     <ClInclude Include="SctIrBuilder.h" />
     <ClInclude Include="SctJsonExporter.h" />
+    <ClInclude Include="SctSemanticComparer.h" />
     <ClInclude Include="SctModel.h" />
     <ClInclude Include="SctParser.h" />
     <ClInclude Include="SctParseProbe.h" />
@@ -108,8 +110,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp" />
+    <ClCompile Include="SctBinaryExporter.cpp" />
     <ClCompile Include="SctIrBuilder.cpp" />
     <ClCompile Include="SctJsonExporter.cpp" />
+    <ClCompile Include="SctSemanticComparer.cpp" />
     <ClCompile Include="SctParseProbe.cpp" />
     <ClCompile Include="SctScptDecodeHelpers.cpp" />
   </ItemGroup>

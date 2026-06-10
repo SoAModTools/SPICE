@@ -671,10 +671,12 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
     std::cout << "[SpiceSCT] Step 1/5: Starting parse (" << bytes.size() << " bytes).\n";
     SctParseResult result{};
     result.file.sourcePath = std::move(sourcePath);
+    result.file.originalBytes.assign(bytes.begin(), bytes.end());
 
     std::vector<std::uint8_t> decoded;
     std::span<const std::uint8_t> payload = bytes;
     if (spice::compression::aklz::isAklz(bytes)) {
+        result.file.originalCompressedAklz = true;
         std::cout << "[SpiceSCT] Step 2/5: Input is AKLZ-compressed, decompressing...\n";
         auto decodedResult = spice::compression::aklz::decompress(bytes);
         if (!decodedResult.ok()) {
@@ -696,6 +698,7 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
         result.diagnostics.push_back({"SCT parse skipped: input byte buffer is empty.", 0});
         return result;
     }
+    result.file.originalPayloadBytes.assign(payload.begin(), payload.end());
 
     if (payload.size() < kHeaderSize) {
         result.diagnostics.push_back({"SCT parse failed: file too small for header and index count.", 0});

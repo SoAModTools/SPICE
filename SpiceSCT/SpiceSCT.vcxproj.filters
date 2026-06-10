@@ -44,6 +44,12 @@
     <ClInclude Include="SctJsonExporter.h">
       <Filter>Export</Filter>
     </ClInclude>
+    <ClInclude Include="SctBinaryExporter.h">
+      <Filter>Export</Filter>
+    </ClInclude>
+    <ClInclude Include="SctSemanticComparer.h">
+      <Filter>Model</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
@@ -60,6 +66,12 @@
     </ClCompile>
     <ClCompile Include="SctJsonExporter.cpp">
       <Filter>Export</Filter>
+    </ClCompile>
+    <ClCompile Include="SctBinaryExporter.cpp">
+      <Filter>Export</Filter>
+    </ClCompile>
+    <ClCompile Include="SctSemanticComparer.cpp">
+      <Filter>Model</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
