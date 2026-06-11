@@ -34,6 +34,9 @@ struct MldTextureEntry {
 
 struct MldTextureArchive {
     std::size_t tableOffset = 0;
+    std::size_t archiveStartOffset = 0;
+    std::size_t archiveEndOffset = 0;
+    std::vector<std::uint8_t> archivePrefixBytes{};
     std::vector<MldTextureEntry> entries{};
     std::vector<std::string> diagnostics{};
 };

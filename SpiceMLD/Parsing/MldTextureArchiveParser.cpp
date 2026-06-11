@@ -77,6 +77,8 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
     const spice::core::Endian endian) {
     model::MldTextureArchive out{};
     out.tableOffset = textureTableOffset;
+    out.archiveStartOffset = textureTableOffset;
+    out.archiveEndOffset = textureTableOffset;
     const auto archiveNames = parseTextureArchiveNames(bytes, textureTableOffset, endian, out.diagnostics);
 
     spice::gvm::parsing::ParseOptions options{};
@@ -85,6 +87,25 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
     auto archive = spice::gvm::parsing::parseGvmArchive(bytes, textureTableOffset, options);
 
     out.diagnostics.insert(out.diagnostics.end(), archive.diagnostics.begin(), archive.diagnostics.end());
+    if (!archive.textures.empty()) {
+        const auto firstTexture = std::min_element(archive.textures.begin(), archive.textures.end(),
+            [](const spice::gvm::model::GvrTexture& left, const spice::gvm::model::GvrTexture& right) {
+                return left.sourceOffset < right.sourceOffset;
+            });
+        const auto firstTextureOffset = firstTexture->sourceOffset;
+        if (firstTextureOffset >= textureTableOffset && firstTextureOffset <= bytes.size()) {
+            out.archivePrefixBytes.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(textureTableOffset),
+                bytes.begin() + static_cast<std::ptrdiff_t>(firstTextureOffset));
+        }
+        for (const auto& texture : archive.textures) {
+            if (texture.sourceOffset <= bytes.size()) {
+                out.archiveEndOffset = std::max(out.archiveEndOffset,
+                    std::min(bytes.size(), texture.sourceOffset + texture.sourceSize));
+            }
+        }
+    }
+
     out.entries.reserve(archive.textures.size());
     for (std::size_t i = 0; i < archive.textures.size(); ++i) {
         const auto& texture = archive.textures[i];
@@ -110,6 +131,12 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
         entry.imageDataOffset = texture.imageDataOffset;
         entry.imageDataSize = texture.imageDataSize;
         entry.paletteDataSize = texture.paletteData.size();
+        if (texture.sourceOffset < bytes.size()) {
+            const auto safeSize = std::min(texture.sourceSize, bytes.size() - texture.sourceOffset);
+            entry.gvrData.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(texture.sourceOffset),
+                bytes.begin() + static_cast<std::ptrdiff_t>(texture.sourceOffset + safeSize));
+        }
         entry.diagnostics = texture.diagnostics;
 
         if (texture.decodedBaseLevel.has_value()) {

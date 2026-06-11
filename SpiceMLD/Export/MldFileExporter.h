@@ -2,14 +2,23 @@
 
 #include "../Model/MldFile.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace spice::mld::exporting {
 
+struct MldTextureReplacement {
+    std::size_t textureIndex = 0;
+    std::vector<std::uint8_t> gvrData{};
+    bool allowPostArchiveShift = false;
+};
+
 struct MldExportOptions {
     model::TargetPlatform platform = model::TargetPlatform::GameCube;
     bool compressAklz = false;
+    std::optional<MldTextureReplacement> textureReplacement{};
 };
 
 class MldFileExporter {
@@ -20,4 +29,3 @@ public:
 };
 
 } // namespace spice::mld::exporting
-

@@ -327,6 +327,67 @@ void convertRawDataBlocks(std::vector<std::uint8_t>& out, const model::MldFile& 
     }
 }
 
+void applyTextureReplacement(std::vector<std::uint8_t>& out,
+    const model::MldFile& file,
+    const MldTextureReplacement& replacement) {
+    if (!file.textureArchive.has_value()) {
+        throw std::runtime_error("MLD texture replacement failed: source MLD has no parsed texture archive");
+    }
+    const auto& archive = *file.textureArchive;
+    if (replacement.textureIndex >= archive.entries.size()) {
+        throw std::runtime_error("MLD texture replacement failed: texture index is out of range");
+    }
+    if (replacement.gvrData.empty()) {
+        throw std::runtime_error("MLD texture replacement failed: replacement GVR data is empty");
+    }
+    if (archive.archiveStartOffset > out.size() || archive.archiveEndOffset > out.size()
+        || archive.archiveStartOffset > archive.archiveEndOffset) {
+        throw std::runtime_error("MLD texture replacement failed: parsed texture archive range is invalid");
+    }
+
+    const auto originalArchiveSize = archive.archiveEndOffset - archive.archiveStartOffset;
+    std::size_t rebuiltArchiveSize = archive.archivePrefixBytes.size();
+    for (std::size_t i = 0; i < archive.entries.size(); ++i) {
+        rebuiltArchiveSize += i == replacement.textureIndex
+            ? replacement.gvrData.size()
+            : archive.entries[i].gvrDataSize;
+    }
+
+    const bool hasPostArchiveSuffix = archive.archiveEndOffset < out.size();
+    if (hasPostArchiveSuffix && rebuiltArchiveSize != originalArchiveSize && !replacement.allowPostArchiveShift) {
+        throw std::runtime_error("MLD texture replacement would shift bytes after a non-terminal texture archive; pass --mld-allow-post-archive-shift to allow this");
+    }
+
+    std::vector<std::uint8_t> rebuilt{};
+    rebuilt.reserve(out.size() - originalArchiveSize + rebuiltArchiveSize);
+    rebuilt.insert(rebuilt.end(), out.begin(), out.begin() + static_cast<std::ptrdiff_t>(archive.archiveStartOffset));
+    rebuilt.insert(rebuilt.end(), archive.archivePrefixBytes.begin(), archive.archivePrefixBytes.end());
+
+    for (std::size_t i = 0; i < archive.entries.size(); ++i) {
+        if (i == replacement.textureIndex) {
+            rebuilt.insert(rebuilt.end(), replacement.gvrData.begin(), replacement.gvrData.end());
+            continue;
+        }
+
+        const auto& entry = archive.entries[i];
+        if (!entry.gvrData.empty()) {
+            rebuilt.insert(rebuilt.end(), entry.gvrData.begin(), entry.gvrData.end());
+            continue;
+        }
+        if (entry.gvrDataOffset > out.size() || entry.gvrDataSize > out.size() - entry.gvrDataOffset) {
+            throw std::runtime_error("MLD texture replacement failed: original GVR range is invalid");
+        }
+        rebuilt.insert(rebuilt.end(),
+            out.begin() + static_cast<std::ptrdiff_t>(entry.gvrDataOffset),
+            out.begin() + static_cast<std::ptrdiff_t>(entry.gvrDataOffset + entry.gvrDataSize));
+    }
+
+    rebuilt.insert(rebuilt.end(),
+        out.begin() + static_cast<std::ptrdiff_t>(archive.archiveEndOffset),
+        out.end());
+    out = std::move(rebuilt);
+}
+
 } // namespace
 
 std::vector<std::uint8_t> MldFileExporter::exportFile(
@@ -335,6 +396,10 @@ std::vector<std::uint8_t> MldFileExporter::exportFile(
     auto out = file.originalBytes;
     if (out.empty()) {
         out.resize(kMldHeaderSize);
+    }
+
+    if (options.textureReplacement.has_value()) {
+        applyTextureReplacement(out, file, *options.textureReplacement);
     }
 
     const auto targetEndian = endianForPlatform(options.platform);
