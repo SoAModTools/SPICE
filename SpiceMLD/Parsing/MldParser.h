@@ -76,6 +76,7 @@ struct ParsedRawEntry {
     model::Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
     std::vector<std::uint32_t> groundAddresses{};
+    std::vector<std::uint32_t> motionAddresses{};
     std::vector<std::uint8_t> payload{};
 };
 

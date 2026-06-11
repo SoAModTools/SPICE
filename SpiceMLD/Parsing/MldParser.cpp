@@ -1192,6 +1192,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             .transform = entry.transform,
             .objectAddresses = objectAddresses,
             .groundAddresses = groundAddresses,
+            .motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{},
             .payload = std::vector<std::uint8_t>(
                 payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
                 payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize)),
