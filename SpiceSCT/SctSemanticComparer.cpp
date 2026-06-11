@@ -111,14 +111,38 @@ std::vector<SctParameter> fallbackParameters(const SctInstruction& instruction) 
     return result;
 }
 
+void appendInstructionMetadataTokens(std::vector<std::string>& result, const SctInstruction& instruction) {
+    if (instruction.skipRefresh) {
+        result.push_back("modifier:skip_refresh");
+    }
+    if (instruction.scheduled.present) {
+        result.push_back("modifier:scheduled_length:" + std::to_string(instruction.scheduled.instructionByteLength));
+    }
+}
+
+std::string normalizedParameterToken(
+    const SctParameter& parameter,
+    std::string prefix,
+    const std::unordered_map<std::uint32_t, std::size_t>& indexes,
+    const SctEdge* targetEdge) {
+    std::string token = std::move(prefix);
+    if (targetEdge != nullptr) {
+        token += targetToken(indexes, targetEdge);
+    } else {
+        token += rawWordsToken(parameter.rawWords);
+    }
+    return token;
+}
+
 std::vector<std::string> normalizedParameters(
     const SctSection& section,
     const SctInstruction& instruction,
     const std::unordered_map<std::uint32_t, std::size_t>& indexes) {
     std::vector<std::string> result{};
+    appendInstructionMetadataTokens(result, instruction);
 
     if (instruction.opcode >= kSalsaOpcodeParamPatterns.size()) {
-        result.reserve(instruction.operands.size());
+        result.reserve(result.size() + instruction.operands.size());
         for (const auto operand : instruction.operands) {
             result.push_back("operand:" + std::to_string(operand));
         }
@@ -127,7 +151,14 @@ std::vector<std::string> normalizedParameters(
 
     const auto& pattern = kSalsaOpcodeParamPatterns[instruction.opcode];
     const auto parameters = instruction.parameters.empty() ? fallbackParameters(instruction) : instruction.parameters;
-    result.reserve(parameters.size());
+    result.reserve(result.size() + parameters.size() + (instruction.scheduled.present ? 1u : 0u));
+    if (instruction.scheduled.present) {
+        result.push_back(normalizedParameterToken(
+            instruction.scheduled.frameDelay,
+            "scheduled.frameDelay:",
+            indexes,
+            nullptr));
+    }
     std::size_t edgeOrdinal = 0;
     const auto loopWidth = pattern.loopStartParam >= 0 && pattern.loopEndParam >= pattern.loopStartParam
         ? static_cast<std::size_t>(pattern.loopEndParam - pattern.loopStartParam + 1)
@@ -141,15 +172,22 @@ std::vector<std::string> normalizedParameters(
             && parameterIndex >= static_cast<std::size_t>(pattern.switchJumpParam)
             && ((parameterIndex - static_cast<std::size_t>(pattern.switchJumpParam)) % loopWidth) == 0u;
 
-        std::string token = "p" + std::to_string(parameter.index) + ":";
+        std::string prefix = "p" + std::to_string(parameter.index) + ":";
         if (isJumpTarget) {
-            token += targetToken(indexes, findEdge(section, instruction.offset, jumpEdgeTypeForOpcode(instruction.opcode)));
+            result.push_back(normalizedParameterToken(
+                parameter,
+                std::move(prefix),
+                indexes,
+                findEdge(section, instruction.offset, jumpEdgeTypeForOpcode(instruction.opcode))));
         } else if (isSwitchTarget) {
-            token += targetToken(indexes, findEdge(section, instruction.offset, SctEdgeType::SwitchCase, edgeOrdinal++));
+            result.push_back(normalizedParameterToken(
+                parameter,
+                std::move(prefix),
+                indexes,
+                findEdge(section, instruction.offset, SctEdgeType::SwitchCase, edgeOrdinal++)));
         } else {
-            token += rawWordsToken(parameter.rawWords);
+            result.push_back(normalizedParameterToken(parameter, std::move(prefix), indexes, nullptr));
         }
-        result.push_back(std::move(token));
     }
 
     return result;

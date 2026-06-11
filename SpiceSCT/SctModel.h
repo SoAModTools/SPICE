@@ -103,6 +103,13 @@ struct SctParameter {
     std::optional<SctExpression> expression;
 };
 
+struct SctScheduledInstructionMetadata {
+    bool present = false;
+    SctParameter frameDelay;
+    std::uint32_t instructionByteLength = 0;
+    std::vector<std::uint32_t> rawWords;
+};
+
 struct SctInstruction {
     struct ScptTraceEntry {
         std::uint32_t rawWord = 0;
@@ -120,7 +127,11 @@ struct SctInstruction {
     };
 
     std::uint32_t offset = 0;
+    std::uint32_t payloadOffset = 0;
     std::uint16_t opcode = 0;
+    std::uint32_t opcodeWordIndex = 0;
+    bool skipRefresh = false;
+    SctScheduledInstructionMetadata scheduled;
     std::string mnemonic;
     SctSemanticConfidence semanticConfidence = SctSemanticConfidence::Unknown;
     std::vector<std::uint32_t> operands;
@@ -159,9 +170,18 @@ struct SctEdge {
     SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
     std::optional<std::uint32_t> fromOffset;
     std::optional<std::uint32_t> toOffset;
+    std::optional<std::uint32_t> fromPayloadOffset;
+    std::optional<std::uint32_t> toPayloadOffset;
     std::uint16_t opcode = 0;
     std::string detail;
     std::map<std::string, std::string> attributes;
+};
+
+struct SctCodeRegion {
+    std::string name;
+    std::uint32_t entryPayloadOffset = 0;
+    std::vector<std::uint32_t> instructionPayloadOffsets;
+    std::vector<std::uint32_t> coveredSectionIndexes;
 };
 
 struct FlagAccessSummary {
@@ -206,6 +226,7 @@ struct SctFile {
     std::vector<std::uint8_t> originalPayloadBytes;
     std::vector<std::uint8_t> headerBytes;
     std::vector<SctSection> sections;
+    std::vector<SctCodeRegion> codeRegions;
 };
 
 struct SctDiagnostic {

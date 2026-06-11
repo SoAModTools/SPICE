@@ -239,7 +239,21 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
                 out << ',';
             }
             out << "{\"offset\":" << inst.offset
+                << ",\"payloadOffset\":" << inst.payloadOffset
                 << ",\"opcode\":" << inst.opcode
+                << ",\"opcodeWordIndex\":" << inst.opcodeWordIndex
+                << ",\"skipRefresh\":" << (inst.skipRefresh ? "true" : "false")
+                << ",\"scheduled\":{\"present\":" << (inst.scheduled.present ? "true" : "false")
+                << ",\"instructionByteLength\":" << inst.scheduled.instructionByteLength
+                << ",\"rawWords\":";
+            writeU32Array(out, inst.scheduled.rawWords);
+            out << ",\"frameDelay\":";
+            if (inst.scheduled.present) {
+                writeParameter(out, inst.scheduled.frameDelay);
+            } else {
+                out << "null";
+            }
+            out << '}'
                 << ",\"mnemonic\":\"" << jsonEscape(inst.mnemonic) << '"'
                 << ",\"semanticConfidence\":\"" << toString(inst.semanticConfidence) << '"'
                 << ",\"sizeBytes\":" << inst.sizeBytes
@@ -287,6 +301,10 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
             writeOptionalU32(out, edge.fromOffset);
             out << ",\"toOffset\":";
             writeOptionalU32(out, edge.toOffset);
+            out << ",\"fromPayloadOffset\":";
+            writeOptionalU32(out, edge.fromPayloadOffset);
+            out << ",\"toPayloadOffset\":";
+            writeOptionalU32(out, edge.toPayloadOffset);
             out << ",\"opcode\":" << edge.opcode
                 << ",\"detail\":\"" << jsonEscape(edge.detail) << "\",\"attributes\":";
             writeAttributes(out, edge.attributes);
@@ -296,6 +314,21 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
         out << "    }";
     }
     out << "\n  ],\n";
+    out << "  \"codeRegions\": [";
+    for (std::size_t ri = 0; ri < result.file.codeRegions.size(); ++ri) {
+        const auto& region = result.file.codeRegions[ri];
+        if (ri != 0) {
+            out << ',';
+        }
+        out << "{\"name\":\"" << jsonEscape(region.name)
+            << "\",\"entryPayloadOffset\":" << region.entryPayloadOffset
+            << ",\"instructionPayloadOffsets\":";
+        writeU32Array(out, region.instructionPayloadOffsets);
+        out << ",\"coveredSectionIndexes\":";
+        writeU32Array(out, region.coveredSectionIndexes);
+        out << '}';
+    }
+    out << "],\n";
     out << "  \"diagnostics\": [";
     for (std::size_t di = 0; di < result.diagnostics.size(); ++di) {
         if (di != 0) {

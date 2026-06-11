@@ -165,6 +165,25 @@ SctParseResult SctIrBuilder::build(const SctParseResult& parseResult) const {
                 instruction.semanticConfidence = metadata.confidence;
             }
             if (instruction.rawWords.empty()) {
+                if (instruction.skipRefresh) {
+                    instruction.rawWords.push_back(13u);
+                }
+                if (instruction.scheduled.present) {
+                    if (!instruction.scheduled.rawWords.empty()) {
+                        instruction.rawWords.insert(
+                            instruction.rawWords.end(),
+                            instruction.scheduled.rawWords.begin(),
+                            instruction.scheduled.rawWords.end());
+                    } else {
+                        instruction.rawWords.push_back(129u);
+                        instruction.rawWords.insert(
+                            instruction.rawWords.end(),
+                            instruction.scheduled.frameDelay.rawWords.begin(),
+                            instruction.scheduled.frameDelay.rawWords.end());
+                        instruction.rawWords.push_back(instruction.scheduled.instructionByteLength);
+                    }
+                }
+                instruction.opcodeWordIndex = static_cast<std::uint32_t>(instruction.rawWords.size());
                 instruction.rawWords.push_back(instruction.opcode);
                 instruction.rawWords.insert(instruction.rawWords.end(), instruction.operands.begin(), instruction.operands.end());
             }

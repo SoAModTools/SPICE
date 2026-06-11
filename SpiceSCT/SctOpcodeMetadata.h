@@ -29,6 +29,8 @@ struct SctOpcodeParamPattern {
     std::int8_t iterationCountParam;
     std::int8_t jumpParam;
     std::int8_t switchJumpParam;
+    std::int8_t internalLoopBreakParam = -1;
+    std::uint32_t internalLoopBreakValue = 0;
 };
 
 struct SctOpcodeSemanticMetadata {
@@ -74,16 +76,16 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 30
     SctOpcodeParamPattern{8, 0xffull, -1, -1, -1, -1, -1}, // opcode 31
     SctOpcodeParamPattern{8, 0xffull, -1, -1, -1, -1, -1}, // opcode 32
-    SctOpcodeParamPattern{8, 0xfeull, -1, -1, 0, -1, -1}, // opcode 33
-    SctOpcodeParamPattern{11, 0x7fdull, -1, -1, 1, -1, -1}, // opcode 34
-    SctOpcodeParamPattern{11, 0x7fdull, -1, -1, 1, -1, -1}, // opcode 35
+    SctOpcodeParamPattern{8, 0xfeull, 1, 7, 0, -1, -1}, // opcode 33
+    SctOpcodeParamPattern{11, 0x7fdull, 2, 10, 1, -1, -1}, // opcode 34
+    SctOpcodeParamPattern{11, 0x7fdull, 2, 10, 1, -1, -1}, // opcode 35
     SctOpcodeParamPattern{8, 0xffull, -1, -1, -1, -1, -1}, // opcode 36
     SctOpcodeParamPattern{8, 0xffull, -1, -1, -1, -1, -1}, // opcode 37
     SctOpcodeParamPattern{5, 0x1full, -1, -1, -1, -1, -1}, // opcode 38
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 39
     SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 40
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 41
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 42
+    SctOpcodeParamPattern{3, 0x5ull, 2, 2, 1, -1, -1}, // opcode 42
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 43
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 44
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 45
@@ -126,12 +128,12 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{4, 0xfull, -1, -1, -1, -1, -1}, // opcode 82
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 83
     SctOpcodeParamPattern{10, 0x3ffull, -1, -1, -1, -1, -1}, // opcode 84
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 85
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 86
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 87
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 88
-    SctOpcodeParamPattern{11, 0x7fdull, -1, -1, 1, -1, -1}, // opcode 89
-    SctOpcodeParamPattern{11, 0x7fdull, -1, -1, 1, -1, -1}, // opcode 90
+    SctOpcodeParamPattern{3, 0x5ull, 2, 2, 1, -1, -1}, // opcode 85
+    SctOpcodeParamPattern{3, 0x5ull, 2, 2, 1, -1, -1}, // opcode 86
+    SctOpcodeParamPattern{3, 0x5ull, 2, 2, 1, -1, -1}, // opcode 87
+    SctOpcodeParamPattern{3, 0x5ull, 2, 2, 1, -1, -1}, // opcode 88
+    SctOpcodeParamPattern{11, 0x7fdull, 2, 10, 1, -1, -1}, // opcode 89
+    SctOpcodeParamPattern{11, 0x7fdull, 2, 10, 1, -1, -1}, // opcode 90
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 91
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 92
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 93
@@ -139,8 +141,8 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 95
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 96
     SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 97
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 98
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 99
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 98
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 99
     SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 100
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 101
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 102
@@ -149,7 +151,7 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 105
     SctOpcodeParamPattern{9, 0x1ffull, -1, -1, -1, -1, -1}, // opcode 106
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 107
-    SctOpcodeParamPattern{11, 0x7fdull, -1, -1, 1, -1, -1}, // opcode 108
+    SctOpcodeParamPattern{11, 0x7fdull, 2, 10, 1, -1, -1}, // opcode 108
     SctOpcodeParamPattern{9, 0x1ffull, -1, -1, -1, -1, -1}, // opcode 109
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 110
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 111
@@ -159,28 +161,28 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 115
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 116
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 117
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 118
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 119
+    SctOpcodeParamPattern{2, 0x5ull, 2, 2, 1, -1, -1}, // opcode 118
+    SctOpcodeParamPattern{2, 0x5ull, 2, 2, 1, -1, -1}, // opcode 119
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 120
-    SctOpcodeParamPattern{8, 0xfeull, -1, -1, 0, -1, -1}, // opcode 121
+    SctOpcodeParamPattern{8, 0xfeull, 1, 7, 0, -1, -1}, // opcode 121
     SctOpcodeParamPattern{5, 0x1full, -1, -1, -1, -1, -1}, // opcode 122
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 123
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 124
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 125
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 126
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 127
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 126
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 127
     SctOpcodeParamPattern{6, 0x3full, -1, -1, -1, -1, -1}, // opcode 128
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, 1, -1, -1}, // opcode 129
-    SctOpcodeParamPattern{9, 0x1fdull, -1, -1, 1, -1, -1}, // opcode 130
-    SctOpcodeParamPattern{5, 0x1eull, -1, -1, 0, -1, -1}, // opcode 131
-    SctOpcodeParamPattern{8, 0xfeull, -1, -1, 0, -1, -1}, // opcode 132
-    SctOpcodeParamPattern{11, 0x7feull, -1, -1, 0, -1, -1}, // opcode 133
+    SctOpcodeParamPattern{9, 0x1fdull, 2, 8, 1, -1, -1}, // opcode 130
+    SctOpcodeParamPattern{5, 0x1eull, 1, 4, 0, -1, -1}, // opcode 131
+    SctOpcodeParamPattern{8, 0xfeull, 1, 7, 0, -1, -1}, // opcode 132
+    SctOpcodeParamPattern{11, 0x7feull, 2, 10, 0, -1, -1}, // opcode 133
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 134
-    SctOpcodeParamPattern{3, 0x5ull, -1, -1, 1, -1, -1}, // opcode 135
+    SctOpcodeParamPattern{3, 0x5ull, 2, 2, 1, -1, -1}, // opcode 135
     SctOpcodeParamPattern{5, 0x1full, -1, -1, -1, -1, -1}, // opcode 136
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 137
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 138
-    SctOpcodeParamPattern{8, 0xfeull, -1, -1, 0, -1, -1}, // opcode 139
+    SctOpcodeParamPattern{8, 0xfeull, 1, 7, 0, -1, -1}, // opcode 139
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 140
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 141
     SctOpcodeParamPattern{5, 0x1full, -1, -1, -1, -1, -1}, // opcode 142
@@ -189,20 +191,20 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 145
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 146
     SctOpcodeParamPattern{10, 0x3ffull, -1, -1, -1, -1, -1}, // opcode 147
-    SctOpcodeParamPattern{10, 0x3feull, -1, -1, 0, -1, -1}, // opcode 148
+    SctOpcodeParamPattern{10, 0x3feull, 1, 9, 0, -1, -1}, // opcode 148
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 149
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 150
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 151
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 152
-    SctOpcodeParamPattern{4, 0xeull, -1, -1, 0, -1, -1}, // opcode 153
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 152
+    SctOpcodeParamPattern{4, 0xeull, 1, 3, 0, -1, -1, 3, 0}, // opcode 153
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 154
     SctOpcodeParamPattern{3, 0x5ull, -1, -1, -1, -1, -1}, // opcode 155
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 156
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 157
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 158
-    SctOpcodeParamPattern{9, 0x1feull, -1, -1, 0, -1, -1}, // opcode 159
+    SctOpcodeParamPattern{9, 0x1feull, 1, 8, 0, -1, -1}, // opcode 159
     SctOpcodeParamPattern{7, 0x7full, -1, -1, -1, -1, -1}, // opcode 160
-    SctOpcodeParamPattern{11, 0x7fdull, -1, -1, 1, -1, -1}, // opcode 161
+    SctOpcodeParamPattern{11, 0x7fdull, 2, 10, 1, -1, -1}, // opcode 161
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 162
     SctOpcodeParamPattern{9, 0x1ffull, -1, -1, -1, -1, -1}, // opcode 163
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 164
@@ -286,8 +288,8 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 242
     SctOpcodeParamPattern{10, 0x3ffull, -1, -1, -1, -1, -1}, // opcode 243
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 244
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 245
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 246
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 245
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 246
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 247
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 248
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 249
@@ -299,12 +301,12 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 255
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 256
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 257
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 258
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 258
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 259
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 260
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 261
     SctOpcodeParamPattern{5, 0x1full, -1, -1, -1, -1, -1}, // opcode 262
-    SctOpcodeParamPattern{2, 0x2ull, -1, -1, 0, -1, -1}, // opcode 263
+    SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 263
     SctOpcodeParamPattern{8, 0xffull, -1, -1, -1, -1, -1}, // opcode 264
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, -1, -1, -1}, // opcode 265
 }};

@@ -12,6 +12,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -62,6 +63,20 @@ struct DecodedInstruction {
     bool writesFlag = false;
     bool testedFlag = false;
     bool isSwitch = false;
+};
+
+struct GlobalDecodedInstruction {
+    DecodedInstruction decoded;
+    std::uint32_t entryPayloadOffset = 0;
+};
+
+struct SectionRow {
+    std::uint32_t start = 0;
+    std::uint32_t end = 0;
+    std::string name;
+    bool isString = false;
+    bool isCode = false;
+    bool isValid = true;
 };
 
 [[nodiscard]] std::string fallbackMnemonic(std::uint16_t opcode) {
@@ -429,16 +444,6 @@ void setScptStackNode(
     return consumedWords;
 }
 
-[[nodiscard]] std::uint32_t clampToSection(std::uint32_t raw, std::uint32_t sectionSize) {
-    if (sectionSize == 0) {
-        return 0;
-    }
-    if (raw >= sectionSize) {
-        return sectionSize - (sectionSize % 4u == 0u ? 4u : sectionSize % 4u);
-    }
-    return raw - (raw % 4u);
-}
-
 void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectionBytes, Endian endian) {
     inst.rawWords.clear();
     if (inst.sizeBytes == 0 || inst.offset >= sectionBytes.size()) {
@@ -451,8 +456,131 @@ void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectio
     }
 }
 
+[[nodiscard]] std::optional<std::uint32_t> sectionIndexForPayloadOffset(
+    const std::vector<SectionRow>& rows,
+    std::uint32_t payloadOffset) {
+    for (std::uint32_t i = 0; i < rows.size(); ++i) {
+        if (payloadOffset >= rows[i].start && payloadOffset < rows[i].end) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> containingInstructionStart(
+    const std::map<std::uint32_t, GlobalDecodedInstruction>& instructions,
+    std::uint32_t offset) {
+    const auto upper = instructions.upper_bound(offset);
+    if (upper == instructions.begin()) {
+        return std::nullopt;
+    }
+    const auto it = std::prev(upper);
+    const auto start = it->first;
+    const auto size = it->second.decoded.inst.sizeBytes;
+    if (offset > start && offset < start + size) {
+        return start;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string decimalString(std::uint32_t value);
+
+[[nodiscard]] SctEdgeType edgeTypeForSuccessor(
+    const SctInstruction& instruction,
+    std::size_t successorIndex,
+    std::uint32_t successorOffset);
+
+[[nodiscard]] SctEdge makeControlFlowEdge(
+    const SctInstruction& instruction,
+    std::size_t successorIndex,
+    std::uint32_t successorPayloadOffset,
+    const std::vector<SectionRow>& rows) {
+    SctEdge edge{};
+    edge.type = edgeTypeForSuccessor(instruction, successorIndex, successorPayloadOffset);
+    edge.confidence = SctSemanticConfidence::Known;
+    edge.fromOffset = instruction.offset;
+    edge.fromPayloadOffset = instruction.payloadOffset;
+    edge.toPayloadOffset = successorPayloadOffset;
+    edge.opcode = instruction.opcode;
+    edge.detail = "Control-flow successor discovered during SCT parse.";
+    edge.attributes.emplace("target_payload_offset", decimalString(successorPayloadOffset));
+    if (const auto targetSection = sectionIndexForPayloadOffset(rows, successorPayloadOffset); targetSection.has_value()) {
+        edge.toOffset = successorPayloadOffset - rows[*targetSection].start;
+        edge.attributes.emplace("target_section", rows[*targetSection].name);
+        edge.attributes.emplace("target_section_index", decimalString(*targetSection));
+        edge.attributes.emplace("target_offset", decimalString(successorPayloadOffset - rows[*targetSection].start));
+    } else {
+        edge.toOffset = successorPayloadOffset;
+        edge.attributes.emplace("target_offset", decimalString(successorPayloadOffset));
+    }
+    return edge;
+}
+
+void addInstructionSemanticEdges(
+    std::vector<SctEdge>& edges,
+    const SctInstruction& instruction,
+    std::uint32_t sourceSectionStart) {
+    const auto metadata = sctOpcodeMetadata(instruction.opcode);
+    if (metadata.controlRole == SctOpcodeControlRole::CallSubscript) {
+        SctEdge edge{};
+        edge.type = SctEdgeType::CallSubscript;
+        edge.confidence = metadata.confidence;
+        edge.fromOffset = instruction.payloadOffset - sourceSectionStart;
+        edge.fromPayloadOffset = instruction.payloadOffset;
+        edge.opcode = instruction.opcode;
+        edge.detail = "Opcode calls a subscript target.";
+        if (!instruction.operands.empty()) {
+            edge.toOffset = instruction.operands.front();
+            edge.toPayloadOffset = instruction.operands.front();
+            edge.attributes.emplace("offset_operand", decimalString(instruction.operands.front()));
+        }
+        edges.push_back(std::move(edge));
+    }
+    if (metadata.controlRole == SctOpcodeControlRole::Return) {
+        SctEdge edge{};
+        edge.type = SctEdgeType::Return;
+        edge.confidence = metadata.confidence;
+        edge.fromOffset = instruction.payloadOffset - sourceSectionStart;
+        edge.fromPayloadOffset = instruction.payloadOffset;
+        edge.opcode = instruction.opcode;
+        edge.detail = "Opcode returns from the current subscript stack.";
+        edges.push_back(std::move(edge));
+    }
+    if (metadata.resourceRole == SctOpcodeResourceRole::LoadsMld || metadata.resourceRole == SctOpcodeResourceRole::LoadsScript) {
+        SctEdge edge{};
+        edge.type = metadata.resourceRole == SctOpcodeResourceRole::LoadsMld ? SctEdgeType::LoadsMld : SctEdgeType::LoadsScript;
+        edge.confidence = metadata.confidence;
+        edge.fromOffset = instruction.payloadOffset - sourceSectionStart;
+        edge.fromPayloadOffset = instruction.payloadOffset;
+        edge.opcode = instruction.opcode;
+        edge.detail = "Opcode references an external SCT/MLD resource.";
+        if (!instruction.operands.empty()) {
+            edge.attributes.emplace("resource_id", decimalString(instruction.operands.front()));
+        }
+        edges.push_back(std::move(edge));
+    }
+}
+
 [[nodiscard]] std::string decimalString(std::uint32_t value) {
     return std::to_string(value);
+}
+
+[[nodiscard]] bool externalLoopBreakApplies(std::uint16_t opcode, std::uint32_t iterations) {
+    return (opcode == 118u || opcode == 119u) && iterations == 0x00010000u;
+}
+
+[[nodiscard]] bool parameterMatchesLoopBreakValue(const SctParameter& parameter, std::uint32_t breakValue) {
+    if (parameter.rawWords.size() == 1u && parameter.rawWords.front() == breakValue) {
+        return true;
+    }
+    if (breakValue == 0u) {
+        if (parameter.rawWords.size() >= 3u && parameter.rawWords[0] == 0x04000000u && parameter.rawWords[1] == 0u
+            && parameter.rawWords.back() == kScptStopCode) {
+            return true;
+        }
+        return parameter.displayValue == "0" || parameter.displayValue == "float: 0.000000";
+    }
+    return false;
 }
 
 [[nodiscard]] SctEdgeType edgeTypeForSuccessor(
@@ -542,28 +670,97 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
         word = wordOther;
     }
 
-    const auto opcode = static_cast<std::uint16_t>(word & 0xffffu);
+    std::uint32_t actualOpcodeOffset = offset;
+    std::vector<std::uint32_t> prefixWords{};
+
+    auto currentWord = word;
+    auto currentOpcode = static_cast<std::uint16_t>(currentWord & 0xffffu);
+    if (currentOpcode == 13u && actualOpcodeOffset + 8u <= sectionBytes.size()) {
+        decoded.inst.skipRefresh = true;
+        prefixWords.push_back(currentWord);
+        actualOpcodeOffset += 4u;
+        currentWord = readU32(sectionBytes, actualOpcodeOffset, chosenEndian);
+        currentOpcode = static_cast<std::uint16_t>(currentWord & 0xffffu);
+    }
+
+    if (currentOpcode == 129u && actualOpcodeOffset + 12u <= sectionBytes.size()) {
+        SctInstruction::ScptParameterValueRecord delayRecord{};
+        delayRecord.parameterIndex = 0;
+        delayRecord.operandStartWordIndex = 0;
+        const auto delayParamOffset = actualOpcodeOffset + 4u;
+        const auto delayWordCount = consumeScptParameterWords(
+            sectionBytes, delayParamOffset, chosenEndian, offset, diagnostics, &delayRecord);
+        const auto lengthOffset = delayParamOffset + (delayWordCount * 4u);
+        if (delayWordCount != 0u && lengthOffset + 8u <= sectionBytes.size()) {
+            decoded.inst.scheduled.present = true;
+            decoded.inst.scheduled.rawWords.push_back(currentWord);
+
+            SctParameter delayParameter{};
+            delayParameter.index = 0;
+            delayParameter.role = "delayFrames";
+            delayParameter.valueKind = SctParameterValueKind::Expression;
+            delayParameter.confidence = SctSemanticConfidence::Known;
+            for (std::uint32_t i = 0; i < delayWordCount; ++i) {
+                const auto rawWord = readU32(sectionBytes, delayParamOffset + (i * 4u), chosenEndian);
+                delayParameter.rawWords.push_back(rawWord);
+                decoded.inst.scheduled.rawWords.push_back(rawWord);
+            }
+            delayParameter.displayValue = delayRecord.resolvedValue;
+            SctExpression expression{};
+            expression.display = delayRecord.resolvedValue;
+            expression.hitStopCode = delayRecord.hitStopCode;
+            for (const auto& trace : delayRecord.evaluationTrace) {
+                expression.trace.push_back({trace.rawWord, trace.interpretedValue});
+            }
+            expression.ast = delayRecord.ast;
+            delayParameter.expression = std::move(expression);
+            decoded.inst.scheduled.frameDelay = std::move(delayParameter);
+
+            decoded.inst.scheduled.instructionByteLength = readU32(sectionBytes, lengthOffset, chosenEndian);
+            decoded.inst.scheduled.rawWords.push_back(decoded.inst.scheduled.instructionByteLength);
+            prefixWords.insert(
+                prefixWords.end(),
+                decoded.inst.scheduled.rawWords.begin(),
+                decoded.inst.scheduled.rawWords.end());
+
+            actualOpcodeOffset = lengthOffset + 4u;
+            currentWord = readU32(sectionBytes, actualOpcodeOffset, chosenEndian);
+            currentOpcode = static_cast<std::uint16_t>(currentWord & 0xffffu);
+        }
+    }
+
+    decoded.inst.opcodeWordIndex = static_cast<std::uint32_t>(prefixWords.size());
+    const auto opcode = currentOpcode;
     decoded.inst.opcode = opcode;
     const auto opcodeMetadata = sctOpcodeMetadata(opcode);
     decoded.inst.mnemonic = opcodeMetadata.mnemonic.empty() ? fallbackMnemonic(opcode) : std::string(opcodeMetadata.mnemonic);
     decoded.inst.semanticConfidence = opcodeMetadata.confidence;
     decoded.inst.decodeOk = opcode <= kMaxOpcodeProbe;
-    decoded.inst.sizeBytes = 4;
+    decoded.inst.sizeBytes = (actualOpcodeOffset - offset) + 4u;
 
     if (opcode < kSalsaOpcodeParamPatterns.size()) {
         const auto& paramPattern = kSalsaOpcodeParamPatterns[opcode];
         std::uint32_t totalParamSlots = paramPattern.paramCount;
         std::uint32_t consumedOperandWords = 0;
         std::uint32_t iterations = 0;
+        bool loopBreakReached = false;
 
         auto consumeParamSlot = [&](std::uint32_t paramIndex) -> bool {
-            const auto paramWordOffset = offset + 4u + (consumedOperandWords * 4u);
+            std::uint32_t baseParamIndex = paramIndex;
+            if (paramPattern.loopStartParam >= 0 && paramPattern.loopEndParam >= paramPattern.loopStartParam
+                && paramIndex >= paramPattern.paramCount) {
+                const auto loopStart = static_cast<std::uint32_t>(paramPattern.loopStartParam);
+                const auto loopWidth = static_cast<std::uint32_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
+                baseParamIndex = loopStart + ((paramIndex - paramPattern.paramCount) % loopWidth);
+            }
+
+            const auto paramWordOffset = actualOpcodeOffset + 4u + (consumedOperandWords * 4u);
             if (paramWordOffset + 4u > sectionBytes.size()) {
                 diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
                 return false;
             }
 
-            const bool isScptParam = paramIndex < 64u && ((paramPattern.scptAnalyzeMask >> paramIndex) & 1ull) != 0ull;
+            const bool isScptParam = baseParamIndex < 64u && ((paramPattern.scptAnalyzeMask >> baseParamIndex) & 1ull) != 0ull;
             std::uint32_t wordsForParam = 1;
             SctInstruction::ScptParameterValueRecord scptRecord{};
             if (isScptParam) {
@@ -579,14 +776,14 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
             }
 
             if (paramPattern.iterationCountParam >= 0
-                && paramIndex == static_cast<std::uint32_t>(paramPattern.iterationCountParam)) {
+                && baseParamIndex == static_cast<std::uint32_t>(paramPattern.iterationCountParam)) {
                 iterations = readU32(sectionBytes, paramWordOffset, chosenEndian);
             }
 
             SctParameter parameter{};
             parameter.index = paramIndex;
-            if (paramIndex < opcodeMetadata.parameterRoles.size()) {
-                parameter.role = std::string(opcodeMetadata.parameterRoles[paramIndex]);
+            if (baseParamIndex < opcodeMetadata.parameterRoles.size()) {
+                parameter.role = std::string(opcodeMetadata.parameterRoles[baseParamIndex]);
             }
             parameter.confidence = opcodeMetadata.confidence;
             parameter.valueKind = isScptParam ? SctParameterValueKind::Expression : SctParameterValueKind::Integer;
@@ -626,6 +823,11 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
             } else if (!parameter.rawWords.empty()) {
                 parameter.displayValue = std::to_string(parameter.rawWords.front());
             }
+            if (paramPattern.internalLoopBreakParam >= 0
+                && baseParamIndex == static_cast<std::uint32_t>(paramPattern.internalLoopBreakParam)
+                && parameterMatchesLoopBreakValue(parameter, paramPattern.internalLoopBreakValue)) {
+                loopBreakReached = true;
+            }
             decoded.inst.parameters.push_back(std::move(parameter));
             return true;
         };
@@ -638,18 +840,25 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
         }
 
         if (paramPattern.loopStartParam >= 0 && paramPattern.loopEndParam >= paramPattern.loopStartParam
-            && paramPattern.iterationCountParam >= 0 && iterations > 1u) {
+            && paramPattern.iterationCountParam >= 0 && iterations > 0u && !loopBreakReached
+            && !externalLoopBreakApplies(opcode, iterations)) {
             const auto loopWidth = static_cast<std::uint32_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
-            totalParamSlots += (iterations - 1u) * loopWidth;
+            const auto decodedLoopIterations = static_cast<std::uint32_t>(paramPattern.loopStartParam) < paramPattern.paramCount ? 1u : 0u;
+            if (iterations > decodedLoopIterations) {
+                totalParamSlots += (iterations - decodedLoopIterations) * loopWidth;
+            }
             for (std::uint32_t paramIndex = paramPattern.paramCount; paramIndex < totalParamSlots; ++paramIndex) {
                 if (!consumeParamSlot(paramIndex)) {
                     decoded.blockTerminator = true;
                     return decoded;
                 }
+                if (loopBreakReached) {
+                    break;
+                }
             }
         }
 
-        decoded.inst.sizeBytes = 4u + (consumedOperandWords * 4u);
+        decoded.inst.sizeBytes = (actualOpcodeOffset - offset) + 4u + (consumedOperandWords * 4u);
         populateRawWords(decoded.inst, sectionBytes, chosenEndian);
 
         if (opcode == 0 || opcode == 10 || opcode == 3) {
@@ -657,17 +866,23 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
 
             if (opcode == 3) {
                 decoded.isSwitch = true;
-                const auto nextOffsetBase = static_cast<std::int64_t>(offset + decoded.inst.sizeBytes);
                 if (paramPattern.switchJumpParam >= 0 && paramPattern.loopStartParam >= 0
                     && paramPattern.loopEndParam >= paramPattern.loopStartParam) {
                     const auto loopWidth = static_cast<std::size_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
-                    const auto start = static_cast<std::size_t>(paramPattern.switchJumpParam);
-                    for (std::size_t i = start; i < decoded.inst.operands.size(); i += loopWidth) {
-                        const auto rel = static_cast<std::int32_t>(decoded.inst.operands[i]);
-                        const auto jumpTarget = nextOffsetBase + rel;
-                        if (jumpTarget >= 0) {
-                            decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
+                    std::uint32_t operandWordOffset = 0;
+                    for (const auto& parameter : decoded.inst.parameters) {
+                        const auto parameterIndex = static_cast<std::size_t>(parameter.index);
+                        const bool isSwitchJump = parameterIndex >= static_cast<std::size_t>(paramPattern.switchJumpParam)
+                            && ((parameterIndex - static_cast<std::size_t>(paramPattern.switchJumpParam)) % loopWidth) == 0u;
+                        if (isSwitchJump && !parameter.rawWords.empty()) {
+                            const auto jumpWordOffset = actualOpcodeOffset + 4u + (operandWordOffset * 4u);
+                            const auto rel = static_cast<std::int32_t>(parameter.rawWords.front());
+                            const auto jumpTarget = static_cast<std::int64_t>(jumpWordOffset) + rel;
+                            if (jumpTarget >= 0) {
+                                decoded.successors.push_back(static_cast<std::uint32_t>(jumpTarget));
+                            }
                         }
+                        operandWordOffset += static_cast<std::uint32_t>(parameter.rawWords.size());
                     }
                 }
             } else  {
@@ -824,11 +1039,6 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
         return result;
     }
 
-    struct SectionRow {
-        std::uint32_t start = 0;
-        std::string name;
-    };
-
     std::vector<SectionRow> rows;
     rows.reserve(sectionCount);
     std::cout << "[SpiceSCT] Step 3/5: Reading section index (" << sectionCount << " sections)...\n";
@@ -840,38 +1050,41 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
         if (name.empty()) {
             name = "section_" + std::to_string(i);
         }
-        rows.push_back({start, std::move(name)});
+        SectionRow row{};
+        row.start = start;
+        row.name = std::move(name);
+        rows.push_back(std::move(row));
     }
 
     const auto dataStart = static_cast<std::uint32_t>(kHeaderSize + indexSize);
     const auto dataSize = static_cast<std::uint32_t>(payload.size() - dataStart);
     const auto dataBytes = payload.subspan(dataStart);
 
-    std::cout << "[SpiceSCT] Step 4/5: Walking section instructions...\n";
     for (std::uint32_t i = 0; i < rows.size(); ++i) {
-        const auto sectionStart = rows[i].start;
-        const auto sectionEnd = (i + 1u < rows.size()) ? rows[i + 1u].start : dataSize;
-
-        if (sectionStart > dataSize || sectionEnd > dataSize || sectionEnd < sectionStart) {
-            result.diagnostics.push_back({"Invalid section bounds in SCT index.", sectionStart});
-            continue;
-        }
-
+        rows[i].end = (i + 1u < rows.size()) ? rows[i + 1u].start : dataSize;
+        rows[i].isValid = rows[i].start <= dataSize && rows[i].end <= dataSize && rows[i].end >= rows[i].start;
         SctSection section{};
         section.id.index = i;
         section.id.name = rows[i].name;
-        section.startOffset = dataStart + sectionStart;
-        section.endOffset = dataStart + sectionEnd;
-        section.kind = SctSectionKind::Script;
+        section.startOffset = dataStart + std::min(rows[i].start, dataSize);
+        section.endOffset = dataStart + std::min(rows[i].end, dataSize);
+        if (!rows[i].isValid) {
+            section.kind = SctSectionKind::Unknown;
+            result.file.sections.push_back(std::move(section));
+            result.diagnostics.push_back({"Invalid section bounds in SCT index.", rows[i].start, rows[i].name});
+            continue;
+        }
 
-        const auto sectionBytes = dataBytes.subspan(sectionStart, sectionEnd - sectionStart);
+        const auto sectionBytes = dataBytes.subspan(rows[i].start, rows[i].end - rows[i].start);
         if (sectionBytes.empty()) {
             section.kind = SctSectionKind::Unknown;
             result.file.sections.push_back(std::move(section));
             continue;
         }
 
+        section.kind = SctSectionKind::Script;
         if (isStringSection(sectionBytes, indexEndian)) {
+            rows[i].isString = true;
             section.kind = SctSectionKind::String;
             section.isStringSection = true;
             section.heuristicEvidence.notes.push_back(
@@ -887,110 +1100,224 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
             continue;
         }
 
-        // Control-flow guided pass starting at section offset 0.
-        std::deque<std::uint32_t> worklist;
-        std::set<std::uint32_t> enqueued;
-        std::unordered_map<std::uint32_t, std::uint32_t> visited;
-        std::unordered_map<std::uint32_t, std::size_t> instructionByOffset;
-
-        worklist.push_back(0);
-        enqueued.insert(0);
-
-        while (!worklist.empty()) {
-            const auto blockStart = worklist.front();
-            worklist.pop_front();
-
-            if (!isOffsetInBounds(blockStart, static_cast<std::uint32_t>(sectionBytes.size()))) {
-                continue;
-            }
-
-            SctBasicBlock block{};
-            block.startOffset = blockStart;
-
-            std::uint32_t cursor = blockStart;
-            while (isOffsetInBounds(cursor, static_cast<std::uint32_t>(sectionBytes.size()))) {
-                if (visited.contains(cursor)) {
-                    break;
-                }
-
-                std::vector<SctDiagnostic> inst_diagnostics{};
-                auto decoded = decodeInstruction(sectionBytes, cursor, indexEndian, inst_diagnostics);
-                if (decoded.inst.sizeBytes == 0) {
-                    break;
-                }
-                for (auto& diag : inst_diagnostics) {
-                    diag.section = section.id.name;
-                }
-                
-                result.diagnostics.insert(result.diagnostics.end(), inst_diagnostics.begin(), inst_diagnostics.end());
-
-                instructionByOffset[cursor] = section.instructions.size();
-                visited.try_emplace(cursor, decoded.inst.sizeBytes);
-                section.instructions.push_back(decoded.inst);
-                const auto& storedInstruction = section.instructions.back();
-                block.instructionOffsets.push_back(cursor);
-                addInstructionSemanticEdges(section, storedInstruction);
-
-                if (decoded.touchesFlag) {
-                    section.heuristicEvidence.touchesFlags = true;
-                }
-                if (decoded.testedFlag) {
-                    section.heuristicEvidence.branchesOnFlags = true;
-                }
-                if (decoded.writesFlag) {
-                    section.heuristicEvidence.writesFlags = true;
-                }
-                if (decoded.isSwitch) {
-                    section.heuristicEvidence.hasSwitch = true;
-                }
-
-                for (auto successor : decoded.successors) {
-                    successor = clampToSection(successor, static_cast<std::uint32_t>(sectionBytes.size()));
-                    block.successorOffsets.push_back(successor);
-                    SctEdge edge{};
-                    edge.type = edgeTypeForSuccessor(storedInstruction, block.successorOffsets.size() - 1, successor);
-                    edge.confidence = SctSemanticConfidence::Known;
-                    edge.fromOffset = storedInstruction.offset;
-                    edge.toOffset = successor;
-                    edge.opcode = storedInstruction.opcode;
-                    edge.detail = "Control-flow successor discovered during SCT parse.";
-                    edge.attributes.emplace("target_offset", decimalString(successor));
-                    section.edges.push_back(std::move(edge));
-                    if (isOffsetInBounds(successor, static_cast<std::uint32_t>(sectionBytes.size())) && !enqueued.contains(successor)) {
-                        worklist.push_back(successor);
-                        enqueued.insert(successor);
-                    }
-                }
-
-                if (!decoded.successors.empty()) {
-                    break;
-                }
-
-                const auto nextCursor = cursor + decoded.inst.sizeBytes;
-                if (decoded.blockTerminator) {
-                    break;
-                }
-
-                if (!isOffsetInBounds(nextCursor, static_cast<std::uint32_t>(sectionBytes.size()))) {
-                    break;
-                }
-
-                cursor = nextCursor;
-            }
-
-            if (!block.instructionOffsets.empty()) {
-                const auto last = block.instructionOffsets.back();
-                const auto& lastInst = section.instructions[instructionByOffset[last]];
-                block.endOffset = last + lastInst.sizeBytes;
-                section.blocks.push_back(std::move(block));
-            }
+        const auto firstWord = readU32(dataBytes, rows[i].start, indexEndian);
+        if (firstWord != 9u && firstWord > kMaxOpcodeProbe) {
+            section.kind = SctSectionKind::Unknown;
+            SctRawSpan span{};
+            span.startOffset = 0;
+            span.endOffset = static_cast<std::uint32_t>(sectionBytes.size());
+            span.reason = SctRawSpanReason::Unknown;
+            span.detail = "Physical index row does not start with a plausible SCT opcode; raw bytes preserved.";
+            span.rawBytes.insert(span.rawBytes.end(), sectionBytes.begin(), sectionBytes.end());
+            section.rawSpans.push_back(std::move(span));
+            result.file.sections.push_back(std::move(section));
+            continue;
         }
 
+        rows[i].isCode = true;
+        if (firstWord != 9u) {
+            result.diagnostics.push_back({
+                "Script index entry does not start with label opcode 9.",
+                rows[i].start,
+                rows[i].name
+            });
+        }
+        result.file.sections.push_back(std::move(section));
+    }
+
+    std::cout << "[SpiceSCT] Step 4/5: Walking global script instructions...\n";
+
+    struct WorkItem {
+        std::uint32_t payloadOffset = 0;
+        std::uint32_t entryPayloadOffset = 0;
+    };
+
+    std::deque<WorkItem> worklist;
+    std::set<std::uint32_t> enqueued;
+    for (const auto& row : rows) {
+        if (!row.isValid || !row.isCode || row.isString || row.start >= row.end || !isOffsetInBounds(row.start, dataSize)) {
+            continue;
+        }
+        worklist.push_back({row.start, row.start});
+        enqueued.insert(row.start);
+    }
+
+    std::map<std::uint32_t, GlobalDecodedInstruction> globalInstructions;
+
+    while (!worklist.empty()) {
+        const auto item = worklist.front();
+        worklist.pop_front();
+
+        if (!isOffsetInBounds(item.payloadOffset, dataSize)) {
+            continue;
+        }
+
+        std::uint32_t cursor = item.payloadOffset;
+        while (isOffsetInBounds(cursor, dataSize)) {
+            if (globalInstructions.contains(cursor)) {
+                break;
+            }
+            if (const auto containing = containingInstructionStart(globalInstructions, cursor); containing.has_value()) {
+                result.diagnostics.push_back({
+                    "Control-flow target lands inside an already decoded instruction; overlapping decode skipped.",
+                    cursor,
+                    {}
+                });
+                break;
+            }
+
+            std::vector<SctDiagnostic> inst_diagnostics{};
+            auto decoded = decodeInstruction(dataBytes, cursor, indexEndian, inst_diagnostics);
+            if (decoded.inst.sizeBytes == 0) {
+                break;
+            }
+            decoded.inst.payloadOffset = cursor;
+
+            const auto sourceSection = sectionIndexForPayloadOffset(rows, cursor);
+            for (auto& diag : inst_diagnostics) {
+                if (sourceSection.has_value()) {
+                    diag.section = rows[*sourceSection].name;
+                }
+            }
+
+            result.diagnostics.insert(result.diagnostics.end(), inst_diagnostics.begin(), inst_diagnostics.end());
+
+            GlobalDecodedInstruction global{};
+            global.decoded = std::move(decoded);
+            global.entryPayloadOffset = item.entryPayloadOffset;
+            const auto [insertedIt, inserted] = globalInstructions.emplace(cursor, std::move(global));
+            const auto& storedDecoded = insertedIt->second.decoded;
+
+            bool hasControlSuccessor = !storedDecoded.successors.empty();
+            for (const auto successor : storedDecoded.successors) {
+                if (!isOffsetInBounds(successor, dataSize)) {
+                    result.diagnostics.push_back({
+                        "Control-flow target is outside the SCT payload; target left unresolved.",
+                        successor,
+                        sourceSection.has_value() ? rows[*sourceSection].name : std::string{}
+                    });
+                    continue;
+                }
+                if (const auto containing = containingInstructionStart(globalInstructions, successor); containing.has_value()) {
+                    result.diagnostics.push_back({
+                        "Control-flow target lands inside an already decoded instruction; overlapping decode skipped.",
+                        successor,
+                        sourceSection.has_value() ? rows[*sourceSection].name : std::string{}
+                    });
+                    continue;
+                }
+                if (!enqueued.contains(successor)) {
+                    worklist.push_back({successor, item.entryPayloadOffset});
+                    enqueued.insert(successor);
+                }
+            }
+
+            if (hasControlSuccessor || storedDecoded.blockTerminator) {
+                break;
+            }
+
+            const auto nextCursor = cursor + storedDecoded.inst.sizeBytes;
+            if (!isOffsetInBounds(nextCursor, dataSize)) {
+                break;
+            }
+            if (const auto containing = containingInstructionStart(globalInstructions, nextCursor); containing.has_value()) {
+                result.diagnostics.push_back({
+                    "Fallthrough lands inside an already decoded instruction; overlapping decode skipped.",
+                    nextCursor,
+                    sourceSection.has_value() ? rows[*sourceSection].name : std::string{}
+                });
+                break;
+            }
+            cursor = nextCursor;
+        }
+    }
+
+    for (const auto& [payloadOffset, global] : globalInstructions) {
+        const auto sectionIndex = sectionIndexForPayloadOffset(rows, payloadOffset);
+        if (!sectionIndex.has_value() || *sectionIndex >= result.file.sections.size()) {
+            continue;
+        }
+        auto& section = result.file.sections[*sectionIndex];
+        auto instruction = global.decoded.inst;
+        instruction.payloadOffset = payloadOffset;
+        instruction.offset = payloadOffset - rows[*sectionIndex].start;
+        section.instructions.push_back(std::move(instruction));
+
+        if (global.decoded.touchesFlag) {
+            section.heuristicEvidence.touchesFlags = true;
+        }
+        if (global.decoded.testedFlag) {
+            section.heuristicEvidence.branchesOnFlags = true;
+        }
+        if (global.decoded.writesFlag) {
+            section.heuristicEvidence.writesFlags = true;
+        }
+        if (global.decoded.isSwitch) {
+            section.heuristicEvidence.hasSwitch = true;
+        }
+    }
+
+    for (const auto& [payloadOffset, global] : globalInstructions) {
+        const auto sectionIndex = sectionIndexForPayloadOffset(rows, payloadOffset);
+        if (!sectionIndex.has_value() || *sectionIndex >= result.file.sections.size()) {
+            continue;
+        }
+        auto& section = result.file.sections[*sectionIndex];
+        auto localInstruction = global.decoded.inst;
+        localInstruction.payloadOffset = payloadOffset;
+        localInstruction.offset = payloadOffset - rows[*sectionIndex].start;
+
+        std::size_t successorIndex = 0;
+        for (const auto successor : global.decoded.successors) {
+            auto edge = makeControlFlowEdge(localInstruction, successorIndex++, successor, rows);
+            section.edges.push_back(std::move(edge));
+        }
+        addInstructionSemanticEdges(section.edges, localInstruction, rows[*sectionIndex].start);
+    }
+
+    for (std::uint32_t sectionIndex = 0; sectionIndex < result.file.sections.size(); ++sectionIndex) {
+        auto& section = result.file.sections[sectionIndex];
+        if (section.kind != SctSectionKind::Script || section.instructions.empty()) {
+            continue;
+        }
         std::sort(section.instructions.begin(), section.instructions.end(), [](const auto& a, const auto& b) {
             return a.offset < b.offset;
         });
 
-        fillUnknownRegions(visited, sectionBytes, section);
+        SctBasicBlock block{};
+        block.startOffset = section.instructions.front().offset;
+        block.endOffset = section.instructions.back().offset + section.instructions.back().sizeBytes;
+        for (const auto& instruction : section.instructions) {
+            block.instructionOffsets.push_back(instruction.offset);
+        }
+        for (const auto& edge : section.edges) {
+            if (edge.toOffset.has_value()
+                && edge.type != SctEdgeType::CallSubscript
+                && edge.type != SctEdgeType::LoadsMld
+                && edge.type != SctEdgeType::LoadsScript
+                && edge.type != SctEdgeType::Return) {
+                block.successorOffsets.push_back(*edge.toOffset);
+            }
+        }
+        section.blocks.push_back(std::move(block));
+
+        std::unordered_map<std::uint32_t, std::uint32_t> localVisited{};
+        for (const auto& [payloadOffset, global] : globalInstructions) {
+            const auto instStart = payloadOffset;
+            const auto instEnd = payloadOffset + global.decoded.inst.sizeBytes;
+            const auto rowStart = rows[sectionIndex].start;
+            const auto rowEnd = rows[sectionIndex].end;
+            if (instEnd <= rowStart || instStart >= rowEnd) {
+                continue;
+            }
+            const auto localStart = std::max(instStart, rowStart) - rowStart;
+            const auto localEnd = std::min(instEnd, rowEnd) - rowStart;
+            if (localEnd > localStart) {
+                localVisited.emplace(localStart, localEnd - localStart);
+            }
+        }
+        const auto sectionBytes = dataBytes.subspan(rows[sectionIndex].start, rows[sectionIndex].end - rows[sectionIndex].start);
+        fillUnknownRegions(localVisited, sectionBytes, section);
 
         if (section.instructions.size() >= 16) {
             section.heuristicEvidence.hasLongLinearSequence = true;
@@ -1005,8 +1332,53 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
             section.heuristicEvidence.likelyCutscene = true;
             section.heuristicEvidence.notes.push_back("Long reachable sequence without strong trigger indicators.");
         }
+    }
 
-        result.file.sections.push_back(std::move(section));
+    for (const auto& row : rows) {
+        if (!row.isValid || !row.isCode || row.isString || row.start >= row.end || !isOffsetInBounds(row.start, dataSize)) {
+            continue;
+        }
+        SctCodeRegion region{};
+        region.name = row.name;
+        region.entryPayloadOffset = row.start;
+
+        std::deque<std::uint32_t> regionWorklist;
+        std::set<std::uint32_t> regionVisited;
+        regionWorklist.push_back(row.start);
+        while (!regionWorklist.empty()) {
+            const auto current = regionWorklist.front();
+            regionWorklist.pop_front();
+            if (regionVisited.contains(current)) {
+                continue;
+            }
+            const auto it = globalInstructions.find(current);
+            if (it == globalInstructions.end()) {
+                continue;
+            }
+            regionVisited.insert(current);
+            region.instructionPayloadOffsets.push_back(current);
+            if (const auto sectionIndex = sectionIndexForPayloadOffset(rows, current); sectionIndex.has_value()) {
+                if (std::find(region.coveredSectionIndexes.begin(), region.coveredSectionIndexes.end(), *sectionIndex)
+                    == region.coveredSectionIndexes.end()) {
+                    region.coveredSectionIndexes.push_back(*sectionIndex);
+                }
+            }
+            if (!it->second.decoded.successors.empty()) {
+                for (const auto successor : it->second.decoded.successors) {
+                    if (globalInstructions.contains(successor) && !regionVisited.contains(successor)) {
+                        regionWorklist.push_back(successor);
+                    }
+                }
+            } else if (!it->second.decoded.blockTerminator) {
+                const auto next = current + it->second.decoded.inst.sizeBytes;
+                if (globalInstructions.contains(next) && !regionVisited.contains(next)) {
+                    regionWorklist.push_back(next);
+                }
+            }
+        }
+        std::sort(region.instructionPayloadOffsets.begin(), region.instructionPayloadOffsets.end());
+        std::sort(region.coveredSectionIndexes.begin(), region.coveredSectionIndexes.end());
+        result.file.codeRegions.push_back(std::move(region));
     }
 
     if (result.file.sections.empty()) {

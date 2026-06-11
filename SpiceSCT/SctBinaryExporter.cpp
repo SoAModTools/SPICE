@@ -80,7 +80,14 @@ std::uint32_t instructionSizeWords(const SctInstruction& instruction) {
     if (!instruction.rawWords.empty()) {
         return static_cast<std::uint32_t>(instruction.rawWords.size());
     }
-    return static_cast<std::uint32_t>(1u + instruction.operands.size());
+    std::uint32_t prefixWords = instruction.skipRefresh ? 1u : 0u;
+    if (instruction.scheduled.present) {
+        prefixWords += static_cast<std::uint32_t>(
+            instruction.scheduled.rawWords.empty()
+                ? 2u + instruction.scheduled.frameDelay.rawWords.size()
+                : instruction.scheduled.rawWords.size());
+    }
+    return static_cast<std::uint32_t>(prefixWords + 1u + instruction.operands.size());
 }
 
 std::vector<std::uint32_t> writableWords(const SctInstruction& instruction) {
@@ -88,10 +95,50 @@ std::vector<std::uint32_t> writableWords(const SctInstruction& instruction) {
         return instruction.rawWords;
     }
     std::vector<std::uint32_t> words{};
-    words.reserve(1u + instruction.operands.size());
+    words.reserve(instructionSizeWords(instruction));
+    if (instruction.skipRefresh) {
+        words.push_back(13u);
+    }
+    if (instruction.scheduled.present) {
+        if (!instruction.scheduled.rawWords.empty()) {
+            words.insert(words.end(), instruction.scheduled.rawWords.begin(), instruction.scheduled.rawWords.end());
+        } else {
+            words.push_back(129u);
+            words.insert(
+                words.end(),
+                instruction.scheduled.frameDelay.rawWords.begin(),
+                instruction.scheduled.frameDelay.rawWords.end());
+            const auto actualInstructionBytes = static_cast<std::uint32_t>((1u + instruction.operands.size()) * 4u);
+            words.push_back(instruction.scheduled.instructionByteLength == 0u
+                ? actualInstructionBytes
+                : instruction.scheduled.instructionByteLength);
+        }
+    }
     words.push_back(instruction.opcode);
     words.insert(words.end(), instruction.operands.begin(), instruction.operands.end());
     return words;
+}
+
+std::size_t opcodeWordIndex(const SctInstruction& instruction, const std::vector<std::uint32_t>& words) {
+    if (instruction.opcodeWordIndex < words.size()
+        && static_cast<std::uint16_t>(words[instruction.opcodeWordIndex] & 0xffffu) == instruction.opcode) {
+        return instruction.opcodeWordIndex;
+    }
+    const auto found = std::find_if(words.begin(), words.end(), [&](std::uint32_t word) {
+        return static_cast<std::uint16_t>(word & 0xffffu) == instruction.opcode;
+    });
+    return found == words.end() ? 0u : static_cast<std::size_t>(std::distance(words.begin(), found));
+}
+
+void patchScheduledLengthWord(const SctInstruction& instruction, std::vector<std::uint32_t>& words) {
+    if (!instruction.scheduled.present || words.empty()) {
+        return;
+    }
+    const auto opcodeIndex = opcodeWordIndex(instruction, words);
+    if (opcodeIndex == 0u) {
+        return;
+    }
+    words[opcodeIndex - 1u] = static_cast<std::uint32_t>((words.size() - opcodeIndex) * 4u);
 }
 
 const SctEdge* findEdge(
@@ -111,6 +158,26 @@ const SctEdge* findEdge(
     return nullptr;
 }
 
+const SctEdge* findGlobalEdge(
+    const std::vector<SctSection>& sections,
+    std::uint32_t fromPayloadOffset,
+    SctEdgeType type,
+    std::size_t ordinal = 0) {
+    std::size_t seen = 0;
+    for (const auto& section : sections) {
+        for (const auto& edge : section.edges) {
+            const auto edgeFrom = edge.fromPayloadOffset.value_or(edge.fromOffset.value_or(0u));
+            if (edgeFrom != fromPayloadOffset || edge.type != type || !edge.toPayloadOffset.has_value()) {
+                continue;
+            }
+            if (seen++ == ordinal) {
+                return &edge;
+            }
+        }
+    }
+    return nullptr;
+}
+
 std::uint32_t remapTarget(
     const std::unordered_map<std::uint32_t, std::uint32_t>& offsetMap,
     std::uint32_t oldTarget,
@@ -124,41 +191,43 @@ std::uint32_t branchRelative(std::uint32_t instructionOffset, std::uint32_t inst
         static_cast<std::int32_t>(targetOffset) - static_cast<std::int32_t>(instructionOffset + instructionSize) + 4);
 }
 
-std::uint32_t switchRelative(std::uint32_t instructionOffset, std::uint32_t instructionSize, std::uint32_t targetOffset) {
+std::uint32_t relativeFromWordOffset(std::uint32_t wordOffset, std::uint32_t targetOffset) {
     return static_cast<std::uint32_t>(
-        static_cast<std::int32_t>(targetOffset) - static_cast<std::int32_t>(instructionOffset + instructionSize));
+        static_cast<std::int32_t>(targetOffset) - static_cast<std::int32_t>(wordOffset));
 }
 
 void patchControlFlowWords(
-    const SctSection& section,
+    const std::vector<SctSection>& sections,
     const SctInstruction& instruction,
-    std::uint32_t newOffset,
+    std::uint32_t newPayloadOffset,
     std::uint32_t newSize,
     const std::unordered_map<std::uint32_t, std::uint32_t>& offsetMap,
-    std::uint32_t newSectionEnd,
     std::vector<std::uint32_t>& words) {
     if (words.empty()) {
         throw std::runtime_error("SCT export failed: instruction has no words.");
     }
+    const auto opcodeIndex = opcodeWordIndex(instruction, words);
 
     if (instruction.opcode == 0) {
-        if (words.size() < 2u) {
+        if (words.size() <= opcodeIndex + 1u) {
             throw std::runtime_error("SCT export failed: branch instruction is missing its offset operand.");
         }
-        if (const auto* edge = findEdge(section, instruction.offset, SctEdgeType::BranchFalse); edge != nullptr) {
-            const auto target = remapTarget(offsetMap, *edge->toOffset, newSectionEnd);
-            words.back() = branchRelative(newOffset, newSize, target);
+        if (const auto* edge = findGlobalEdge(sections, instruction.payloadOffset, SctEdgeType::BranchFalse); edge != nullptr) {
+            if (const auto it = offsetMap.find(*edge->toPayloadOffset); it != offsetMap.end()) {
+                words.back() = branchRelative(newPayloadOffset, newSize, it->second);
+            }
         }
         return;
     }
 
     if (instruction.opcode == 10) {
-        if (words.size() < 2u) {
+        if (words.size() <= opcodeIndex + 1u) {
             throw std::runtime_error("SCT export failed: jump instruction is missing its offset operand.");
         }
-        if (const auto* edge = findEdge(section, instruction.offset, SctEdgeType::Jump); edge != nullptr) {
-            const auto target = remapTarget(offsetMap, *edge->toOffset, newSectionEnd);
-            words.back() = branchRelative(newOffset, newSize, target);
+        if (const auto* edge = findGlobalEdge(sections, instruction.payloadOffset, SctEdgeType::Jump); edge != nullptr) {
+            if (const auto it = offsetMap.find(*edge->toPayloadOffset); it != offsetMap.end()) {
+                words.back() = branchRelative(newPayloadOffset, newSize, it->second);
+            }
         }
         return;
     }
@@ -173,15 +242,25 @@ void patchControlFlowWords(
     }
     const auto loopWidth = static_cast<std::size_t>(pattern.loopEndParam - pattern.loopStartParam + 1);
     std::size_t edgeOrdinal = 0;
-    for (std::size_t operandIndex = static_cast<std::size_t>(pattern.switchJumpParam);
-         operandIndex + 1u < words.size();
-         operandIndex += loopWidth) {
-        const auto* edge = findEdge(section, instruction.offset, SctEdgeType::SwitchCase, edgeOrdinal++);
-        if (edge == nullptr) {
-            break;
+    std::size_t operandWordOffset = 0;
+    for (const auto& parameter : instruction.parameters) {
+        const auto parameterIndex = static_cast<std::size_t>(parameter.index);
+        const bool isSwitchJump = parameterIndex >= static_cast<std::size_t>(pattern.switchJumpParam)
+            && ((parameterIndex - static_cast<std::size_t>(pattern.switchJumpParam)) % loopWidth) == 0u;
+        if (isSwitchJump && !parameter.rawWords.empty()) {
+            const auto wordIndex = opcodeIndex + 1u + operandWordOffset;
+            if (wordIndex >= words.size()) {
+                break;
+            }
+            const auto* edge = findGlobalEdge(sections, instruction.payloadOffset, SctEdgeType::SwitchCase, edgeOrdinal++);
+            if (edge == nullptr) {
+                break;
+            }
+            if (const auto it = offsetMap.find(*edge->toPayloadOffset); it != offsetMap.end()) {
+                words[wordIndex] = relativeFromWordOffset(newPayloadOffset + static_cast<std::uint32_t>(wordIndex * 4u), it->second);
+            }
         }
-        const auto target = remapTarget(offsetMap, *edge->toOffset, newSectionEnd);
-        words[operandIndex + 1u] = switchRelative(newOffset, newSize, target);
+        operandWordOffset += parameter.rawWords.size();
     }
 }
 
@@ -202,33 +281,37 @@ std::vector<std::uint8_t> rawSectionBytes(const SctSection& section) {
     return bytes;
 }
 
-std::vector<std::uint8_t> exportScriptSection(const SctSection& section, Endian endian) {
+std::vector<std::uint8_t> exportScriptSection(
+    const std::vector<SctSection>& sections,
+    const SctSection& section,
+    Endian endian,
+    const std::unordered_map<std::uint32_t, std::uint32_t>& offsetMap,
+    std::uint32_t newSectionPayloadStart) {
     const auto instructions = sortedInstructions(section);
-    std::unordered_map<std::uint32_t, std::uint32_t> offsetMap{};
+    std::vector<std::uint8_t> bytes{};
     std::uint32_t cursor = 0;
     for (const auto* instruction : instructions) {
-        offsetMap.emplace(instruction->offset, cursor);
-        cursor += instructionSizeWords(*instruction) * 4u;
-    }
-    offsetMap.emplace(section.endOffset > section.startOffset ? section.endOffset - section.startOffset : cursor, cursor);
-    const auto newSectionEnd = cursor;
-
-    std::vector<std::uint8_t> bytes{};
-    for (const auto* instruction : instructions) {
         auto words = writableWords(*instruction);
-        const auto newOffset = offsetMap.at(instruction->offset);
+        patchScheduledLengthWord(*instruction, words);
+        const auto newPayloadOffset = offsetMap.at(instruction->payloadOffset);
         const auto newSize = static_cast<std::uint32_t>(words.size() * 4u);
-        patchControlFlowWords(section, *instruction, newOffset, newSize, offsetMap, newSectionEnd, words);
+        patchControlFlowWords(sections, *instruction, newPayloadOffset, newSize, offsetMap, words);
         for (const auto word : words) {
             appendU32(bytes, word, endian);
         }
+        cursor += newSize;
     }
     return bytes;
 }
 
-std::vector<std::uint8_t> exportSection(const SctSection& section, Endian endian) {
+std::vector<std::uint8_t> exportSection(
+    const std::vector<SctSection>& sections,
+    const SctSection& section,
+    Endian endian,
+    const std::unordered_map<std::uint32_t, std::uint32_t>& offsetMap,
+    std::uint32_t newSectionPayloadStart) {
     if (section.kind == SctSectionKind::Script) {
-        return exportScriptSection(section, endian);
+        return exportScriptSection(sections, section, endian, offsetMap, newSectionPayloadStart);
     }
     return rawSectionBytes(section);
 }
@@ -251,8 +334,31 @@ std::vector<std::uint8_t> exportCanonicalPayload(const SctParseResult& parseResu
 
     std::vector<std::vector<std::uint8_t>> sectionBytes{};
     sectionBytes.reserve(ir.file.sections.size());
+
+    std::unordered_map<std::uint32_t, std::uint32_t> offsetMap{};
+    std::uint32_t newPayloadCursor = 0;
     for (const auto& section : ir.file.sections) {
-        sectionBytes.push_back(exportSection(section, endian));
+        if (section.kind == SctSectionKind::Script) {
+            for (const auto* instruction : sortedInstructions(section)) {
+                offsetMap.emplace(instruction->payloadOffset, newPayloadCursor);
+                newPayloadCursor += instructionSizeWords(*instruction) * 4u;
+            }
+        } else {
+            const auto rawBytes = rawSectionBytes(section);
+            const auto oldPayloadStart = section.startOffset >= dataStart
+                ? static_cast<std::uint32_t>(section.startOffset - dataStart)
+                : 0u;
+            for (std::uint32_t offset = 0; offset < rawBytes.size(); offset += 4u) {
+                offsetMap.emplace(oldPayloadStart + offset, newPayloadCursor + offset);
+            }
+            newPayloadCursor += static_cast<std::uint32_t>(rawBytes.size());
+        }
+    }
+
+    std::uint32_t sectionStart = 0;
+    for (const auto& section : ir.file.sections) {
+        sectionBytes.push_back(exportSection(ir.file.sections, section, endian, offsetMap, sectionStart));
+        sectionStart += static_cast<std::uint32_t>(sectionBytes.back().size());
     }
 
     std::vector<std::uint8_t> out{};
@@ -262,7 +368,7 @@ std::vector<std::uint8_t> exportCanonicalPayload(const SctParseResult& parseResu
     }
     writeU32(out, 8, sectionCount, endian);
 
-    std::uint32_t sectionStart = 0;
+    sectionStart = 0;
     for (std::size_t i = 0; i < ir.file.sections.size(); ++i) {
         const auto rowOffset = kHeaderSize + (i * kIndexEntrySize);
         writeU32(out, rowOffset, sectionStart, endian);
