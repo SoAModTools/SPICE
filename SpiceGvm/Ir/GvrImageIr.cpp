@@ -132,17 +132,38 @@ model::TextureFormat parseTextureFormatOrDefault(const std::optional<std::string
         return fallback;
     }
     const auto upper = toUpperCopy(*value);
-    if (upper == "RGBA8") {
-        return model::TextureFormat::RGBA8;
+    if (upper == "I4") {
+        return model::TextureFormat::I4;
     }
-    if (upper == "CMPR") {
-        return model::TextureFormat::CMPR;
+    if (upper == "I8") {
+        return model::TextureFormat::I8;
+    }
+    if (upper == "IA4") {
+        return model::TextureFormat::IA4;
+    }
+    if (upper == "IA8") {
+        return model::TextureFormat::IA8;
+    }
+    if (upper == "RGB565") {
+        return model::TextureFormat::RGB565;
     }
     if (upper == "RGB5A3") {
         return model::TextureFormat::RGB5A3;
     }
+    if (upper == "RGBA8") {
+        return model::TextureFormat::RGBA8;
+    }
     if (upper == "CI4") {
         return model::TextureFormat::CI4;
+    }
+    if (upper == "CI8") {
+        return model::TextureFormat::CI8;
+    }
+    if (upper == "CI14X2") {
+        return model::TextureFormat::CI14X2;
+    }
+    if (upper == "CMPR") {
+        return model::TextureFormat::CMPR;
     }
     throw std::runtime_error("unsupported GVR import texture format: " + *value);
 }
@@ -156,6 +177,12 @@ model::PaletteFormat parsePaletteFormatOrDefault(const std::optional<std::string
     if (upper == "NONE") {
         return model::PaletteFormat::None;
     }
+    if (upper == "IA8") {
+        return model::PaletteFormat::IA8;
+    }
+    if (upper == "RGB565") {
+        return model::PaletteFormat::RGB565;
+    }
     if (upper == "RGB5A3") {
         return model::PaletteFormat::RGB5A3;
     }
@@ -164,8 +191,15 @@ model::PaletteFormat parsePaletteFormatOrDefault(const std::optional<std::string
 
 model::TextureFormat defaultImportTextureFormat(const model::TextureFormat sourceFormat) {
     switch (sourceFormat) {
+    case model::TextureFormat::I4:
+    case model::TextureFormat::I8:
+    case model::TextureFormat::IA4:
+    case model::TextureFormat::IA8:
+    case model::TextureFormat::RGB565:
     case model::TextureFormat::CMPR:
     case model::TextureFormat::CI4:
+    case model::TextureFormat::CI8:
+    case model::TextureFormat::CI14X2:
     case model::TextureFormat::RGB5A3:
     case model::TextureFormat::RGBA8:
         return sourceFormat;
@@ -280,8 +314,12 @@ GvrImageIrExportResult exportGvrImageIr(
     appendJsonString(json, "paletteFormat", model::to_string(texture.paletteFormat));
     appendJsonBool(json, "hasMipmaps", texture.hasMipmaps);
     appendJsonString(json, "importTextureFormat", model::to_string(defaultImportTextureFormat(texture.textureFormat)),
-        texture.textureFormat == model::TextureFormat::CI4);
-    if (texture.textureFormat == model::TextureFormat::CI4) {
+        texture.textureFormat == model::TextureFormat::CI4 ||
+            texture.textureFormat == model::TextureFormat::CI8 ||
+            texture.textureFormat == model::TextureFormat::CI14X2);
+    if (texture.textureFormat == model::TextureFormat::CI4 ||
+        texture.textureFormat == model::TextureFormat::CI8 ||
+        texture.textureFormat == model::TextureFormat::CI14X2) {
         appendJsonString(json, "importPaletteFormat", model::to_string(texture.paletteFormat), false);
     }
     json << "}\n";
@@ -315,7 +353,9 @@ GvrImageIrImportResult importGvrImageIr(const std::filesystem::path& jsonPath, c
 
     encoding::EncodeOptions encodeOptions{};
     encodeOptions.textureFormat = importFormat;
-    encodeOptions.paletteFormat = importFormat == model::TextureFormat::CI4
+    encodeOptions.paletteFormat = importFormat == model::TextureFormat::CI4 ||
+        importFormat == model::TextureFormat::CI8 ||
+        importFormat == model::TextureFormat::CI14X2
         ? parsePaletteFormatOrDefault(optionalString(json, "importPaletteFormat"), model::PaletteFormat::RGB5A3)
         : model::PaletteFormat::None;
     encodeOptions.generateMipmaps = importTextureFormatText.has_value()

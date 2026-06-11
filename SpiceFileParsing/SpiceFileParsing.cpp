@@ -98,6 +98,8 @@ struct CliOptions {
     spice::gvm::ir::AklzPolicy gvrAklzPolicy = spice::gvm::ir::AklzPolicy::Preserve;
     bool gvrFormatPreserve = false;
     std::optional<spice::gvm::model::TextureFormat> gvrFormatOverride{};
+    bool gvrPaletteFormatPreserve = false;
+    std::optional<spice::gvm::model::PaletteFormat> gvrPaletteFormatOverride{};
     bool gvrMipmapsPreserve = false;
     std::optional<bool> gvrMipmapsOverride{};
     GvrGlobalIndexPolicy gvrGlobalIndexPolicy = GvrGlobalIndexPolicy::Preserve;
@@ -110,10 +112,10 @@ void printUsage() {
     std::cout
         << "Usage:\n"
         << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
-        << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format rgba8|rgb5a3|cmpr|ci4] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
-        << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|rgba8|rgb5a3|cmpr|ci4] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
-        << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --create-gvr-batch [--gvr-format rgba8|rgb5a3|cmpr|ci4]\n"
-        << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --replace-gvr-batch source_gvr_dir [--gvr-format preserve|rgba8|rgb5a3|cmpr|ci4]\n\n"
+        << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
+        << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
+        << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --create-gvr-batch [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr]\n"
+        << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --replace-gvr-batch source_gvr_dir [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SpiceFileParsing/inputs\n"
         << "  - output_dir defaults to SpiceFileParsing/parsed\n"
@@ -152,6 +154,21 @@ std::optional<spice::contentgraph::ContentGraphProjection> parseContentGraphProj
 
 std::optional<spice::gvm::model::TextureFormat> parseGvrTextureFormat(std::string value) {
     value = toLowerCopy(std::move(value));
+    if (value == "i4") {
+        return spice::gvm::model::TextureFormat::I4;
+    }
+    if (value == "i8") {
+        return spice::gvm::model::TextureFormat::I8;
+    }
+    if (value == "ia4") {
+        return spice::gvm::model::TextureFormat::IA4;
+    }
+    if (value == "ia8") {
+        return spice::gvm::model::TextureFormat::IA8;
+    }
+    if (value == "rgb565") {
+        return spice::gvm::model::TextureFormat::RGB565;
+    }
     if (value == "rgba8") {
         return spice::gvm::model::TextureFormat::RGBA8;
     }
@@ -163,6 +180,26 @@ std::optional<spice::gvm::model::TextureFormat> parseGvrTextureFormat(std::strin
     }
     if (value == "ci4") {
         return spice::gvm::model::TextureFormat::CI4;
+    }
+    if (value == "ci8") {
+        return spice::gvm::model::TextureFormat::CI8;
+    }
+    if (value == "ci14x2") {
+        return spice::gvm::model::TextureFormat::CI14X2;
+    }
+    return std::nullopt;
+}
+
+std::optional<spice::gvm::model::PaletteFormat> parseGvrPaletteFormat(std::string value) {
+    value = toLowerCopy(std::move(value));
+    if (value == "ia8") {
+        return spice::gvm::model::PaletteFormat::IA8;
+    }
+    if (value == "rgb565") {
+        return spice::gvm::model::PaletteFormat::RGB565;
+    }
+    if (value == "rgb5a3") {
+        return spice::gvm::model::PaletteFormat::RGB5A3;
     }
     return std::nullopt;
 }
@@ -313,7 +350,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--gvr-format") {
             if (i + 1 >= argc) {
-                std::cerr << "--gvr-format requires preserve, rgba8, rgb5a3, cmpr, or ci4.\n";
+                std::cerr << "--gvr-format requires preserve or a supported GVR texture format.\n";
                 return std::nullopt;
             }
             std::string value = toLowerCopy(argv[++i]);
@@ -328,6 +365,26 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
                 }
                 options.gvrFormatPreserve = false;
                 options.gvrFormatOverride = *format;
+            }
+            continue;
+        }
+        if (arg == "--gvr-palette-format") {
+            if (i + 1 >= argc) {
+                std::cerr << "--gvr-palette-format requires preserve, ia8, rgb565, or rgb5a3.\n";
+                return std::nullopt;
+            }
+            std::string value = toLowerCopy(argv[++i]);
+            if (value == "preserve") {
+                options.gvrPaletteFormatPreserve = true;
+                options.gvrPaletteFormatOverride.reset();
+            } else {
+                const auto format = parseGvrPaletteFormat(value);
+                if (!format.has_value()) {
+                    std::cerr << "Unknown GVR palette format: " << value << "\n";
+                    return std::nullopt;
+                }
+                options.gvrPaletteFormatPreserve = false;
+                options.gvrPaletteFormatOverride = *format;
             }
             continue;
         }
@@ -451,6 +508,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         std::cerr << "--gvr-format preserve is only valid for replacement modes.\n";
         return std::nullopt;
     }
+    if ((options.createGvrSingle || options.createGvrBatch) && options.gvrPaletteFormatPreserve) {
+        std::cerr << "--gvr-palette-format preserve is only valid for replacement modes.\n";
+        return std::nullopt;
+    }
     if ((options.createGvrSingle || options.createGvrBatch) && options.gvrMipmapsPreserve) {
         std::cerr << "--gvr-mipmaps preserve is only valid for replacement modes.\n";
         return std::nullopt;
@@ -468,6 +529,9 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
     }
     if ((options.replaceGvrSingle || options.replaceGvrBatch) && !options.gvrFormatOverride.has_value()) {
         options.gvrFormatPreserve = true;
+    }
+    if ((options.replaceGvrSingle || options.replaceGvrBatch) && !options.gvrPaletteFormatOverride.has_value()) {
+        options.gvrPaletteFormatPreserve = true;
     }
     if ((options.replaceGvrSingle || options.replaceGvrBatch) && !options.gvrMipmapsOverride.has_value()) {
         options.gvrMipmapsPreserve = true;
@@ -535,21 +599,34 @@ bool endsWithInsensitive(std::string value, std::string suffix) {
 
 bool isSupportedGvrEncodeFormat(const spice::gvm::model::TextureFormat format) {
     switch (format) {
+    case spice::gvm::model::TextureFormat::I4:
+    case spice::gvm::model::TextureFormat::I8:
+    case spice::gvm::model::TextureFormat::IA4:
+    case spice::gvm::model::TextureFormat::IA8:
+    case spice::gvm::model::TextureFormat::RGB565:
     case spice::gvm::model::TextureFormat::RGBA8:
     case spice::gvm::model::TextureFormat::RGB5A3:
     case spice::gvm::model::TextureFormat::CMPR:
     case spice::gvm::model::TextureFormat::CI4:
+    case spice::gvm::model::TextureFormat::CI8:
+    case spice::gvm::model::TextureFormat::CI14X2:
         return true;
     default:
         return false;
     }
 }
 
+bool isIndexedGvrFormat(const spice::gvm::model::TextureFormat format) {
+    return format == spice::gvm::model::TextureFormat::CI4 ||
+        format == spice::gvm::model::TextureFormat::CI8 ||
+        format == spice::gvm::model::TextureFormat::CI14X2;
+}
+
 spice::gvm::encoding::EncodeOptions buildCreateGvrEncodeOptions(const CliOptions& cliOptions) {
     spice::gvm::encoding::EncodeOptions options{};
     options.textureFormat = cliOptions.gvrFormatOverride.value_or(spice::gvm::model::TextureFormat::RGBA8);
-    options.paletteFormat = options.textureFormat == spice::gvm::model::TextureFormat::CI4
-        ? spice::gvm::model::PaletteFormat::RGB5A3
+    options.paletteFormat = isIndexedGvrFormat(options.textureFormat)
+        ? cliOptions.gvrPaletteFormatOverride.value_or(spice::gvm::model::PaletteFormat::RGB5A3)
         : spice::gvm::model::PaletteFormat::None;
     options.generateMipmaps = cliOptions.gvrMipmapsOverride.value_or(false);
     if (cliOptions.gvrGlobalIndexPolicy == GvrGlobalIndexPolicy::Value) {
@@ -568,15 +645,12 @@ spice::gvm::encoding::EncodeOptions buildReplaceGvrEncodeOptions(
         throw std::runtime_error("cannot preserve unsupported source GVR texture format: "
             + spice::gvm::model::to_string(sourceMetadata.texture.textureFormat));
     }
-    options.paletteFormat = options.textureFormat == spice::gvm::model::TextureFormat::CI4
-        ? spice::gvm::model::PaletteFormat::RGB5A3
+    options.paletteFormat = isIndexedGvrFormat(options.textureFormat)
+        ? cliOptions.gvrPaletteFormatOverride.value_or(
+            isIndexedGvrFormat(sourceMetadata.texture.textureFormat)
+                ? sourceMetadata.texture.paletteFormat
+                : spice::gvm::model::PaletteFormat::RGB5A3)
         : spice::gvm::model::PaletteFormat::None;
-    if (options.textureFormat == spice::gvm::model::TextureFormat::CI4
-        && sourceMetadata.texture.hasInternalPalette
-        && sourceMetadata.texture.paletteFormat != spice::gvm::model::PaletteFormat::RGB5A3) {
-        throw std::runtime_error("cannot preserve CI4 source palette format: "
-            + spice::gvm::model::to_string(sourceMetadata.texture.paletteFormat));
-    }
     options.generateMipmaps = cliOptions.gvrMipmapsOverride.value_or(sourceMetadata.texture.hasMipmaps);
     switch (cliOptions.gvrGlobalIndexPolicy) {
     case GvrGlobalIndexPolicy::Preserve:

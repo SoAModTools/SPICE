@@ -19,6 +19,8 @@ spice::mld::model::MldTextureEntry makeTexture(
     entry.dataFormat = rawDataFormat;
     entry.sourceFormat = format;
     entry.sourcePaletteFormat = palette;
+    entry.hasInternalPalette = palette != "None";
+    entry.paletteDataSize = entry.hasInternalPalette ? 512U : 0U;
     entry.width = 32;
     entry.height = 16;
     entry.imageDataSize = 2048;
@@ -48,7 +50,8 @@ TEST(MldGvrFormatInventory, ClassifiesCurrentRgba8Coverage) {
     indexed.sourceFormat = "CI8";
     indexed.sourcePaletteFormat = "RGB5A3";
     indexed.paletteDataSize = 512;
-    EXPECT_FALSE(spice::mld::analysis::isGvrEncoderCovered(indexed));
+    indexed.hasInternalPalette = true;
+    EXPECT_TRUE(spice::mld::analysis::isGvrEncoderCovered(indexed));
 
     spice::mld::analysis::MldGvrTextureSample cmpr{};
     cmpr.sourceFormat = "CMPR";
@@ -94,10 +97,7 @@ TEST(MldGvrFormatInventory, AggregatesByFormatTupleAndRanksUnsupported) {
     EXPECT_TRUE(inventory.samples.front().hasGlobalIndex);
     EXPECT_EQ(inventory.samples.front().globalIndex, 3U);
     ASSERT_EQ(inventory.formatGroups.size(), 3U);
-    ASSERT_EQ(inventory.priorityGroups.size(), 1U);
-    EXPECT_EQ(inventory.priorityGroups[0].sourceFormat, "CI8");
-    EXPECT_EQ(inventory.priorityGroups[0].textureCount, 2U);
-    EXPECT_EQ(inventory.priorityGroups[0].decodedCount, 1U);
+    EXPECT_TRUE(inventory.priorityGroups.empty());
 }
 
 TEST(MldGvrFormatInventory, CapsRepresentativeSamplesDeterministically) {

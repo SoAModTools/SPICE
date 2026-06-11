@@ -5,6 +5,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
+#include <vector>
 
 namespace {
 
@@ -285,6 +286,72 @@ TEST(GvrImageIr, Ci4Rgb5A3GvrEncoderIsDeterministicAndSupportsMipFlag) {
     EXPECT_TRUE(parsed.hasMipmaps);
 }
 
+TEST(GvrImageIr, EncodesAllDirectAndIntensityFormats) {
+    const auto image = makeEncoderImage();
+    const std::vector<spice::gvm::model::TextureFormat> formats{
+        spice::gvm::model::TextureFormat::I4,
+        spice::gvm::model::TextureFormat::I8,
+        spice::gvm::model::TextureFormat::IA4,
+        spice::gvm::model::TextureFormat::IA8,
+        spice::gvm::model::TextureFormat::RGB565,
+        spice::gvm::model::TextureFormat::RGB5A3,
+        spice::gvm::model::TextureFormat::RGBA8,
+    };
+
+    for (const auto format : formats) {
+        spice::gvm::encoding::EncodeOptions options{};
+        options.textureFormat = format;
+        options.generateMipmaps = true;
+
+        const auto bytes = spice::gvm::encoding::encodeGvr(image, options);
+        const auto parsed = spice::gvm::parsing::parseGvrTexture(
+            std::span<const std::uint8_t>(bytes.data(), bytes.size()),
+            0);
+
+        EXPECT_EQ(parsed.textureFormat, format);
+        EXPECT_TRUE(parsed.hasMipmaps);
+        ASSERT_TRUE(parsed.decodedBaseLevel.has_value());
+        EXPECT_EQ(parsed.decodedBaseLevel->width, image.width);
+        EXPECT_EQ(parsed.decodedBaseLevel->height, image.height);
+    }
+}
+
+TEST(GvrImageIr, EncodesAllIndexedFormatsWithAllPaletteFormats) {
+    const auto image = makeCi4Image();
+    const std::vector<spice::gvm::model::TextureFormat> textureFormats{
+        spice::gvm::model::TextureFormat::CI4,
+        spice::gvm::model::TextureFormat::CI8,
+        spice::gvm::model::TextureFormat::CI14X2,
+    };
+    const std::vector<spice::gvm::model::PaletteFormat> paletteFormats{
+        spice::gvm::model::PaletteFormat::IA8,
+        spice::gvm::model::PaletteFormat::RGB565,
+        spice::gvm::model::PaletteFormat::RGB5A3,
+    };
+
+    for (const auto textureFormat : textureFormats) {
+        for (const auto paletteFormat : paletteFormats) {
+            spice::gvm::encoding::EncodeOptions options{};
+            options.textureFormat = textureFormat;
+            options.paletteFormat = paletteFormat;
+            options.generateMipmaps = true;
+
+            const auto bytes = spice::gvm::encoding::encodeGvr(image, options);
+            const auto parsed = spice::gvm::parsing::parseGvrTexture(
+                std::span<const std::uint8_t>(bytes.data(), bytes.size()),
+                0);
+
+            EXPECT_EQ(parsed.textureFormat, textureFormat);
+            EXPECT_EQ(parsed.paletteFormat, paletteFormat);
+            EXPECT_TRUE(parsed.hasMipmaps);
+            EXPECT_TRUE(parsed.hasInternalPalette);
+            ASSERT_TRUE(parsed.decodedBaseLevel.has_value());
+            EXPECT_EQ(parsed.decodedBaseLevel->width, image.width);
+            EXPECT_EQ(parsed.decodedBaseLevel->height, image.height);
+        }
+    }
+}
+
 TEST(GvrImageIr, ExportImportRoundTripsThroughPngSidecar) {
     const auto dir = testOutDir("export_import");
     const auto image = makeTestImage();
@@ -388,6 +455,52 @@ TEST(GvrImageIr, ImportSidecarCanSelectCmprAndCi4Outputs) {
         0);
     EXPECT_EQ(rgba8Parsed.textureFormat, spice::gvm::model::TextureFormat::RGBA8);
     EXPECT_TRUE(rgba8Parsed.hasMipmaps);
+}
+
+TEST(GvrImageIr, ImportSidecarCanSelectEveryDecodedTextureFormat) {
+    const auto dir = testOutDir("import_all_formats");
+    const auto image = makeCi4Image();
+    const auto pngPath = dir / "texture.png";
+    spice::gvm::image::writePngRgba8(pngPath, image);
+
+    const std::vector<spice::gvm::model::TextureFormat> formats{
+        spice::gvm::model::TextureFormat::I4,
+        spice::gvm::model::TextureFormat::I8,
+        spice::gvm::model::TextureFormat::IA4,
+        spice::gvm::model::TextureFormat::IA8,
+        spice::gvm::model::TextureFormat::RGB565,
+        spice::gvm::model::TextureFormat::RGB5A3,
+        spice::gvm::model::TextureFormat::RGBA8,
+        spice::gvm::model::TextureFormat::CI4,
+        spice::gvm::model::TextureFormat::CI8,
+        spice::gvm::model::TextureFormat::CI14X2,
+        spice::gvm::model::TextureFormat::CMPR,
+    };
+
+    for (const auto format : formats) {
+        const auto jsonPath = dir / (spice::gvm::model::to_string(format) + ".gvr.json");
+        const bool indexed = format == spice::gvm::model::TextureFormat::CI4 ||
+            format == spice::gvm::model::TextureFormat::CI8 ||
+            format == spice::gvm::model::TextureFormat::CI14X2;
+        writeSidecar(jsonPath,
+            "texture.png",
+            image.width,
+            image.height,
+            spice::gvm::model::to_string(format),
+            true,
+            indexed ? "RGB565" : "");
+
+        const auto imported = spice::gvm::ir::importGvrImageIr(jsonPath, spice::gvm::ir::AklzPolicy::Raw);
+        const auto parsed = spice::gvm::parsing::parseGvrTexture(
+            std::span<const std::uint8_t>(imported.bytes.data(), imported.bytes.size()),
+            0);
+
+        EXPECT_EQ(parsed.textureFormat, format);
+        EXPECT_TRUE(parsed.hasMipmaps);
+        if (indexed) {
+            EXPECT_EQ(parsed.paletteFormat, spice::gvm::model::PaletteFormat::RGB565);
+        }
+    }
 }
 
 TEST(GvrImageIr, LegacySidecarWithoutImportTextureFormatStillImportsBaseRgba8) {

@@ -277,22 +277,25 @@ MldGvrFormatInventory MldGvrFormatInventoryBuilder::build() const {
 }
 
 bool isGvrEncoderCovered(const MldGvrTextureSample& sample) {
-    if (sample.sourceFormat == "RGBA8") {
+    if (sample.sourceFormat == "I4" ||
+        sample.sourceFormat == "I8" ||
+        sample.sourceFormat == "IA4" ||
+        sample.sourceFormat == "IA8" ||
+        sample.sourceFormat == "RGB565" ||
+        sample.sourceFormat == "RGB5A3" ||
+        sample.sourceFormat == "RGBA8" ||
+        sample.sourceFormat == "CMPR") {
         return sample.sourcePaletteFormat == "None" &&
             !usesPalette(sample);
     }
-    if (sample.sourceFormat == "RGB5A3") {
-        return sample.sourcePaletteFormat == "None" &&
-            !usesPalette(sample);
-    }
-    if (sample.sourceFormat == "CMPR") {
-        return sample.sourcePaletteFormat == "None" &&
-            !usesPalette(sample);
-    }
-    if (sample.sourceFormat == "CI4") {
-        return sample.sourcePaletteFormat == "RGB5A3" &&
+    if (sample.sourceFormat == "CI4" ||
+        sample.sourceFormat == "CI8" ||
+        sample.sourceFormat == "CI14X2") {
+        return (sample.sourcePaletteFormat == "IA8" ||
+            sample.sourcePaletteFormat == "RGB565" ||
+            sample.sourcePaletteFormat == "RGB5A3") &&
             sample.hasInternalPalette &&
-            sample.paletteDataSize == 32U;
+            sample.paletteDataSize > 0U;
     }
     return false;
 }
@@ -306,7 +309,7 @@ std::string formatMldGvrFormatInventoryJson(const MldGvrFormatInventory& invento
     out << "  \"filesFailed\": " << inventory.filesFailed << ",\n";
     out << "  \"textureCount\": " << inventory.textureCount << ",\n";
     out << "  \"decodedTextureCount\": " << inventory.decodedTextureCount << ",\n";
-    out << "  \"currentEncoderCoverage\": \"RGBA8 base/mip textures, RGB5A3 base/mip textures, CMPR base/mip textures, and CI4 RGB5A3 internal-palette base/mip textures\",\n";
+    out << "  \"currentEncoderCoverage\": \"All decoder-known base/mip GVR texture formats: I4, I8, IA4, IA8, RGB565, RGB5A3, RGBA8, CI4, CI8, CI14X2, and CMPR; indexed formats support IA8, RGB565, and RGB5A3 internal palettes\",\n";
     out << "  \"failures\": [";
     for (std::size_t i = 0; i < inventory.failures.size(); ++i) {
         if (i != 0U) {
@@ -346,7 +349,7 @@ std::string formatMldGvrFormatInventoryJson(const MldGvrFormatInventory& invento
 std::string formatMldGvrFormatInventoryMarkdown(const MldGvrFormatInventory& inventory) {
     std::ostringstream out{};
     out << "# MLD GVR Format Priority Report\n\n";
-    out << "Current encoder coverage: RGBA8 base/mip textures, RGB5A3 base/mip textures, CMPR base/mip textures, and CI4 RGB5A3 internal-palette base/mip textures.\n\n";
+    out << "Current encoder coverage: all decoder-known base/mip GVR texture formats. Indexed formats support IA8, RGB565, and RGB5A3 internal palettes.\n\n";
     out << "## Summary\n\n";
     out << "- Files scanned: " << inventory.filesScanned << "\n";
     out << "- Files parsed: " << inventory.filesParsed << "\n";
