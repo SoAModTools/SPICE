@@ -2,15 +2,23 @@
 
 #include "../Model/GvmTextureModel.h"
 
+#include <cstdint>
+#include <vector>
+
 namespace spice::gvm::encoding {
 
 struct EncodeOptions {
-    model::TextureFormat textureFormat = model::TextureFormat::RGB5A3;
+    model::TextureFormat textureFormat = model::TextureFormat::RGBA8;
     model::PaletteFormat paletteFormat = model::PaletteFormat::None;
     bool generateMipmaps = false;
+    bool hasGlobalIndex = false;
+    std::uint32_t globalIndex = 0;
 };
 
-// Placeholder for the eventual RGBA8 -> GameCube texture path. The decode model
-// already preserves the metadata needed to add this without changing callers.
+[[nodiscard]] std::vector<std::uint8_t> encodeGvr(const model::RgbaImage& image,
+    const EncodeOptions& options = {});
+
+[[nodiscard]] std::vector<std::uint8_t> encodeRgba8Gvr(const model::RgbaImage& image,
+    const EncodeOptions& options = {});
 
 } // namespace spice::gvm::encoding

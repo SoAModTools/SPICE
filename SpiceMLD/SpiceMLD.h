@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Analysis/MldGvrFormatInventory.h"
 #include "Export/BlenderIrJsonExporter.h"
 #include "Export/MldFileExporter.h"
 #include "Model/SearchWorldModel.h"

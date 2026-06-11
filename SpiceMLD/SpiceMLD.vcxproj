@@ -97,6 +97,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Analysis\MldGvrFormatInventory.h" />
     <ClInclude Include="common\ByteUtils.h" />
     <ClInclude Include="Export\BlenderIrJsonExporter.h" />
     <ClInclude Include="Export\MldFileExporter.h" />
@@ -122,6 +123,7 @@
     <ClInclude Include="SpiceMLD.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Analysis\MldGvrFormatInventory.cpp" />
     <ClCompile Include="Model\BlenderIrModel.cpp" />
     <ClCompile Include="Parsing\MldBinaryReader.cpp" />
     <ClCompile Include="Parsing\MldTextureArchiveParser.cpp" />

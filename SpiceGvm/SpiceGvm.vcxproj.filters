@@ -7,6 +7,15 @@
     <Filter Include="Encoding">
       <UniqueIdentifier>{AE827348-1B00-4304-AB69-B103DF5B583F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Image">
+      <UniqueIdentifier>{3CE7F772-4D90-4B2F-A9EC-73A734D4C2C4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Ir">
+      <UniqueIdentifier>{9E27B6F1-13AF-493F-8460-30B5427F076B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ThirdParty">
+      <UniqueIdentifier>{5C5B69D5-02B3-4666-9F88-4D8EC2E052BB}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Model">
       <UniqueIdentifier>{4E208F3D-E989-4C45-9E5B-638692DB6735}</UniqueIdentifier>
     </Filter>
@@ -24,6 +33,12 @@
     <ClInclude Include="Encoding\GvrEncoder.h">
       <Filter>Encoding</Filter>
     </ClInclude>
+    <ClInclude Include="Image\PngCodec.h">
+      <Filter>Image</Filter>
+    </ClInclude>
+    <ClInclude Include="Ir\GvrImageIr.h">
+      <Filter>Ir</Filter>
+    </ClInclude>
     <ClInclude Include="Model\GvmTextureModel.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -33,16 +48,31 @@
     <ClInclude Include="SpiceGvm.h">
       <Filter>EntryPoint</Filter>
     </ClInclude>
+    <ClInclude Include="..\third-party\lodepng\lodepng.h">
+      <Filter>ThirdParty</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Decoding\GvrDecoder.cpp">
       <Filter>Decoding</Filter>
+    </ClCompile>
+    <ClCompile Include="Encoding\GvrEncoder.cpp">
+      <Filter>Encoding</Filter>
+    </ClCompile>
+    <ClCompile Include="Image\PngCodec.cpp">
+      <Filter>Image</Filter>
+    </ClCompile>
+    <ClCompile Include="Ir\GvrImageIr.cpp">
+      <Filter>Ir</Filter>
     </ClCompile>
     <ClCompile Include="Model\GvmTextureModel.cpp">
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\GvmParser.cpp">
       <Filter>Parsing</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third-party\lodepng\lodepng.cpp">
+      <Filter>ThirdParty</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

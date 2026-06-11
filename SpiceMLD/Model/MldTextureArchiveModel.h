@@ -18,10 +18,13 @@ struct MldTextureEntry {
     std::uint8_t dataFormat = 0;
     std::string sourceFormat{};
     std::string sourcePaletteFormat{};
+    bool hasMipmaps = false;
+    bool hasInternalPalette = false;
     std::uint16_t width = 0;
     std::uint16_t height = 0;
     std::size_t imageDataOffset = 0;
     std::size_t imageDataSize = 0;
+    std::size_t paletteDataSize = 0;
     std::vector<std::uint8_t> gvrData{};
     bool decoded = false;
     std::vector<std::uint8_t> rgba8{};

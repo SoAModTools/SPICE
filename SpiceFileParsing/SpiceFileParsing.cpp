@@ -1,6 +1,7 @@
 #include "../SpiceMLD/SpiceMLD.h"
 #include "../SpiceSCT/SpiceSCT.h"
 #include "../SpiceContentGraph/SpiceContentGraph.h"
+#include "../SpiceGvm/SpiceGvm.h"
 #include "../Compression/Aklz.h"
 #include "../Sa3Dport/Testing/Slice2TestApi.h"
 #include "../Sa3Dport/Testing/Slice5TestApi.h"
@@ -73,6 +74,11 @@ struct CliOptions {
     bool exportSctBinary = false;
     bool exportSctBinaryCompressed = false;
     bool exportContentGraph = false;
+    bool sampleMldGvrFormats = false;
+    bool gvrOnly = false;
+    bool exportGvrImageIr = false;
+    bool importGvrImageIr = false;
+    spice::gvm::ir::AklzPolicy gvrAklzPolicy = spice::gvm::ir::AklzPolicy::Preserve;
     spice::contentgraph::ContentGraphProjection contentGraphProjection =
         spice::contentgraph::ContentGraphProjection::Full;
 };
@@ -80,19 +86,24 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SpiceFileParsing/inputs\n"
         << "  - output_dir defaults to SpiceFileParsing/parsed\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
         << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
+        << "  - --sample-mld-gvr-formats writes compact embedded GVR format inventory and priority reports for .mld files.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
         << "  - --sct-decode-unreached-code adds a speculative section-level view of unreached raw spans.\n"
         << "  - --export-sct-binary writes canonical parse/export SCT bytes and validates parse-equivalence.\n"
         << "  - --export-sct-binary-compressed also AKLZ-compresses the canonical SCT export.\n"
         << "  - --content-graph parses .sct/.mld files and writes content_graph.json.\n"
         << "  - --content-graph-projection selects full, sections, or world graph JSON.\n"
+        << "  - --gvr-only limits GVR import/export modes to GVR-related input files.\n"
+        << "  - --export-gvr-image-ir writes PNG plus .gvr.json sidecar files for standalone .gvr files.\n"
+        << "  - --import-gvr-image-ir writes standalone RGBA8 .gvr files from .gvr.json sidecars.\n"
+        << "  - --gvr-aklz controls GVR import wrapping; default preserve uses sourceWasAklz from the sidecar.\n"
         << "  - Bridge executable path is auto-discovered at <SpiceFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
         << "  - In A/B mode, all slices (0..9) run automatically per fixture using a per-fixture NJ block manifest.\n";
 }
@@ -156,6 +167,35 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.exportContentGraph = true;
             continue;
         }
+        if (arg == "--sample-mld-gvr-formats" || arg == "--mld-gvr-format-inventory") {
+            options.sampleMldGvrFormats = true;
+            continue;
+        }
+        if (arg == "--gvr-only") {
+            options.gvrOnly = true;
+            continue;
+        }
+        if (arg == "--export-gvr-image-ir") {
+            options.exportGvrImageIr = true;
+            continue;
+        }
+        if (arg == "--import-gvr-image-ir") {
+            options.importGvrImageIr = true;
+            continue;
+        }
+        if (arg == "--gvr-aklz") {
+            if (i + 1 >= argc) {
+                std::cerr << "--gvr-aklz requires preserve, compressed, or raw.\n";
+                return std::nullopt;
+            }
+            try {
+                options.gvrAklzPolicy = spice::gvm::ir::parseAklzPolicy(argv[++i]);
+            } catch (const std::exception& ex) {
+                std::cerr << ex.what() << "\n";
+                return std::nullopt;
+            }
+            continue;
+        }
         if (arg == "--content-graph-projection") {
             if (i + 1 >= argc) {
                 std::cerr << "--content-graph-projection requires full, sections, or world.\n";
@@ -185,17 +225,34 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         ++positionalIndex;
     }
 
-    if (options.parseSctOnly && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
+    if (options.parseSctOnly && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats)) {
         std::cerr << "--sct-only cannot be combined with MLD-only or MLD A/B modes.\n";
         return std::nullopt;
     }
-    if (options.exportSctBinary && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
+    if (options.exportSctBinary && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats)) {
         std::cerr << "--export-sct-binary cannot be combined with MLD-only or MLD A/B modes.\n";
         return std::nullopt;
     }
     if (options.exportContentGraph
-        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.parseSctOnly || options.exportSctBinary)) {
+        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary)) {
         std::cerr << "--content-graph cannot be combined with MLD-only, SCT-only, SCT binary export, or MLD A/B modes.\n";
+        return std::nullopt;
+    }
+    if (options.sampleMldGvrFormats && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
+        std::cerr << "--sample-mld-gvr-formats cannot be combined with other MLD-only or MLD A/B modes.\n";
+        return std::nullopt;
+    }
+    if (options.exportGvrImageIr && options.importGvrImageIr) {
+        std::cerr << "--export-gvr-image-ir cannot be combined with --import-gvr-image-ir.\n";
+        return std::nullopt;
+    }
+    if ((options.exportGvrImageIr || options.importGvrImageIr)
+        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary || options.exportContentGraph)) {
+        std::cerr << "GVR image IR modes cannot be combined with MLD, SCT, or content-graph modes.\n";
+        return std::nullopt;
+    }
+    if (options.gvrOnly && !(options.exportGvrImageIr || options.importGvrImageIr)) {
+        std::cerr << "--gvr-only requires --export-gvr-image-ir or --import-gvr-image-ir.\n";
         return std::nullopt;
     }
 
@@ -243,6 +300,22 @@ std::string jsonEscape(std::string value) {
         }
     }
     return escaped;
+}
+
+bool endsWithInsensitive(std::string value, std::string suffix) {
+    value = toLowerCopy(std::move(value));
+    suffix = toLowerCopy(std::move(suffix));
+    return value.size() >= suffix.size()
+        && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string gvrSidecarStem(const std::filesystem::path& path) {
+    auto filename = path.filename().string();
+    if (endsWithInsensitive(filename, ".gvr.json")) {
+        filename.resize(filename.size() - std::string(".gvr.json").size());
+        return filename;
+    }
+    return path.stem().string();
 }
 
 void writeFixtureManifestFromInputDir(const std::filesystem::path& inputDir, const std::filesystem::path& outputDir) {
@@ -1969,6 +2042,7 @@ int main(int argc, char** argv) {
     constexpr int kAbStartSlice = 1;
     constexpr int kAbEndSlice = 9;
     spice::contentgraph::ContentGraphCorpusInput contentGraphInput{};
+    spice::mld::analysis::MldGvrFormatInventoryBuilder mldGvrFormatInventoryBuilder{};
 
     for (const auto& entry : std::filesystem::directory_iterator(inputDir)) {
         if (!entry.is_regular_file()) {
@@ -1977,11 +2051,65 @@ int main(int argc, char** argv) {
 
         const auto extension = toLowerCopy(entry.path().extension().string());
         const auto bytes = readAllBytes(entry.path());
-        if (bytes.empty()) {
+        if (bytes.empty() && !cliOptions->importGvrImageIr) {
             continue;
         }
 
-        if ((cliOptions->runAbSa3dPortVsSa3dBridge || cliOptions->exportMldEntryListOnly) && extension != ".mld") {
+        if (cliOptions->exportGvrImageIr) {
+            if (extension != ".gvr") {
+                continue;
+            }
+            std::cout << "[SpiceFileParsing]   - Exporting GVR image IR: " << entry.path().filename().string() << "\n";
+            try {
+                const auto exported = spice::gvm::ir::exportGvrImageIr(
+                    std::span<const std::uint8_t>(bytes.data(), bytes.size()),
+                    entry.path(),
+                    outputDir);
+                const auto reportPath = outputDir / (entry.path().stem().string() + ".gvr.ir.txt");
+                std::ofstream reportOut(reportPath, std::ios::binary);
+                reportOut << "source=" << entry.path().string() << "\n";
+                reportOut << "png=" << exported.pngPath.string() << "\n";
+                reportOut << "json=" << exported.jsonPath.string() << "\n";
+                for (const auto& diagnostic : exported.diagnostics) {
+                    reportOut << "diagnostic=" << diagnostic << "\n";
+                }
+                ++filesProcessed;
+            } catch (const std::exception& ex) {
+                std::cerr << "[SpiceFileParsing] WARNING: GVR image IR export failed for "
+                          << entry.path().string() << ": " << ex.what() << "\n";
+            }
+            continue;
+        }
+
+        if (cliOptions->importGvrImageIr) {
+            if (!endsWithInsensitive(entry.path().filename().string(), ".gvr.json")) {
+                continue;
+            }
+            std::cout << "[SpiceFileParsing]   - Importing GVR image IR: " << entry.path().filename().string() << "\n";
+            try {
+                const auto imported = spice::gvm::ir::importGvrImageIr(entry.path(), cliOptions->gvrAklzPolicy);
+                const auto outPath = outputDir / (gvrSidecarStem(entry.path()) + ".imported.gvr");
+                if (!writeAllBytes(outPath, std::span<const std::uint8_t>(imported.bytes.data(), imported.bytes.size()))) {
+                    std::cerr << "[SpiceFileParsing] WARNING: failed to write imported GVR: "
+                              << outPath.string() << "\n";
+                }
+                const auto reportPath = outputDir / (gvrSidecarStem(entry.path()) + ".gvr.import.txt");
+                std::ofstream reportOut(reportPath, std::ios::binary);
+                reportOut << "source=" << entry.path().string() << "\n";
+                reportOut << "output=" << outPath.string() << "\n";
+                reportOut << "aklzPolicy=" << spice::gvm::ir::to_string(cliOptions->gvrAklzPolicy) << "\n";
+                for (const auto& diagnostic : imported.diagnostics) {
+                    reportOut << "diagnostic=" << diagnostic << "\n";
+                }
+                ++filesProcessed;
+            } catch (const std::exception& ex) {
+                std::cerr << "[SpiceFileParsing] WARNING: GVR image IR import failed for "
+                          << entry.path().string() << ": " << ex.what() << "\n";
+            }
+            continue;
+        }
+
+        if ((cliOptions->runAbSa3dPortVsSa3dBridge || cliOptions->exportMldEntryListOnly || cliOptions->sampleMldGvrFormats) && extension != ".mld") {
             continue;
         }
         if (cliOptions->parseSctOnly && extension != ".sct") {
@@ -2063,6 +2191,26 @@ int main(int argc, char** argv) {
 
         if (extension == ".mld") {
             std::cout << "[SpiceFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
+            if (cliOptions->sampleMldGvrFormats) {
+                mldGvrFormatInventoryBuilder.noteFileScanned();
+                try {
+                    spice::mld::parsing::ParseOptions sampleOptions{};
+                    sampleOptions.entryListOnly = true;
+                    sampleOptions.buildBlenderIntermediateIr = false;
+                    auto sampled = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), sampleOptions);
+                    if (sampled.textureArchive.has_value()) {
+                        mldGvrFormatInventoryBuilder.addParsedMld(entry.path().string(), *sampled.textureArchive);
+                    } else {
+                        mldGvrFormatInventoryBuilder.addParseFailure(entry.path().string(), "No texture archive was parsed.");
+                    }
+                    ++filesProcessed;
+                } catch (const std::exception& ex) {
+                    mldGvrFormatInventoryBuilder.addParseFailure(entry.path().string(), ex.what());
+                    std::cerr << "[SpiceFileParsing] WARNING: MLD GVR format sampling failed for "
+                              << entry.path().string() << ": " << ex.what() << "\n";
+                }
+                continue;
+            }
             if (cliOptions->exportContentGraph) {
                 spice::mld::parsing::ParseOptions graphOptions{};
                 graphOptions.entryListOnly = true;
@@ -2175,6 +2323,24 @@ int main(int argc, char** argv) {
         std::ofstream graphOut(graphOutPath, std::ios::binary);
         graphOut << graphExporter.toJson(graph, cliOptions->contentGraphProjection);
         std::cout << "[SpiceFileParsing]   - Wrote content graph: " << graphOutPath.string() << "\n";
+    }
+
+    if (cliOptions->sampleMldGvrFormats) {
+        const auto inventory = mldGvrFormatInventoryBuilder.build();
+        const auto jsonOutPath = outputDir / "mld_gvr_format_inventory.json";
+        {
+            std::ofstream jsonOut(jsonOutPath, std::ios::binary);
+            jsonOut << spice::mld::analysis::formatMldGvrFormatInventoryJson(inventory);
+        }
+        const auto markdownOutPath = outputDir / "mld_gvr_format_priority_report.md";
+        {
+            std::ofstream markdownOut(markdownOutPath, std::ios::binary);
+            markdownOut << spice::mld::analysis::formatMldGvrFormatInventoryMarkdown(inventory);
+        }
+        std::cout << "[SpiceFileParsing]   - Wrote MLD GVR format inventory: "
+                  << jsonOutPath.string() << "\n";
+        std::cout << "[SpiceFileParsing]   - Wrote MLD GVR priority report: "
+                  << markdownOutPath.string() << "\n";
     }
 
     std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";

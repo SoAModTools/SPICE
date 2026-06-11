@@ -17,8 +17,14 @@
     <Filter Include="Export">
       <UniqueIdentifier>{C8A2F599-A70B-4D84-BAA2-0CF225D37020}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Analysis">
+      <UniqueIdentifier>{E4B83F63-1EC1-488A-9404-0935A212816F}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Analysis\MldGvrFormatInventory.h">
+      <Filter>Analysis</Filter>
+    </ClInclude>
     <ClInclude Include="common\ByteUtils.h">
       <Filter>Common</Filter>
     </ClInclude>
@@ -90,6 +96,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Analysis\MldGvrFormatInventory.cpp">
+      <Filter>Analysis</Filter>
+    </ClCompile>
     <ClCompile Include="Export\BlenderIrJsonExporter.cpp">
       <Filter>Export</Filter>
     </ClCompile>

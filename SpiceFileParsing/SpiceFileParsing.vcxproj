@@ -148,6 +148,9 @@
     <ProjectReference Include="..\SpiceMLD\SpiceMLD.vcxproj">
       <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
+      <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SpiceSCT\SpiceSCT.vcxproj">
       <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
     </ProjectReference>

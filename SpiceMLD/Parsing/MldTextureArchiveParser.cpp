@@ -102,10 +102,13 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
         entry.dataFormat = texture.rawDataFormat;
         entry.sourceFormat = spice::gvm::model::to_string(texture.textureFormat);
         entry.sourcePaletteFormat = spice::gvm::model::to_string(texture.paletteFormat);
+        entry.hasMipmaps = texture.hasMipmaps;
+        entry.hasInternalPalette = texture.hasInternalPalette;
         entry.width = texture.width;
         entry.height = texture.height;
         entry.imageDataOffset = texture.imageDataOffset;
         entry.imageDataSize = texture.imageDataSize;
+        entry.paletteDataSize = texture.paletteData.size();
         entry.diagnostics = texture.diagnostics;
 
         if (texture.decodedBaseLevel.has_value()) {

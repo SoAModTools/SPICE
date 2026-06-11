@@ -99,16 +99,26 @@
   <ItemGroup>
     <ClInclude Include="Decoding\GvrDecoder.h" />
     <ClInclude Include="Encoding\GvrEncoder.h" />
+    <ClInclude Include="Image\PngCodec.h" />
+    <ClInclude Include="Ir\GvrImageIr.h" />
     <ClInclude Include="Model\GvmTextureModel.h" />
     <ClInclude Include="Parsing\GvmParser.h" />
     <ClInclude Include="SpiceGvm.h" />
+    <ClInclude Include="..\third-party\lodepng\lodepng.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Decoding\GvrDecoder.cpp" />
+    <ClCompile Include="Encoding\GvrEncoder.cpp" />
+    <ClCompile Include="Image\PngCodec.cpp" />
+    <ClCompile Include="Ir\GvrImageIr.cpp" />
     <ClCompile Include="Model\GvmTextureModel.cpp" />
     <ClCompile Include="Parsing\GvmParser.cpp" />
+    <ClCompile Include="..\third-party\lodepng\lodepng.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Compression\Compression.vcxproj">
+      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
