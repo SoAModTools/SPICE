@@ -74,6 +74,14 @@ const char* toString(SctParameterValueKind value) {
     }
 }
 
+const char* toString(SctFooterEntryKind value) {
+    switch (value) {
+    case SctFooterEntryKind::String: return "string";
+    case SctFooterEntryKind::SctString: return "sctString";
+    default: return "string";
+    }
+}
+
 const char* toString(SctScptAstNodeKind value) {
     switch (value) {
     case SctScptAstNodeKind::Unknown: return "unknown";
@@ -216,6 +224,56 @@ void writeStringEntry(std::ostringstream& out, const SctStringEntry& entry) {
     out << ",\"decodedText\":\"" << jsonEscape(entry.decodedText) << '"'
         << ",\"decodeOk\":" << (entry.decodeOk ? "true" : "false")
         << '}';
+}
+
+void writeFooter(std::ostringstream& out, const std::optional<SctFooter>& footer) {
+    if (!footer.has_value()) {
+        out << "null";
+        return;
+    }
+
+    out << "{\"present\":" << (footer->present ? "true" : "false")
+        << ",\"payloadStartOffset\":" << footer->payloadStartOffset
+        << ",\"payloadEndOffset\":" << footer->payloadEndOffset
+        << ",\"confidence\":\"" << toString(footer->confidence) << '"'
+        << ",\"rawBytes\":";
+    writeU8Array(out, footer->rawBytes);
+    out << ",\"diagnostics\":[";
+    for (std::size_t di = 0; di < footer->diagnostics.size(); ++di) {
+        if (di != 0) {
+            out << ',';
+        }
+        out << "{\"payloadOffset\":" << footer->diagnostics[di].payloadOffset
+            << ",\"message\":\"" << jsonEscape(footer->diagnostics[di].message) << "\"}";
+    }
+    out << "],\"entries\":[";
+    for (std::size_t ei = 0; ei < footer->entries.size(); ++ei) {
+        if (ei != 0) {
+            out << ',';
+        }
+        const auto& entry = footer->entries[ei];
+        out << "{\"id\":\"" << jsonEscape(entry.id)
+            << "\",\"kind\":\"" << toString(entry.kind)
+            << "\",\"payloadOffset\":" << entry.payloadOffset
+            << ",\"rawBytes\":";
+        writeU8Array(out, entry.rawBytes);
+        out << ",\"decodedText\":\"" << jsonEscape(entry.decodedText)
+            << "\",\"decodeOk\":" << (entry.decodeOk ? "true" : "false")
+            << ",\"references\":[";
+        for (std::size_t ri = 0; ri < entry.references.size(); ++ri) {
+            if (ri != 0) {
+                out << ',';
+            }
+            const auto& ref = entry.references[ri];
+            out << "{\"instructionPayloadOffset\":" << ref.instructionPayloadOffset
+                << ",\"parameterIndex\":" << ref.parameterIndex
+                << ",\"operandPayloadOffset\":" << ref.operandPayloadOffset
+                << ",\"targetPayloadOffset\":" << ref.targetPayloadOffset
+                << ",\"opcode\":" << ref.opcode << "}";
+        }
+        out << "]}";
+    }
+    out << "]}";
 }
 
 void writeInstruction(std::ostringstream& out, const SctInstruction& inst) {
@@ -399,7 +457,14 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
         }
         out << ",\"stringSectionIndexes\":";
         writeU32Array(out, group.stringSectionIndexes);
-        out << ",\"synthetic\":" << (group.synthetic ? "true" : "false")
+        out << ",\"footerEntryIds\":[";
+        for (std::size_t fi = 0; fi < group.footerEntryIds.size(); ++fi) {
+            if (fi != 0) {
+                out << ',';
+            }
+            out << '"' << jsonEscape(group.footerEntryIds[fi]) << '"';
+        }
+        out << "],\"synthetic\":" << (group.synthetic ? "true" : "false")
             << ",\"notes\":[";
         for (std::size_t ni = 0; ni < group.notes.size(); ++ni) {
             if (ni != 0) {
@@ -410,6 +475,9 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
         out << "]}";
     }
     out << "],\n";
+    out << "  \"footer\": ";
+    writeFooter(out, result.file.footer);
+    out << ",\n";
     out << "  \"codeRegions\": [";
     for (std::size_t ri = 0; ri < result.file.codeRegions.size(); ++ri) {
         const auto& region = result.file.codeRegions[ri];

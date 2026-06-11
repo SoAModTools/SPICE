@@ -21,6 +21,17 @@ enum class SctOpcodeResourceRole {
     LoadsMld,
 };
 
+enum class SctFooterParamKind {
+    None,
+    String,
+    SctString,
+};
+
+struct SctFooterParamMetadata {
+    SctFooterParamKind kind = SctFooterParamKind::None;
+    bool signedRelative = false;
+};
+
 struct SctOpcodeParamPattern {
     std::uint16_t paramCount;
     std::uint64_t scptAnalyzeMask;
@@ -387,5 +398,49 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     }
 
     return meta;
+}
+
+[[nodiscard]] inline SctFooterParamMetadata sctFooterParamMetadata(std::uint16_t opcode, std::uint32_t parameterIndex) {
+    switch (opcode) {
+    case 23:
+        if (parameterIndex == 0u) return {SctFooterParamKind::String, true};
+        break;
+    case 24:
+        if (parameterIndex == 0u) return {SctFooterParamKind::SctString, true};
+        break;
+    case 25:
+        if (parameterIndex == 1u) return {SctFooterParamKind::SctString, false};
+        break;
+    case 43:
+        if (parameterIndex == 0u) return {SctFooterParamKind::String, false};
+        break;
+    case 54:
+        if (parameterIndex == 1u) return {SctFooterParamKind::String, true};
+        break;
+    case 69:
+        if (parameterIndex == 0u) return {SctFooterParamKind::String, true};
+        break;
+    case 110:
+    case 113:
+    case 210:
+    case 214:
+    case 248:
+    case 250:
+    case 257:
+        if (parameterIndex == 0u) return {SctFooterParamKind::String, false};
+        break;
+    case 144:
+        if (parameterIndex == 0u) return {SctFooterParamKind::SctString, true};
+        break;
+    case 155:
+        if (parameterIndex == 1u) return {SctFooterParamKind::SctString, true};
+        break;
+    case 215:
+        if (parameterIndex == 1u) return {SctFooterParamKind::String, false};
+        break;
+    default:
+        break;
+    }
+    return {};
 }
 } // namespace spice::sct

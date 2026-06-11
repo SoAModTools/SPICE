@@ -70,6 +70,19 @@ struct GlobalDecodedInstruction {
     std::uint32_t entryPayloadOffset = 0;
 };
 
+struct FooterReferenceCandidate {
+    SctFooterReference reference;
+    SctFooterEntryKind kind = SctFooterEntryKind::String;
+    bool valid = false;
+};
+
+struct FooterBoundaryResult {
+    bool detected = false;
+    std::uint32_t footerStart = 0;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+    std::string diagnostic;
+};
+
 struct SectionRow {
     std::uint32_t start = 0;
     std::uint32_t end = 0;
@@ -185,6 +198,35 @@ struct OpcodeBoundaryProbe {
     return decoded;
 }
 
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> readNullTerminatedBytes(
+    std::span<const std::uint8_t> bytes,
+    std::uint32_t offset) {
+    if (offset >= bytes.size()) {
+        return std::nullopt;
+    }
+    std::vector<std::uint8_t> result{};
+    for (std::uint32_t cursor = offset; cursor < bytes.size(); ++cursor) {
+        const auto byte = bytes[cursor];
+        result.push_back(byte);
+        if (byte == 0u) {
+            return result;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool hasPlausibleStringBytes(const std::vector<std::uint8_t>& bytes) {
+    return !bytes.empty() && bytes.back() == 0u;
+}
+
+[[nodiscard]] std::string numberedId(std::string prefix, std::uint32_t value) {
+    auto digits = std::to_string(value);
+    while (digits.size() < 3u) {
+        digits.insert(digits.begin(), '0');
+    }
+    return prefix + digits;
+}
+
 [[nodiscard]] SctRawSpan makeRawSpan(
     std::span<const std::uint8_t> sectionBytes,
     SctRawSpanReason reason,
@@ -213,6 +255,20 @@ struct OpcodeBoundaryProbe {
         entry.decodeOk = true;
     }
     return entry;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> firstStringEndOffset(
+    std::span<const std::uint8_t> sectionBytes,
+    const LabelPreambleProbe& preamble) {
+    if (!preamble.present || preamble.endOffset >= sectionBytes.size()) {
+        return std::nullopt;
+    }
+    for (std::uint32_t cursor = preamble.endOffset; cursor < sectionBytes.size(); ++cursor) {
+        if (sectionBytes[cursor] == 0u) {
+            return cursor + 1u;
+        }
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] bool looksLikeLocalizedStringId(const std::string& name) {
@@ -589,6 +645,12 @@ void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectio
 
 [[nodiscard]] std::string decimalString(std::uint32_t value);
 
+[[nodiscard]] DecodedInstruction decodeInstruction(
+    std::span<const std::uint8_t> sectionBytes,
+    std::uint32_t offset,
+    Endian baseEndian,
+    std::vector<SctDiagnostic>& diagnostics);
+
 [[nodiscard]] SctEdgeType edgeTypeForSuccessor(
     const SctInstruction& instruction,
     std::size_t successorIndex,
@@ -667,6 +729,212 @@ void addInstructionSemanticEdges(
 
 [[nodiscard]] std::string decimalString(std::uint32_t value) {
     return std::to_string(value);
+}
+
+[[nodiscard]] std::optional<std::uint32_t> parameterOperandPayloadOffset(
+    const SctInstruction& instruction,
+    std::uint32_t parameterIndex) {
+    std::uint32_t operandWordIndex = 0;
+    for (const auto& parameter : instruction.parameters) {
+        if (parameter.index == parameterIndex) {
+            return instruction.payloadOffset + ((instruction.opcodeWordIndex + 1u + operandWordIndex) * 4u);
+        }
+        operandWordIndex += static_cast<std::uint32_t>(parameter.rawWords.size());
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::int64_t footerRelativeValue(const SctParameter& parameter, bool signedRelative) {
+    if (parameter.rawWords.empty()) {
+        return 0;
+    }
+    const auto raw = parameter.rawWords.front();
+    if (signedRelative) {
+        return static_cast<std::int32_t>(raw);
+    }
+    return raw;
+}
+
+[[nodiscard]] std::vector<FooterReferenceCandidate> collectFooterReferenceCandidates(
+    const std::map<std::uint32_t, GlobalDecodedInstruction>& globalInstructions,
+    std::span<const std::uint8_t> dataBytes,
+    std::uint32_t lastRowStart) {
+    std::vector<FooterReferenceCandidate> candidates{};
+    for (const auto& [payloadOffset, global] : globalInstructions) {
+        const auto& instruction = global.decoded.inst;
+        for (const auto& parameter : instruction.parameters) {
+            const auto metadata = sctFooterParamMetadata(instruction.opcode, parameter.index);
+            if (metadata.kind == SctFooterParamKind::None) {
+                continue;
+            }
+            const auto operandPayloadOffset = parameterOperandPayloadOffset(instruction, parameter.index);
+            if (!operandPayloadOffset.has_value()) {
+                continue;
+            }
+            const auto target = static_cast<std::int64_t>(*operandPayloadOffset)
+                + footerRelativeValue(parameter, metadata.signedRelative);
+
+            FooterReferenceCandidate candidate{};
+            candidate.reference.instructionPayloadOffset = payloadOffset;
+            candidate.reference.parameterIndex = parameter.index;
+            candidate.reference.operandPayloadOffset = *operandPayloadOffset;
+            candidate.reference.opcode = instruction.opcode;
+            candidate.kind = metadata.kind == SctFooterParamKind::SctString
+                ? SctFooterEntryKind::SctString
+                : SctFooterEntryKind::String;
+
+            if (target >= 0 && target < static_cast<std::int64_t>(dataBytes.size())) {
+                candidate.reference.targetPayloadOffset = static_cast<std::uint32_t>(target);
+                const auto rawString = readNullTerminatedBytes(dataBytes, candidate.reference.targetPayloadOffset);
+                candidate.valid = candidate.reference.targetPayloadOffset > lastRowStart
+                    && rawString.has_value()
+                    && hasPlausibleStringBytes(*rawString);
+            }
+            candidates.push_back(std::move(candidate));
+        }
+    }
+    return candidates;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> terminatorEndFromDecodedInstruction(
+    const DecodedInstruction& decoded,
+    std::uint32_t offset) {
+    if (!decoded.inst.decodeOk) {
+        return std::nullopt;
+    }
+    if (decoded.inst.opcode == 12u) {
+        return offset + 4u;
+    }
+    if (decoded.inst.opcode == 10u && decoded.inst.sizeBytes >= 8u && !decoded.inst.operands.empty()) {
+        if (static_cast<std::int32_t>(decoded.inst.operands.back()) < 0) {
+            return offset + decoded.inst.sizeBytes;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] FooterBoundaryResult inferFooterBoundary(
+    const std::vector<FooterReferenceCandidate>& candidates,
+    const std::map<std::uint32_t, GlobalDecodedInstruction>& globalInstructions,
+    std::span<const std::uint8_t> dataBytes,
+    std::uint32_t lastRowStart,
+    Endian indexEndian) {
+    FooterBoundaryResult result{};
+    std::optional<std::uint32_t> earliestFooterTarget{};
+    for (const auto& candidate : candidates) {
+        if (!candidate.valid) {
+            continue;
+        }
+        if (!earliestFooterTarget.has_value() || candidate.reference.targetPayloadOffset < *earliestFooterTarget) {
+            earliestFooterTarget = candidate.reference.targetPayloadOffset;
+        }
+    }
+
+    if (!earliestFooterTarget.has_value()) {
+        result.diagnostic = "No valid footer string references were found.";
+        return result;
+    }
+
+    if (*earliestFooterTarget <= lastRowStart) {
+        result.diagnostic = "Earliest footer reference does not land after the final index row start.";
+        return result;
+    }
+
+    auto cursor = ((*earliestFooterTarget - 1u) / 4u) * 4u;
+    while (cursor > lastRowStart) {
+        if (const auto it = globalInstructions.find(cursor); it != globalInstructions.end()) {
+            if (const auto terminatorEnd = terminatorEndFromDecodedInstruction(it->second.decoded, cursor);
+                terminatorEnd.has_value() && *terminatorEnd <= *earliestFooterTarget) {
+                result.detected = true;
+                result.footerStart = *terminatorEnd;
+                result.confidence = SctSemanticConfidence::Known;
+                return result;
+            }
+        }
+        if (cursor < 4u) {
+            break;
+        }
+        cursor -= 4u;
+    }
+
+    cursor = ((*earliestFooterTarget - 1u) / 4u) * 4u;
+    while (cursor > lastRowStart) {
+        std::vector<SctDiagnostic> diagnostics{};
+        const auto decoded = decodeInstruction(dataBytes, cursor, indexEndian, diagnostics);
+        if (const auto terminatorEnd = terminatorEndFromDecodedInstruction(decoded, cursor);
+            terminatorEnd.has_value() && *terminatorEnd <= *earliestFooterTarget) {
+            result.detected = true;
+            result.footerStart = *terminatorEnd;
+            result.confidence = SctSemanticConfidence::Heuristic;
+            result.diagnostic = "Footer boundary inferred using aligned SALSA-compatible fallback scan.";
+            return result;
+        }
+        if (cursor < 4u) {
+            break;
+        }
+        cursor -= 4u;
+    }
+
+    result.diagnostic = "Footer references were found, but no aligned final-section terminator was found before the footer.";
+    return result;
+}
+
+void populateFooterEntriesAndGroups(
+    SctParseResult& result,
+    SctFooter& footer,
+    const std::vector<FooterReferenceCandidate>& footerCandidates,
+    std::span<const std::uint8_t> dataBytes) {
+    std::map<std::uint32_t, std::size_t> entryIndexByTarget{};
+    std::uint32_t plainCount = 0;
+    std::uint32_t sctStringCount = 0;
+    for (const auto& candidate : footerCandidates) {
+        if (!candidate.valid || candidate.reference.targetPayloadOffset < footer.payloadStartOffset) {
+            continue;
+        }
+        const auto rawString = readNullTerminatedBytes(dataBytes, candidate.reference.targetPayloadOffset);
+        if (!rawString.has_value()) {
+            footer.diagnostics.push_back({
+                "Footer reference target is not null-terminated.",
+                candidate.reference.targetPayloadOffset
+            });
+            continue;
+        }
+
+        auto entryIt = entryIndexByTarget.find(candidate.reference.targetPayloadOffset);
+        if (entryIt == entryIndexByTarget.end()) {
+            SctFooterEntry entry{};
+            entry.kind = candidate.kind;
+            entry.payloadOffset = candidate.reference.targetPayloadOffset;
+            entry.rawBytes = *rawString;
+            entry.decodedText = decodeStringBytes(entry.rawBytes);
+            entry.decodeOk = true;
+            if (entry.kind == SctFooterEntryKind::SctString) {
+                entry.id = numberedId("FOOTER", sctStringCount++);
+            } else {
+                entry.id = numberedId("STRING", plainCount++);
+            }
+            footer.entries.push_back(std::move(entry));
+            entryIt = entryIndexByTarget.emplace(candidate.reference.targetPayloadOffset, footer.entries.size() - 1u).first;
+        } else if (footer.entries[entryIt->second].kind == SctFooterEntryKind::String
+            && candidate.kind == SctFooterEntryKind::SctString) {
+            footer.entries[entryIt->second].kind = SctFooterEntryKind::SctString;
+            footer.entries[entryIt->second].id = numberedId("FOOTER", sctStringCount++);
+        }
+        footer.entries[entryIt->second].references.push_back(candidate.reference);
+    }
+
+    SctStringGroup footerGroup{};
+    footerGroup.name = "_Footer_";
+    footerGroup.synthetic = true;
+    footerGroup.notes.push_back("Synthetic footer string group created from footer string references.");
+    for (const auto& entry : footer.entries) {
+        if (entry.kind == SctFooterEntryKind::SctString) {
+            footerGroup.footerEntryIds.push_back(entry.id);
+        }
+    }
+    if (!footerGroup.footerEntryIds.empty()) {
+        result.file.stringGroups.push_back(std::move(footerGroup));
+    }
 }
 
 [[nodiscard]] bool externalLoopBreakApplies(std::uint16_t opcode, std::uint32_t iterations) {
@@ -903,6 +1171,12 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
             if (!isScptParam && (opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsMld
                 || opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsScript)) {
                 parameter.valueKind = SctParameterValueKind::ResourceRef;
+            }
+            if (!isScptParam && sctFooterParamMetadata(opcode, baseParamIndex).kind != SctFooterParamKind::None) {
+                parameter.valueKind = SctParameterValueKind::StringRef;
+                if (parameter.role.empty()) {
+                    parameter.role = "footerStringRef";
+                }
             }
 
             for (std::uint32_t i = 0; i < wordsForParam; ++i) {
@@ -1536,6 +1810,88 @@ SctParseResult SctParser::parse(
             cursor = nextCursor;
         }
     }
+
+    SctFooter footer{};
+    footer.present = true;
+    footer.payloadStartOffset = dataSize;
+    footer.payloadEndOffset = dataSize;
+    footer.confidence = SctSemanticConfidence::Known;
+
+    if (!rows.empty()) {
+        const auto lastRowIndex = static_cast<std::uint32_t>(rows.size() - 1u);
+        const auto lastRowStart = rows[lastRowIndex].start;
+        auto footerCandidates = collectFooterReferenceCandidates(globalInstructions, dataBytes, lastRowStart);
+        bool footerBoundaryApplied = false;
+
+        if (lastRowIndex < result.file.sections.size()
+            && result.file.sections[lastRowIndex].kind == SctSectionKind::String) {
+            const auto originalLastRowEnd = rows[lastRowIndex].end;
+            const auto sectionBytes = dataBytes.subspan(
+                rows[lastRowIndex].start,
+                originalLastRowEnd - rows[lastRowIndex].start);
+            const auto preamble = parseLabelPreamble(sectionBytes, indexEndian);
+            if (const auto stringEnd = firstStringEndOffset(sectionBytes, preamble); stringEnd.has_value()) {
+                footer.payloadStartOffset = rows[lastRowIndex].start + *stringEnd;
+                footer.confidence = SctSemanticConfidence::Known;
+                rows[lastRowIndex].end = footer.payloadStartOffset;
+                auto& finalSection = result.file.sections[lastRowIndex];
+                finalSection.endOffset = dataStart + footer.payloadStartOffset;
+                const auto truncatedSectionBytes = dataBytes.subspan(
+                    rows[lastRowIndex].start,
+                    rows[lastRowIndex].end - rows[lastRowIndex].start);
+                finalSection.stringEntry = makeStringEntry(truncatedSectionBytes, preamble);
+                finalSection.rawSpans.clear();
+                finalSection.rawSpans.push_back(makeRawSpan(
+                    truncatedSectionBytes,
+                    SctRawSpanReason::StringPayload,
+                    "Raw string-section bytes preserved by SCT IR."));
+                footerBoundaryApplied = true;
+            } else {
+                const std::string message = "Final string section did not contain a null terminator; footer left empty.";
+                footer.diagnostics.push_back({message, lastRowStart});
+                result.diagnostics.push_back({message, lastRowStart, rows[lastRowIndex].name});
+                footer.confidence = SctSemanticConfidence::Unknown;
+            }
+        }
+
+        if (!footerBoundaryApplied
+            && lastRowIndex < result.file.sections.size()
+            && result.file.sections[lastRowIndex].kind != SctSectionKind::String) {
+            auto footerBoundary = inferFooterBoundary(footerCandidates, globalInstructions, dataBytes, lastRowStart, indexEndian);
+            if (footerBoundary.detected
+                && footerBoundary.footerStart > lastRowStart
+                && footerBoundary.footerStart <= dataSize
+                && footerBoundary.footerStart < rows[lastRowIndex].end) {
+                rows[lastRowIndex].end = footerBoundary.footerStart;
+                if (lastRowIndex < result.file.sections.size()) {
+                    result.file.sections[lastRowIndex].endOffset = dataStart + footerBoundary.footerStart;
+                }
+                footer.payloadStartOffset = footerBoundary.footerStart;
+                footer.confidence = footerBoundary.confidence;
+                if (!footerBoundary.diagnostic.empty()) {
+                    footer.diagnostics.push_back({footerBoundary.diagnostic, footerBoundary.footerStart});
+                    result.diagnostics.push_back({footerBoundary.diagnostic, footerBoundary.footerStart});
+                }
+                footerBoundaryApplied = true;
+            } else if (!footerBoundary.diagnostic.empty() && std::any_of(
+                footerCandidates.begin(),
+                footerCandidates.end(),
+                [](const auto& candidate) { return candidate.valid; })) {
+                footer.diagnostics.push_back({footerBoundary.diagnostic, lastRowStart});
+                result.diagnostics.push_back({footerBoundary.diagnostic, lastRowStart});
+                footer.confidence = SctSemanticConfidence::Unknown;
+            }
+        }
+
+        footer.payloadStartOffset = std::min(footer.payloadStartOffset, dataSize);
+        footer.rawBytes.insert(
+            footer.rawBytes.end(),
+            dataBytes.begin() + footer.payloadStartOffset,
+            dataBytes.end());
+        populateFooterEntriesAndGroups(result, footer, footerCandidates, dataBytes);
+    }
+
+    result.file.footer = std::move(footer);
 
     for (const auto& [payloadOffset, global] : globalInstructions) {
         const auto sectionIndex = sectionIndexForPayloadOffset(rows, payloadOffset);

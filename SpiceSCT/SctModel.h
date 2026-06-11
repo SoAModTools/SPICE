@@ -46,6 +46,11 @@ enum class SctParameterValueKind {
     StringRef,
 };
 
+enum class SctFooterEntryKind {
+    String,
+    SctString,
+};
+
 enum class SctEdgeType {
     Fallthrough,
     BranchTrue,
@@ -224,8 +229,42 @@ struct SctStringGroup {
     std::string name;
     std::optional<std::uint32_t> labelSectionIndex;
     std::vector<std::uint32_t> stringSectionIndexes;
+    std::vector<std::string> footerEntryIds;
     bool synthetic = false;
     std::vector<std::string> notes;
+};
+
+struct SctFooterReference {
+    std::uint32_t instructionPayloadOffset = 0;
+    std::uint32_t parameterIndex = 0;
+    std::uint32_t operandPayloadOffset = 0;
+    std::uint32_t targetPayloadOffset = 0;
+    std::uint16_t opcode = 0;
+};
+
+struct SctFooterEntry {
+    std::string id;
+    SctFooterEntryKind kind = SctFooterEntryKind::String;
+    std::uint32_t payloadOffset = 0;
+    std::vector<std::uint8_t> rawBytes;
+    std::string decodedText;
+    bool decodeOk = false;
+    std::vector<SctFooterReference> references;
+};
+
+struct SctFooterDiagnostic {
+    std::string message;
+    std::uint32_t payloadOffset = 0;
+};
+
+struct SctFooter {
+    bool present = false;
+    std::uint32_t payloadStartOffset = 0;
+    std::uint32_t payloadEndOffset = 0;
+    std::vector<std::uint8_t> rawBytes;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+    std::vector<SctFooterEntry> entries;
+    std::vector<SctFooterDiagnostic> diagnostics;
 };
 
 struct FlagAccessSummary {
@@ -274,6 +313,7 @@ struct SctFile {
     std::vector<SctSection> sections;
     std::vector<SctCodeRegion> codeRegions;
     std::vector<SctStringGroup> stringGroups;
+    std::optional<SctFooter> footer;
 };
 
 struct SctDiagnostic {

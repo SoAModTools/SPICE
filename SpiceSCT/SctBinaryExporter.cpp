@@ -264,6 +264,37 @@ void patchControlFlowWords(
     }
 }
 
+void patchFooterReferenceWords(
+    const SctInstruction& instruction,
+    std::uint32_t newPayloadOffset,
+    const std::unordered_map<std::uint32_t, std::uint32_t>& offsetMap,
+    std::vector<std::uint32_t>& words) {
+    const auto opcodeIndex = opcodeWordIndex(instruction, words);
+    std::size_t operandWordOffset = 0;
+    for (const auto& parameter : instruction.parameters) {
+        const auto metadata = sctFooterParamMetadata(instruction.opcode, parameter.index);
+        if (metadata.kind != SctFooterParamKind::None && !parameter.rawWords.empty()) {
+            const auto wordIndex = opcodeIndex + 1u + operandWordOffset;
+            if (wordIndex >= words.size()) {
+                break;
+            }
+            const auto oldOperandPayloadOffset = instruction.payloadOffset + static_cast<std::uint32_t>(wordIndex * 4u);
+            const auto oldRelative = metadata.signedRelative
+                ? static_cast<std::int64_t>(static_cast<std::int32_t>(parameter.rawWords.front()))
+                : static_cast<std::int64_t>(parameter.rawWords.front());
+            const auto oldTarget = static_cast<std::int64_t>(oldOperandPayloadOffset) + oldRelative;
+            if (oldTarget >= 0) {
+                if (const auto targetIt = offsetMap.find(static_cast<std::uint32_t>(oldTarget)); targetIt != offsetMap.end()) {
+                    words[wordIndex] = relativeFromWordOffset(
+                        newPayloadOffset + static_cast<std::uint32_t>(wordIndex * 4u),
+                        targetIt->second);
+                }
+            }
+        }
+        operandWordOffset += parameter.rawWords.size();
+    }
+}
+
 std::vector<std::uint8_t> rawSectionBytes(const SctSection& section) {
     std::vector<std::uint8_t> bytes{};
     for (const auto& span : section.rawSpans) {
@@ -296,6 +327,7 @@ std::vector<std::uint8_t> exportScriptSection(
         const auto newPayloadOffset = offsetMap.at(instruction->payloadOffset);
         const auto newSize = static_cast<std::uint32_t>(words.size() * 4u);
         patchControlFlowWords(sections, *instruction, newPayloadOffset, newSize, offsetMap, words);
+        patchFooterReferenceWords(*instruction, newPayloadOffset, offsetMap, words);
         for (const auto word : words) {
             appendU32(bytes, word, endian);
         }
@@ -354,6 +386,18 @@ std::vector<std::uint8_t> exportCanonicalPayload(const SctParseResult& parseResu
             newPayloadCursor += static_cast<std::uint32_t>(rawBytes.size());
         }
     }
+    const auto newFooterStart = newPayloadCursor;
+    if (ir.file.footer.has_value() && ir.file.footer->present) {
+        for (const auto& entry : ir.file.footer->entries) {
+            if (entry.payloadOffset >= ir.file.footer->payloadStartOffset
+                && entry.payloadOffset < ir.file.footer->payloadEndOffset) {
+                offsetMap.emplace(
+                    entry.payloadOffset,
+                    newFooterStart + (entry.payloadOffset - ir.file.footer->payloadStartOffset));
+            }
+        }
+        newPayloadCursor += static_cast<std::uint32_t>(ir.file.footer->rawBytes.size());
+    }
 
     std::uint32_t sectionStart = 0;
     for (const auto& section : ir.file.sections) {
@@ -378,6 +422,9 @@ std::vector<std::uint8_t> exportCanonicalPayload(const SctParseResult& parseResu
 
     for (const auto& bytes : sectionBytes) {
         out.insert(out.end(), bytes.begin(), bytes.end());
+    }
+    if (ir.file.footer.has_value() && ir.file.footer->present) {
+        out.insert(out.end(), ir.file.footer->rawBytes.begin(), ir.file.footer->rawBytes.end());
     }
     return out;
 }

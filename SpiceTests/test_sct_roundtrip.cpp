@@ -329,6 +329,111 @@ std::vector<std::uint8_t> makeNamedSct(
     return out;
 }
 
+std::vector<std::uint8_t> makeSingleIndexedPayloadSct(std::vector<std::uint8_t> payload, std::string name = "entry")
+{
+    std::vector<std::vector<std::uint8_t>> sections = {std::move(payload)};
+    std::vector<std::string> names = {std::move(name)};
+    return makeNamedSct(sections, names);
+}
+
+void appendCString(std::vector<std::uint8_t>& bytes, std::string text)
+{
+    for (const auto ch : text) {
+        bytes.push_back(static_cast<std::uint8_t>(ch));
+    }
+    bytes.push_back(0u);
+}
+
+std::vector<std::uint8_t> makeFooterTypedPayload()
+{
+    std::vector<std::uint8_t> payload{};
+    appendLabel(payload, 0x3f800000u);
+
+    appendU32(payload, 23u);
+    appendU32(payload, 16u);
+
+    appendU32(payload, 24u);
+    appendU32(payload, 17u);
+
+    appendU32(payload, 12u);
+
+    appendCString(payload, "file.bin");
+    appendCString(payload, "\\h()Hi\\e");
+    return payload;
+}
+
+std::vector<std::uint8_t> makeFooterWithUnalignedOpcodeLookalikes()
+{
+    std::vector<std::uint8_t> payload{};
+    appendLabel(payload, 0x3f800000u);
+
+    appendU32(payload, 24u);
+    appendU32(payload, 13u);
+    appendU32(payload, 12u);
+
+    payload.push_back(0x41u);
+    payload.push_back(0u);
+    payload.push_back(0u);
+    payload.push_back(0u);
+    payload.push_back(12u);
+    appendCString(payload, "Hi\\e");
+    return payload;
+}
+
+std::vector<std::uint8_t> makeFooterAfterTerminalJumpPayload()
+{
+    std::vector<std::uint8_t> payload{};
+    appendLabel(payload, 0x3f800000u);
+
+    appendU32(payload, 24u);
+    appendU32(payload, 13u);
+    appendU32(payload, 10u);
+    appendU32(payload, 0xfffffffcu);
+
+    payload.push_back(0u);
+    appendCString(payload, "Hi\\e");
+    return payload;
+}
+
+std::vector<std::uint8_t> makeFinalStringTailSct(std::string displayText, std::uint32_t paddingBytes)
+{
+    std::vector<std::uint8_t> script{};
+    appendLabel(script, 0x3f800000u);
+    appendU32(script, 24u);
+    appendU32(script, 0u);
+    appendU32(script, 12u);
+
+    std::vector<std::uint8_t> finalString{};
+    appendLabel(finalString, 0x3f800000u);
+    for (const auto ch : displayText) {
+        finalString.push_back(static_cast<std::uint8_t>(ch));
+    }
+    finalString.push_back(0u);
+    for (std::uint32_t i = 0; i < paddingBytes; ++i) {
+        finalString.push_back(0u);
+    }
+    appendCString(finalString, "Tail\\e");
+
+    const auto finalStart = static_cast<std::uint32_t>(script.size());
+    const auto footerStart = finalStart + 16u + static_cast<std::uint32_t>(displayText.size()) + 1u;
+    const auto target = footerStart + paddingBytes;
+    writeU32(script, 20u, target - 20u);
+    const std::vector<std::vector<std::uint8_t>> sections = {script, finalString};
+    const std::vector<std::string> names = {"entry", "MS0000001"};
+    return makeNamedSct(sections, names);
+}
+
+std::vector<std::uint8_t> makeFinalStringOnlySct(std::string displayText)
+{
+    std::vector<std::uint8_t> finalString{};
+    appendLabel(finalString, 0x3f800000u);
+    for (const auto ch : displayText) {
+        finalString.push_back(static_cast<std::uint8_t>(ch));
+    }
+    finalString.push_back(0u);
+    return makeSingleIndexedPayloadSct(std::move(finalString), "MS0000001");
+}
+
 std::vector<std::uint8_t> makeRoundTripFixture()
 {
     const std::vector<std::vector<std::uint8_t>> sections = {
@@ -752,6 +857,157 @@ TEST(SctRoundTrip, Opcode119ExternalBreakSkipsLoopBody)
     ASSERT_EQ(2u, instructions[0].parameters.size());
     EXPECT_EQ(12u, instructions[1].opcode);
     EXPECT_EQ(20u, instructions[1].offset);
+}
+
+TEST(SctRoundTrip, DetectsTypedFooterStringsAfterFinalIndexedSection)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(
+        makeSingleIndexedPayloadSct(makeFooterTypedPayload()),
+        "footer_typed.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_TRUE(parsed.file.footer.has_value());
+    const auto& footer = *parsed.file.footer;
+    EXPECT_TRUE(footer.present);
+    EXPECT_EQ(36u, footer.payloadStartOffset);
+    ASSERT_EQ(2u, footer.entries.size());
+    EXPECT_EQ(spice::sct::SctFooterEntryKind::String, footer.entries[0].kind);
+    EXPECT_EQ("STRING000", footer.entries[0].id);
+    EXPECT_EQ("file.bin", footer.entries[0].decodedText);
+    EXPECT_EQ(spice::sct::SctFooterEntryKind::SctString, footer.entries[1].kind);
+    EXPECT_EQ("FOOTER000", footer.entries[1].id);
+    EXPECT_EQ("\\h()Hi\\e", footer.entries[1].decodedText);
+
+    ASSERT_EQ(1u, parsed.file.stringGroups.size());
+    EXPECT_EQ("_Footer_", parsed.file.stringGroups[0].name);
+    EXPECT_TRUE(parsed.file.stringGroups[0].stringSectionIndexes.empty());
+    EXPECT_EQ(std::vector<std::string>({"FOOTER000"}), parsed.file.stringGroups[0].footerEntryIds);
+
+    ASSERT_EQ(1u, parsed.file.sections.size());
+    EXPECT_EQ(kHeaderSize + kIndexEntrySize + 36u, parsed.file.sections[0].endOffset);
+}
+
+TEST(SctRoundTrip, FooterBoundaryScanIgnoresUnalignedOpcodeLookalikes)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(
+        makeSingleIndexedPayloadSct(makeFooterWithUnalignedOpcodeLookalikes()),
+        "footer_unaligned.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_TRUE(parsed.file.footer.has_value());
+    EXPECT_EQ(28u, parsed.file.footer->payloadStartOffset);
+    ASSERT_EQ(1u, parsed.file.footer->entries.size());
+    EXPECT_EQ(33u, parsed.file.footer->entries[0].payloadOffset);
+    EXPECT_EQ("Hi\\e", parsed.file.footer->entries[0].decodedText);
+}
+
+TEST(SctRoundTrip, FooterBoundaryCanUseTerminalNegativeJump)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(
+        makeSingleIndexedPayloadSct(makeFooterAfterTerminalJumpPayload()),
+        "footer_jump.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_TRUE(parsed.file.footer.has_value());
+    EXPECT_EQ(32u, parsed.file.footer->payloadStartOffset);
+    ASSERT_EQ(1u, parsed.file.footer->entries.size());
+    EXPECT_EQ(33u, parsed.file.footer->entries[0].payloadOffset);
+    EXPECT_EQ("Hi\\e", parsed.file.footer->entries[0].decodedText);
+}
+
+TEST(SctRoundTrip, CanonicalExportPreservesFooterEntriesAndReferences)
+{
+    const auto original = spice::sct::SctParser{}.parse(
+        makeSingleIndexedPayloadSct(makeFooterTypedPayload()),
+        "footer_typed.sct");
+    ASSERT_TRUE(original.parseOk);
+    ASSERT_TRUE(original.file.footer.has_value());
+
+    const auto exported = spice::sct::SctBinaryExporter{}.exportFile(original);
+    const auto reparsed = spice::sct::SctParser{}.parse(exported, "footer_typed.exported.sct");
+    ASSERT_TRUE(reparsed.parseOk);
+    ASSERT_TRUE(reparsed.file.footer.has_value());
+    ASSERT_EQ(2u, reparsed.file.footer->entries.size());
+    EXPECT_EQ(spice::sct::SctFooterEntryKind::String, reparsed.file.footer->entries[0].kind);
+    EXPECT_EQ(spice::sct::SctFooterEntryKind::SctString, reparsed.file.footer->entries[1].kind);
+    EXPECT_EQ("file.bin", reparsed.file.footer->entries[0].decodedText);
+    EXPECT_EQ("\\h()Hi\\e", reparsed.file.footer->entries[1].decodedText);
+}
+
+TEST(SctRoundTrip, FinalStringTailBecomesFooterAndPreservesAlignmentPadding)
+{
+    const std::vector<std::pair<std::string, std::uint32_t>> cases = {
+        {"abc", 0u},
+        {"abcdef", 1u},
+        {"abcde", 2u},
+        {"abcd", 3u},
+    };
+    for (const auto& [displayText, paddingBytes] : cases) {
+        const auto parsed = spice::sct::SctParser{}.parse(
+            makeFinalStringTailSct(displayText, paddingBytes),
+            "final_string_tail.sct");
+        ASSERT_TRUE(parsed.parseOk);
+        ASSERT_TRUE(parsed.file.footer.has_value());
+        const auto& footer = *parsed.file.footer;
+
+        const auto expectedFooterStart = 28u + 16u + static_cast<std::uint32_t>(displayText.size()) + 1u;
+        EXPECT_TRUE(footer.present);
+        EXPECT_EQ(expectedFooterStart, footer.payloadStartOffset);
+        ASSERT_EQ(1u, footer.entries.size());
+        EXPECT_EQ(expectedFooterStart + paddingBytes, footer.entries[0].payloadOffset);
+        EXPECT_EQ(spice::sct::SctFooterEntryKind::SctString, footer.entries[0].kind);
+        EXPECT_EQ("Tail\\e", footer.entries[0].decodedText);
+        ASSERT_GE(footer.rawBytes.size(), static_cast<std::size_t>(paddingBytes));
+        for (std::uint32_t i = 0; i < paddingBytes; ++i) {
+            EXPECT_EQ(0u, footer.rawBytes[i]);
+        }
+
+        ASSERT_EQ(2u, parsed.file.sections.size());
+        const auto& finalSection = parsed.file.sections[1];
+        ASSERT_TRUE(finalSection.stringEntry.has_value());
+        EXPECT_EQ(displayText, finalSection.stringEntry->decodedText);
+        EXPECT_EQ(displayText.size() + 1u, finalSection.stringEntry->rawTextBytes.size());
+        EXPECT_EQ(kHeaderSize + (2u * kIndexEntrySize) + expectedFooterStart, finalSection.endOffset);
+        ASSERT_EQ(1u, finalSection.rawSpans.size());
+        EXPECT_EQ(16u + displayText.size() + 1u, finalSection.rawSpans[0].rawBytes.size());
+    }
+}
+
+TEST(SctRoundTrip, FinalStringWithoutTailStillCreatesEmptyFooter)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(
+        makeFinalStringOnlySct("abc"),
+        "final_string_empty_footer.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_TRUE(parsed.file.footer.has_value());
+    EXPECT_TRUE(parsed.file.footer->present);
+    EXPECT_TRUE(parsed.file.footer->rawBytes.empty());
+    EXPECT_TRUE(parsed.file.footer->entries.empty());
+    EXPECT_EQ(20u, parsed.file.footer->payloadStartOffset);
+
+    ASSERT_EQ(1u, parsed.file.sections.size());
+    ASSERT_TRUE(parsed.file.sections[0].stringEntry.has_value());
+    EXPECT_EQ("abc", parsed.file.sections[0].stringEntry->decodedText);
+}
+
+TEST(SctRoundTrip, CanonicalExportPreservesFinalStringTailFooter)
+{
+    const auto originalBytes = makeFinalStringTailSct("ab", 1u);
+    const auto original = spice::sct::SctParser{}.parse(originalBytes, "final_string_tail.sct");
+    ASSERT_TRUE(original.parseOk);
+    ASSERT_TRUE(original.file.footer.has_value());
+
+    spice::sct::SctExportOptions preserveOptions{};
+    preserveOptions.mode = spice::sct::SctExportMode::PreserveBytesForTest;
+    EXPECT_EQ(originalBytes, spice::sct::SctBinaryExporter{}.exportFile(original, preserveOptions));
+
+    const auto exported = spice::sct::SctBinaryExporter{}.exportFile(original);
+    const auto reparsed = spice::sct::SctParser{}.parse(exported, "final_string_tail.exported.sct");
+    ASSERT_TRUE(reparsed.parseOk);
+    ASSERT_TRUE(reparsed.file.footer.has_value());
+    EXPECT_EQ(original.file.footer->payloadStartOffset, reparsed.file.footer->payloadStartOffset);
+    ASSERT_EQ(1u, reparsed.file.footer->entries.size());
+    EXPECT_EQ(spice::sct::SctFooterEntryKind::SctString, reparsed.file.footer->entries[0].kind);
+    EXPECT_EQ("Tail\\e", reparsed.file.footer->entries[0].decodedText);
+    ASSERT_TRUE(reparsed.file.sections[1].stringEntry.has_value());
+    EXPECT_EQ("ab", reparsed.file.sections[1].stringEntry->decodedText);
 }
 
 TEST(SctRoundTrip, CodeRegionFallsThroughAcrossIndexRows)
