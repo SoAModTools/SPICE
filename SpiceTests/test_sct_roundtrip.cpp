@@ -30,6 +30,14 @@ void appendU32(std::vector<std::uint8_t>& bytes, std::uint32_t value)
     writeU32(bytes, offset, value);
 }
 
+std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset)
+{
+    return (static_cast<std::uint32_t>(bytes[offset + 0u]) << 24u)
+        | (static_cast<std::uint32_t>(bytes[offset + 1u]) << 16u)
+        | (static_cast<std::uint32_t>(bytes[offset + 2u]) << 8u)
+        | static_cast<std::uint32_t>(bytes[offset + 3u]);
+}
+
 void writeName(std::vector<std::uint8_t>& bytes, std::size_t offset, std::string name)
 {
     for (std::size_t i = 0; i < 16u; ++i) {
@@ -782,6 +790,62 @@ TEST(SctRoundTrip, CanonicalExportPreservesFoldedInstructionModifierSemantics)
 
     const auto comparison = spice::sct::SctSemanticComparer{}.compare(original, reparsed);
     EXPECT_TRUE(comparison.equivalent);
+}
+
+TEST(SctRoundTrip, CanonicalExportWritesFoldedMetadataBeforeMainOpcode)
+{
+    spice::sct::SctInstruction instruction{};
+    instruction.offset = 0u;
+    instruction.payloadOffset = 0u;
+    instruction.opcode = 41u;
+    instruction.opcodeWordIndex = 0u;
+    instruction.skipRefresh = true;
+    instruction.scheduled.present = true;
+    instruction.scheduled.frameDelay.valueKind = spice::sct::SctParameterValueKind::Expression;
+    instruction.scheduled.frameDelay.rawWords = {0x04000000u, 0x3f800000u, 0x1du};
+    instruction.scheduled.instructionByteLength = 16u;
+    instruction.operands = {0x04000000u, 0x45c3a000u, 0x1du};
+    const std::vector<std::uint32_t> noncanonicalWords = {
+        41u, 0x04000000u, 0x45c3a000u, 0x1du,
+        13u, 129u, 0x04000000u, 0x3f800000u, 0x1du, 16u,
+    };
+    instruction.rawWords = noncanonicalWords;
+    instruction.sizeBytes = static_cast<std::uint32_t>(instruction.rawWords.size() * 4u);
+    instruction.decodeOk = true;
+
+    spice::sct::SctSection section{};
+    section.id.index = 0u;
+    section.id.name = "entry";
+    section.kind = spice::sct::SctSectionKind::Script;
+    section.startOffset = static_cast<std::uint32_t>(kHeaderSize + kIndexEntrySize);
+    section.endOffset = section.startOffset + instruction.sizeBytes;
+    section.instructions.push_back(std::move(instruction));
+
+    spice::sct::SctParseResult parseResult{};
+    parseResult.parseOk = true;
+    parseResult.file.detectedEndian = "big";
+    std::vector<std::uint8_t> originalPayload{};
+    for (const auto word : noncanonicalWords) {
+        appendU32(originalPayload, word);
+    }
+    parseResult.file.originalBytes = makeSingleIndexedPayloadSct(std::move(originalPayload), "entry");
+    parseResult.file.sections.push_back(std::move(section));
+
+    const auto exported = spice::sct::SctBinaryExporter{}.exportFile(parseResult);
+    const auto payloadOffset = kHeaderSize + kIndexEntrySize;
+    const std::vector<std::uint32_t> expectedWords = {
+        13u, 129u, 0x04000000u, 0x3f800000u, 0x1du, 16u,
+        41u, 0x04000000u, 0x45c3a000u, 0x1du,
+    };
+
+    ASSERT_GE(exported.size(), payloadOffset + (expectedWords.size() * 4u));
+    for (std::size_t i = 0; i < expectedWords.size(); ++i) {
+        EXPECT_EQ(expectedWords[i], readU32(exported, payloadOffset + (i * 4u))) << "word " << i;
+    }
+
+    spice::sct::SctExportOptions preserveOptions{};
+    preserveOptions.mode = spice::sct::SctExportMode::PreserveBytesForTest;
+    EXPECT_EQ(parseResult.file.originalBytes, spice::sct::SctBinaryExporter{}.exportFile(parseResult, preserveOptions));
 }
 
 TEST(SctRoundTrip, SwitchTargetsUseLogicalParametersAfterMultiwordScptSelector)

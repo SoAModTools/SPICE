@@ -90,32 +90,75 @@ std::uint32_t instructionSizeWords(const SctInstruction& instruction) {
     return static_cast<std::uint32_t>(prefixWords + 1u + instruction.operands.size());
 }
 
+bool hasFoldedMetadata(const SctInstruction& instruction) {
+    return instruction.skipRefresh || instruction.scheduled.present;
+}
+
+std::size_t rawOpcodeWordIndex(const SctInstruction& instruction) {
+    if (instruction.opcodeWordIndex < instruction.rawWords.size()
+        && instruction.rawWords[instruction.opcodeWordIndex] == instruction.opcode) {
+        return instruction.opcodeWordIndex;
+    }
+    const auto found = std::find_if(instruction.rawWords.begin(), instruction.rawWords.end(), [&](std::uint32_t word) {
+        return word == instruction.opcode;
+    });
+    return found == instruction.rawWords.end()
+        ? 0u
+        : static_cast<std::size_t>(std::distance(instruction.rawWords.begin(), found));
+}
+
+void appendMetadataWords(const SctInstruction& instruction, std::vector<std::uint32_t>& words) {
+    if (instruction.skipRefresh) {
+        words.push_back(13u);
+    }
+    if (!instruction.scheduled.present) {
+        return;
+    }
+
+    if (!instruction.scheduled.rawWords.empty()) {
+        words.insert(words.end(), instruction.scheduled.rawWords.begin(), instruction.scheduled.rawWords.end());
+        return;
+    }
+
+    words.push_back(129u);
+    words.insert(
+        words.end(),
+        instruction.scheduled.frameDelay.rawWords.begin(),
+        instruction.scheduled.frameDelay.rawWords.end());
+    const auto actualInstructionBytes = static_cast<std::uint32_t>((1u + instruction.operands.size()) * 4u);
+    words.push_back(instruction.scheduled.instructionByteLength == 0u
+        ? actualInstructionBytes
+        : instruction.scheduled.instructionByteLength);
+}
+
+void appendOperandWords(const SctInstruction& instruction, std::vector<std::uint32_t>& words) {
+    if (!instruction.operands.empty()) {
+        words.insert(words.end(), instruction.operands.begin(), instruction.operands.end());
+        return;
+    }
+
+    if (instruction.rawWords.empty()) {
+        return;
+    }
+
+    const auto opcodeIndex = rawOpcodeWordIndex(instruction);
+    if (opcodeIndex + 1u < instruction.rawWords.size()) {
+        words.insert(
+            words.end(),
+            instruction.rawWords.begin() + static_cast<std::ptrdiff_t>(opcodeIndex + 1u),
+            instruction.rawWords.end());
+    }
+}
+
 std::vector<std::uint32_t> writableWords(const SctInstruction& instruction) {
-    if (!instruction.rawWords.empty()) {
+    if (!instruction.rawWords.empty() && !hasFoldedMetadata(instruction)) {
         return instruction.rawWords;
     }
     std::vector<std::uint32_t> words{};
     words.reserve(instructionSizeWords(instruction));
-    if (instruction.skipRefresh) {
-        words.push_back(13u);
-    }
-    if (instruction.scheduled.present) {
-        if (!instruction.scheduled.rawWords.empty()) {
-            words.insert(words.end(), instruction.scheduled.rawWords.begin(), instruction.scheduled.rawWords.end());
-        } else {
-            words.push_back(129u);
-            words.insert(
-                words.end(),
-                instruction.scheduled.frameDelay.rawWords.begin(),
-                instruction.scheduled.frameDelay.rawWords.end());
-            const auto actualInstructionBytes = static_cast<std::uint32_t>((1u + instruction.operands.size()) * 4u);
-            words.push_back(instruction.scheduled.instructionByteLength == 0u
-                ? actualInstructionBytes
-                : instruction.scheduled.instructionByteLength);
-        }
-    }
+    appendMetadataWords(instruction, words);
     words.push_back(instruction.opcode);
-    words.insert(words.end(), instruction.operands.begin(), instruction.operands.end());
+    appendOperandWords(instruction, words);
     return words;
 }
 
