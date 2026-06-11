@@ -76,7 +76,23 @@ struct SectionRow {
     std::string name;
     bool isString = false;
     bool isCode = false;
+    bool isLabelOnly = false;
+    bool isGroupLabel = false;
     bool isValid = true;
+};
+
+struct LabelPreambleProbe {
+    bool present = false;
+    Endian endian = Endian::Big;
+    std::uint32_t endOffset = 0;
+    std::vector<std::uint32_t> rawWords;
+};
+
+struct OpcodeBoundaryProbe {
+    bool plausible = false;
+    bool swapped = false;
+    bool suspiciousOpcode4 = false;
+    std::uint16_t opcode = 0;
 };
 
 [[nodiscard]] std::string fallbackMnemonic(std::uint16_t opcode) {
@@ -91,9 +107,10 @@ struct SectionRow {
     return value == 0x7f7fffff || value == 0x00800000 || value == 0x7fffffff || value == kScptStopCode;
 }
 
-[[nodiscard]] bool isStringSection(std::span<const std::uint8_t> sectionBytes, Endian baseEndian) {
-    if (sectionBytes.size() < 12u) {
-        return false;
+[[nodiscard]] LabelPreambleProbe parseLabelPreamble(std::span<const std::uint8_t> sectionBytes, Endian baseEndian) {
+    LabelPreambleProbe probe{};
+    if (sectionBytes.size() < 8u) {
+        return probe;
     }
 
     const auto otherEndian = baseEndian == Endian::Big ? Endian::Little : Endian::Big;
@@ -101,28 +118,115 @@ struct SectionRow {
     const auto firstWordOther = readU32(sectionBytes, 0, otherEndian);
 
     Endian chosenEndian = baseEndian;
-    if (firstWordBase != 0x00000009u) {
-        if (firstWordOther != 0x00000009u) {
-            return false;
+    if (firstWordBase != 9u) {
+        if (firstWordOther != 9u) {
+            return probe;
         }
         chosenEndian = otherEndian;
     }
 
-    std::uint32_t cursor = 0;
-    while (cursor + 4u <= sectionBytes.size()) {
-        const auto currentWord = readU32(sectionBytes, cursor, chosenEndian);
-        if (currentWord == kScptStopCode) {
-            break;
+    for (std::uint32_t cursor = 0; cursor + 4u <= sectionBytes.size(); cursor += 4u) {
+        const auto word = readU32(sectionBytes, cursor, chosenEndian);
+        probe.rawWords.push_back(word);
+        if (word == kScptStopCode) {
+            probe.present = true;
+            probe.endian = chosenEndian;
+            probe.endOffset = cursor + 4u;
+            return probe;
         }
-        cursor += 4u;
     }
 
-    if (cursor + 8u > sectionBytes.size()) {
+    probe.rawWords.clear();
+    return probe;
+}
+
+[[nodiscard]] OpcodeBoundaryProbe probeOpcodeBoundary(
+    std::span<const std::uint8_t> sectionBytes,
+    std::uint32_t offset,
+    Endian baseEndian) {
+    OpcodeBoundaryProbe probe{};
+    if (offset + 4u > sectionBytes.size()) {
+        return probe;
+    }
+
+    const auto baseWord = readU32(sectionBytes, offset, baseEndian);
+    if (baseWord <= kMaxOpcodeProbe) {
+        probe.plausible = true;
+        probe.opcode = static_cast<std::uint16_t>(baseWord);
+        return probe;
+    }
+
+    const auto otherEndian = baseEndian == Endian::Big ? Endian::Little : Endian::Big;
+    const auto otherWord = readU32(sectionBytes, offset, otherEndian);
+    if (otherWord <= kMaxOpcodeProbe) {
+        probe.swapped = true;
+        probe.suspiciousOpcode4 = otherWord == 4u;
+        if (!probe.suspiciousOpcode4) {
+            probe.plausible = true;
+            probe.opcode = static_cast<std::uint16_t>(otherWord);
+        }
+    }
+    return probe;
+}
+
+[[nodiscard]] std::string decodeStringBytes(std::span<const std::uint8_t> bytes) {
+    std::string decoded{};
+    decoded.reserve(bytes.size());
+    for (const auto byte : bytes) {
+        if (byte == 0u) {
+            continue;
+        }
+        if (byte == '\n' || byte == '\r' || byte == '\t' || (byte >= 0x20u && byte <= 0x7eu)) {
+            decoded.push_back(static_cast<char>(byte));
+        } else {
+            decoded.push_back('?');
+        }
+    }
+    return decoded;
+}
+
+[[nodiscard]] SctRawSpan makeRawSpan(
+    std::span<const std::uint8_t> sectionBytes,
+    SctRawSpanReason reason,
+    std::string detail) {
+    SctRawSpan span{};
+    span.startOffset = 0;
+    span.endOffset = static_cast<std::uint32_t>(sectionBytes.size());
+    span.reason = reason;
+    span.detail = std::move(detail);
+    span.rawBytes.insert(span.rawBytes.end(), sectionBytes.begin(), sectionBytes.end());
+    return span;
+}
+
+[[nodiscard]] SctStringEntry makeStringEntry(
+    std::span<const std::uint8_t> sectionBytes,
+    const LabelPreambleProbe& preamble) {
+    SctStringEntry entry{};
+    entry.hasPreamble = preamble.present;
+    entry.preambleEndOffset = preamble.endOffset;
+    entry.textStartOffset = preamble.endOffset;
+    entry.preambleWords = preamble.rawWords;
+    if (preamble.endOffset < sectionBytes.size()) {
+        const auto textBytes = sectionBytes.subspan(preamble.endOffset);
+        entry.rawTextBytes.insert(entry.rawTextBytes.end(), textBytes.begin(), textBytes.end());
+        entry.decodedText = decodeStringBytes(textBytes);
+        entry.decodeOk = true;
+    }
+    return entry;
+}
+
+[[nodiscard]] bool looksLikeLocalizedStringId(const std::string& name) {
+    if (name.size() < 2u || name.front() != 'M') {
         return false;
     }
-
-    const auto nextWord = readU32(sectionBytes, cursor + 4u, chosenEndian);
-    return nextWord > kMaxOpcodeProbe;
+    const auto second = name[1];
+    return (second >= '0' && second <= '9')
+        || second == 'F'
+        || second == 'G'
+        || second == 'S'
+        || second == 'p'
+        || second == 'f'
+        || second == 'i';
 }
 
 [[nodiscard]] std::uint32_t scptInputActionPrefix(std::uint32_t value) {
@@ -659,28 +763,31 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
     const auto otherEndian = baseEndian == Endian::Big ? Endian::Little : Endian::Big;
     const auto wordOther = readU32(sectionBytes, offset, otherEndian);
 
-    const auto baseOpcode = static_cast<std::uint16_t>(wordBase & 0xffffu);
-    const auto otherOpcode = static_cast<std::uint16_t>(wordOther & 0xffffu);
-
     Endian chosenEndian = baseEndian;
     std::uint32_t word = wordBase;
 
-    if (baseOpcode > kMaxOpcodeProbe && otherOpcode <= kMaxOpcodeProbe) {
+    if (wordBase > kMaxOpcodeProbe && wordOther <= kMaxOpcodeProbe && wordOther != 4u) {
         chosenEndian = otherEndian;
         word = wordOther;
+    }
+    if (wordBase > kMaxOpcodeProbe && wordOther == 4u) {
+        diagnostics.push_back({
+            "Instruction boundary probe rejected swapped opcode 4 because it aliases the SCPT float preamble.",
+            offset
+        });
     }
 
     std::uint32_t actualOpcodeOffset = offset;
     std::vector<std::uint32_t> prefixWords{};
 
     auto currentWord = word;
-    auto currentOpcode = static_cast<std::uint16_t>(currentWord & 0xffffu);
+    auto currentOpcode = currentWord <= kMaxOpcodeProbe ? static_cast<std::uint16_t>(currentWord) : kMaxOpcodeProbe + 1u;
     if (currentOpcode == 13u && actualOpcodeOffset + 8u <= sectionBytes.size()) {
         decoded.inst.skipRefresh = true;
         prefixWords.push_back(currentWord);
         actualOpcodeOffset += 4u;
         currentWord = readU32(sectionBytes, actualOpcodeOffset, chosenEndian);
-        currentOpcode = static_cast<std::uint16_t>(currentWord & 0xffffu);
+        currentOpcode = currentWord <= kMaxOpcodeProbe ? static_cast<std::uint16_t>(currentWord) : kMaxOpcodeProbe + 1u;
     }
 
     if (currentOpcode == 129u && actualOpcodeOffset + 12u <= sectionBytes.size()) {
@@ -725,11 +832,12 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
 
             actualOpcodeOffset = lengthOffset + 4u;
             currentWord = readU32(sectionBytes, actualOpcodeOffset, chosenEndian);
-            currentOpcode = static_cast<std::uint16_t>(currentWord & 0xffffu);
+            currentOpcode = currentWord <= kMaxOpcodeProbe ? static_cast<std::uint16_t>(currentWord) : kMaxOpcodeProbe + 1u;
         }
     }
 
     decoded.inst.opcodeWordIndex = static_cast<std::uint32_t>(prefixWords.size());
+    decoded.inst.endian = chosenEndian == baseEndian ? SctInstructionEndian::Native : SctInstructionEndian::Swapped;
     const auto opcode = currentOpcode;
     decoded.inst.opcode = opcode;
     const auto opcodeMetadata = sctOpcodeMetadata(opcode);
@@ -958,9 +1066,77 @@ void fillUnknownRegions(
     }
 }
 
+void decodeUnreachedCodeBlocks(
+    SctSection& section,
+    std::span<const std::uint8_t> sectionBytes,
+    std::uint32_t sectionPayloadStart,
+    Endian indexEndian) {
+
+    section.unreachedCode.clear();
+    for (const auto& span : section.rawSpans) {
+        if (span.reason != SctRawSpanReason::Unreached || span.startOffset >= span.endOffset) {
+            continue;
+        }
+
+        SctUnreachedCodeBlock block{};
+        block.startOffset = span.startOffset;
+        block.endOffset = span.endOffset;
+        block.payloadStartOffset = sectionPayloadStart + span.startOffset;
+        block.payloadEndOffset = sectionPayloadStart + span.endOffset;
+        block.rawBytes = span.rawBytes;
+        block.confidence = SctSemanticConfidence::Heuristic;
+        block.stopReason = "span_end";
+
+        auto cursor = span.startOffset;
+        while (cursor < span.endOffset) {
+            std::vector<SctDiagnostic> diagnostics{};
+            auto decoded = decodeInstruction(sectionBytes, cursor, indexEndian, diagnostics);
+            for (const auto& diagnostic : diagnostics) {
+                block.diagnostics.push_back({diagnostic.message, diagnostic.offset});
+            }
+
+            if (decoded.inst.sizeBytes == 0u) {
+                block.stopReason = "zero_length_decode";
+                break;
+            }
+            if (!decoded.inst.decodeOk) {
+                const auto rejectedOpcode4 = std::any_of(
+                    diagnostics.begin(),
+                    diagnostics.end(),
+                    [](const SctDiagnostic& diagnostic) {
+                        return diagnostic.message.find("swapped opcode 4") != std::string::npos;
+                    });
+                block.stopReason = rejectedOpcode4 ? "opcode4_swapped_rejected" : "non_opcode_word";
+                break;
+            }
+            if (cursor + decoded.inst.sizeBytes > span.endOffset) {
+                block.stopReason = "truncated_instruction";
+                block.diagnostics.push_back({
+                    "Speculative unreached-code decode stopped because the instruction exceeds the raw span.",
+                    cursor
+                });
+                break;
+            }
+
+            decoded.inst.offset = cursor;
+            decoded.inst.payloadOffset = sectionPayloadStart + cursor;
+            block.instructions.push_back(std::move(decoded.inst));
+            cursor += block.instructions.back().sizeBytes;
+        }
+
+        if (block.instructions.empty() && block.diagnostics.empty()) {
+            block.diagnostics.push_back({
+                "No plausible instruction boundary found in unreached raw span.",
+                span.startOffset
+            });
+        }
+        section.unreachedCode.push_back(std::move(block));
+    }
+}
+
 } // namespace
 
-SctParseResult SctParser::parseFile(const std::string& sourcePath) const {
+SctParseResult SctParser::parseFile(const std::string& sourcePath, SctParseOptions options) const {
     SctParseResult result{};
     result.file.sourcePath = sourcePath;
 
@@ -987,10 +1163,13 @@ SctParseResult SctParser::parseFile(const std::string& sourcePath) const {
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
     in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 
-    return parse(bytes, sourcePath);
+    return parse(bytes, sourcePath, options);
 }
 
-SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string sourcePath) const {
+SctParseResult SctParser::parse(
+    std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    SctParseOptions options) const {
     std::cout << "[SpiceSCT] Step 1/5: Starting parse (" << bytes.size() << " bytes).\n";
     SctParseResult result{};
     result.file.sourcePath = std::move(sourcePath);
@@ -1082,39 +1261,49 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
             continue;
         }
 
-        section.kind = SctSectionKind::Script;
-        if (isStringSection(sectionBytes, indexEndian)) {
-            rows[i].isString = true;
-            section.kind = SctSectionKind::String;
-            section.isStringSection = true;
-            section.heuristicEvidence.notes.push_back(
-                "Detected string section from SALSA-style pattern (9 ... 0x1d followed by non-opcode payload); skipped decode.");
-            SctRawSpan span{};
-            span.startOffset = 0;
-            span.endOffset = static_cast<std::uint32_t>(sectionBytes.size());
-            span.reason = SctRawSpanReason::StringPadding;
-            span.detail = "Raw string-section bytes preserved by SCT IR.";
-            span.rawBytes.insert(span.rawBytes.end(), sectionBytes.begin(), sectionBytes.end());
-            section.rawSpans.push_back(std::move(span));
+        const auto preamble = parseLabelPreamble(sectionBytes, indexEndian);
+        if (preamble.present && preamble.endOffset == sectionBytes.size()) {
+            rows[i].isLabelOnly = true;
+            section.kind = SctSectionKind::Label;
+            section.heuristicEvidence.notes.push_back("Physical row contains only a 9 ... 0x1d label/string preamble.");
             result.file.sections.push_back(std::move(section));
             continue;
         }
 
-        const auto firstWord = readU32(dataBytes, rows[i].start, indexEndian);
-        if (firstWord != 9u && firstWord > kMaxOpcodeProbe) {
+        if (preamble.present) {
+            const auto opcodeProbe = probeOpcodeBoundary(sectionBytes, preamble.endOffset, indexEndian);
+            if (!opcodeProbe.plausible) {
+                rows[i].isString = true;
+                section.kind = SctSectionKind::String;
+                section.isStringSection = true;
+                section.stringEntry = makeStringEntry(sectionBytes, preamble);
+                section.heuristicEvidence.notes.push_back(
+                    opcodeProbe.suspiciousOpcode4
+                        ? "Detected string section after rejecting swapped opcode 4 at the string payload boundary."
+                        : "Detected string section from 9 ... 0x1d preamble followed by non-opcode payload.");
+                section.rawSpans.push_back(makeRawSpan(
+                    sectionBytes,
+                    SctRawSpanReason::StringPayload,
+                    "Raw string-section bytes preserved by SCT IR."));
+                result.file.sections.push_back(std::move(section));
+                continue;
+            }
+        }
+
+        section.kind = SctSectionKind::Script;
+        const auto firstWordProbe = probeOpcodeBoundary(sectionBytes, 0, indexEndian);
+        if (!preamble.present && !firstWordProbe.plausible) {
             section.kind = SctSectionKind::Unknown;
-            SctRawSpan span{};
-            span.startOffset = 0;
-            span.endOffset = static_cast<std::uint32_t>(sectionBytes.size());
-            span.reason = SctRawSpanReason::Unknown;
-            span.detail = "Physical index row does not start with a plausible SCT opcode; raw bytes preserved.";
-            span.rawBytes.insert(span.rawBytes.end(), sectionBytes.begin(), sectionBytes.end());
-            section.rawSpans.push_back(std::move(span));
+            section.rawSpans.push_back(makeRawSpan(
+                sectionBytes,
+                SctRawSpanReason::Unknown,
+                "Physical index row does not start with a plausible SCT opcode; raw bytes preserved."));
             result.file.sections.push_back(std::move(section));
             continue;
         }
 
         rows[i].isCode = true;
+        const auto firstWord = readU32(dataBytes, rows[i].start, indexEndian);
         if (firstWord != 9u) {
             result.diagnostics.push_back({
                 "Script index entry does not start with label opcode 9.",
@@ -1123,6 +1312,118 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
             });
         }
         result.file.sections.push_back(std::move(section));
+    }
+
+    auto addLabelRawSpan = [&](std::uint32_t sectionIndex) {
+        if (sectionIndex >= result.file.sections.size() || sectionIndex >= rows.size()) {
+            return;
+        }
+        const auto sectionBytes = dataBytes.subspan(rows[sectionIndex].start, rows[sectionIndex].end - rows[sectionIndex].start);
+        auto& section = result.file.sections[sectionIndex];
+        section.rawSpans.clear();
+        section.rawSpans.push_back(makeRawSpan(
+            sectionBytes,
+            SctRawSpanReason::StringGroupLabel,
+            "Raw string-group label preamble preserved by SCT IR."));
+    };
+
+    auto finalizeStringGroup = [&](SctStringGroup& group) {
+        if (group.stringSectionIndexes.empty()) {
+            return;
+        }
+        result.file.stringGroups.push_back(std::move(group));
+        group = {};
+    };
+
+    SctStringGroup currentGroup{};
+    std::uint32_t syntheticGroupIndex = 0;
+    bool hasOpenGroup = false;
+
+    for (std::uint32_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].isLabelOnly) {
+            const auto sectionBytes = dataBytes.subspan(rows[i].start, rows[i].end - rows[i].start);
+            const bool treatAsEmptyString = looksLikeLocalizedStringId(rows[i].name)
+                && (hasOpenGroup || ((i + 1u < rows.size()) && rows[i + 1u].isString));
+            if (treatAsEmptyString) {
+                rows[i].isString = true;
+                result.file.sections[i].kind = SctSectionKind::String;
+                result.file.sections[i].isStringSection = true;
+                result.file.sections[i].stringEntry = makeStringEntry(sectionBytes, parseLabelPreamble(sectionBytes, indexEndian));
+                result.file.sections[i].stringEntry->decodeOk = true;
+                result.file.sections[i].rawSpans.clear();
+                result.file.sections[i].rawSpans.push_back(makeRawSpan(
+                    sectionBytes,
+                    SctRawSpanReason::StringPayload,
+                    "Raw empty string-section bytes preserved by SCT IR."));
+                result.file.sections[i].heuristicEvidence.notes.push_back(
+                    "Label-only localized string id treated as an empty string entry.");
+                if (!hasOpenGroup) {
+                    currentGroup.name = "Untitled(" + std::to_string(syntheticGroupIndex++) + ")";
+                    currentGroup.labelSectionIndex.reset();
+                    currentGroup.synthetic = true;
+                    currentGroup.notes.push_back("Synthetic string group created for strings without a preceding physical label.");
+                    hasOpenGroup = true;
+                }
+                currentGroup.stringSectionIndexes.push_back(i);
+                continue;
+            }
+
+            const bool ownsFollowingStrings = (i + 1u < rows.size()) && rows[i + 1u].isString;
+            if (ownsFollowingStrings) {
+                if (hasOpenGroup) {
+                    finalizeStringGroup(currentGroup);
+                    hasOpenGroup = false;
+                }
+                rows[i].isGroupLabel = true;
+                result.file.sections[i].kind = SctSectionKind::Label;
+                addLabelRawSpan(i);
+                currentGroup.name = rows[i].name;
+                currentGroup.labelSectionIndex = i;
+                currentGroup.synthetic = false;
+                currentGroup.notes.push_back("Physical label row used as a string group label.");
+                hasOpenGroup = true;
+                continue;
+            }
+
+            result.file.sections[i].kind = SctSectionKind::Script;
+            rows[i].isCode = true;
+            result.file.sections[i].rawSpans.clear();
+            continue;
+        }
+
+        if (rows[i].isString) {
+            if (!hasOpenGroup) {
+                currentGroup.name = "Untitled(" + std::to_string(syntheticGroupIndex++) + ")";
+                currentGroup.labelSectionIndex.reset();
+                currentGroup.synthetic = true;
+                currentGroup.notes.push_back("Synthetic string group created for strings without a preceding physical label.");
+                hasOpenGroup = true;
+            }
+            currentGroup.stringSectionIndexes.push_back(i);
+            continue;
+        }
+
+        if (hasOpenGroup) {
+            finalizeStringGroup(currentGroup);
+            hasOpenGroup = false;
+        }
+    }
+    if (hasOpenGroup) {
+        finalizeStringGroup(currentGroup);
+    }
+
+    for (std::uint32_t i = 0; i < rows.size(); ++i) {
+        if (!rows[i].isLabelOnly || rows[i].isGroupLabel) {
+            continue;
+        }
+        const auto firstWord = readU32(dataBytes, rows[i].start, indexEndian);
+        if (firstWord != 9u) {
+            result.diagnostics.push_back({
+                "Script index entry does not start with label opcode 9.",
+                rows[i].start,
+                rows[i].name
+            });
+        }
     }
 
     std::cout << "[SpiceSCT] Step 4/5: Walking global script instructions...\n";
@@ -1154,6 +1455,10 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
 
         std::uint32_t cursor = item.payloadOffset;
         while (isOffsetInBounds(cursor, dataSize)) {
+            const auto cursorSection = sectionIndexForPayloadOffset(rows, cursor);
+            if (cursorSection.has_value() && !rows[*cursorSection].isCode) {
+                break;
+            }
             if (globalInstructions.contains(cursor)) {
                 break;
             }
@@ -1318,6 +1623,9 @@ SctParseResult SctParser::parse(std::span<const std::uint8_t> bytes, std::string
         }
         const auto sectionBytes = dataBytes.subspan(rows[sectionIndex].start, rows[sectionIndex].end - rows[sectionIndex].start);
         fillUnknownRegions(localVisited, sectionBytes, section);
+        if (options.decodeUnreachedCode) {
+            decodeUnreachedCodeBlocks(section, sectionBytes, rows[sectionIndex].start, indexEndian);
+        }
 
         if (section.instructions.size() >= 16) {
             section.heuristicEvidence.hasLongLinearSequence = true;

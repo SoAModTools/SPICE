@@ -69,6 +69,7 @@ struct CliOptions {
     bool extractGrndGobjBlocks = false;
     bool exportMldEntryListOnly = false;
     bool parseSctOnly = false;
+    bool decodeSctUnreachedCode = false;
     bool exportSctBinary = false;
     bool exportSctBinaryCompressed = false;
     bool exportContentGraph = false;
@@ -79,7 +80,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sct-only] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SpiceFileParsing/inputs\n"
         << "  - output_dir defaults to SpiceFileParsing/parsed\n"
@@ -87,6 +88,7 @@ void printUsage() {
         << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
+        << "  - --sct-decode-unreached-code adds a speculative section-level view of unreached raw spans.\n"
         << "  - --export-sct-binary writes canonical parse/export SCT bytes and validates parse-equivalence.\n"
         << "  - --export-sct-binary-compressed also AKLZ-compresses the canonical SCT export.\n"
         << "  - --content-graph parses .sct/.mld files and writes content_graph.json.\n"
@@ -135,6 +137,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--sct-only" || arg == "--parse-sct-only") {
             options.parseSctOnly = true;
+            continue;
+        }
+        if (arg == "--sct-decode-unreached-code" || arg == "--decode-sct-unreached-code") {
+            options.decodeSctUnreachedCode = true;
             continue;
         }
         if (arg == "--export-sct-binary" || arg == "--export-sct") {
@@ -2001,7 +2007,12 @@ int main(int argc, char** argv) {
 
         if (extension == ".sct") {
             std::cout << "[SpiceFileParsing]   - Parsing SCT: " << entry.path().filename().string() << "\n";
-            auto parsed = sctParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entry.path().string());
+            spice::sct::SctParseOptions sctParseOptions{};
+            sctParseOptions.decodeUnreachedCode = cliOptions->decodeSctUnreachedCode;
+            auto parsed = sctParser.parse(
+                std::span<const std::uint8_t>(bytes.data(), bytes.size()),
+                entry.path().string(),
+                sctParseOptions);
             auto sctIr = spice::sct::SctIrBuilder{}.build(parsed);
             if (cliOptions->exportContentGraph) {
                 contentGraphInput.sctFiles.push_back({entry.path().string(), std::move(sctIr)});

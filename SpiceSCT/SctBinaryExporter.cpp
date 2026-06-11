@@ -121,11 +121,11 @@ std::vector<std::uint32_t> writableWords(const SctInstruction& instruction) {
 
 std::size_t opcodeWordIndex(const SctInstruction& instruction, const std::vector<std::uint32_t>& words) {
     if (instruction.opcodeWordIndex < words.size()
-        && static_cast<std::uint16_t>(words[instruction.opcodeWordIndex] & 0xffffu) == instruction.opcode) {
+        && words[instruction.opcodeWordIndex] == instruction.opcode) {
         return instruction.opcodeWordIndex;
     }
     const auto found = std::find_if(words.begin(), words.end(), [&](std::uint32_t word) {
-        return static_cast<std::uint16_t>(word & 0xffffu) == instruction.opcode;
+        return word == instruction.opcode;
     });
     return found == words.end() ? 0u : static_cast<std::size_t>(std::distance(words.begin(), found));
 }

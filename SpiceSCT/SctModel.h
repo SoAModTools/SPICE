@@ -26,7 +26,15 @@ enum class SctRawSpanReason {
     Unreached,
     PostReturn,
     StringPadding,
+    StringPreamble,
+    StringPayload,
+    StringGroupLabel,
     Unknown,
+};
+
+enum class SctInstructionEndian {
+    Native,
+    Swapped,
 };
 
 enum class SctParameterValueKind {
@@ -130,6 +138,7 @@ struct SctInstruction {
     std::uint32_t payloadOffset = 0;
     std::uint16_t opcode = 0;
     std::uint32_t opcodeWordIndex = 0;
+    SctInstructionEndian endian = SctInstructionEndian::Native;
     bool skipRefresh = false;
     SctScheduledInstructionMetadata scheduled;
     std::string mnemonic;
@@ -165,6 +174,23 @@ struct SctRawSpan {
     std::string detail;
 };
 
+struct SctUnreachedCodeDiagnostic {
+    std::string message;
+    std::uint32_t offset = 0;
+};
+
+struct SctUnreachedCodeBlock {
+    std::uint32_t startOffset = 0;
+    std::uint32_t endOffset = 0;
+    std::uint32_t payloadStartOffset = 0;
+    std::uint32_t payloadEndOffset = 0;
+    std::vector<std::uint8_t> rawBytes;
+    std::vector<SctInstruction> instructions;
+    std::vector<SctUnreachedCodeDiagnostic> diagnostics;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+    std::string stopReason;
+};
+
 struct SctEdge {
     SctEdgeType type = SctEdgeType::Fallthrough;
     SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
@@ -182,6 +208,24 @@ struct SctCodeRegion {
     std::uint32_t entryPayloadOffset = 0;
     std::vector<std::uint32_t> instructionPayloadOffsets;
     std::vector<std::uint32_t> coveredSectionIndexes;
+};
+
+struct SctStringEntry {
+    bool hasPreamble = false;
+    std::uint32_t preambleEndOffset = 0;
+    std::uint32_t textStartOffset = 0;
+    std::vector<std::uint32_t> preambleWords;
+    std::vector<std::uint8_t> rawTextBytes;
+    std::string decodedText;
+    bool decodeOk = false;
+};
+
+struct SctStringGroup {
+    std::string name;
+    std::optional<std::uint32_t> labelSectionIndex;
+    std::vector<std::uint32_t> stringSectionIndexes;
+    bool synthetic = false;
+    std::vector<std::string> notes;
 };
 
 struct FlagAccessSummary {
@@ -209,11 +253,13 @@ struct SctSection {
     std::uint32_t endOffset = 0;
     SctSectionKind kind = SctSectionKind::Unknown;
     bool isStringSection = false;
+    std::optional<SctStringEntry> stringEntry;
     std::vector<SctInstruction> instructions;
     std::vector<SctBasicBlock> blocks;
     std::vector<SctEdge> edges;
     std::vector<SctUnknownRegion> unknownRegions;
     std::vector<SctRawSpan> rawSpans;
+    std::vector<SctUnreachedCodeBlock> unreachedCode;
     FlagAccessSummary flagSummary;
     SectionHeuristicEvidence heuristicEvidence;
 };
@@ -227,6 +273,7 @@ struct SctFile {
     std::vector<std::uint8_t> headerBytes;
     std::vector<SctSection> sections;
     std::vector<SctCodeRegion> codeRegions;
+    std::vector<SctStringGroup> stringGroups;
 };
 
 struct SctDiagnostic {

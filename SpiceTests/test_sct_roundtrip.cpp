@@ -51,6 +51,28 @@ std::vector<std::uint8_t> makeScriptWithGarbage()
     return section;
 }
 
+std::vector<std::uint8_t> makeJumpOverUnreachedJump()
+{
+    std::vector<std::uint8_t> section{};
+    appendU32(section, 10u);
+    appendU32(section, 12u);
+    appendU32(section, 10u);
+    appendU32(section, 4u);
+    appendU32(section, 12u);
+    return section;
+}
+
+std::vector<std::uint8_t> makeJumpOverScptFloatPreamble()
+{
+    std::vector<std::uint8_t> section{};
+    appendU32(section, 10u);
+    appendU32(section, 12u);
+    appendU32(section, 0x04000000u);
+    appendU32(section, 0x3f800000u);
+    appendU32(section, 12u);
+    return section;
+}
+
 std::vector<std::uint8_t> makeReturnOnlyScript()
 {
     std::vector<std::uint8_t> section{};
@@ -64,6 +86,22 @@ std::vector<std::uint8_t> makeStringSection()
     appendU32(section, 9u);
     appendU32(section, 0x1du);
     appendU32(section, 999u);
+    return section;
+}
+
+std::vector<std::uint8_t> makeStringTextSection(std::string text)
+{
+    std::vector<std::uint8_t> section{};
+    appendU32(section, 9u);
+    appendU32(section, 0x04000000u);
+    appendU32(section, 0x3f800000u);
+    appendU32(section, 0x1du);
+    for (const auto ch : text) {
+        section.push_back(static_cast<std::uint8_t>(ch));
+    }
+    while ((section.size() % 4u) != 0u) {
+        section.push_back(0u);
+    }
     return section;
 }
 
@@ -100,6 +138,23 @@ void appendLabel(std::vector<std::uint8_t>& section, std::uint32_t floatWord)
     appendU32(section, 0x04000000u);
     appendU32(section, floatWord);
     appendU32(section, 0x1du);
+}
+
+std::vector<std::uint8_t> makeStringGroupLabelOnlySection()
+{
+    std::vector<std::uint8_t> section{};
+    appendLabel(section, 0x3f800000u);
+    return section;
+}
+
+std::vector<std::uint8_t> makeSuspiciousOpcode4StringSection()
+{
+    std::vector<std::uint8_t> section{};
+    appendLabel(section, 0x3f800000u);
+    appendU32(section, 0x04000000u);
+    appendU32(section, 0x3f800000u);
+    appendU32(section, 0x1du);
+    return section;
 }
 
 void appendScheduledPrefix(std::vector<std::uint8_t>& section)
@@ -253,6 +308,27 @@ std::vector<std::uint8_t> makeSct(std::span<const std::vector<std::uint8_t>> sec
     return out;
 }
 
+std::vector<std::uint8_t> makeNamedSct(
+    std::span<const std::vector<std::uint8_t>> sections,
+    std::span<const std::string> names)
+{
+    std::vector<std::uint8_t> out(kHeaderSize + (sections.size() * kIndexEntrySize), 0u);
+    writeU32(out, 8u, static_cast<std::uint32_t>(sections.size()));
+
+    std::uint32_t sectionStart = 0;
+    for (std::size_t i = 0; i < sections.size(); ++i) {
+        const auto rowOffset = kHeaderSize + (i * kIndexEntrySize);
+        writeU32(out, rowOffset, sectionStart);
+        writeName(out, rowOffset + kIndexNameOffset, i < names.size() ? names[i] : "M0000" + std::to_string(i + 1u));
+        sectionStart += static_cast<std::uint32_t>(sections[i].size());
+    }
+
+    for (const auto& section : sections) {
+        out.insert(out.end(), section.begin(), section.end());
+    }
+    return out;
+}
+
 std::vector<std::uint8_t> makeRoundTripFixture()
 {
     const std::vector<std::vector<std::uint8_t>> sections = {
@@ -311,6 +387,185 @@ TEST(SctRoundTrip, PreserveModeReturnsOriginalBytesForDiagnostics)
     const auto preserved = spice::sct::SctBinaryExporter{}.exportFile(original, options);
 
     EXPECT_EQ(originalBytes, preserved);
+}
+
+TEST(SctRoundTrip, UnreachedCodeDecodeIsOptInAndSeparateFromInstructions)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeJumpOverUnreachedJump(),
+    };
+
+    const auto defaultParsed = spice::sct::SctParser{}.parse(makeSct(sections), "unreached_jump.sct");
+    ASSERT_TRUE(defaultParsed.parseOk);
+    ASSERT_EQ(1u, defaultParsed.file.sections.size());
+    EXPECT_TRUE(defaultParsed.file.sections.front().unreachedCode.empty());
+    ASSERT_EQ(2u, defaultParsed.file.sections.front().instructions.size());
+
+    spice::sct::SctParseOptions options{};
+    options.decodeUnreachedCode = true;
+    const auto parsed = spice::sct::SctParser{}.parse(makeSct(sections), "unreached_jump.sct", options);
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(1u, parsed.file.sections.size());
+
+    const auto& section = parsed.file.sections.front();
+    ASSERT_EQ(2u, section.instructions.size());
+    EXPECT_EQ(10u, section.instructions[0].opcode);
+    EXPECT_EQ(12u, section.instructions[1].opcode);
+
+    ASSERT_EQ(1u, section.unreachedCode.size());
+    const auto& block = section.unreachedCode.front();
+    EXPECT_EQ(8u, block.startOffset);
+    EXPECT_EQ(16u, block.endOffset);
+    EXPECT_EQ(8u, block.payloadStartOffset);
+    EXPECT_EQ(16u, block.payloadEndOffset);
+    EXPECT_EQ("span_end", block.stopReason);
+    ASSERT_EQ(1u, block.instructions.size());
+    EXPECT_EQ(10u, block.instructions.front().opcode);
+    EXPECT_EQ(8u, block.instructions.front().offset);
+    EXPECT_EQ(8u, block.instructions.front().payloadOffset);
+
+    const auto json = spice::sct::SctJsonExporter{}.toJson(parsed);
+    EXPECT_NE(std::string::npos, json.find("\"unreachedCode\""));
+    EXPECT_NE(std::string::npos, json.find("\"payloadStartOffset\":8"));
+}
+
+TEST(SctRoundTrip, UnreachedCodeRejectsScptFloatPreambleAsSwappedOpcode4)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeJumpOverScptFloatPreamble(),
+    };
+
+    spice::sct::SctParseOptions options{};
+    options.decodeUnreachedCode = true;
+    const auto parsed = spice::sct::SctParser{}.parse(makeSct(sections), "unreached_scpt_float.sct", options);
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(1u, parsed.file.sections.size());
+
+    const auto& section = parsed.file.sections.front();
+    ASSERT_EQ(2u, section.instructions.size());
+    ASSERT_EQ(1u, section.unreachedCode.size());
+    const auto& block = section.unreachedCode.front();
+    EXPECT_TRUE(block.instructions.empty());
+    EXPECT_EQ("opcode4_swapped_rejected", block.stopReason);
+    EXPECT_FALSE(block.diagnostics.empty());
+    EXPECT_TRUE(std::any_of(block.diagnostics.begin(), block.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.message.find("swapped opcode 4") != std::string::npos;
+    }));
+}
+
+TEST(SctRoundTrip, LabelOnlyRowBeforeStringsBecomesStringGroupLabel)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeStringGroupLabelOnlySection(),
+        makeStringTextSection("Hi!"),
+        makeLabelReturnSection(),
+    };
+    const std::vector<std::string> names = {"mes_test", "M00010000", "entry"};
+    const auto bytes = makeNamedSct(sections, names);
+    const auto parsed = spice::sct::SctParser{}.parse(bytes, "string_group_label.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(3u, parsed.file.sections.size());
+
+    EXPECT_EQ(spice::sct::SctSectionKind::Label, parsed.file.sections[0].kind);
+    EXPECT_TRUE(parsed.file.sections[0].instructions.empty());
+    EXPECT_FALSE(parsed.file.sections[0].rawSpans.empty());
+
+    EXPECT_EQ(spice::sct::SctSectionKind::String, parsed.file.sections[1].kind);
+    ASSERT_TRUE(parsed.file.sections[1].stringEntry.has_value());
+    EXPECT_TRUE(parsed.file.sections[1].stringEntry->decodeOk);
+    EXPECT_EQ("Hi!", parsed.file.sections[1].stringEntry->decodedText);
+
+    ASSERT_EQ(1u, parsed.file.stringGroups.size());
+    EXPECT_EQ("mes_test", parsed.file.stringGroups[0].name);
+    ASSERT_TRUE(parsed.file.stringGroups[0].labelSectionIndex.has_value());
+    EXPECT_EQ(0u, *parsed.file.stringGroups[0].labelSectionIndex);
+    EXPECT_EQ(std::vector<std::uint32_t>({1u}), parsed.file.stringGroups[0].stringSectionIndexes);
+    EXPECT_FALSE(parsed.file.stringGroups[0].synthetic);
+
+    EXPECT_EQ(spice::sct::SctSectionKind::Script, parsed.file.sections[2].kind);
+
+    const auto exported = spice::sct::SctBinaryExporter{}.exportFile(parsed);
+    const auto reparsed = spice::sct::SctParser{}.parse(exported, "string_group_label.exported.sct");
+    ASSERT_TRUE(reparsed.parseOk);
+    ASSERT_EQ(1u, reparsed.file.stringGroups.size());
+    EXPECT_EQ(std::vector<std::uint32_t>({1u}), reparsed.file.stringGroups[0].stringSectionIndexes);
+}
+
+TEST(SctRoundTrip, LabelOnlyLocalizedStringIdInsideGroupBecomesStringEntry)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeStringGroupLabelOnlySection(),
+        makeStringTextSection("One"),
+        makeStringGroupLabelOnlySection(),
+        makeStringTextSection("Two"),
+        makeLabelReturnSection(),
+    };
+    const std::vector<std::string> names = {"mes_test", "M00010000", "M00010001", "M00010002", "entry"};
+    const auto parsed = spice::sct::SctParser{}.parse(makeNamedSct(sections, names), "localized_empty_string.sct");
+    ASSERT_TRUE(parsed.parseOk);
+
+    ASSERT_EQ(5u, parsed.file.sections.size());
+    EXPECT_EQ(spice::sct::SctSectionKind::Label, parsed.file.sections[0].kind);
+    EXPECT_EQ(spice::sct::SctSectionKind::String, parsed.file.sections[1].kind);
+    EXPECT_EQ(spice::sct::SctSectionKind::String, parsed.file.sections[2].kind);
+    EXPECT_TRUE(parsed.file.sections[2].instructions.empty());
+    ASSERT_TRUE(parsed.file.sections[2].stringEntry.has_value());
+    EXPECT_TRUE(parsed.file.sections[2].stringEntry->decodeOk);
+    EXPECT_TRUE(parsed.file.sections[2].stringEntry->rawTextBytes.empty());
+
+    ASSERT_EQ(1u, parsed.file.stringGroups.size());
+    EXPECT_EQ("mes_test", parsed.file.stringGroups[0].name);
+    EXPECT_EQ(std::vector<std::uint32_t>({1u, 2u, 3u}), parsed.file.stringGroups[0].stringSectionIndexes);
+}
+
+TEST(SctRoundTrip, LabelOnlyRowWithoutFollowingStringsRemainsScriptEntry)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeStringGroupLabelOnlySection(),
+        makeLabelReturnSection(),
+    };
+    const std::vector<std::string> names = {"entry", "next"};
+    const auto parsed = spice::sct::SctParser{}.parse(makeNamedSct(sections, names), "label_only_code.sct");
+    ASSERT_TRUE(parsed.parseOk);
+
+    ASSERT_EQ(2u, parsed.file.sections.size());
+    EXPECT_EQ(spice::sct::SctSectionKind::Script, parsed.file.sections[0].kind);
+    ASSERT_EQ(1u, parsed.file.sections[0].instructions.size());
+    EXPECT_EQ(9u, parsed.file.sections[0].instructions.front().opcode);
+    EXPECT_TRUE(parsed.file.stringGroups.empty());
+}
+
+TEST(SctRoundTrip, StringsWithoutPhysicalGroupLabelCreateSyntheticGroup)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeStringTextSection("Solo"),
+        makeLabelReturnSection(),
+    };
+    const auto parsed = spice::sct::SctParser{}.parse(makeSct(sections), "synthetic_string_group.sct");
+    ASSERT_TRUE(parsed.parseOk);
+
+    ASSERT_EQ(1u, parsed.file.stringGroups.size());
+    EXPECT_EQ("Untitled(0)", parsed.file.stringGroups[0].name);
+    EXPECT_FALSE(parsed.file.stringGroups[0].labelSectionIndex.has_value());
+    EXPECT_TRUE(parsed.file.stringGroups[0].synthetic);
+    EXPECT_EQ(std::vector<std::uint32_t>({0u}), parsed.file.stringGroups[0].stringSectionIndexes);
+}
+
+TEST(SctRoundTrip, ScptFloatPreambleIsNotAcceptedAsSwappedOpcode4)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeSuspiciousOpcode4StringSection(),
+    };
+    const auto parsed = spice::sct::SctParser{}.parse(makeSct(sections), "suspicious_opcode4_string.sct");
+    ASSERT_TRUE(parsed.parseOk);
+
+    ASSERT_EQ(1u, parsed.file.sections.size());
+    EXPECT_EQ(spice::sct::SctSectionKind::String, parsed.file.sections[0].kind);
+    EXPECT_TRUE(parsed.file.sections[0].instructions.empty());
+    ASSERT_TRUE(parsed.file.sections[0].stringEntry.has_value());
+    EXPECT_TRUE(parsed.file.sections[0].stringEntry->decodeOk);
+    ASSERT_EQ(1u, parsed.file.stringGroups.size());
+    EXPECT_TRUE(parsed.file.stringGroups[0].synthetic);
 }
 
 TEST(SctRoundTrip, CanonicalExportRewritesBranchAndSwitchTargetsSemantically)

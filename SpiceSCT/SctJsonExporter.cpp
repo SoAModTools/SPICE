@@ -46,8 +46,19 @@ const char* toString(SctRawSpanReason value) {
     case SctRawSpanReason::Unreached: return "unreached";
     case SctRawSpanReason::PostReturn: return "post_return";
     case SctRawSpanReason::StringPadding: return "string_padding";
+    case SctRawSpanReason::StringPreamble: return "string_preamble";
+    case SctRawSpanReason::StringPayload: return "string_payload";
+    case SctRawSpanReason::StringGroupLabel: return "string_group_label";
     case SctRawSpanReason::Unknown: return "unknown";
     default: return "unknown";
+    }
+}
+
+const char* toString(SctInstructionEndian value) {
+    switch (value) {
+    case SctInstructionEndian::Native: return "native";
+    case SctInstructionEndian::Swapped: return "swapped";
+    default: return "native";
     }
 }
 
@@ -194,6 +205,55 @@ void writeParameter(std::ostringstream& out, const SctParameter& parameter) {
     out << '}';
 }
 
+void writeStringEntry(std::ostringstream& out, const SctStringEntry& entry) {
+    out << "{\"hasPreamble\":" << (entry.hasPreamble ? "true" : "false")
+        << ",\"preambleEndOffset\":" << entry.preambleEndOffset
+        << ",\"textStartOffset\":" << entry.textStartOffset
+        << ",\"preambleWords\":";
+    writeU32Array(out, entry.preambleWords);
+    out << ",\"rawTextBytes\":";
+    writeU8Array(out, entry.rawTextBytes);
+    out << ",\"decodedText\":\"" << jsonEscape(entry.decodedText) << '"'
+        << ",\"decodeOk\":" << (entry.decodeOk ? "true" : "false")
+        << '}';
+}
+
+void writeInstruction(std::ostringstream& out, const SctInstruction& inst) {
+    out << "{\"offset\":" << inst.offset
+        << ",\"payloadOffset\":" << inst.payloadOffset
+        << ",\"opcode\":" << inst.opcode
+        << ",\"opcodeWordIndex\":" << inst.opcodeWordIndex
+        << ",\"endian\":\"" << toString(inst.endian) << '"'
+        << ",\"skipRefresh\":" << (inst.skipRefresh ? "true" : "false")
+        << ",\"scheduled\":{\"present\":" << (inst.scheduled.present ? "true" : "false")
+        << ",\"instructionByteLength\":" << inst.scheduled.instructionByteLength
+        << ",\"rawWords\":";
+    writeU32Array(out, inst.scheduled.rawWords);
+    out << ",\"frameDelay\":";
+    if (inst.scheduled.present) {
+        writeParameter(out, inst.scheduled.frameDelay);
+    } else {
+        out << "null";
+    }
+    out << '}'
+        << ",\"mnemonic\":\"" << jsonEscape(inst.mnemonic) << '"'
+        << ",\"semanticConfidence\":\"" << toString(inst.semanticConfidence) << '"'
+        << ",\"sizeBytes\":" << inst.sizeBytes
+        << ",\"decodeOk\":" << (inst.decodeOk ? "true" : "false")
+        << ",\"rawWords\":";
+    writeU32Array(out, inst.rawWords);
+    out << ",\"operands\":";
+    writeU32Array(out, inst.operands);
+    out << ",\"parameters\":[";
+    for (std::size_t pi = 0; pi < inst.parameters.size(); ++pi) {
+        if (pi != 0) {
+            out << ',';
+        }
+        writeParameter(out, inst.parameters[pi]);
+    }
+    out << "]}";
+}
+
 } // namespace
 
 std::string SctJsonExporter::toJson(const SctParseResult& result) const {
@@ -232,42 +292,52 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
         }
         out << "],\n";
 
+        out << "      \"stringEntry\": ";
+        if (section.stringEntry.has_value()) {
+            writeStringEntry(out, *section.stringEntry);
+        } else {
+            out << "null";
+        }
+        out << ",\n";
+
         out << "      \"instructions\": [";
         for (std::size_t ii = 0; ii < section.instructions.size(); ++ii) {
             const auto& inst = section.instructions[ii];
             if (ii != 0) {
                 out << ',';
             }
-            out << "{\"offset\":" << inst.offset
-                << ",\"payloadOffset\":" << inst.payloadOffset
-                << ",\"opcode\":" << inst.opcode
-                << ",\"opcodeWordIndex\":" << inst.opcodeWordIndex
-                << ",\"skipRefresh\":" << (inst.skipRefresh ? "true" : "false")
-                << ",\"scheduled\":{\"present\":" << (inst.scheduled.present ? "true" : "false")
-                << ",\"instructionByteLength\":" << inst.scheduled.instructionByteLength
-                << ",\"rawWords\":";
-            writeU32Array(out, inst.scheduled.rawWords);
-            out << ",\"frameDelay\":";
-            if (inst.scheduled.present) {
-                writeParameter(out, inst.scheduled.frameDelay);
-            } else {
-                out << "null";
+            writeInstruction(out, inst);
+        }
+        out << "],\n";
+
+        out << "      \"unreachedCode\": [";
+        for (std::size_t ui = 0; ui < section.unreachedCode.size(); ++ui) {
+            const auto& block = section.unreachedCode[ui];
+            if (ui != 0) {
+                out << ',';
             }
-            out << '}'
-                << ",\"mnemonic\":\"" << jsonEscape(inst.mnemonic) << '"'
-                << ",\"semanticConfidence\":\"" << toString(inst.semanticConfidence) << '"'
-                << ",\"sizeBytes\":" << inst.sizeBytes
-                << ",\"decodeOk\":" << (inst.decodeOk ? "true" : "false")
-                << ",\"rawWords\":";
-            writeU32Array(out, inst.rawWords);
-            out << ",\"operands\":";
-            writeU32Array(out, inst.operands);
-            out << ",\"parameters\":[";
-            for (std::size_t pi = 0; pi < inst.parameters.size(); ++pi) {
-                if (pi != 0) {
+            out << "{\"startOffset\":" << block.startOffset
+                << ",\"endOffset\":" << block.endOffset
+                << ",\"payloadStartOffset\":" << block.payloadStartOffset
+                << ",\"payloadEndOffset\":" << block.payloadEndOffset
+                << ",\"confidence\":\"" << toString(block.confidence) << '"'
+                << ",\"stopReason\":\"" << jsonEscape(block.stopReason) << '"'
+                << ",\"rawBytes\":";
+            writeU8Array(out, block.rawBytes);
+            out << ",\"diagnostics\":[";
+            for (std::size_t di = 0; di < block.diagnostics.size(); ++di) {
+                if (di != 0) {
                     out << ',';
                 }
-                writeParameter(out, inst.parameters[pi]);
+                out << "{\"offset\":" << block.diagnostics[di].offset
+                    << ",\"message\":\"" << jsonEscape(block.diagnostics[di].message) << "\"}";
+            }
+            out << "],\"instructions\":[";
+            for (std::size_t ii = 0; ii < block.instructions.size(); ++ii) {
+                if (ii != 0) {
+                    out << ',';
+                }
+                writeInstruction(out, block.instructions[ii]);
             }
             out << "]}";
         }
@@ -314,6 +384,32 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
         out << "    }";
     }
     out << "\n  ],\n";
+    out << "  \"stringGroups\": [";
+    for (std::size_t gi = 0; gi < result.file.stringGroups.size(); ++gi) {
+        const auto& group = result.file.stringGroups[gi];
+        if (gi != 0) {
+            out << ',';
+        }
+        out << "{\"name\":\"" << jsonEscape(group.name)
+            << "\",\"labelSectionIndex\":";
+        if (group.labelSectionIndex.has_value()) {
+            out << *group.labelSectionIndex;
+        } else {
+            out << "null";
+        }
+        out << ",\"stringSectionIndexes\":";
+        writeU32Array(out, group.stringSectionIndexes);
+        out << ",\"synthetic\":" << (group.synthetic ? "true" : "false")
+            << ",\"notes\":[";
+        for (std::size_t ni = 0; ni < group.notes.size(); ++ni) {
+            if (ni != 0) {
+                out << ',';
+            }
+            out << '"' << jsonEscape(group.notes[ni]) << '"';
+        }
+        out << "]}";
+    }
+    out << "],\n";
     out << "  \"codeRegions\": [";
     for (std::size_t ri = 0; ri < result.file.codeRegions.size(); ++ri) {
         const auto& region = result.file.codeRegions[ri];
