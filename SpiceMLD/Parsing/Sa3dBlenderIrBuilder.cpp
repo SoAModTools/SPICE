@@ -523,10 +523,10 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
 
     for (std::size_t i = 0; i < parseResult.textureArchive->entries.size(); ++i) {
         const auto& tx = parseResult.textureArchive->entries[i];
-        const std::uint32_t globalIndex = tx.hasGlobalIndex ? tx.globalIndex : static_cast<std::uint32_t>(i);
+        const std::uint32_t textureId = tx.hasGlobalIndex ? tx.globalIndex : tx.archiveTextureIndex;
 
         model::BlenderIrTexture outTexture{};
-        outTexture.textureId = globalIndex;
+        outTexture.textureId = textureId;
         outTexture.hasTextureId = true;
         outTexture.sourceOffset = tx.gvrDataOffset;
         outTexture.sourceSize = tx.gvrDataSize;
@@ -541,7 +541,7 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
         if (!tx.textureName.empty()) {
             outTexture.textureName = tx.textureName;
         } else {
-            outTexture.textureName = "texture_" + std::to_string(globalIndex);
+            outTexture.textureName = "texture_" + std::to_string(textureId);
         }
 
         const auto decoded = decodeGvrToRgba8(tx);

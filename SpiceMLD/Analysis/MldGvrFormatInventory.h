@@ -12,6 +12,7 @@ namespace spice::mld::analysis {
 struct MldGvrTextureSample {
     std::string sourcePath{};
     std::size_t textureIndex = 0;
+    std::uint32_t archiveTextureIndex = 0;
     std::string textureName{};
     bool hasGlobalIndex = false;
     std::uint32_t globalIndex = 0;

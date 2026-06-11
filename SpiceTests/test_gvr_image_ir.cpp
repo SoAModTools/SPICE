@@ -421,6 +421,71 @@ TEST(GvrImageIr, LegacySidecarWithoutImportTextureFormatStillImportsBaseRgba8) {
     EXPECT_FALSE(parsed.hasMipmaps);
 }
 
+TEST(GvrImageIr, EncodesNewGvrFromPngWithoutSidecar) {
+    const auto dir = testOutDir("encode_new_from_png");
+    const auto image = makeEncoderImage();
+    const auto pngPath = dir / "texture.png";
+    spice::gvm::image::writePngRgba8(pngPath, image);
+
+    spice::gvm::ir::GvrPngEncodeOptions options{};
+    options.encodeOptions.textureFormat = spice::gvm::model::TextureFormat::CMPR;
+    options.encodeOptions.generateMipmaps = true;
+    options.encodeOptions.hasGlobalIndex = true;
+    options.encodeOptions.globalIndex = 42;
+    options.aklzPolicy = spice::gvm::ir::AklzPolicy::Raw;
+
+    const auto encoded = spice::gvm::ir::encodeGvrFromPng(pngPath, options);
+    const auto parsed = spice::gvm::parsing::parseGvrTexture(
+        std::span<const std::uint8_t>(encoded.bytes.data(), encoded.bytes.size()),
+        0);
+
+    EXPECT_EQ(parsed.textureFormat, spice::gvm::model::TextureFormat::CMPR);
+    EXPECT_TRUE(parsed.hasMipmaps);
+    EXPECT_TRUE(parsed.hasGlobalIndex);
+    EXPECT_EQ(parsed.globalIndex, 42U);
+    EXPECT_FALSE(spice::compression::aklz::isAklz(encoded.bytes));
+}
+
+TEST(GvrImageIr, ReplacesGvrFromPngPreservingSourceMetadata) {
+    const auto dir = testOutDir("replace_from_png_preserve");
+    const auto image = makeEncoderImage();
+    const auto pngPath = dir / "replacement.png";
+    spice::gvm::image::writePngRgba8(pngPath, image);
+
+    spice::gvm::encoding::EncodeOptions sourceOptions{};
+    sourceOptions.textureFormat = spice::gvm::model::TextureFormat::RGB5A3;
+    sourceOptions.generateMipmaps = true;
+    sourceOptions.hasGlobalIndex = true;
+    sourceOptions.globalIndex = 77;
+    const auto sourceRaw = spice::gvm::encoding::encodeGvr(image, sourceOptions);
+    const auto sourceCompressed = spice::compression::aklz::compress(sourceRaw);
+    ASSERT_TRUE(sourceCompressed.ok());
+
+    const auto sourceMetadata = spice::gvm::ir::readGvrSourceMetadata(
+        std::span<const std::uint8_t>(sourceCompressed.bytes.data(), sourceCompressed.bytes.size()));
+    spice::gvm::ir::GvrPngEncodeOptions replaceOptions{};
+    replaceOptions.encodeOptions.textureFormat = sourceMetadata.texture.textureFormat;
+    replaceOptions.encodeOptions.paletteFormat = spice::gvm::model::PaletteFormat::None;
+    replaceOptions.encodeOptions.generateMipmaps = sourceMetadata.texture.hasMipmaps;
+    replaceOptions.encodeOptions.hasGlobalIndex = sourceMetadata.texture.hasGlobalIndex;
+    replaceOptions.encodeOptions.globalIndex = sourceMetadata.texture.globalIndex;
+    replaceOptions.aklzPolicy = spice::gvm::ir::AklzPolicy::Preserve;
+    replaceOptions.sourceWasAklz = sourceMetadata.sourceWasAklz;
+
+    const auto replaced = spice::gvm::ir::encodeGvrFromPng(pngPath, replaceOptions);
+    ASSERT_TRUE(spice::compression::aklz::isAklz(replaced.bytes));
+    const auto decoded = spice::compression::aklz::decompress(replaced.bytes);
+    ASSERT_TRUE(decoded.ok());
+    const auto parsed = spice::gvm::parsing::parseGvrTexture(
+        std::span<const std::uint8_t>(decoded.bytes.data(), decoded.bytes.size()),
+        0);
+
+    EXPECT_EQ(parsed.textureFormat, spice::gvm::model::TextureFormat::RGB5A3);
+    EXPECT_TRUE(parsed.hasMipmaps);
+    EXPECT_TRUE(parsed.hasGlobalIndex);
+    EXPECT_EQ(parsed.globalIndex, 77U);
+}
+
 TEST(GvrImageIr, ImportAklzPolicyPreservesOrOverridesWrapper) {
     const auto dir = testOutDir("aklz_policy");
     const auto image = makeTestImage();

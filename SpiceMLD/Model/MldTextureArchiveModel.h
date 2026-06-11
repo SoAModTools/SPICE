@@ -8,6 +8,7 @@
 namespace spice::mld::model {
 
 struct MldTextureEntry {
+    std::uint32_t archiveTextureIndex = 0;
     std::size_t archiveOffset = 0;
     std::size_t gvrDataOffset = 0;
     std::size_t gvrDataSize = 0;

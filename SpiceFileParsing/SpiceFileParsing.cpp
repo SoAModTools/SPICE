@@ -63,9 +63,25 @@ std::string toLowerCopy(std::string value) {
     return value;
 }
 
+enum class GvrGlobalIndexPolicy {
+    Preserve,
+    None,
+    Value,
+};
+
 struct CliOptions {
     std::filesystem::path inputDir{};
     std::filesystem::path outputDir{};
+    bool createGvrSingle = false;
+    bool replaceGvrSingle = false;
+    bool createGvrBatch = false;
+    bool replaceGvrBatch = false;
+    std::filesystem::path createGvrInputPng{};
+    std::filesystem::path createGvrOutputGvr{};
+    std::filesystem::path replaceGvrSourceGvr{};
+    std::filesystem::path replaceGvrInputPng{};
+    std::filesystem::path replaceGvrOutputGvr{};
+    std::filesystem::path replaceGvrBatchSourceDir{};
     bool runAbSa3dPortVsSa3dBridge = false;
     bool extractGrndGobjBlocks = false;
     bool exportMldEntryListOnly = false;
@@ -78,7 +94,14 @@ struct CliOptions {
     bool gvrOnly = false;
     bool exportGvrImageIr = false;
     bool importGvrImageIr = false;
+    bool gvrAklzSpecified = false;
     spice::gvm::ir::AklzPolicy gvrAklzPolicy = spice::gvm::ir::AklzPolicy::Preserve;
+    bool gvrFormatPreserve = false;
+    std::optional<spice::gvm::model::TextureFormat> gvrFormatOverride{};
+    bool gvrMipmapsPreserve = false;
+    std::optional<bool> gvrMipmapsOverride{};
+    GvrGlobalIndexPolicy gvrGlobalIndexPolicy = GvrGlobalIndexPolicy::Preserve;
+    std::uint32_t gvrGlobalIndexValue = 0;
     spice::contentgraph::ContentGraphProjection contentGraphProjection =
         spice::contentgraph::ContentGraphProjection::Full;
 };
@@ -87,6 +110,10 @@ void printUsage() {
     std::cout
         << "Usage:\n"
         << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format rgba8|rgb5a3|cmpr|ci4] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
+        << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|rgba8|rgb5a3|cmpr|ci4] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
+        << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --create-gvr-batch [--gvr-format rgba8|rgb5a3|cmpr|ci4]\n"
+        << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --replace-gvr-batch source_gvr_dir [--gvr-format preserve|rgba8|rgb5a3|cmpr|ci4]\n\n"
         << "Notes:\n"
         << "  - input_dir defaults to SpiceFileParsing/inputs\n"
         << "  - output_dir defaults to SpiceFileParsing/parsed\n"
@@ -103,6 +130,7 @@ void printUsage() {
         << "  - --gvr-only limits GVR import/export modes to GVR-related input files.\n"
         << "  - --export-gvr-image-ir writes PNG plus .gvr.json sidecar files for standalone .gvr files.\n"
         << "  - --import-gvr-image-ir writes standalone RGBA8 .gvr files from .gvr.json sidecars.\n"
+        << "  - --create-gvr and --replace-gvr encode PNGs directly to standalone GVR files without sidecars.\n"
         << "  - --gvr-aklz controls GVR import wrapping; default preserve uses sourceWasAklz from the sidecar.\n"
         << "  - Bridge executable path is auto-discovered at <SpiceFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
         << "  - In A/B mode, all slices (0..9) run automatically per fixture using a per-fixture NJ block manifest.\n";
@@ -122,6 +150,58 @@ std::optional<spice::contentgraph::ContentGraphProjection> parseContentGraphProj
     return std::nullopt;
 }
 
+std::optional<spice::gvm::model::TextureFormat> parseGvrTextureFormat(std::string value) {
+    value = toLowerCopy(std::move(value));
+    if (value == "rgba8") {
+        return spice::gvm::model::TextureFormat::RGBA8;
+    }
+    if (value == "rgb5a3") {
+        return spice::gvm::model::TextureFormat::RGB5A3;
+    }
+    if (value == "cmpr") {
+        return spice::gvm::model::TextureFormat::CMPR;
+    }
+    if (value == "ci4") {
+        return spice::gvm::model::TextureFormat::CI4;
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> parseOnOff(std::string value) {
+    value = toLowerCopy(std::move(value));
+    if (value == "on" || value == "true" || value == "yes" || value == "1") {
+        return true;
+    }
+    if (value == "off" || value == "false" || value == "no" || value == "0") {
+        return false;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> parseU32(std::string value) {
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    try {
+        std::size_t consumed = 0;
+        const auto parsed = std::stoull(value, &consumed, 0);
+        if (consumed != value.size() || parsed > 0xFFFFFFFFULL) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+bool usesGvrDirectMode(const CliOptions& options) {
+    return options.createGvrSingle || options.replaceGvrSingle || options.createGvrBatch || options.replaceGvrBatch;
+}
+
+bool usesAnyGvrMode(const CliOptions& options) {
+    return usesGvrDirectMode(options) || options.exportGvrImageIr || options.importGvrImageIr;
+}
+
 std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::filesystem::path& sourceDir) {
     CliOptions options{};
     options.inputDir = sourceDir / "inputs";
@@ -133,6 +213,40 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         if (arg == "--help" || arg == "-h") {
             printUsage();
             return std::nullopt;
+        }
+        if (arg == "--create-gvr") {
+            if (i + 2 >= argc) {
+                std::cerr << "--create-gvr requires input.png and output.gvr.\n";
+                return std::nullopt;
+            }
+            options.createGvrSingle = true;
+            options.createGvrInputPng = std::filesystem::path(argv[++i]);
+            options.createGvrOutputGvr = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--replace-gvr") {
+            if (i + 3 >= argc) {
+                std::cerr << "--replace-gvr requires existing.gvr, input.png, and output.gvr.\n";
+                return std::nullopt;
+            }
+            options.replaceGvrSingle = true;
+            options.replaceGvrSourceGvr = std::filesystem::path(argv[++i]);
+            options.replaceGvrInputPng = std::filesystem::path(argv[++i]);
+            options.replaceGvrOutputGvr = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--create-gvr-batch") {
+            options.createGvrBatch = true;
+            continue;
+        }
+        if (arg == "--replace-gvr-batch") {
+            if (i + 1 >= argc) {
+                std::cerr << "--replace-gvr-batch requires source_gvr_dir.\n";
+                return std::nullopt;
+            }
+            options.replaceGvrBatch = true;
+            options.replaceGvrBatchSourceDir = std::filesystem::path(argv[++i]);
+            continue;
         }
         if (arg == "--ab-sa3d-port-vs-sa3d-bridge") {
             options.runAbSa3dPortVsSa3dBridge = true;
@@ -190,9 +304,71 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             }
             try {
                 options.gvrAklzPolicy = spice::gvm::ir::parseAklzPolicy(argv[++i]);
+                options.gvrAklzSpecified = true;
             } catch (const std::exception& ex) {
                 std::cerr << ex.what() << "\n";
                 return std::nullopt;
+            }
+            continue;
+        }
+        if (arg == "--gvr-format") {
+            if (i + 1 >= argc) {
+                std::cerr << "--gvr-format requires preserve, rgba8, rgb5a3, cmpr, or ci4.\n";
+                return std::nullopt;
+            }
+            std::string value = toLowerCopy(argv[++i]);
+            if (value == "preserve") {
+                options.gvrFormatPreserve = true;
+                options.gvrFormatOverride.reset();
+            } else {
+                const auto format = parseGvrTextureFormat(value);
+                if (!format.has_value()) {
+                    std::cerr << "Unknown GVR format: " << value << "\n";
+                    return std::nullopt;
+                }
+                options.gvrFormatPreserve = false;
+                options.gvrFormatOverride = *format;
+            }
+            continue;
+        }
+        if (arg == "--gvr-mipmaps") {
+            if (i + 1 >= argc) {
+                std::cerr << "--gvr-mipmaps requires preserve, on, or off.\n";
+                return std::nullopt;
+            }
+            std::string value = toLowerCopy(argv[++i]);
+            if (value == "preserve") {
+                options.gvrMipmapsPreserve = true;
+                options.gvrMipmapsOverride.reset();
+            } else {
+                const auto enabled = parseOnOff(value);
+                if (!enabled.has_value()) {
+                    std::cerr << "Unknown GVR mipmap value: " << value << "\n";
+                    return std::nullopt;
+                }
+                options.gvrMipmapsPreserve = false;
+                options.gvrMipmapsOverride = *enabled;
+            }
+            continue;
+        }
+        if (arg == "--gvr-global-index") {
+            if (i + 1 >= argc) {
+                std::cerr << "--gvr-global-index requires preserve, none, or an integer.\n";
+                return std::nullopt;
+            }
+            std::string value = toLowerCopy(argv[++i]);
+            if (value == "preserve") {
+                options.gvrGlobalIndexPolicy = GvrGlobalIndexPolicy::Preserve;
+            } else if (value == "none") {
+                options.gvrGlobalIndexPolicy = GvrGlobalIndexPolicy::None;
+            } else {
+                const auto index = parseU32(value);
+                if (!index.has_value()) {
+                    std::cerr << "Invalid GVR global index: " << value << "\n";
+                    return std::nullopt;
+                }
+                options.gvrGlobalIndexPolicy = GvrGlobalIndexPolicy::Value;
+                options.gvrGlobalIndexValue = *index;
             }
             continue;
         }
@@ -242,17 +418,65 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         std::cerr << "--sample-mld-gvr-formats cannot be combined with other MLD-only or MLD A/B modes.\n";
         return std::nullopt;
     }
+    const int directGvrModeCount = (options.createGvrSingle ? 1 : 0)
+        + (options.replaceGvrSingle ? 1 : 0)
+        + (options.createGvrBatch ? 1 : 0)
+        + (options.replaceGvrBatch ? 1 : 0);
+    if (directGvrModeCount > 1) {
+        std::cerr << "Only one direct GVR mode can be selected.\n";
+        return std::nullopt;
+    }
     if (options.exportGvrImageIr && options.importGvrImageIr) {
         std::cerr << "--export-gvr-image-ir cannot be combined with --import-gvr-image-ir.\n";
         return std::nullopt;
     }
-    if ((options.exportGvrImageIr || options.importGvrImageIr)
-        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary || options.exportContentGraph)) {
-        std::cerr << "GVR image IR modes cannot be combined with MLD, SCT, or content-graph modes.\n";
+    if (directGvrModeCount > 0 && (options.exportGvrImageIr || options.importGvrImageIr)) {
+        std::cerr << "Direct GVR modes cannot be combined with GVR image IR import/export modes.\n";
         return std::nullopt;
     }
-    if (options.gvrOnly && !(options.exportGvrImageIr || options.importGvrImageIr)) {
-        std::cerr << "--gvr-only requires --export-gvr-image-ir or --import-gvr-image-ir.\n";
+    if (usesAnyGvrMode(options)
+        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary || options.exportContentGraph)) {
+        std::cerr << "GVR modes cannot be combined with MLD, SCT, or content-graph modes.\n";
+        return std::nullopt;
+    }
+    if (options.gvrOnly && !usesAnyGvrMode(options)) {
+        std::cerr << "--gvr-only requires a GVR import/export/create/replace mode.\n";
+        return std::nullopt;
+    }
+    if ((options.createGvrBatch || options.replaceGvrBatch) && !options.gvrOnly) {
+        std::cerr << "GVR batch modes require --gvr-only.\n";
+        return std::nullopt;
+    }
+    if ((options.createGvrSingle || options.createGvrBatch) && options.gvrFormatPreserve) {
+        std::cerr << "--gvr-format preserve is only valid for replacement modes.\n";
+        return std::nullopt;
+    }
+    if ((options.createGvrSingle || options.createGvrBatch) && options.gvrMipmapsPreserve) {
+        std::cerr << "--gvr-mipmaps preserve is only valid for replacement modes.\n";
+        return std::nullopt;
+    }
+    if ((options.createGvrSingle || options.createGvrBatch) && options.gvrGlobalIndexPolicy == GvrGlobalIndexPolicy::Preserve) {
+        options.gvrGlobalIndexPolicy = GvrGlobalIndexPolicy::None;
+    }
+    if ((options.createGvrSingle || options.createGvrBatch) && !options.gvrAklzSpecified) {
+        options.gvrAklzPolicy = spice::gvm::ir::AklzPolicy::Raw;
+    }
+    if ((options.createGvrSingle || options.createGvrBatch)
+        && options.gvrAklzPolicy == spice::gvm::ir::AklzPolicy::Preserve) {
+        std::cerr << "--gvr-aklz preserve is only valid for replacement or sidecar import modes.\n";
+        return std::nullopt;
+    }
+    if ((options.replaceGvrSingle || options.replaceGvrBatch) && !options.gvrFormatOverride.has_value()) {
+        options.gvrFormatPreserve = true;
+    }
+    if ((options.replaceGvrSingle || options.replaceGvrBatch) && !options.gvrMipmapsOverride.has_value()) {
+        options.gvrMipmapsPreserve = true;
+    }
+    if ((options.replaceGvrSingle || options.replaceGvrBatch) && !options.gvrAklzSpecified) {
+        options.gvrAklzPolicy = spice::gvm::ir::AklzPolicy::Preserve;
+    }
+    if ((options.createGvrSingle || options.replaceGvrSingle) && options.gvrOnly) {
+        std::cerr << "--gvr-only is only needed for directory-based GVR modes.\n";
         return std::nullopt;
     }
 
@@ -307,6 +531,176 @@ bool endsWithInsensitive(std::string value, std::string suffix) {
     suffix = toLowerCopy(std::move(suffix));
     return value.size() >= suffix.size()
         && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool isSupportedGvrEncodeFormat(const spice::gvm::model::TextureFormat format) {
+    switch (format) {
+    case spice::gvm::model::TextureFormat::RGBA8:
+    case spice::gvm::model::TextureFormat::RGB5A3:
+    case spice::gvm::model::TextureFormat::CMPR:
+    case spice::gvm::model::TextureFormat::CI4:
+        return true;
+    default:
+        return false;
+    }
+}
+
+spice::gvm::encoding::EncodeOptions buildCreateGvrEncodeOptions(const CliOptions& cliOptions) {
+    spice::gvm::encoding::EncodeOptions options{};
+    options.textureFormat = cliOptions.gvrFormatOverride.value_or(spice::gvm::model::TextureFormat::RGBA8);
+    options.paletteFormat = options.textureFormat == spice::gvm::model::TextureFormat::CI4
+        ? spice::gvm::model::PaletteFormat::RGB5A3
+        : spice::gvm::model::PaletteFormat::None;
+    options.generateMipmaps = cliOptions.gvrMipmapsOverride.value_or(false);
+    if (cliOptions.gvrGlobalIndexPolicy == GvrGlobalIndexPolicy::Value) {
+        options.hasGlobalIndex = true;
+        options.globalIndex = cliOptions.gvrGlobalIndexValue;
+    }
+    return options;
+}
+
+spice::gvm::encoding::EncodeOptions buildReplaceGvrEncodeOptions(
+    const CliOptions& cliOptions,
+    const spice::gvm::ir::GvrSourceMetadata& sourceMetadata) {
+    spice::gvm::encoding::EncodeOptions options{};
+    options.textureFormat = cliOptions.gvrFormatOverride.value_or(sourceMetadata.texture.textureFormat);
+    if (!isSupportedGvrEncodeFormat(options.textureFormat)) {
+        throw std::runtime_error("cannot preserve unsupported source GVR texture format: "
+            + spice::gvm::model::to_string(sourceMetadata.texture.textureFormat));
+    }
+    options.paletteFormat = options.textureFormat == spice::gvm::model::TextureFormat::CI4
+        ? spice::gvm::model::PaletteFormat::RGB5A3
+        : spice::gvm::model::PaletteFormat::None;
+    if (options.textureFormat == spice::gvm::model::TextureFormat::CI4
+        && sourceMetadata.texture.hasInternalPalette
+        && sourceMetadata.texture.paletteFormat != spice::gvm::model::PaletteFormat::RGB5A3) {
+        throw std::runtime_error("cannot preserve CI4 source palette format: "
+            + spice::gvm::model::to_string(sourceMetadata.texture.paletteFormat));
+    }
+    options.generateMipmaps = cliOptions.gvrMipmapsOverride.value_or(sourceMetadata.texture.hasMipmaps);
+    switch (cliOptions.gvrGlobalIndexPolicy) {
+    case GvrGlobalIndexPolicy::Preserve:
+        options.hasGlobalIndex = sourceMetadata.texture.hasGlobalIndex;
+        options.globalIndex = sourceMetadata.texture.globalIndex;
+        break;
+    case GvrGlobalIndexPolicy::None:
+        options.hasGlobalIndex = false;
+        options.globalIndex = 0;
+        break;
+    case GvrGlobalIndexPolicy::Value:
+        options.hasGlobalIndex = true;
+        options.globalIndex = cliOptions.gvrGlobalIndexValue;
+        break;
+    default:
+        break;
+    }
+    return options;
+}
+
+void writeGvrEncodeReport(
+    const std::filesystem::path& reportPath,
+    const std::filesystem::path& pngPath,
+    const std::filesystem::path& outputPath,
+    const spice::gvm::encoding::EncodeOptions& encodeOptions,
+    const spice::gvm::ir::AklzPolicy aklzPolicy,
+    const std::vector<std::string>& diagnostics) {
+    std::ofstream reportOut(reportPath, std::ios::binary);
+    reportOut << "sourcePng=" << pngPath.string() << "\n";
+    reportOut << "output=" << outputPath.string() << "\n";
+    reportOut << "textureFormat=" << spice::gvm::model::to_string(encodeOptions.textureFormat) << "\n";
+    reportOut << "paletteFormat=" << spice::gvm::model::to_string(encodeOptions.paletteFormat) << "\n";
+    reportOut << "hasMipmaps=" << (encodeOptions.generateMipmaps ? "true" : "false") << "\n";
+    reportOut << "hasGlobalIndex=" << (encodeOptions.hasGlobalIndex ? "true" : "false") << "\n";
+    reportOut << "globalIndex=" << encodeOptions.globalIndex << "\n";
+    reportOut << "aklzPolicy=" << spice::gvm::ir::to_string(aklzPolicy) << "\n";
+    for (const auto& diagnostic : diagnostics) {
+        reportOut << "diagnostic=" << diagnostic << "\n";
+    }
+}
+
+bool writeGvrOutput(const std::filesystem::path& outputPath, std::span<const std::uint8_t> bytes) {
+    if (outputPath.has_parent_path()) {
+        std::filesystem::create_directories(outputPath.parent_path());
+    }
+    return writeAllBytes(outputPath, bytes);
+}
+
+void createGvrFromPngFile(
+    const CliOptions& cliOptions,
+    const std::filesystem::path& pngPath,
+    const std::filesystem::path& outputPath) {
+    spice::gvm::ir::GvrPngEncodeOptions encodeRequest{};
+    encodeRequest.encodeOptions = buildCreateGvrEncodeOptions(cliOptions);
+    encodeRequest.aklzPolicy = cliOptions.gvrAklzPolicy;
+    encodeRequest.sourceWasAklz = false;
+    const auto encoded = spice::gvm::ir::encodeGvrFromPng(pngPath, encodeRequest);
+    if (!writeGvrOutput(outputPath, std::span<const std::uint8_t>(encoded.bytes.data(), encoded.bytes.size()))) {
+        throw std::runtime_error("failed to write GVR output: " + outputPath.string());
+    }
+    writeGvrEncodeReport(outputPath.parent_path() / (outputPath.stem().string() + ".gvr.create.txt"),
+        pngPath,
+        outputPath,
+        encodeRequest.encodeOptions,
+        encodeRequest.aklzPolicy,
+        encoded.diagnostics);
+}
+
+void replaceGvrFromPngFile(
+    const CliOptions& cliOptions,
+    const std::filesystem::path& sourceGvrPath,
+    const std::filesystem::path& pngPath,
+    const std::filesystem::path& outputPath) {
+    const auto sourceBytes = readAllBytes(sourceGvrPath);
+    if (sourceBytes.empty()) {
+        throw std::runtime_error("failed to read source GVR: " + sourceGvrPath.string());
+    }
+    const auto sourceMetadata = spice::gvm::ir::readGvrSourceMetadata(
+        std::span<const std::uint8_t>(sourceBytes.data(), sourceBytes.size()));
+    spice::gvm::ir::GvrPngEncodeOptions encodeRequest{};
+    encodeRequest.encodeOptions = buildReplaceGvrEncodeOptions(cliOptions, sourceMetadata);
+    encodeRequest.aklzPolicy = cliOptions.gvrAklzPolicy;
+    encodeRequest.sourceWasAklz = sourceMetadata.sourceWasAklz;
+    auto encoded = spice::gvm::ir::encodeGvrFromPng(pngPath, encodeRequest);
+    encoded.diagnostics.insert(encoded.diagnostics.begin(), sourceMetadata.diagnostics.begin(), sourceMetadata.diagnostics.end());
+    if (!writeGvrOutput(outputPath, std::span<const std::uint8_t>(encoded.bytes.data(), encoded.bytes.size()))) {
+        throw std::runtime_error("failed to write GVR output: " + outputPath.string());
+    }
+    writeGvrEncodeReport(outputPath.parent_path() / (outputPath.stem().string() + ".gvr.replace.txt"),
+        pngPath,
+        outputPath,
+        encodeRequest.encodeOptions,
+        encodeRequest.aklzPolicy,
+        encoded.diagnostics);
+}
+
+std::size_t createGvrBatch(const CliOptions& cliOptions) {
+    std::size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(cliOptions.inputDir)) {
+        if (!entry.is_regular_file() || toLowerCopy(entry.path().extension().string()) != ".png") {
+            continue;
+        }
+        const auto outputPath = cliOptions.outputDir / (entry.path().stem().string() + ".gvr");
+        createGvrFromPngFile(cliOptions, entry.path(), outputPath);
+        ++count;
+    }
+    return count;
+}
+
+std::size_t replaceGvrBatch(const CliOptions& cliOptions) {
+    std::size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(cliOptions.inputDir)) {
+        if (!entry.is_regular_file() || toLowerCopy(entry.path().extension().string()) != ".png") {
+            continue;
+        }
+        const auto sourceGvrPath = cliOptions.replaceGvrBatchSourceDir / (entry.path().stem().string() + ".gvr");
+        if (!std::filesystem::exists(sourceGvrPath)) {
+            throw std::runtime_error("missing replacement source GVR for PNG stem: " + entry.path().stem().string());
+        }
+        const auto outputPath = cliOptions.outputDir / (entry.path().stem().string() + ".gvr");
+        replaceGvrFromPngFile(cliOptions, sourceGvrPath, entry.path(), outputPath);
+        ++count;
+    }
+    return count;
 }
 
 std::string gvrSidecarStem(const std::filesystem::path& path) {
@@ -2019,6 +2413,30 @@ int main(int argc, char** argv) {
     if (!cliOptions.has_value()) {
         return 1;
     }
+
+    if (cliOptions->createGvrSingle || cliOptions->replaceGvrSingle) {
+        try {
+            if (cliOptions->createGvrSingle) {
+                std::cout << "[SpiceFileParsing] Step 2/4: Creating standalone GVR.\n";
+                createGvrFromPngFile(*cliOptions, cliOptions->createGvrInputPng, cliOptions->createGvrOutputGvr);
+                std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->createGvrOutputGvr.string() << "\n";
+            } else {
+                std::cout << "[SpiceFileParsing] Step 2/4: Replacing standalone GVR.\n";
+                replaceGvrFromPngFile(*cliOptions,
+                    cliOptions->replaceGvrSourceGvr,
+                    cliOptions->replaceGvrInputPng,
+                    cliOptions->replaceGvrOutputGvr);
+                std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->replaceGvrOutputGvr.string() << "\n";
+            }
+            std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
+            std::cout << "SpiceFileParsing finished.\nFilesProcessed=1\n";
+            return 0;
+        } catch (const std::exception& ex) {
+            std::cerr << "[SpiceFileParsing] ERROR: " << ex.what() << "\n";
+            return 1;
+        }
+    }
+
     const std::filesystem::path inputDir = cliOptions->inputDir;
     const std::filesystem::path outputDir = cliOptions->outputDir;
     const std::filesystem::path decompressedDir = source_dir / "decompressed_inputs";
@@ -2032,6 +2450,12 @@ int main(int argc, char** argv) {
         std::cerr << "Input directory not found: " << inputDir << "\n";
         return 1;
     }
+    if (cliOptions->replaceGvrBatch
+        && (!std::filesystem::exists(cliOptions->replaceGvrBatchSourceDir)
+            || !std::filesystem::is_directory(cliOptions->replaceGvrBatchSourceDir))) {
+        std::cerr << "Replacement source GVR directory not found: " << cliOptions->replaceGvrBatchSourceDir << "\n";
+        return 1;
+    }
 
     spice::sct::SctParser sctParser{};
     spice::mld::parsing::MldParser mldParser{};
@@ -2043,6 +2467,22 @@ int main(int argc, char** argv) {
     constexpr int kAbEndSlice = 9;
     spice::contentgraph::ContentGraphCorpusInput contentGraphInput{};
     spice::mld::analysis::MldGvrFormatInventoryBuilder mldGvrFormatInventoryBuilder{};
+
+    if (cliOptions->createGvrBatch || cliOptions->replaceGvrBatch) {
+        try {
+            filesProcessed = cliOptions->createGvrBatch
+                ? createGvrBatch(*cliOptions)
+                : replaceGvrBatch(*cliOptions);
+        } catch (const std::exception& ex) {
+            std::cerr << "[SpiceFileParsing] ERROR: " << ex.what() << "\n";
+            return 1;
+        }
+        std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
+        std::cout << "SpiceFileParsing finished.\nFilesProcessed=" << filesProcessed << "\n";
+        std::cout << "inputDir=" << inputDir << "\n";
+        std::cout << "outputDir=" << outputDir << "\n";
+        return 0;
+    }
 
     for (const auto& entry : std::filesystem::directory_iterator(inputDir)) {
         if (!entry.is_regular_file()) {

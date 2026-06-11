@@ -90,11 +90,12 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
         const auto& texture = archive.textures[i];
 
         model::MldTextureEntry entry{};
+        entry.archiveTextureIndex = static_cast<std::uint32_t>(i);
         entry.archiveOffset = texture.sourceOffset;
         entry.gvrDataOffset = texture.sourceOffset;
         entry.gvrDataSize = texture.sourceSize;
-        entry.hasGlobalIndex = true;
-        entry.globalIndex = static_cast<std::uint32_t>(i);
+        entry.hasGlobalIndex = texture.hasGlobalIndex;
+        entry.globalIndex = texture.globalIndex;
         if (i < archiveNames.size()) {
             entry.textureName = archiveNames[i];
         }

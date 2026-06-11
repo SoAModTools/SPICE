@@ -330,4 +330,22 @@ GvrImageIrImportResult importGvrImageIr(const std::filesystem::path& jsonPath, c
     return result;
 }
 
+GvrSourceMetadata readGvrSourceMetadata(std::span<const std::uint8_t> sourceBytes) {
+    GvrSourceMetadata result{};
+    auto parseBytes = decodeAklzIfNeeded(sourceBytes, result.diagnostics, result.sourceWasAklz);
+    result.texture = parsing::parseGvrTexture(std::span<const std::uint8_t>(parseBytes.data(), parseBytes.size()), 0U);
+    result.diagnostics.insert(result.diagnostics.end(), result.texture.diagnostics.begin(), result.texture.diagnostics.end());
+    return result;
+}
+
+GvrImageIrImportResult encodeGvrFromPng(
+    const std::filesystem::path& pngPath,
+    const GvrPngEncodeOptions& options) {
+    GvrImageIrImportResult result{};
+    const auto image = image::readPngRgba8(pngPath);
+    auto rawGvr = encoding::encodeGvr(image, options.encodeOptions);
+    result.bytes = applyAklzPolicy(std::move(rawGvr), options.sourceWasAklz, options.aklzPolicy, result.diagnostics);
+    return result;
+}
+
 } // namespace spice::gvm::ir

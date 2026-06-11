@@ -11,6 +11,7 @@ spice::mld::model::MldTextureEntry makeTexture(
     const std::uint8_t rawDataFormat,
     const bool decoded = true) {
     spice::mld::model::MldTextureEntry entry{};
+    entry.archiveTextureIndex = 4;
     entry.textureName = "sample";
     entry.hasGlobalIndex = true;
     entry.globalIndex = 3;
@@ -88,6 +89,10 @@ TEST(MldGvrFormatInventory, AggregatesByFormatTupleAndRanksUnsupported) {
     EXPECT_EQ(inventory.filesParsed, 2U);
     EXPECT_EQ(inventory.textureCount, 4U);
     EXPECT_EQ(inventory.decodedTextureCount, 3U);
+    ASSERT_FALSE(inventory.samples.empty());
+    EXPECT_EQ(inventory.samples.front().archiveTextureIndex, 4U);
+    EXPECT_TRUE(inventory.samples.front().hasGlobalIndex);
+    EXPECT_EQ(inventory.samples.front().globalIndex, 3U);
     ASSERT_EQ(inventory.formatGroups.size(), 3U);
     ASSERT_EQ(inventory.priorityGroups.size(), 1U);
     EXPECT_EQ(inventory.priorityGroups[0].sourceFormat, "CI8");

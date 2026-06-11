@@ -123,6 +123,7 @@ void writeJsonSample(std::ostream& out, const MldGvrTextureSample& sample, const
     out << indent << "{\n";
     out << indent << "  \"sourcePath\": \"" << jsonEscape(sample.sourcePath) << "\",\n";
     out << indent << "  \"textureIndex\": " << sample.textureIndex << ",\n";
+    out << indent << "  \"archiveTextureIndex\": " << sample.archiveTextureIndex << ",\n";
     out << indent << "  \"textureName\": \"" << jsonEscape(sample.textureName) << "\",\n";
     out << indent << "  \"hasGlobalIndex\": " << (sample.hasGlobalIndex ? "true" : "false") << ",\n";
     out << indent << "  \"globalIndex\": " << sample.globalIndex << ",\n";
@@ -184,6 +185,7 @@ void writeJsonGroup(std::ostream& out, const MldGvrFormatGroup& group, const std
     MldGvrTextureSample sample{};
     sample.sourcePath = sourcePath;
     sample.textureIndex = textureIndex;
+    sample.archiveTextureIndex = entry.archiveTextureIndex;
     sample.textureName = entry.textureName;
     sample.hasGlobalIndex = entry.hasGlobalIndex;
     sample.globalIndex = entry.globalIndex;
