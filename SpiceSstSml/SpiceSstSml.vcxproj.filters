@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Entry Point">
+      <UniqueIdentifier>{F0F6FA50-8C4D-4B62-98C0-B0E944882760}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;h;hh;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{B4B71024-AB00-4611-9DB2-BD79058288C2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Parser">
+      <UniqueIdentifier>{5A3FCE47-4C56-4489-9C21-154E7EC4420D}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="SpiceSstSml.h">
+      <Filter>Entry Point</Filter>
+    </ClInclude>
+    <ClInclude Include="SstSmlModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SmlParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="SstParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="BattleStageParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="SmlParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="BattleStageParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
