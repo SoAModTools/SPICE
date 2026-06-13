@@ -28,6 +28,8 @@ research thread.
 - `planning/Analysis/2026-06-12_sst_sml_command_payload_semantics`
 - `planning/Analysis/2026-06-12_sst_type0_payload_semantics`
 - `planning/Analysis/2026-06-12_sst_type0_runtime_consumers`
+- `planning/Analysis/2026-06-12_sst_type0_class_callbacks`
+- `planning/Analysis/2026-06-12_sst_type0_selector_source_audit`
 - `planning/Analysis/2026-06-12_sst_type8_type9_semantics`
 - `planning/Analysis/2026-06-12_sst_type8_type9_runtime_consumers`
 - `planning/Analysis/2026-06-12_sst_type3_type4_type10_runtime_consumers`
@@ -36,6 +38,8 @@ research thread.
 - `planning/Analysis/2026-06-12_sst_type11_boundary`
 - `planning/Analysis/2026-06-12_sst_type11_runtime_structure`
 - `planning/Analysis/2026-06-12_sst_type6_type7_code_paths`
+- `planning/Analysis/2026-06-12_sml_runtime_table_trace`
+- `planning/Analysis/2026-06-12_sst_type1_lighting_helpers`
 - `<local-analysis>\Analyses\20260611_1448_battle_ui`
 - `<local-analysis>\Analyses\20260611_0843_script_inst_ops`
 
@@ -72,8 +76,8 @@ project is based on `US_jahorta_main.dol`:
 - JP compatibility: `<local-corpus>\2002-11-12-gc-jp-final_Eternal_Arcadia_Legends`
 
 Current top-level layout, command-block layout, command payload spans, and
-modeled SST-to-SML links are stable across US, EU, and JP in the local battle
-corpora.
+runtime-slot candidate fields are stable across US, EU, and JP in the local
+battle corpora.
 
 ## Game-Side Load Path
 
@@ -90,6 +94,10 @@ Important functions:
 | `FUN_8000c7c0` | `8000c7c0` | Walks SST command blocks and patches command payload pointers. |
 | `FUN_8000c19c` | `8000c19c` | Dispatches most patched SST command records. |
 | `FUN_8000bb28` | `8000bb28` | Downstream type `0` runtime-row setup; first confirmed semantic reads of copied type `0` data. |
+| `FUN_8006b774` | `8006b774` | Type `1` setup path that populates the four-slot runtime table used by later model-index commands. |
+| `FUN_8006bdb4` | `8006bdb4` | Creates the type `1` child/menu object and copies the `0x68` type `1` row into child-local data. |
+| `FUN_8006b6f4` | `8006b6f4` | Reads one entry from the four-slot runtime table at `DAT_80309e88`. |
+| `FUN_8006cf54` | `8006cf54` | Initializes model blocks inside a loaded MLD resource. |
 
 `FUN_8000cb44` reads the SML record count from SML `+0x04`, patches SML record
 `+0x04` by adding the SML base address, then calls `FUN_8000c8ac`.
@@ -239,6 +247,152 @@ Representative texture archive examples:
 This supports exposing embedded payload bytes to `SpiceMLD` in future code, but
 the SML wrapper should remain owned by `SpiceSstSml`.
 
+## Runtime Resource Tables
+
+Evidence level: `US+Gekko`
+
+`FUN_8000c8ac` does not hand the embedded MLD payload directly to later SST
+command consumers. It copies the SML embedded payload, passes it through the
+normal MLD load/texture-adjust path, and stores the resulting loaded MLD pointer
+in a cached resource list rooted at `DAT_803473a0`.
+
+The loaded MLD resource record is `0x44` bytes in the currently observed US
+binary:
+
+| Offset | Size | Current meaning |
+| --- | ---: | --- |
+| `+0x04` | 2 | Refcount/state halfword. SML embedded loads through `FUN_8000c8ac` store `0`; general loads through `FUN_8006e924` store or increment `1+`. |
+| `+0x08` | 4 | Loaded/adjusted MLD pointer returned by `loadTextures_801db124`. |
+| `+0x0c` | string | Cached resource name such as `s0100.mld`. |
+| `+0x2c` | 4 | Optional allocation freed by `FUN_8006d080`. |
+| `+0x30` | 4 | Optional pointer released by `FUN_8006d080`. |
+| `+0x34` | 4 | Previous/parent list pointer. |
+| `+0x38` | 4 | Next list pointer. |
+
+`FUN_8006cf54` receives one of these resource records, reads the loaded MLD
+pointer at record `+0x08`, walks its `0x68` MLD index entries, and initializes
+model blocks:
+
+- entry `+0x14` is treated as an object-address list pointer
+- object data whose marker starts with `NJCM` has its pointer advanced by `8`
+  and is passed to `FUN_80075040`
+- object data whose marker starts with `NJBM` is also advanced by `8`
+
+This proves that SML embedded payloads become normal loaded MLD resources.
+However, it does not prove that SST command model-index fields index SML
+records directly at runtime.
+
+The later SST command paths call `FUN_8006b6f4(modelIndex)`, which reads a
+separate four-slot runtime table rooted at `DAT_80309e88`. This table is
+`0x40` bytes total: four `0x10`-byte slots initialized by `FUN_8006b71c`.
+
+| Slot offset | Size | Current meaning |
+| --- | ---: | --- |
+| `+0x00` | 4 | Runtime row/object pointer returned by `FUN_8006b6f4`. |
+| `+0x04` | 4 | Owner/source child pointer, used by `FUN_8006b5b8` for removal. |
+| `+0x08` | 4 | Runtime state word, initialized to `0`. |
+| `+0x0c` | 1 | Active flag. |
+
+`FUN_8006b774`, reached from SST type `1`, is the confirmed table-population
+path. It walks up to `32` `0x68`-byte type `1` subrecords until a negative first
+byte. For each accepted row:
+
+- row `+0x02` is read as a signed class/menu selector and must be in `0..3`
+- row `+0x08` is read as a signed runtime slot id and must be `< 4`
+- `FUN_8006bdb4(row+0x02, outChild, row)` creates the battle child/menu object
+- `FUN_8006bdb4` copies the row bytes from `+0x00..+0x64` into child-local data
+  at `child->data + 0x28..+0x8c`
+- the runtime table slot `+0x00` is set to `child->data + 0x28`
+- the runtime table slot `+0x04` is set to the child pointer
+- the slot state word is cleared and the active flag is set
+
+So the current best model is:
+
+```text
+SML record
+  -> embedded MLD payload
+  -> loaded MLD resource list at DAT_803473a0
+
+SST type 1 row
+  -> copied child-local runtime row
+  -> four-slot runtime table at DAT_80309e88
+  -> model-index fields in SST types 2/3/4/8/9/10/11
+```
+
+The corpus fact that all observed model-index candidates are `0` remains useful
+for structural validation, but parser-facing wording should treat these fields
+as runtime-slot indices. A direct SML-record identity is not currently proven.
+
+### Type 1 Runtime Row Consumer
+
+Evidence level: `US+Gekko`, `US/EU/JP stable`
+
+The callback selected by current type `1` rows is `FUN_8006b46c`. It reads the
+child-local row at `child->data + 0x28` and calls `FUN_8006b8a8` while the child
+state byte at child `+0x19` is `3`.
+
+Direct row-field reads in `FUN_8006b46c` and `FUN_8006b8a8`:
+
+| Row offset | Width | Current meaning |
+| --- | ---: | --- |
+| `+0x00` | `i8` | Row state / walker sentinel. Active corpus rows are `4`; the second structural row is `-1` and stops the row walk. |
+| `+0x02` | `i16` | Class/menu selector passed to `FUN_8006bdb4`; corpus value is always `2`. |
+| `+0x04` | `u32` | Flags. `0x40000000` gates render-light slot/global-color setup; `0x20000000` gates vector setup. |
+| `+0x08` | `i16` | Runtime slot id. Corpus value is always `0`; helper calls use `slot + 1`. |
+| `+0x0c/+0x10/+0x14` | `f32 x3` | Render-light direction or position vector, depending on row/applier case. Passed to layer-A helpers `FUN_8028708c` / `FUN_8028703c` and layer-B helpers `FUN_8028b63c` / `FUN_8028b5ec`. |
+| `+0x30/+0x34/+0x38` | `f32 x3` | Per-slot RGB/intensity triplet. Clamped to byte color channels by `FUN_80287124` and `FUN_8028b6d4`. |
+| `+0x3c/+0x40/+0x44` | `f32 x3` | Global/ambient RGB triplet. Clamped to byte color channels by `FUN_802871d8` and `FUN_8028b784`. |
+| `+0x48` | `f32` | Passed to attenuation/spot-parameter helpers `FUN_80286fec` and `FUN_8028b59c` for nonzero slots; corpus value is always `30.0`. |
+| `+0x4c` | `f32` | Multiplied by a constant before attenuation/spot-parameter helpers; corpus value is always `60.0`. |
+| `+0x64` | `u32` | Last copied word; corpus value is always `0`. |
+
+Corpus probe:
+
+```text
+SpiceSstSml/research/results/20260612_140000_type1_runtime_rows/
+```
+
+Across US, EU, and JP:
+
+- paired stages scanned: `136` per region
+- type `1` commands: `136` per region, exactly one per stage
+- structural rows: `272` per region
+- active rows: `136` per region
+- inactive/sentinel rows: `136` per region
+- class selector: always `2`
+- runtime slot id: always `0`
+- flag values: `0`, `0x40000000`, or `0xc0000000`
+
+Current interpretation: type `1` is a stage-level lighting/render-environment
+setup command that also seeds the four-slot table later read by model-index
+commands. It is not currently evidence of a direct SML embedded-MLD record
+lookup.
+
+The helper family reached from `FUN_8006b8a8` is now traced far enough to rule
+out the earlier camera/view wording. `FUN_801d9d2c` applies the same row shape as
+a twelve-entry render-light configuration table:
+
+- cases `2` and `7` call global/ambient color helpers `FUN_802871d8` and
+  `FUN_8028b784`
+- cases `3` and `8` configure directional slot `1` through
+  `FUN_8028708c` / `FUN_8028b63c` plus slot-color helpers
+- cases `4..6` and `9..11` configure positional/spot slots `2..4` through
+  `FUN_8028703c` / `FUN_8028b5ec`, attenuation helpers
+  `FUN_80286fec` / `FUN_8028b59c`, and slot-color helpers
+
+The two helper groups write parallel `0x60`-byte slot records at `DAT_80344dec`
+and `DAT_8034535c`. Those records contain enable words, type/mode words,
+direction/position floats, clamped RGB(A) bytes, and attenuation/spot scalar
+fields. The exact engine names for the two groups are still unknown, so docs and
+parser metadata should use conservative layer-A/layer-B lighting terminology for
+now.
+
+Parser status: `SpiceSstSml` decodes type `1` payloads into
+`SstType1LightingRow` metadata while preserving the original command payload
+bytes. The decoded rows expose state, sentinel status, class selector, flags,
+known flag-bit helpers, runtime slot id, light vector, slot RGB, global RGB,
+attenuation/spot scalar pair, tail word, and raw row bytes.
+
 ## SST Layout
 
 Evidence level: `US+Gekko`, `US/EU/JP stable`
@@ -338,8 +492,8 @@ provisional unless noted.
 
 | Type | Current field model |
 | ---: | --- |
-| `0` | One command appears first in every command block and aggregate count equals the SML top-level record count. `FUN_8000c19c` copies the full `0x4c` payload as words into a runtime row; it does not directly interpret fields with `lha`, `lhz`, or `lfs`. Runtime consumers read `+0x16` as a signed lookup/resource index and `+0x18` as a signed battle object class selector. Corpus probing shows `+0x16` is always `0`, `+0x18` raw words are `selector << 16`, `+0x34/+0x38/+0x3c` are always `0x3f800000`, and `+0x44` is either `0` or `0x02000000`; keep transform/flag names provisional until downstream consumers are traced. |
-| `1` | Two `0x68` subrecords. `FUN_8006b774` reads each subrecord at `+0x00`, `+0x02`, `+0x08`, and `+0x64`. Observed first subrecord active byte is `4`; second is `-1`. |
+| `0` | One command appears first in every command block and aggregate count equals the SML top-level record count. `FUN_8000c19c` copies the full `0x4c` payload as words into a runtime row; setup consumers read `+0x16` as a signed lookup/resource index and `+0x18` as a signed battle object class selector. The callback selected through `FUN_800300c4` now proves selector `3` consumes `+0x1c/+0x20/+0x24` as transform vector floats, `+0x28/+0x2c/+0x30` as signed rotation/angle words, `+0x34/+0x38/+0x3c` as scale floats, and `+0x44` as a render/model action byte. Names remain provisional outside the directly traced selector path. |
+| `1` | Stage lighting/render-environment setup command. `FUN_8006b774` walks up to `32` `0x68`-byte subrecords until a negative first byte at `+0x00`; current on-disk payload holds two structural rows, one active and one sentinel. `+0x02 i16` is the class/menu selector, `+0x04 u32` is a flag word, `+0x08 i16` is the runtime slot id, `+0x0c/+0x10/+0x14` are a light direction/position vector, `+0x30..+0x44` are per-slot and global/ambient RGB triplets, and `+0x48/+0x4c` are attenuation/spot scalar fields. `FUN_8006bdb4` copies each accepted row into child-local data at `+0x28`, and `FUN_8006b774` stores that copied row pointer in the four-slot runtime table used by later model-index commands. |
 | `2` | Creates child type `4` / `FUN_8000e0d8`. `+0x00 i16` model index, `+0x02 u16` node traversal lookup key. Payload `+0x04..+0x40` is copied to child-local `+0x0c..+0x48`; local `+0x04` is forced to `-1`. Current evidence identifies this as a model-data point/vertex coordinate deformation effect: helper code scans model chunks `0x20..0x37`, snapshots 3-float coordinate triples, computes per-point distance weights, and writes selected X/Y/Z components back into the model-data coordinate array. |
 | `3` | `+0x00 i16` model index, `+0x02 u16` lookup key, `+0x04/+0x06 i16` parameters. |
 | `4` | `+0x00 i16` model index, `+0x04 u32` raw/flag, `+0x08/+0x0c/+0x10 f32`, `+0x14` raw/reserved. |
@@ -400,17 +554,21 @@ Command types currently treated as carrying model-index candidates are:
 Across US, EU, and JP:
 
 - checked model-index candidate links: `478` per region
-- resolved links to SML records: `478` per region
-- unresolved links: `0`
+- structurally resolvable candidate links under the current same-index
+  correlation model: `478` per region
+- unresolved structural links: `0`
 - observed nonzero command arguments: `0`
 - unsupported command types: `0`
 - type `0` appears exactly once in every command block and is always the first
   command: `1285/1285` command blocks per region
 - type `1` appears exactly once per battle stage: `136/136` stages per region
 
-In the current corpus every observed model-index candidate is `0`, so the
-field role is Gekko-backed but its higher-level semantics still need runtime
-object context.
+In the current corpus every observed model-index candidate is `0`. Direct
+runtime evidence now shows these fields index the four-slot table at
+`DAT_80309e88`, not SML records directly. The same-index SML link remains a
+useful parser validation/reporting aid because command blocks and SML records
+are walked together by top-level index, but it should not be promoted to a
+runtime identity without additional dataflow evidence.
 
 ## Command Payload Semantics Probe
 
@@ -435,7 +593,9 @@ that run:
 - type `1` is one-per-stage and appears in the block for top-level record `0`
   in representative stage samples
 - model-index candidate fields for types `2`, `3`, `4`, `8`, `9`, `10`, and
-  `11` all resolve to SML record `0` in the current corpus
+  `11` are always runtime slot `0` in the current corpus; the old
+  same-index/SML-record resolution report is structural, not a proven runtime
+  SML-record lookup
 - top command-block patterns include `[0]`, `[0, 1]`, `[0, 8]`, `[0, 4]`,
   `[0, 8, 9]`, `[0, 3]`, `[0, 9]`, and `[0, 1, 10]`
 
@@ -497,9 +657,10 @@ Current field guidance:
 | --- | --- |
 | `+0x16` | Gekko-backed signed lookup/resource index. It is passed to `FUN_8006cf28` and sometimes `FUN_8006ceec`; corpus value is `0` for all US/EU/JP rows. |
 | `+0x18` | Gekko-backed signed battle object class selector in the high halfword; not a float and not a proven SceneTable field. |
-| `+0x1c..+0x26` | Sparse raw halfwords in corpus, but only copy evidence in this pass. |
-| `+0x34/+0x38/+0x3c` | Strong scale/default triplet candidate by corpus bit pattern, but current Gekko evidence is raw word copy only. |
-| `+0x44` | Raw flag-word candidate by corpus values, but current Gekko evidence is raw word copy only. |
+| `+0x1c/+0x20/+0x24` | Gekko-backed transform vector for selector callback `3`; later callback evidence loads these as `f32` values and passes them to `FUN_802924e0`. |
+| `+0x28/+0x2c/+0x30` | Gekko-backed signed 32-bit rotation/angle components for selector callback `3`; values are scaled before `FUN_80292080`. Exact unit is still unresolved. |
+| `+0x34/+0x38/+0x3c` | Gekko-backed scale triplet for selector callback `3`; corpus value is stable `1.0f` for every row. |
+| `+0x44` | Gekko-backed render/model action byte for selector callback `3`; word patterns `0x00000000` and `0x02000000` correspond to byte values `0` and `2` at big-endian offset `+0x44`. Bytes `+0x45..+0x47` remain raw. |
 
 ### Type 0 Runtime Consumer Pass
 
@@ -549,6 +710,92 @@ SceneTable comparison:
   not be named as a SceneTable `command`, `category`, or `table_id` without
   direct dataflow evidence
 
+### Type 0 Class Callback Pass
+
+Evidence level: `US+Gekko`, `US/EU/JP stable` for already measured corpus
+patterns.
+
+The focused class-callback pass is tracked under:
+
+```text
+planning/Analysis/2026-06-12_sst_type0_class_callbacks/
+```
+
+Generated local-only artifacts are under:
+
+```text
+tools/ghidra/analyses/20260612_150000_sst_type0_class_callbacks/
+```
+
+`FUN_800300c4` indexes the callback table at `802dbf38` by the selector value:
+
+```text
+return (&PTR_FUN_802dbf38)[param_1];
+```
+
+The exported table currently maps selector indices `0..20` to callback
+functions. The selector `3` callback is `FUN_80021cbc`, which gives the first
+direct Gekko-backed transform interpretation of the copied type `0` runtime row:
+
+| Offset | Width | Evidence |
+| --- | --- | --- |
+| `+0x1c` | `f32` | `80021d28 lfs f1,0x1c(r31)` passes X to `FUN_802924e0`. |
+| `+0x20` | `f32` | `80021d30 lfs f2,0x20(r31)` passes Y to `FUN_802924e0`; later `FUN_8007e264(r31+0x20)` resets this copied local slot to a constant. |
+| `+0x24` | `f32` | `80021d34 lfs f3,0x24(r31)` passes Z to `FUN_802924e0`. |
+| `+0x28` | `i32-ish word` | `80021d3c lwz r6,0x28(r31)` is converted through signed integer-to-float math, scaled by `FLOAT_80348334`, and passed to `FUN_80292080`. |
+| `+0x2c` | `i32-ish word` | `80021d44 lwz r4,0x2c(r31)` follows the same rotation/angle conversion path. |
+| `+0x30` | `i32-ish word` | `80021d4c lwz r0,0x30(r31)` follows the same rotation/angle conversion path. |
+| `+0x34` | `f32` | `80021dc8 lfs f1,0x34(r31)` passes scale X to `FUN_802923e0`. |
+| `+0x38` | `f32` | `80021dd0 lfs f2,0x38(r31)` passes scale Y to `FUN_802923e0`. |
+| `+0x3c` | `f32` | `80021dd4 lfs f3,0x3c(r31)` passes scale Z to `FUN_802923e0`. |
+| `+0x16` | `i16` | `80021dec lha r6,0x16(r31)` passes the lookup/resource index to `FUN_8006ceec`. |
+| `+0x44` | `u8` | `80021e08/80021e18 lbz ...,0x44(r31)` passes a byte to `FUN_80035380` or `FUN_80035140`. |
+
+This pass also confirms that callback reads are against the copied child-local
+row stored at thread `+0x24`. Earlier setup overwrites copied local offsets
+`+0x00` and `+0x08` with runtime pointers, so callback reads at those offsets
+must not be used as direct on-disk field semantics.
+
+Other selector callbacks also load thread-local data and many enter larger
+battle-combatant state machines. Current evidence is not yet clean enough to
+promote additional on-disk type `0` fields from those callbacks; keep the parser
+metadata limited to the selector `3` fields above until each path is traced with
+the same direct source-pointer discipline.
+
+### Type 0 Selector Source-Pointer Audit
+
+Evidence level: `US+Gekko`, `US/EU/JP stable` for current selector buckets.
+
+The source-pointer audit is tracked under:
+
+```text
+planning/Analysis/2026-06-12_sst_type0_selector_source_audit/
+```
+
+Derived local-only audit output is under:
+
+```text
+tools/ghidra/analyses/20260612_160000_sst_type0_selector_source_audit/
+```
+
+Audit result: no additional parser metadata should be promoted yet.
+
+| Selector | Current source-pointer result | Parser impact |
+| ---: | --- | --- |
+| `0` | no-op callback | no field promotion |
+| `1` | copied type `0` runtime row, but only copied row `+0x4c` secondary buffer and overwritten `+0x08` resource pointer are used | no field promotion |
+| `2` | copied type `0` runtime row, but only copied row `+0x4c` secondary buffer and overwritten `+0x00/+0x08` runtime pointers are used | no field promotion |
+| `3` | copied type `0` runtime row with direct reads from non-overwritten offsets | keep existing provisional field metadata |
+| `4`, `5`, `11`, `12` | copied type `0` runtime row, but only runtime pointers or secondary buffers are used; currently absent from corpus buckets | no field promotion |
+| `6`, `20` | no-op callbacks | no field promotion |
+| `7`, `8`, `9`, `10`, `13`, `14`, `15`, `16`, `17`, `18`, `19` | battle-combatant worksheet callbacks; in these functions `thread +0x24` is not the copied SST row | no field promotion |
+
+The key audit rule is that a raw `lwz ...,0x24(r3)` is not enough to prove a
+type `0` field read. The callback's expected thread/data shape must be traced.
+For the large battle-combatant callbacks, offset matches such as `+0x1c`,
+`+0x24`, or `+0x30` are worksheet/global-state accesses and should not be folded
+back into the SST type `0` schema.
+
 ### Type 8/9 Command Correlation Pass
 
 Evidence level: `US+Gekko`, `US/EU/JP stable` for corpus patterns.
@@ -585,11 +832,11 @@ Corpus results are identical across US, EU, and JP:
 | block pattern `[0, 8]` | `107` |
 | block pattern `[0, 9]` | `10` |
 
-Both type `8` and type `9` model-index fields resolve in every observed row. In
-the current corpus every observed model index is `0`, so these commands attach
-behavior or child state from the stage's first SML record to other command
-blocks. This is stable corpus behavior, but does not yet prove whether `0` is a
-hard-coded stage root, effect source, or some other battle-local model object.
+Both type `8` and type `9` model-index fields resolve to a valid runtime slot in
+every observed row. In the current corpus every observed model index is `0`, so
+these commands attach behavior or child state to runtime slot `0`. This is
+stable corpus behavior, but the slot is populated by SST type `1` setup rather
+than by a direct SML-record lookup.
 
 Direct Gekko evidence for type `8` in `FUN_8000c19c`:
 
@@ -906,7 +1153,7 @@ Corpus results are identical across US, EU, and JP:
 | type `3` commands | `87` |
 | type `4` commands | `92` |
 | type `10` commands | `4` |
-| model-index candidate links resolved | `183` |
+| runtime-slot candidate links resolved | `183` |
 
 Callback/runtime mapping:
 
@@ -1012,12 +1259,15 @@ preserving embedded MLD bytes and SST-to-SML links for a later semantic pass.
   structural payload size remains `0x18`
 - joined SML/SST count agreement
 - command type histogram
-- model-index candidate resolution to SML records
+- runtime-slot candidate validation, with same-index SML/SST correlation kept
+  as structural context rather than a proven runtime lookup
 
 It intentionally does not model:
 
 - embedded MLD internals as native `SpiceSstSml` structures
 - runtime child/menu object structures created by SST command consumers
+- loaded MLD resource-list records or the four-slot runtime table as stable
+  parser-facing structures
 - type `11` trailing bytes as part of the structural walker payload
 - stable semantic names for corpus-only command payload fields
 - export/repackaging
@@ -1072,27 +1322,35 @@ Representative US examples from the command-payload probe:
 - For code-supported but corpus-absent types `6` and `7`, are these unused
   battle effects, region/build leftovers, or commands used by non-battle/custom
   data not present in the current local corpora?
-- Where exactly is the runtime object/resource table built from SML embedded
-  MLD records, and how does it relate to the model pointer table read by
-  type `8`/`9` consumers?
+- What is the exact relationship between the loaded MLD resource list at
+  `DAT_803473a0` and the copied SST type `1` lighting/render-environment rows
+  placed in the `DAT_80309e88` four-slot table? Current evidence proves both
+  structures, but not a direct pointer/dataflow from one into the other.
+- What are the formal engine names for the type `1` lighting helper groups at
+  `DAT_80344dec` and `DAT_8034535c`, and do those groups correspond to known
+  engine concepts such as world/model lighting layers, material-light sets, or
+  battle-specific render passes?
 
 ## Next Milestones
 
-1. Add an optional research/debug path that passes extracted SML embedded MLD
-   payloads to `SpiceMLD` and reports header, index-entry, archive texture
-   count, and marker-order summaries without making `SpiceSstSml` depend on
-   `SpiceMLD` in the core parser.
-2. Trace the loader path that converts SML embedded MLD entries into the runtime
-   object/resource table used by SST command consumers, especially the table
-   read by type `8`/`9` model-index paths.
-3. Add an optional research/JSON dump over `SpiceSstSml` parse results so the
-   evidence level, provisional status, raw payload bytes, model-index links,
-   and type `11` consumer windows can be inspected without writing a C++
-   harness or committing local corpus outputs.
-4. Add Ghidra annotations for the type `2` helper path: label the located
+1. Add optional parser/research metadata that reports model-index fields as
+   runtime-slot candidates while preserving the older same-index SML/SST context
+   as structural evidence.
+2. Add Ghidra annotations for the type `1` lighting helpers:
+   `FUN_801d9d2c`, `FUN_8028708c`, `FUN_8028703c`, `FUN_80287124`,
+   `FUN_802871d8`, `FUN_80287274`, `FUN_80286fec`, `FUN_8028b59c`,
+   `FUN_8028b5ec`, `FUN_8028b63c`, `FUN_8028b6d4`, `FUN_8028b784`,
+   `FUN_8028b820`, `DAT_80344dec`, and `DAT_8034535c`.
+3. Add Ghidra annotations for the loaded MLD resource cache:
+   `DAT_803473a0`, the `0x44` resource record fields, `FUN_8000c8ac`,
+   `FUN_8006e924`, `FUN_8006cf54`, and `FUN_8006d080`.
+4. Add Ghidra annotations for the four-slot SST runtime table:
+   `DAT_80309e88`, slot fields `+0x00/+0x04/+0x08/+0x0c`,
+   `FUN_8006b774`, `FUN_8006bdb4`, `FUN_8006b6f4`, and `FUN_8006b5b8`.
+5. Add Ghidra annotations for the type `2` helper path: label the located
    model-data chunk pointer, source-coordinate snapshot buffer, distance/weight
    buffer, and target coordinate selector before promoting those names into the
    parser metadata.
-5. Add Ghidra annotations for the type `11` child type `12` local block:
+6. Add Ghidra annotations for the type `11` child type `12` local block:
    target vector pointer, related ramp object pointer, vector delta fields,
    ramp state, axis selector, cycle count, and frame counter.

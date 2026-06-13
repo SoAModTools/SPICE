@@ -1,4 +1,5 @@
 #include "../SpiceMLD/SpiceMLD.h"
+#include "../SpiceSstSml/SpiceSstSml.h"
 #include "../SpiceSCT/SpiceSCT.h"
 #include "../SpiceContentGraph/SpiceContentGraph.h"
 #include "../SpiceGvm/SpiceGvm.h"
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -95,6 +97,9 @@ struct CliOptions {
     bool runAbSa3dPortVsSa3dBridge = false;
     bool extractGrndGobjBlocks = false;
     bool exportMldEntryListOnly = false;
+    bool exportSmlEmbeddedMld = false;
+    bool exportSmlEmbeddedMldBlenderIr = false;
+    bool exportSstSmlCommandMap = false;
     bool parseSctOnly = false;
     bool decodeSctUnreachedCode = false;
     bool exportSctBinary = false;
@@ -121,7 +126,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sst-sml-command-map] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
         << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
         << "  SpiceFileParsing --replace-mld-texture source.mld input.png output.mld (--mld-texture-index <n>|--mld-texture-name <name>) [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-global-index preserve|none|<u32>] [--mld-aklz preserve|raw|compressed] [--mld-allow-dimension-change] [--mld-allow-post-archive-shift]\n"
@@ -133,6 +138,9 @@ void printUsage() {
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
         << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
+        << "  - --export-sml-embedded-mld extracts each SML embedded MLD payload under output/<stem>/embedded_mld.\n"
+        << "  - --export-sml-embedded-mld-blender-ir also parses each embedded MLD payload and writes Blender IR under output/<stem>/blender_ir/entry_<index>.\n"
+        << "  - --export-sst-sml-command-map writes output/<stem>/<stem>.sst_sml_command_map.json when a same-stem .sst exists.\n"
         << "  - --sample-mld-gvr-formats writes compact embedded GVR format inventory and priority reports for .mld files.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
         << "  - --sct-decode-unreached-code adds a speculative section-level view of unreached raw spans.\n"
@@ -318,6 +326,19 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--export-mld-entry-list-only" || arg == "--mld-entry-list-only") {
             options.exportMldEntryListOnly = true;
+            continue;
+        }
+        if (arg == "--export-sml-embedded-mld") {
+            options.exportSmlEmbeddedMld = true;
+            continue;
+        }
+        if (arg == "--export-sml-embedded-mld-blender-ir") {
+            options.exportSmlEmbeddedMld = true;
+            options.exportSmlEmbeddedMldBlenderIr = true;
+            continue;
+        }
+        if (arg == "--export-sst-sml-command-map") {
+            options.exportSstSmlCommandMap = true;
             continue;
         }
         if (arg == "--sct-only" || arg == "--parse-sct-only") {
@@ -2888,6 +2909,95 @@ int main(int argc, char** argv) {
                 ++filesProcessed;
             } catch (const std::exception& ex) {
                 std::cerr << "[SpiceFileParsing] WARNING: GVR image IR import failed for "
+                          << entry.path().string() << ": " << ex.what() << "\n";
+            }
+            continue;
+        }
+
+        if (cliOptions->exportSmlEmbeddedMld || cliOptions->exportSstSmlCommandMap) {
+            if (extension != ".sml") {
+                continue;
+            }
+
+            std::cout << "[SpiceFileParsing]   - Exporting SML embedded MLD payloads: "
+                      << entry.path().filename().string() << "\n";
+            const auto stem = entry.path().stem().string();
+            const auto stageOutputDir = outputDir / stem;
+
+            try {
+                const auto smlParsed = spice::sstsml::SmlParser::parse(
+                    std::span<const std::uint8_t>(bytes.data(), bytes.size()),
+                    entry.path().string());
+
+                std::optional<spice::sstsml::SstParseResult> sstParsed{};
+                const auto sstPath = entry.path().parent_path() / (stem + ".sst");
+                if (std::filesystem::exists(sstPath) && std::filesystem::is_regular_file(sstPath)) {
+                    const auto sstBytes = readAllBytes(sstPath);
+                    if (!sstBytes.empty()) {
+                        sstParsed = spice::sstsml::SstParser::parse(
+                            std::span<const std::uint8_t>(sstBytes.data(), sstBytes.size()),
+                            sstPath.string());
+                    }
+                }
+
+                std::map<std::size_t, std::filesystem::path> blenderIrPaths{};
+                if (cliOptions->exportSmlEmbeddedMldBlenderIr) {
+                    for (const auto& record : smlParsed.records) {
+                        if (!record.embeddedMldInBounds || record.embeddedMldBytes.empty()) {
+                            continue;
+                        }
+
+                        const auto blenderIrDir = stageOutputDir / "blender_ir" /
+                            ("entry_" + std::to_string(record.index));
+                        spice::mld::parsing::ParseOptions embeddedMldOptions{};
+                        embeddedMldOptions.buildBlenderIntermediateIr = true;
+                        embeddedMldOptions.exportBlenderIrJson = true;
+                        embeddedMldOptions.blenderIrOutputDir = blenderIrDir.string();
+                        try {
+                            const auto parsedEmbeddedMld = mldParser.parse(
+                                std::span<const std::uint8_t>(
+                                    record.embeddedMldBytes.data(),
+                                    record.embeddedMldBytes.size()),
+                                embeddedMldOptions);
+                            const auto blenderIrPath = blenderIrDir / "blender_ir_scene.json";
+                            if (parsedEmbeddedMld.blenderIrScene.has_value() &&
+                                std::filesystem::exists(blenderIrPath)) {
+                                blenderIrPaths[record.index] = blenderIrPath;
+                            } else {
+                                std::cerr << "[SpiceFileParsing] WARNING: embedded MLD Blender IR was not produced for "
+                                          << entry.path().filename().string()
+                                          << " record " << record.index << "\n";
+                            }
+                        } catch (const std::exception& ex) {
+                            std::cerr << "[SpiceFileParsing] WARNING: embedded MLD parse failed for "
+                                      << entry.path().filename().string()
+                                      << " record " << record.index << ": " << ex.what() << "\n";
+                        }
+                    }
+                }
+
+                spice::sstsml::SmlEmbeddedMldExportOptions exportOptions{};
+                exportOptions.stageOutputDir = stageOutputDir;
+                exportOptions.stem = stem;
+                exportOptions.writeEmbeddedMldPayloads = cliOptions->exportSmlEmbeddedMld;
+                exportOptions.writeCommandMap = cliOptions->exportSstSmlCommandMap;
+                exportOptions.blenderIrPathsByRecordIndex = std::move(blenderIrPaths);
+                const auto exportResult = spice::sstsml::exportSmlEmbeddedMldsAndCommandMap(
+                    smlParsed,
+                    sstParsed.has_value() ? &*sstParsed : nullptr,
+                    exportOptions);
+
+                if (!exportResult.wroteManifest) {
+                    std::cerr << "[SpiceFileParsing] WARNING: failed to write SML embedded MLD manifest for "
+                              << entry.path().string() << "\n";
+                }
+                if (cliOptions->exportSstSmlCommandMap && !exportResult.wroteCommandMap) {
+                    std::cerr << "[SpiceFileParsing] WARNING: no SST/SML command map was written for "
+                              << entry.path().string() << "\n";
+                }
+                ++filesProcessed;
+            } catch (const std::exception& ex) {
+                std::cerr << "[SpiceFileParsing] WARNING: SML embedded MLD export failed for "
                           << entry.path().string() << ": " << ex.what() << "\n";
             }
             continue;

@@ -25,6 +25,9 @@
     <ClInclude Include="SstParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SstSmlExport.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
     <ClInclude Include="BattleStageParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -37,6 +40,9 @@
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="BattleStageParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlExport.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>

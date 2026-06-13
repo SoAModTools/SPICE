@@ -16,6 +16,10 @@ using spice::core::EndianReader;
 
 constexpr std::uint32_t kSstTopLevelRecordStride = 0x10U;
 constexpr std::uint32_t kSstCommandRecordStride = 0x10U;
+constexpr std::uint32_t kType1LightingRowStride = 0x68U;
+constexpr std::uint32_t kType1LightingRowCount = 2U;
+constexpr std::uint32_t kType1EnableLightSetupFlag = 0x40000000U;
+constexpr std::uint32_t kType1EnableVectorSetupFlag = 0x20000000U;
 
 void addDiagnostic(std::vector<ParseDiagnostic>& diagnostics,
     DiagnosticSeverity severity,
@@ -150,6 +154,54 @@ std::optional<CommandConsumerWindow> type11TrailingConsumerWindow(std::span<cons
     return window;
 }
 
+Float3 readFloat3(const EndianReader& reader, std::uint32_t offset) {
+    return Float3{
+        reader.read_f32(offset + 0x00U),
+        reader.read_f32(offset + 0x04U),
+        reader.read_f32(offset + 0x08U),
+    };
+}
+
+std::vector<SstType1LightingRow> parseType1LightingRows(std::span<const std::uint8_t> decodedBytes,
+    std::uint32_t payloadOffset,
+    std::uint32_t payloadSize) {
+    std::vector<SstType1LightingRow> rows{};
+    if (!canReadRange(decodedBytes.size(), payloadOffset, payloadSize)) {
+        return rows;
+    }
+
+    const EndianReader reader(decodedBytes, Endian::Big);
+    const std::uint32_t maxRows = std::min<std::uint32_t>(kType1LightingRowCount,
+        payloadSize / kType1LightingRowStride);
+    rows.reserve(maxRows);
+    for (std::uint32_t rowIndex = 0U; rowIndex < maxRows; ++rowIndex) {
+        const std::uint32_t rowOffset = payloadOffset + (rowIndex * kType1LightingRowStride);
+        SstType1LightingRow row{};
+        row.index = rowIndex;
+        row.rowOffset = rowOffset;
+        row.state = reader.read_i8(rowOffset + 0x00U);
+        row.sentinel = row.state < 0;
+        row.classSelector = reader.read_i16(rowOffset + 0x02U);
+        row.flags = reader.read_u32(rowOffset + 0x04U);
+        row.enablesLightSetup = (row.flags & kType1EnableLightSetupFlag) != 0U;
+        row.enablesVectorSetup = (row.flags & kType1EnableVectorSetupFlag) != 0U;
+        row.runtimeSlotId = reader.read_i16(rowOffset + 0x08U);
+        row.lightVector = readFloat3(reader, rowOffset + 0x0CU);
+        row.slotRgb = readFloat3(reader, rowOffset + 0x30U);
+        row.globalRgb = readFloat3(reader, rowOffset + 0x3CU);
+        row.attenuationOrSpot0 = reader.read_f32(rowOffset + 0x48U);
+        row.attenuationOrSpot1 = reader.read_f32(rowOffset + 0x4CU);
+        row.rawTailWord = reader.read_u32(rowOffset + 0x64U);
+        row.rawBytes = copyRange(decodedBytes, rowOffset, kType1LightingRowStride);
+        rows.push_back(std::move(row));
+        if (rows.back().sentinel) {
+            break;
+        }
+    }
+
+    return rows;
+}
+
 } // namespace
 
 bool SstParseResult::ok() const {
@@ -202,45 +254,179 @@ std::vector<CommandFieldSummary> SstParser::fieldSummariesForType(std::int16_t t
                 CommandFieldEvidence::GekkoAndCorpus,
                 true,
                 "Runtime consumers read copied type 0 row +0x18 as a signed battle object class selector."),
+            field(0x1CU,
+                CommandFieldWidth::F32,
+                CommandFieldKind::VectorComponent,
+                "transformPositionX",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true,
+                "Selector callback 3 loads copied type 0 row +0x1c as f32 and passes it to FUN_802924e0."),
+            field(0x20U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::VectorComponent,
+                "transformPositionY",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true,
+                "Selector callback 3 loads copied type 0 row +0x20 as f32 and passes it to FUN_802924e0; runtime helper FUN_8007e264 later resets this copied local slot."),
+            field(0x24U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::VectorComponent,
+                "transformPositionZ",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true,
+                "Selector callback 3 loads copied type 0 row +0x24 as f32 and passes it to FUN_802924e0."),
+            field(0x28U,
+                CommandFieldWidth::U32,
+                CommandFieldKind::RotationComponent,
+                "rotationAngleX",
+                CommandFieldEvidence::Gekko,
+                true,
+                "Selector callback 3 reads copied type 0 row +0x28 as a signed 32-bit angle component, scales it, and passes it to FUN_80292080."),
+            field(0x2CU,
+                CommandFieldWidth::U32,
+                CommandFieldKind::RotationComponent,
+                "rotationAngleY",
+                CommandFieldEvidence::Gekko,
+                true,
+                "Selector callback 3 reads copied type 0 row +0x2c as a signed 32-bit angle component, scales it, and passes it to FUN_80292080."),
+            field(0x30U,
+                CommandFieldWidth::U32,
+                CommandFieldKind::RotationComponent,
+                "rotationAngleZ",
+                CommandFieldEvidence::Gekko,
+                true,
+                "Selector callback 3 reads copied type 0 row +0x30 as a signed 32-bit angle component, scales it, and passes it to FUN_80292080."),
             field(0x34U,
                 CommandFieldWidth::F32,
                 CommandFieldKind::FloatParameter,
-                "scaleOrDefaultX",
-                CommandFieldEvidence::CorpusStable,
+                "scaleX",
+                CommandFieldEvidence::GekkoAndCorpus,
                 true,
-                "Corpus-stable 1.0f candidate; downstream consumer still not traced."),
+                "Selector callback 3 loads copied type 0 row +0x34 as f32 scale X and passes it to FUN_802923e0; corpus value is stable 1.0f."),
             field(0x38U,
                 CommandFieldWidth::F32,
                 CommandFieldKind::FloatParameter,
-                "scaleOrDefaultY",
-                CommandFieldEvidence::CorpusStable,
+                "scaleY",
+                CommandFieldEvidence::GekkoAndCorpus,
                 true,
-                "Corpus-stable 1.0f candidate; downstream consumer still not traced."),
+                "Selector callback 3 loads copied type 0 row +0x38 as f32 scale Y and passes it to FUN_802923e0; corpus value is stable 1.0f."),
             field(0x3CU,
                 CommandFieldWidth::F32,
                 CommandFieldKind::FloatParameter,
-                "scaleOrDefaultZ",
-                CommandFieldEvidence::CorpusStable,
+                "scaleZ",
+                CommandFieldEvidence::GekkoAndCorpus,
                 true,
-                "Corpus-stable 1.0f candidate; downstream consumer still not traced."),
+                "Selector callback 3 loads copied type 0 row +0x3c as f32 scale Z and passes it to FUN_802923e0; corpus value is stable 1.0f."),
             field(0x44U,
-                CommandFieldWidth::U32,
-                CommandFieldKind::RawWord,
-                "flagWordCandidate",
-                CommandFieldEvidence::CorpusStable,
+                CommandFieldWidth::U8,
+                CommandFieldKind::HalfwordParameter,
+                "renderActionByte",
+                CommandFieldEvidence::GekkoAndCorpus,
                 true,
-                "Corpus values are 0 or 0x02000000; exact runtime consumer remains provisional."),
+                "Selector callback 3 reads byte +0x44 and passes it to FUN_80035140 or FUN_80035380. Big-endian word values 0x00000000/0x02000000 correspond to byte values 0/2; trailing bytes +0x45..+0x47 remain raw."),
         };
     case 1:
         return {
-            field(0x00U, CommandFieldWidth::I8, CommandFieldKind::HalfwordParameter, "subrecord0Active"),
-            field(0x02U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "subrecord0HalfwordParameter"),
-            field(0x08U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "subrecord0HalfwordParameter"),
-            field(0x64U, CommandFieldWidth::U32, CommandFieldKind::RawWord, "subrecord0RawWord"),
-            field(0x68U, CommandFieldWidth::I8, CommandFieldKind::HalfwordParameter, "subrecord1Active"),
-            field(0x6AU, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "subrecord1HalfwordParameter"),
-            field(0x70U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "subrecord1HalfwordParameter"),
-            field(0xCCU, CommandFieldWidth::U32, CommandFieldKind::RawWord, "subrecord1RawWord"),
+            field(0x00U,
+                CommandFieldWidth::I8,
+                CommandFieldKind::HalfwordParameter,
+                "rowState",
+                CommandFieldEvidence::GekkoAndCorpus,
+                false,
+                "Active observed rows use state 4; a negative value is the row-walker sentinel."),
+            field(0x02U,
+                CommandFieldWidth::I16,
+                CommandFieldKind::HalfwordParameter,
+                "classSelector",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true,
+                "Passed to FUN_8006bdb4 as the child/menu class selector; corpus value is currently always 2."),
+            field(0x04U,
+                CommandFieldWidth::U32,
+                CommandFieldKind::RawWord,
+                "lightingFlags",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true,
+                "0x40000000 gates render-light setup; 0x20000000 gates vector setup."),
+            field(0x08U,
+                CommandFieldWidth::I16,
+                CommandFieldKind::RuntimeSlot,
+                "runtimeSlotId",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true,
+                "Runtime slot id stored in the DAT_80309e88 four-slot table; corpus value is currently always 0."),
+            field(0x0CU,
+                CommandFieldWidth::F32,
+                CommandFieldKind::VectorComponent,
+                "lightVectorX",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x10U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::VectorComponent,
+                "lightVectorY",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x14U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::VectorComponent,
+                "lightVectorZ",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x30U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "slotRgbR",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x34U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "slotRgbG",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x38U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "slotRgbB",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x3CU,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "globalRgbR",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x40U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "globalRgbG",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x44U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "globalRgbB",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x48U,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "attenuationOrSpot0",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x4CU,
+                CommandFieldWidth::F32,
+                CommandFieldKind::FloatParameter,
+                "attenuationOrSpot1",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
+            field(0x64U,
+                CommandFieldWidth::U32,
+                CommandFieldKind::RawWord,
+                "rowTailWord",
+                CommandFieldEvidence::GekkoAndCorpus,
+                true),
         };
     case 2:
         return {
@@ -448,6 +634,11 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
                 if (command.modelIndexCandidate && command.payloadBytes.size() >= 2U) {
                     EndianReader payloadReader(command.payloadBytes, Endian::Big);
                     command.modelIndex = payloadReader.read_i16(0x00U);
+                }
+                if (command.type == 1) {
+                    command.type1LightingRows = parseType1LightingRows(decodedBytes,
+                        command.payloadOffset,
+                        command.payloadSize);
                 }
             } else {
                 addDiagnostic(result.diagnostics,

@@ -1,10 +1,15 @@
 #include "../Compression/Aklz.h"
+#include "../SpiceMLD/SpiceMLD.h"
 #include "../SpiceSstSml/SpiceSstSml.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <span>
 #include <string>
 #include <vector>
@@ -27,6 +32,10 @@ void writeBeU32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint3
     bytes[offset + 1U] = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
     bytes[offset + 2U] = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
     bytes[offset + 3U] = static_cast<std::uint8_t>(value & 0xFFU);
+}
+
+void writeBeF32(std::vector<std::uint8_t>& bytes, std::size_t offset, float value) {
+    writeBeU32(bytes, offset, std::bit_cast<std::uint32_t>(value));
 }
 
 std::vector<std::uint8_t> makeSml(std::uint32_t recordCount = 2U) {
@@ -112,6 +121,213 @@ std::vector<std::uint8_t> makeSst() {
     writeBeI16(bytes, 0xEAU, 0x0044);
 
     return bytes;
+}
+
+std::vector<std::uint8_t> makeSstWithType1LightingRows() {
+    std::vector<std::uint8_t> bytes(0x114U, 0U);
+
+    writeBeU32(bytes, 0x00U, 0xAAA00000U);
+    writeBeU32(bytes, 0x04U, 0x0001FFFFU);
+    writeBeU32(bytes, 0x08U, 0xBBBB0000U);
+    writeBeU32(bytes, 0x0CU, 0x20U);
+
+    writeBeU32(bytes, 0x20U, 1U);
+    writeBeI16(bytes, 0x24U, 1);
+    writeBeI16(bytes, 0x26U, 0);
+    writeBeU32(bytes, 0x28U, 0x10000004U);
+    writeBeU32(bytes, 0x2CU, 0x10000008U);
+    writeBeU32(bytes, 0x30U, 0x01010101U);
+
+    writeBeI16(bytes, 0x34U, -1);
+    writeBeI16(bytes, 0x36U, 0);
+
+    constexpr std::size_t firstRow = 0x44U;
+    bytes[firstRow + 0x00U] = 4U;
+    writeBeI16(bytes, firstRow + 0x02U, 2);
+    writeBeU32(bytes, firstRow + 0x04U, 0x60000000U);
+    writeBeI16(bytes, firstRow + 0x08U, 0);
+    writeBeF32(bytes, firstRow + 0x0CU, 1.25F);
+    writeBeF32(bytes, firstRow + 0x10U, -2.5F);
+    writeBeF32(bytes, firstRow + 0x14U, 3.75F);
+    writeBeF32(bytes, firstRow + 0x30U, 0.1F);
+    writeBeF32(bytes, firstRow + 0x34U, 0.2F);
+    writeBeF32(bytes, firstRow + 0x38U, 0.3F);
+    writeBeF32(bytes, firstRow + 0x3CU, 0.4F);
+    writeBeF32(bytes, firstRow + 0x40U, 0.5F);
+    writeBeF32(bytes, firstRow + 0x44U, 0.6F);
+    writeBeF32(bytes, firstRow + 0x48U, 30.0F);
+    writeBeF32(bytes, firstRow + 0x4CU, 60.0F);
+    writeBeU32(bytes, firstRow + 0x64U, 0x11223344U);
+
+    constexpr std::size_t sentinelRow = firstRow + 0x68U;
+    bytes[sentinelRow + 0x00U] = 0xFFU;
+    writeBeI16(bytes, sentinelRow + 0x02U, -1);
+    writeBeU32(bytes, sentinelRow + 0x04U, 0x20000000U);
+    writeBeI16(bytes, sentinelRow + 0x08U, 3);
+    writeBeF32(bytes, sentinelRow + 0x0CU, 9.0F);
+    writeBeU32(bytes, sentinelRow + 0x64U, 0x55667788U);
+
+    return bytes;
+}
+
+void writeTag(std::vector<std::uint8_t>& bytes, std::size_t offset, const char* tag) {
+    bytes[offset + 0U] = static_cast<std::uint8_t>(tag[0]);
+    bytes[offset + 1U] = static_cast<std::uint8_t>(tag[1]);
+    bytes[offset + 2U] = static_cast<std::uint8_t>(tag[2]);
+    bytes[offset + 3U] = static_cast<std::uint8_t>(tag[3]);
+}
+
+void writeList(std::vector<std::uint8_t>& bytes, std::size_t offset, std::span<const std::uint32_t> values) {
+    writeBeU32(bytes, offset, static_cast<std::uint32_t>(values.size()));
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        writeBeU32(bytes, offset + 4U + (i * 4U), values[i]);
+    }
+}
+
+std::vector<std::uint8_t> makeMinimalEmbeddedMld() {
+    constexpr std::size_t kEntryOffset = 0x20U;
+    constexpr std::size_t kListGroundLinks = 0x100U;
+    constexpr std::size_t kListParam2 = 0x108U;
+    constexpr std::size_t kListFunctionParams = 0x110U;
+    constexpr std::size_t kListObjects = 0x11CU;
+    constexpr std::size_t kListGrounds = 0x124U;
+    constexpr std::size_t kListMotions = 0x12CU;
+    constexpr std::size_t kGrndOffset = 0x140U;
+    constexpr std::size_t kTextureTable = 0x170U;
+
+    std::vector<std::uint8_t> bytes(0x180U, 0U);
+    writeBeU32(bytes, 0x00U, 1U);
+    writeBeU32(bytes, 0x04U, static_cast<std::uint32_t>(kEntryOffset));
+    writeBeU32(bytes, 0x08U, static_cast<std::uint32_t>(kListFunctionParams));
+    writeBeU32(bytes, 0x0CU, static_cast<std::uint32_t>(kGrndOffset));
+    writeBeU32(bytes, 0x10U, static_cast<std::uint32_t>(kTextureTable));
+
+    writeBeU32(bytes, kEntryOffset + 0x00U, 0x101U);
+    writeBeU32(bytes, kEntryOffset + 0x04U, 0x202U);
+    writeBeU32(bytes, kEntryOffset + 0x08U, static_cast<std::uint32_t>(kListGroundLinks));
+    writeBeU32(bytes, kEntryOffset + 0x0CU, static_cast<std::uint32_t>(kListParam2));
+    writeBeU32(bytes, kEntryOffset + 0x10U, static_cast<std::uint32_t>(kListFunctionParams));
+    writeBeU32(bytes, kEntryOffset + 0x14U, static_cast<std::uint32_t>(kListObjects));
+    writeBeU32(bytes, kEntryOffset + 0x18U, static_cast<std::uint32_t>(kListGrounds));
+    writeBeU32(bytes, kEntryOffset + 0x1CU, static_cast<std::uint32_t>(kListMotions));
+    const std::string fxn = "wall";
+    std::copy(fxn.begin(), fxn.end(), bytes.begin() + static_cast<std::ptrdiff_t>(kEntryOffset + 0x24U));
+    writeBeF32(bytes, kEntryOffset + 0x44U, 1.0F);
+    writeBeF32(bytes, kEntryOffset + 0x48U, 2.0F);
+    writeBeF32(bytes, kEntryOffset + 0x4CU, 3.0F);
+    writeBeF32(bytes, kEntryOffset + 0x50U, 4.0F);
+    writeBeF32(bytes, kEntryOffset + 0x54U, 5.0F);
+    writeBeF32(bytes, kEntryOffset + 0x58U, 6.0F);
+    writeBeF32(bytes, kEntryOffset + 0x5CU, 1.0F);
+    writeBeF32(bytes, kEntryOffset + 0x60U, 1.0F);
+    writeBeF32(bytes, kEntryOffset + 0x64U, 1.0F);
+
+    const std::uint32_t groundLinks[] = { 7U };
+    const std::uint32_t functionParams[] = { 0x333U, 0x444U };
+    const std::uint32_t grounds[] = { static_cast<std::uint32_t>(kGrndOffset) };
+    const std::vector<std::uint32_t> empty{};
+    writeList(bytes, kListGroundLinks, groundLinks);
+    writeList(bytes, kListParam2, empty);
+    writeList(bytes, kListFunctionParams, functionParams);
+    writeList(bytes, kListObjects, empty);
+    writeList(bytes, kListGrounds, grounds);
+    writeList(bytes, kListMotions, empty);
+
+    writeTag(bytes, kGrndOffset, "GRND");
+    writeBeU32(bytes, kGrndOffset + 4U, 0x2CU);
+    writeBeU16(bytes, kGrndOffset + 0x20U, 2U);
+    writeBeU16(bytes, kGrndOffset + 0x22U, 3U);
+    writeBeU16(bytes, kGrndOffset + 0x24U, 4U);
+    writeBeU16(bytes, kGrndOffset + 0x26U, 5U);
+
+    writeBeU32(bytes, kTextureTable, 0U);
+    return bytes;
+}
+
+std::vector<std::uint8_t> makeSmlWithEmbeddedMld(std::span<const std::uint8_t> embeddedMld) {
+    std::vector<std::uint8_t> bytes(0x20U + embeddedMld.size(), 0U);
+    writeBeU32(bytes, 0x00U, 0x534D4C30U);
+    writeBeU32(bytes, 0x04U, 0x0001FFFFU);
+    writeBeU32(bytes, 0x08U, 0x00000100U);
+    writeBeU32(bytes, 0x0CU, 0x20U);
+    writeBeU32(bytes, 0x10U, static_cast<std::uint32_t>(embeddedMld.size()));
+    writeBeU32(bytes, 0x14U, 0x11111111U);
+    std::copy(embeddedMld.begin(), embeddedMld.end(), bytes.begin() + 0x20U);
+    return bytes;
+}
+
+std::vector<std::uint8_t> makeSmlWithOutOfBoundsPayload() {
+    std::vector<std::uint8_t> bytes(0x20U, 0U);
+    writeBeU32(bytes, 0x00U, 0x534D4C30U);
+    writeBeU32(bytes, 0x04U, 0x0001FFFFU);
+    writeBeU32(bytes, 0x08U, 0x00000100U);
+    writeBeU32(bytes, 0x0CU, 0x80U);
+    writeBeU32(bytes, 0x10U, 0x10U);
+    writeBeU32(bytes, 0x14U, 0x11111111U);
+    return bytes;
+}
+
+std::vector<std::uint8_t> makeSstWithType0AndExtraCommand() {
+    std::vector<std::uint8_t> bytes(0xB0U, 0U);
+    writeBeU32(bytes, 0x00U, 0xAAA00000U);
+    writeBeU32(bytes, 0x04U, 0x0001FFFFU);
+    writeBeU32(bytes, 0x08U, 0xBBBB0000U);
+    writeBeU32(bytes, 0x0CU, 0x20U);
+
+    writeBeU32(bytes, 0x20U, 2U);
+    writeBeI16(bytes, 0x24U, 0);
+    writeBeI16(bytes, 0x26U, 0);
+    writeBeU32(bytes, 0x28U, 0x20000004U);
+    writeBeU32(bytes, 0x2CU, 0x20000008U);
+    writeBeU32(bytes, 0x30U, 0x01020304U);
+
+    writeBeI16(bytes, 0x34U, 3);
+    writeBeI16(bytes, 0x36U, 0);
+    writeBeU32(bytes, 0x38U, 0x30000004U);
+    writeBeU32(bytes, 0x3CU, 0x30000008U);
+    writeBeU32(bytes, 0x40U, 0x05060708U);
+
+    writeBeI16(bytes, 0x44U, -1);
+    writeBeI16(bytes, 0x46U, 0);
+
+    constexpr std::size_t type0Payload = 0x54U;
+    writeBeI16(bytes, type0Payload + 0x16U, -3);
+    writeBeI16(bytes, type0Payload + 0x18U, 3);
+    writeBeF32(bytes, type0Payload + 0x1CU, 10.0F);
+    writeBeF32(bytes, type0Payload + 0x20U, 20.0F);
+    writeBeF32(bytes, type0Payload + 0x24U, 30.0F);
+    writeBeU32(bytes, type0Payload + 0x28U, 0x00000100U);
+    writeBeU32(bytes, type0Payload + 0x2CU, 0x00000200U);
+    writeBeU32(bytes, type0Payload + 0x30U, 0x00000300U);
+    writeBeF32(bytes, type0Payload + 0x34U, 1.0F);
+    writeBeF32(bytes, type0Payload + 0x38U, 1.0F);
+    writeBeF32(bytes, type0Payload + 0x3CU, 1.0F);
+    bytes[type0Payload + 0x44U] = 2U;
+
+    constexpr std::size_t type3Payload = type0Payload + 0x4CU;
+    writeBeI16(bytes, type3Payload + 0x00U, 0);
+    writeBeU16(bytes, type3Payload + 0x02U, 0x2222U);
+    writeBeI16(bytes, type3Payload + 0x04U, 0x0033);
+    writeBeI16(bytes, type3Payload + 0x06U, 0x0044);
+
+    return bytes;
+}
+
+std::filesystem::path makeTempOutputDir(const std::string& name) {
+    const auto path = std::filesystem::temp_directory_path() / name;
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+    return path;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+std::vector<std::uint8_t> readAllBytes(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
 bool hasInfoDiagnosticContaining(const std::vector<ParseDiagnostic>& diagnostics, const std::string& text) {
@@ -239,6 +455,114 @@ TEST(SpiceSstSmlParser, Type11ExposesSeparateTrailingConsumerWindow) {
     EXPECT_EQ(window.fieldSummaries[2].name, "trailingRampParameter");
 }
 
+TEST(SpiceSstSmlParser, DecodesType1LightingRowsAndStopsAtSentinel) {
+    const auto bytes = makeSstWithType1LightingRows();
+    const auto result = SstParser::parse(bytes);
+
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.commandBlocks.size(), 1U);
+    ASSERT_EQ(result.commandBlocks[0].commands.size(), 1U);
+    const auto& command = result.commandBlocks[0].commands[0];
+    EXPECT_EQ(command.type, 1);
+    EXPECT_EQ(command.payloadSize, 0xD0U);
+    EXPECT_EQ(command.payloadBytes.size(), 0xD0U);
+    ASSERT_EQ(command.type1LightingRows.size(), 2U);
+
+    const auto& row = command.type1LightingRows[0];
+    EXPECT_EQ(row.index, 0U);
+    EXPECT_EQ(row.rowOffset, command.payloadOffset);
+    EXPECT_EQ(row.state, 4);
+    EXPECT_FALSE(row.sentinel);
+    EXPECT_EQ(row.classSelector, 2);
+    EXPECT_EQ(row.flags, 0x60000000U);
+    EXPECT_TRUE(row.enablesLightSetup);
+    EXPECT_TRUE(row.enablesVectorSetup);
+    EXPECT_EQ(row.runtimeSlotId, 0);
+    EXPECT_FLOAT_EQ(row.lightVector.x, 1.25F);
+    EXPECT_FLOAT_EQ(row.lightVector.y, -2.5F);
+    EXPECT_FLOAT_EQ(row.lightVector.z, 3.75F);
+    EXPECT_FLOAT_EQ(row.slotRgb.x, 0.1F);
+    EXPECT_FLOAT_EQ(row.slotRgb.y, 0.2F);
+    EXPECT_FLOAT_EQ(row.slotRgb.z, 0.3F);
+    EXPECT_FLOAT_EQ(row.globalRgb.x, 0.4F);
+    EXPECT_FLOAT_EQ(row.globalRgb.y, 0.5F);
+    EXPECT_FLOAT_EQ(row.globalRgb.z, 0.6F);
+    EXPECT_FLOAT_EQ(row.attenuationOrSpot0, 30.0F);
+    EXPECT_FLOAT_EQ(row.attenuationOrSpot1, 60.0F);
+    EXPECT_EQ(row.rawTailWord, 0x11223344U);
+    EXPECT_EQ(row.rawBytes.size(), 0x68U);
+
+    const auto& sentinel = command.type1LightingRows[1];
+    EXPECT_EQ(sentinel.index, 1U);
+    EXPECT_TRUE(sentinel.sentinel);
+    EXPECT_EQ(sentinel.state, -1);
+    EXPECT_EQ(sentinel.classSelector, -1);
+    EXPECT_EQ(sentinel.runtimeSlotId, 3);
+    EXPECT_FALSE(sentinel.enablesLightSetup);
+    EXPECT_TRUE(sentinel.enablesVectorSetup);
+    EXPECT_EQ(sentinel.rawTailWord, 0x55667788U);
+}
+
+TEST(SpiceSstSmlParser, Type1FieldSummariesUseLightingMetadata) {
+    const auto fields = SstParser::fieldSummariesForType(1);
+
+    ASSERT_FALSE(fields.empty());
+    const auto runtimeSlot = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "runtimeSlotId";
+    });
+    ASSERT_NE(runtimeSlot, fields.end());
+    EXPECT_EQ(runtimeSlot->kind, CommandFieldKind::RuntimeSlot);
+    EXPECT_EQ(runtimeSlot->evidence, CommandFieldEvidence::GekkoAndCorpus);
+
+    const auto slotRgb = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "slotRgbR";
+    });
+    ASSERT_NE(slotRgb, fields.end());
+    EXPECT_EQ(slotRgb->width, CommandFieldWidth::F32);
+    EXPECT_EQ(slotRgb->evidence, CommandFieldEvidence::GekkoAndCorpus);
+
+    const auto attenuation = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "attenuationOrSpot1";
+    });
+    ASSERT_NE(attenuation, fields.end());
+    EXPECT_TRUE(attenuation->provisional);
+}
+
+TEST(SpiceSstSmlParser, Type0FieldSummariesUseCallbackBackedTransformMetadata) {
+    const auto fields = SstParser::fieldSummariesForType(0);
+
+    const auto position = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "transformPositionX";
+    });
+    ASSERT_NE(position, fields.end());
+    EXPECT_EQ(position->width, CommandFieldWidth::F32);
+    EXPECT_EQ(position->kind, CommandFieldKind::VectorComponent);
+    EXPECT_EQ(position->evidence, CommandFieldEvidence::GekkoAndCorpus);
+
+    const auto rotation = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "rotationAngleY";
+    });
+    ASSERT_NE(rotation, fields.end());
+    EXPECT_EQ(rotation->width, CommandFieldWidth::U32);
+    EXPECT_EQ(rotation->kind, CommandFieldKind::RotationComponent);
+    EXPECT_EQ(rotation->evidence, CommandFieldEvidence::Gekko);
+
+    const auto scale = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "scaleZ";
+    });
+    ASSERT_NE(scale, fields.end());
+    EXPECT_EQ(scale->width, CommandFieldWidth::F32);
+    EXPECT_EQ(scale->evidence, CommandFieldEvidence::GekkoAndCorpus);
+
+    const auto renderAction = std::find_if(fields.begin(), fields.end(), [](const auto& field) {
+        return field.name == "renderActionByte";
+    });
+    ASSERT_NE(renderAction, fields.end());
+    EXPECT_EQ(renderAction->offset, 0x44U);
+    EXPECT_EQ(renderAction->width, CommandFieldWidth::U8);
+    EXPECT_EQ(renderAction->evidence, CommandFieldEvidence::GekkoAndCorpus);
+}
+
 TEST(SpiceSstSmlParser, ConservativeMetadataKeepsEvidenceAndProvisionalStatus) {
     const auto type2Fields = SstParser::fieldSummariesForType(2);
     const auto type6Fields = SstParser::fieldSummariesForType(6);
@@ -273,4 +597,123 @@ TEST(SpiceSstSmlParser, ParsesAklzWrappedInputs) {
     EXPECT_TRUE(sstResult.sourceWasCompressedAklz);
     EXPECT_EQ(smlResult.records.size(), 2U);
     EXPECT_EQ(sstResult.commandBlocks.size(), 2U);
+}
+
+TEST(SpiceSstSmlExport, ExtractsEmbeddedMldPayloadsAndReportsMissingSst) {
+    const auto smlParsed = SmlParser::parse(makeSml(), "s999.sml");
+    ASSERT_TRUE(smlParsed.ok());
+
+    const auto outputDir = makeTempOutputDir("spice_sst_sml_export_missing_sst");
+    SmlEmbeddedMldExportOptions options{};
+    options.stageOutputDir = outputDir / "s999";
+    options.stem = "s999";
+    options.writeEmbeddedMldPayloads = true;
+    options.writeCommandMap = true;
+
+    const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, nullptr, options);
+
+    EXPECT_TRUE(result.wroteManifest);
+    EXPECT_FALSE(result.wroteCommandMap);
+    ASSERT_EQ(result.entries.size(), 2U);
+    EXPECT_TRUE(result.entries[0].wroteEmbeddedMld);
+    EXPECT_TRUE(std::filesystem::exists(options.stageOutputDir / "embedded_mld" / "s999_sml_entry_0.mld"));
+    EXPECT_TRUE(std::filesystem::exists(options.stageOutputDir / "embedded_mld" / "s999_sml_entry_1.mld"));
+
+    const auto manifest = readTextFile(result.manifestPath);
+    EXPECT_NE(manifest.find("No same-stem SST"), std::string::npos);
+}
+
+TEST(SpiceSstSmlExport, ReportsOutOfBoundsSmlRecordWithoutWritingPayload) {
+    const auto smlParsed = SmlParser::parse(makeSmlWithOutOfBoundsPayload(), "bad.sml");
+    ASSERT_FALSE(smlParsed.ok());
+
+    const auto outputDir = makeTempOutputDir("spice_sst_sml_export_oob");
+    SmlEmbeddedMldExportOptions options{};
+    options.stageOutputDir = outputDir / "bad";
+    options.stem = "bad";
+    options.writeEmbeddedMldPayloads = true;
+
+    const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, nullptr, options);
+
+    ASSERT_EQ(result.entries.size(), 1U);
+    EXPECT_FALSE(result.entries[0].wroteEmbeddedMld);
+    EXPECT_FALSE(std::filesystem::exists(options.stageOutputDir / "embedded_mld" / "bad_sml_entry_0.mld"));
+    ASSERT_FALSE(result.entries[0].diagnostics.empty());
+    EXPECT_NE(result.entries[0].diagnostics[0].find("out of bounds"), std::string::npos);
+}
+
+TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadata) {
+    const auto smlParsed = SmlParser::parse(makeSml(1U), "s777.sml");
+    const auto sstParsed = SstParser::parse(makeSstWithType0AndExtraCommand(), "s777.sst");
+    ASSERT_TRUE(smlParsed.ok());
+    ASSERT_TRUE(sstParsed.ok());
+
+    const auto outputDir = makeTempOutputDir("spice_sst_sml_export_command_map");
+    SmlEmbeddedMldExportOptions options{};
+    options.stageOutputDir = outputDir / "s777";
+    options.stem = "s777";
+    options.writeEmbeddedMldPayloads = true;
+    options.writeCommandMap = true;
+
+    const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, &sstParsed, options);
+
+    ASSERT_TRUE(result.commandMapPath.has_value());
+    EXPECT_TRUE(result.wroteCommandMap);
+    const auto commandMap = readTextFile(*result.commandMapPath);
+    EXPECT_NE(commandMap.find("\"index\":0"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"type\":0"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"type\":3"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"battleObjectClassSelector\":3"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"lookupResourceIndex\":-3"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"renderActionByte\":2"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"resolvedSmlRecordIndex\":0"), std::string::npos);
+}
+
+TEST(SpiceSstSmlExport, PreservesRecordCountMismatchInCommandMap) {
+    const auto smlParsed = SmlParser::parse(makeSml(1U), "s778.sml");
+    const auto sstParsed = SstParser::parse(makeSst(), "s778.sst");
+    ASSERT_TRUE(smlParsed.ok());
+    ASSERT_TRUE(sstParsed.ok());
+
+    const auto outputDir = makeTempOutputDir("spice_sst_sml_export_mismatch");
+    SmlEmbeddedMldExportOptions options{};
+    options.stageOutputDir = outputDir / "s778";
+    options.stem = "s778";
+    options.writeEmbeddedMldPayloads = true;
+    options.writeCommandMap = true;
+
+    const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, &sstParsed, options);
+
+    ASSERT_TRUE(result.commandMapPath.has_value());
+    const auto commandMap = readTextFile(*result.commandMapPath);
+    EXPECT_NE(commandMap.find("\"agree\":false"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"index\":1"), std::string::npos);
+    const auto manifest = readTextFile(result.manifestPath);
+    EXPECT_NE(manifest.find("record counts differ"), std::string::npos);
+}
+
+TEST(SpiceSstSmlExport, ExtractedEmbeddedMldCanBeParsedByMldParser) {
+    const auto embeddedMld = makeMinimalEmbeddedMld();
+    const auto smlParsed = SmlParser::parse(makeSmlWithEmbeddedMld(embeddedMld), "s123.sml");
+    ASSERT_TRUE(smlParsed.ok());
+
+    const auto outputDir = makeTempOutputDir("spice_sst_sml_export_mld_parse");
+    SmlEmbeddedMldExportOptions options{};
+    options.stageOutputDir = outputDir / "s123";
+    options.stem = "s123";
+    options.writeEmbeddedMldPayloads = true;
+
+    const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, nullptr, options);
+    ASSERT_EQ(result.entries.size(), 1U);
+    ASSERT_TRUE(result.entries[0].wroteEmbeddedMld);
+
+    const auto exportedBytes = readAllBytes(result.entries[0].embeddedMldPath);
+    ASSERT_FALSE(exportedBytes.empty());
+    spice::mld::parsing::MldParser parser{};
+    spice::mld::parsing::ParseOptions parseOptions{};
+    parseOptions.buildBlenderIntermediateIr = false;
+    const auto parsed = parser.parse(std::span<const std::uint8_t>(exportedBytes.data(), exportedBytes.size()), parseOptions);
+
+    ASSERT_EQ(parsed.entryList.size(), 1U);
+    EXPECT_EQ(parsed.entryList[0].fxnName, "wall");
 }

@@ -23,12 +23,14 @@ struct ParseDiagnostic {
 
 enum class CommandFieldKind {
     ModelIndex,
+    RuntimeSlot,
     LookupKey,
     RawWord,
     HalfwordParameter,
     FloatParameter,
     RuntimePointer,
     VectorComponent,
+    RotationComponent,
     VectorDelta,
     Duration,
     Counter,
@@ -114,6 +116,31 @@ struct SstTopLevelRecord {
     std::uint32_t commandBlockOffset{ 0U };
 };
 
+struct Float3 {
+    float x{ 0.0F };
+    float y{ 0.0F };
+    float z{ 0.0F };
+};
+
+struct SstType1LightingRow {
+    std::size_t index{ 0U };
+    std::uint32_t rowOffset{ 0U };
+    std::int8_t state{ 0 };
+    bool sentinel{ false };
+    std::int16_t classSelector{ 0 };
+    std::uint32_t flags{ 0U };
+    bool enablesLightSetup{ false };
+    bool enablesVectorSetup{ false };
+    std::int16_t runtimeSlotId{ 0 };
+    Float3 lightVector{};
+    Float3 slotRgb{};
+    Float3 globalRgb{};
+    float attenuationOrSpot0{ 0.0F };
+    float attenuationOrSpot1{ 0.0F };
+    std::uint32_t rawTailWord{ 0U };
+    std::vector<std::uint8_t> rawBytes{};
+};
+
 struct SstCommandRecord {
     std::size_t index{ 0U };
     std::uint32_t recordOffset{ 0U };
@@ -131,6 +158,7 @@ struct SstCommandRecord {
     std::vector<std::uint8_t> payloadBytes{};
     std::vector<CommandFieldSummary> fieldSummaries{};
     std::vector<CommandConsumerWindow> consumerWindows{};
+    std::vector<SstType1LightingRow> type1LightingRows{};
 };
 
 struct SstCommandBlock {

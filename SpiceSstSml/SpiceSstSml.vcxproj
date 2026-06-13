@@ -103,12 +103,14 @@
     <ClInclude Include="SmlParser.h" />
     <ClInclude Include="SpiceSstSml.h" />
     <ClInclude Include="SstParser.h" />
+    <ClInclude Include="SstSmlExport.h" />
     <ClInclude Include="SstSmlModel.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BattleStageParser.cpp" />
     <ClCompile Include="SmlParser.cpp" />
     <ClCompile Include="SstParser.cpp" />
+    <ClCompile Include="SstSmlExport.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Compression\Compression.vcxproj">
