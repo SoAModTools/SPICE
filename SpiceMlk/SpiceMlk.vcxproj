@@ -99,11 +99,13 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="MlkCorpus.h" />
     <ClInclude Include="MlkModel.h" />
     <ClInclude Include="MlkScanner.h" />
     <ClInclude Include="SpiceMlk.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="MlkCorpus.cpp" />
     <ClCompile Include="MlkScanner.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -113,8 +115,10 @@
     <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SpiceMLD\SpiceMLD.vcxproj">
+      <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>
-

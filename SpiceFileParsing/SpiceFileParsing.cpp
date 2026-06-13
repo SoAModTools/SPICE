@@ -1,4 +1,5 @@
 #include "../SpiceMLD/SpiceMLD.h"
+#include "../SpiceMlk/SpiceMlk.h"
 #include "../SpiceSstSml/SpiceSstSml.h"
 #include "../SpiceSCT/SpiceSCT.h"
 #include "../SpiceContentGraph/SpiceContentGraph.h"
@@ -185,6 +186,7 @@ struct CliOptions {
     bool exportSmlEmbeddedMldBlenderIr = false;
     bool exportSmlCombinedBlenderIr = false;
     bool exportSstSmlCommandMap = false;
+    bool exportMlkCorpus = false;
     std::filesystem::path smlStageAnnotationRepositoryDir{};
     bool parseSctOnly = false;
     bool decodeSctUnreachedCode = false;
@@ -212,7 +214,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--export-mlk-corpus] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
         << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
         << "  SpiceFileParsing --replace-mld-texture source.mld input.png output.mld (--mld-texture-index <n>|--mld-texture-name <name>) [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-global-index preserve|none|<u32>] [--mld-aklz preserve|raw|compressed] [--mld-allow-dimension-change] [--mld-allow-post-archive-shift]\n"
@@ -228,6 +230,7 @@ void printUsage() {
         << "  - --export-sml-embedded-mld-blender-ir also parses each embedded MLD payload and writes Blender IR under output/<stem>/blender_ir/entry_<index>.\n"
         << "  - --export-sml-combined-blender-ir writes output/<stem>/<stem>_combined_blender_ir_scene.json by appending all embedded SML MLD Blender IR scenes.\n"
         << "  - --export-sst-sml-command-map writes output/<stem>/<stem>.sst_sml_command_map.json when a same-stem .sst exists.\n"
+        << "  - --export-mlk-corpus scans .mlk files and writes mlk_corpus.json plus CSV summaries.\n"
         << "  - SML research exports also create living stage annotation JSON/media under SpiceSstSml/research/results/state_annotations/<stem> when run from the repo; existing annotation JSON is preserved, and combined Blender IR is copied there when available.\n"
         << "  - --sample-mld-gvr-formats writes compact embedded GVR format inventory and priority reports for .mld files.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
@@ -454,6 +457,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.exportSstSmlCommandMap = true;
             continue;
         }
+        if (arg == "--export-mlk-corpus") {
+            options.exportMlkCorpus = true;
+            continue;
+        }
         if (arg == "--sml-stage-annotation-repository") {
             if (i + 1 >= argc) {
                 std::cerr << "--sml-stage-annotation-repository requires an output directory.\n";
@@ -677,6 +684,17 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
     if (options.exportContentGraph
         && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary)) {
         std::cerr << "--content-graph cannot be combined with MLD-only, SCT-only, SCT binary export, or MLD A/B modes.\n";
+        return std::nullopt;
+    }
+    if (options.exportMlkCorpus
+        && (options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
+            || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
+            || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
+            || options.exportSstSmlCommandMap || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
+            || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr)) {
+        std::cerr << "--export-mlk-corpus cannot be combined with other parse/export modes.\n";
         return std::nullopt;
     }
     if (options.sampleMldGvrFormats && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
@@ -2926,6 +2944,28 @@ int main(int argc, char** argv) {
     const std::filesystem::path inputDir = cliOptions->inputDir;
     const std::filesystem::path outputDir = cliOptions->outputDir;
     const std::filesystem::path decompressedDir = source_dir / "decompressed_inputs";
+
+    if (cliOptions->exportMlkCorpus) {
+        try {
+            std::filesystem::create_directories(outputDir);
+            std::cout << "[SpiceFileParsing] Step 2/4: Scanning MLK corpus.\n";
+            const auto corpus = spice::mlk::scanMlkCorpus(inputDir);
+            std::cout << "[SpiceFileParsing] Step 3/4: Writing MLK corpus artifacts.\n";
+            const auto written = spice::mlk::writeMlkCorpusArtifacts(corpus, outputDir);
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.jsonPath.string() << "\n";
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.filesCsvPath.string() << "\n";
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.recordsCsvPath.string() << "\n";
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.word12HistogramCsvPath.string() << "\n";
+            std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
+            std::cout << "SpiceFileParsing finished.\nFilesProcessed=" << corpus.files.size()
+                      << "\ninputDir=" << inputDir.string()
+                      << "\noutputDir=" << outputDir.string() << "\n";
+            return 0;
+        } catch (const std::exception& ex) {
+            std::cerr << "[SpiceFileParsing] ERROR: " << ex.what() << "\n";
+            return 1;
+        }
+    }
 
     std::filesystem::create_directories(outputDir);
     std::filesystem::create_directories(decompressedDir);
