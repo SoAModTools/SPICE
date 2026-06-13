@@ -59,10 +59,45 @@ std::string makeSignature(std::span<const std::uint8_t> bytes, std::uint32_t off
     return signature;
 }
 
+MlkEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> payload) {
+    MlkEmbeddedMldHeaderProbe probe{};
+    if (payload.size() < 0x14U) {
+        return probe;
+    }
+
+    EndianReader reader(payload, Endian::Big);
+    probe.entryCount = reader.read_u32(0x00U);
+    probe.indexTableOffset = reader.read_u32(0x04U);
+    probe.functionParametersOffset = reader.read_u32(0x08U);
+    probe.realDataOffset = reader.read_u32(0x0CU);
+    probe.textureTableOffset = reader.read_u32(0x10U);
+
+    if (probe.entryCount == 0U || probe.entryCount > 4096U) {
+        return probe;
+    }
+    const std::uint64_t tableEnd =
+        static_cast<std::uint64_t>(probe.indexTableOffset) +
+        static_cast<std::uint64_t>(probe.entryCount) * 0x68U;
+    if (tableEnd > payload.size()) {
+        return probe;
+    }
+
+    const auto offsetInPayload = [&](std::uint32_t offset) {
+        return offset == 0U || offset < payload.size();
+    };
+    probe.plausible =
+        offsetInPayload(probe.indexTableOffset) &&
+        offsetInPayload(probe.functionParametersOffset) &&
+        offsetInPayload(probe.realDataOffset) &&
+        offsetInPayload(probe.textureTableOffset);
+    return probe;
+}
+
 MlkPayloadKind classifyPayload(std::span<const std::uint8_t> bytes,
     std::uint32_t offset,
     std::uint32_t length,
-    const std::string& signature) {
+    const std::string& signature,
+    const MlkEmbeddedMldHeaderProbe& embeddedMldHeader) {
     if (length == 0U) {
         return MlkPayloadKind::Empty;
     }
@@ -73,6 +108,9 @@ MlkPayloadKind classifyPayload(std::span<const std::uint8_t> bytes,
     const auto payload = bytes.subspan(offset, length);
     if (spice::compression::aklz::isAklz(payload)) {
         return MlkPayloadKind::AklzCompressed;
+    }
+    if (embeddedMldHeader.plausible) {
+        return MlkPayloadKind::MldFile;
     }
     if (signature == "POF0") {
         return MlkPayloadKind::Pof0;
@@ -102,6 +140,21 @@ std::span<const std::uint8_t> decodeIfNeeded(std::span<const std::uint8_t> input
 
     decodedStorage = decoded.bytes;
     return decodedStorage;
+}
+
+std::uint16_t inferCountFromFirstPayloadOffset(std::uint32_t firstPayloadOffset) {
+    if (firstPayloadOffset < kMlkRecordsOffset) {
+        return 0U;
+    }
+    const auto tableSize = firstPayloadOffset - kMlkRecordsOffset;
+    if (tableSize % kMlkRecordStride != 0U) {
+        return 0U;
+    }
+    const auto inferred = tableSize / kMlkRecordStride;
+    if (inferred > std::numeric_limits<std::uint16_t>::max()) {
+        return 0U;
+    }
+    return static_cast<std::uint16_t>(inferred);
 }
 
 std::vector<std::uint8_t> readFileBytes(const std::filesystem::path& path) {
@@ -161,10 +214,24 @@ const char* toString(MlkPayloadKind kind) {
         return "unknown";
     case MlkPayloadKind::AklzCompressed:
         return "aklz";
+    case MlkPayloadKind::MldFile:
+        return "mld";
     case MlkPayloadKind::NinjaChunk:
         return "ninja-chunk";
     case MlkPayloadKind::Pof0:
         return "pof0";
+    }
+    return "unknown";
+}
+
+const char* toString(MlkRecordCountSource source) {
+    switch (source) {
+    case MlkRecordCountSource::HeaderU16At04:
+        return "header-u16-at-0x04";
+    case MlkRecordCountSource::FirstPayloadOffset:
+        return "first-payload-offset";
+    case MlkRecordCountSource::Unresolved:
+        return "unresolved";
     }
     return "unknown";
 }
@@ -203,27 +270,57 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
         return result;
     }
 
+    const auto firstPayloadOffset = reader.try_read_u32(kMlkRecordsOffset + 0x04U);
+    if (firstPayloadOffset.has_value()) {
+        result.firstPayloadOffset = *firstPayloadOffset;
+        result.recordCountInferredFromFirstPayloadOffset =
+            inferCountFromFirstPayloadOffset(*firstPayloadOffset);
+        result.recordCountMatchesFirstPayloadOffset =
+            result.recordCountInferredFromFirstPayloadOffset == result.recordCountCandidate;
+    }
+
     const std::uint64_t tableEnd =
         static_cast<std::uint64_t>(kMlkRecordsOffset) +
         static_cast<std::uint64_t>(result.recordCountCandidate) * kMlkRecordStride;
-    if (tableEnd <= std::numeric_limits<std::uint32_t>::max()) {
-        result.recordTableEndOffset = static_cast<std::uint32_t>(tableEnd);
-    } else {
-        result.recordTableEndOffset = std::numeric_limits<std::uint32_t>::max();
+    result.selectedRecordCount = result.recordCountCandidate;
+    result.recordCountSource = MlkRecordCountSource::HeaderU16At04;
+
+    std::uint64_t selectedTableEnd = tableEnd;
+    if (selectedTableEnd > decodedBytes.size()) {
+        const std::uint64_t inferredTableEnd =
+            static_cast<std::uint64_t>(kMlkRecordsOffset) +
+            static_cast<std::uint64_t>(result.recordCountInferredFromFirstPayloadOffset) *
+                kMlkRecordStride;
+        if (result.recordCountInferredFromFirstPayloadOffset > 0U &&
+            inferredTableEnd <= decodedBytes.size()) {
+            result.selectedRecordCount = result.recordCountInferredFromFirstPayloadOffset;
+            result.recordCountSource = MlkRecordCountSource::FirstPayloadOffset;
+            selectedTableEnd = inferredTableEnd;
+            addDiagnostic(result.diagnostics,
+                DiagnosticSeverity::Warning,
+                "MLK header record count table is out of bounds; using first payload offset inference",
+                0x04U);
+        } else {
+            result.recordCountSource = MlkRecordCountSource::Unresolved;
+            result.recordTableEndOffset = selectedTableEnd <= std::numeric_limits<std::uint32_t>::max()
+                ? static_cast<std::uint32_t>(selectedTableEnd)
+                : std::numeric_limits<std::uint32_t>::max();
+            addDiagnostic(result.diagnostics,
+                DiagnosticSeverity::Error,
+                "MLK record table extends beyond decoded file",
+                kMlkRecordsOffset);
+            return result;
+        }
     }
 
-    result.recordTableInBounds = tableEnd <= decodedBytes.size();
-    if (!result.recordTableInBounds) {
-        addDiagnostic(result.diagnostics,
-            DiagnosticSeverity::Error,
-            "MLK record table extends beyond decoded file",
-            kMlkRecordsOffset);
-        return result;
-    }
+    result.recordTableEndOffset = selectedTableEnd <= std::numeric_limits<std::uint32_t>::max()
+        ? static_cast<std::uint32_t>(selectedTableEnd)
+        : std::numeric_limits<std::uint32_t>::max();
+    result.recordTableInBounds = selectedTableEnd <= decodedBytes.size();
 
-    result.records.reserve(result.recordCountCandidate);
+    result.records.reserve(result.selectedRecordCount);
     std::set<std::uint32_t> seenKeys;
-    for (std::uint32_t i = 0U; i < result.recordCountCandidate; ++i) {
+    for (std::uint32_t i = 0U; i < result.selectedRecordCount; ++i) {
         const std::uint32_t recordOffset = kMlkRecordsOffset + (i * kMlkRecordStride);
         MlkRecordProbe record{};
         record.index = i;
@@ -240,9 +337,24 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
             result.recordTableEndOffset - kMlkRecordsOffset);
 
         if (record.payloadInBounds) {
+            if (i == 0U) {
+                if (!result.recordCountMatchesFirstPayloadOffset) {
+                    addDiagnostic(result.diagnostics,
+                        DiagnosticSeverity::Warning,
+                        "MLK first payload offset does not match the record count candidate",
+                        record.recordOffset + 0x04U);
+                }
+            }
             record.payloadSignature = makeSignature(decodedBytes, record.payloadOffset);
+            const auto payload =
+                decodedBytes.subspan(record.payloadOffset, record.payloadSize);
+            record.embeddedMldHeader = probeEmbeddedMldHeader(payload);
             record.payloadKind =
-                classifyPayload(decodedBytes, record.payloadOffset, record.payloadSize, record.payloadSignature);
+                classifyPayload(decodedBytes,
+                    record.payloadOffset,
+                    record.payloadSize,
+                    record.payloadSignature,
+                    record.embeddedMldHeader);
         } else {
             addDiagnostic(result.diagnostics,
                 DiagnosticSeverity::Error,
@@ -275,4 +387,3 @@ MlkScanResult MlkScanner::scanFile(const std::filesystem::path& path) {
 }
 
 } // namespace spice::mlk
-
