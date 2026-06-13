@@ -337,6 +337,57 @@ bool hasInfoDiagnosticContaining(const std::vector<ParseDiagnostic>& diagnostics
     });
 }
 
+spice::mld::model::BlenderIrScene makeSingleEntryBlenderIrScene(
+    std::uint32_t sourceEntryId,
+    std::uint32_t objectAddress,
+    std::uint32_t motionAddress,
+    std::string textureName) {
+    spice::mld::model::BlenderIrScene scene{};
+
+    spice::mld::model::BlenderIrTexture texture{};
+    texture.hasTextureId = true;
+    texture.textureId = 7U;
+    texture.textureName = textureName;
+    scene.textures.push_back(std::move(texture));
+
+    spice::mld::model::BlenderIrMesh mesh{};
+    spice::mld::model::BlenderIrMaterial material{};
+    material.textureName = textureName;
+    mesh.materials.push_back(std::move(material));
+    scene.meshes.push_back(std::move(mesh));
+
+    spice::mld::model::BlenderIrObjectTree tree{};
+    tree.label = "tree";
+    tree.sourceObjectAddress = objectAddress;
+    spice::mld::model::BlenderIrNode node{};
+    node.meshIndex = 0U;
+    tree.nodes.push_back(std::move(node));
+    tree.rootNodeIndices.push_back(0U);
+    scene.objectTrees.push_back(std::move(tree));
+
+    spice::mld::model::BlenderIrInstance instance{};
+    instance.sourceEntryId = sourceEntryId;
+    instance.tableIndex = 0U;
+    instance.objectAddresses.push_back(objectAddress);
+    instance.meshIndices.push_back(0U);
+    instance.objectTreeIndices.push_back(0U);
+    scene.indexEntries.push_back(std::move(instance));
+
+    spice::mld::model::BlenderIrAnimation animation{};
+    animation.sourceEntryId = sourceEntryId;
+    animation.tableIndex = 0U;
+    animation.sourceObjectAddress = objectAddress;
+    animation.sourceMotionAddress = motionAddress;
+    animation.motionSlot = 1U;
+    animation.objectTreeIndex = 0U;
+    spice::mld::model::BlenderIrNodeAnimation nodeAnimation{};
+    nodeAnimation.nodeIndex = 0U;
+    animation.nodes.push_back(std::move(nodeAnimation));
+    scene.animations.push_back(std::move(animation));
+
+    return scene;
+}
+
 } // namespace
 
 TEST(SpiceSstSmlParser, ParsesUncompressedSmlTableAndEmbeddedMldSpans) {
@@ -651,9 +702,30 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     const auto outputDir = makeTempOutputDir("spice_sst_sml_export_command_map");
     SmlEmbeddedMldExportOptions options{};
     options.stageOutputDir = outputDir / "s777";
+    options.stageAnnotationRepositoryDir = outputDir / "state_annotations";
     options.stem = "s777";
     options.writeEmbeddedMldPayloads = true;
     options.writeCommandMap = true;
+    const auto combinedIrSourcePath = outputDir / "transient" / "s777_combined_blender_ir_scene.json";
+    std::filesystem::create_directories(combinedIrSourcePath.parent_path());
+    {
+        std::ofstream combinedIrSource(combinedIrSourcePath, std::ios::binary);
+        combinedIrSource << "{\"scene\":\"combined\"}\n";
+    }
+    options.combinedBlenderIrPath = combinedIrSourcePath;
+    spice::sstsml::SmlBlenderIrEntrySummary blenderSummary{};
+    blenderSummary.meshCount = 3U;
+    blenderSummary.objectTreeCount = 1U;
+    blenderSummary.indexEntryCount = 1U;
+    blenderSummary.textureCount = 2U;
+    blenderSummary.animationCount = 1U;
+    blenderSummary.animationNodeCount = 2U;
+    blenderSummary.animationPositionKeyCount = 60U;
+    blenderSummary.animationRotationKeyCount = 60U;
+    blenderSummary.varyingAnimationChannelCount = 2U;
+    blenderSummary.indexEntryNames.push_back("wall.nj");
+    blenderSummary.varyingAnimationChannels.push_back("table=0,objectTree=0,motionSlot=0,node=0,channel=position");
+    options.blenderIrSummariesByRecordIndex[0U] = blenderSummary;
 
     const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, &sstParsed, options);
 
@@ -667,6 +739,79 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     EXPECT_NE(commandMap.find("\"lookupResourceIndex\":-3"), std::string::npos);
     EXPECT_NE(commandMap.find("\"renderActionByte\":2"), std::string::npos);
     EXPECT_NE(commandMap.find("\"resolvedSmlRecordIndex\":0"), std::string::npos);
+
+    ASSERT_TRUE(result.stageAnnotationTemplatePath.has_value());
+    EXPECT_EQ(*result.stageAnnotationTemplatePath, outputDir / "state_annotations" / "s777" / "s777.stage_annotation.json");
+    EXPECT_TRUE(result.wroteStageAnnotationTemplate);
+    ASSERT_TRUE(result.stageAnnotationMediaDir.has_value());
+    EXPECT_TRUE(result.createdStageAnnotationMediaDir);
+    EXPECT_FALSE(std::filesystem::exists(*result.stageAnnotationMediaDir / "entry_0"));
+    ASSERT_TRUE(result.stageAnnotationCombinedBlenderIrPath.has_value());
+    EXPECT_TRUE(result.copiedStageAnnotationCombinedBlenderIr);
+    EXPECT_EQ(
+        *result.stageAnnotationCombinedBlenderIrPath,
+        outputDir / "state_annotations" / "s777" / "s777_combined_blender_ir_scene.json");
+    EXPECT_EQ(readTextFile(*result.stageAnnotationCombinedBlenderIrPath), "{\"scene\":\"combined\"}\n");
+    const auto annotationTemplate = readTextFile(*result.stageAnnotationTemplatePath);
+    EXPECT_NE(annotationTemplate.find("\"schema\":\"spice_sst_sml_stage_annotation_v1\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"documentRole\":\"living_stage_annotation\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"mediaDirectory\":\"s777.stage_annotation_media\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"combinedBlenderIrScene\":\"s777_combined_blender_ir_scene.json\""), std::string::npos);
+    EXPECT_EQ(annotationTemplate.find("\"mediaDirectory\":\"s777.stage_annotation_media/entry_0\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"humanAnnotations\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"media\":[]"), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"visualRole\":\"\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"blenderIrSummary\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"meshCount\":3"), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"indexEntryNames\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("wall.nj"), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"hasVaryingAnimation\":true"), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"commandTypes\":[0,3]"), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"commandTypeHistogram\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"suspectedRuntimeBehavior\":\"\""), std::string::npos);
+}
+
+TEST(SpiceSstSmlExport, PreservesExistingLivingStageAnnotationDocument) {
+    const auto smlParsed = SmlParser::parse(makeSml(1U), "s779.sml");
+    const auto sstParsed = SstParser::parse(makeSst(), "s779.sst");
+    ASSERT_TRUE(smlParsed.ok());
+    ASSERT_TRUE(sstParsed.ok());
+
+    const auto outputDir = makeTempOutputDir("spice_sst_sml_export_preserve_annotation");
+    const auto annotationDir = outputDir / "state_annotations" / "s779";
+    std::filesystem::create_directories(annotationDir);
+    const auto annotationPath = annotationDir / "s779.stage_annotation.json";
+    {
+        std::ofstream existing(annotationPath, std::ios::binary);
+        existing << "{\"schema\":\"spice_sst_sml_stage_annotation_v1\",\"manual\":\"keep me\"}\n";
+    }
+
+    SmlEmbeddedMldExportOptions options{};
+    options.stageOutputDir = outputDir / "s779";
+    options.stageAnnotationRepositoryDir = outputDir / "state_annotations";
+    options.stem = "s779";
+    options.writeEmbeddedMldPayloads = false;
+    options.writeCommandMap = false;
+    const auto combinedIrSourcePath = outputDir / "transient" / "s779_combined_blender_ir_scene.json";
+    std::filesystem::create_directories(combinedIrSourcePath.parent_path());
+    {
+        std::ofstream combinedIrSource(combinedIrSourcePath, std::ios::binary);
+        combinedIrSource << "{\"scene\":\"updated\"}\n";
+    }
+    options.combinedBlenderIrPath = combinedIrSourcePath;
+
+    const auto result = exportSmlEmbeddedMldsAndCommandMap(smlParsed, &sstParsed, options);
+
+    ASSERT_TRUE(result.stageAnnotationTemplatePath.has_value());
+    EXPECT_EQ(*result.stageAnnotationTemplatePath, annotationPath);
+    EXPECT_TRUE(result.wroteStageAnnotationTemplate);
+    ASSERT_TRUE(result.stageAnnotationMediaDir.has_value());
+    EXPECT_FALSE(std::filesystem::exists(*result.stageAnnotationMediaDir / "entry_0"));
+    EXPECT_EQ(readTextFile(annotationPath), "{\"schema\":\"spice_sst_sml_stage_annotation_v1\",\"manual\":\"keep me\"}\n");
+    ASSERT_TRUE(result.stageAnnotationCombinedBlenderIrPath.has_value());
+    EXPECT_TRUE(result.copiedStageAnnotationCombinedBlenderIr);
+    EXPECT_EQ(readTextFile(*result.stageAnnotationCombinedBlenderIrPath), "{\"scene\":\"updated\"}\n");
+    EXPECT_FALSE(result.diagnostics.empty());
 }
 
 TEST(SpiceSstSmlExport, PreservesRecordCountMismatchInCommandMap) {
@@ -716,4 +861,44 @@ TEST(SpiceSstSmlExport, ExtractedEmbeddedMldCanBeParsedByMldParser) {
 
     ASSERT_EQ(parsed.entryList.size(), 1U);
     EXPECT_EQ(parsed.entryList[0].fxnName, "wall");
+}
+
+TEST(SpiceSstSmlExport, CombinesSmlBlenderIrScenesAndRemapsAnimations) {
+    spice::sstsml::exporting::SmlBlenderIrCombiner combiner{};
+
+    combiner.appendEntryScene(makeSingleEntryBlenderIrScene(10U, 0x100U, 0x200U, "shared"), "s006", 0U);
+    combiner.appendEntryScene(makeSingleEntryBlenderIrScene(11U, 0x300U, 0x400U, "shared"), "s006", 1U);
+
+    const auto& combined = combiner.scene();
+    ASSERT_EQ(combined.meshes.size(), 2U);
+    ASSERT_EQ(combined.objectTrees.size(), 2U);
+    ASSERT_EQ(combined.indexEntries.size(), 2U);
+    ASSERT_EQ(combined.textures.size(), 2U);
+    ASSERT_EQ(combined.animations.size(), 2U);
+
+    EXPECT_EQ(combined.textures[0].textureName, "s006_entry_00__shared");
+    EXPECT_EQ(combined.textures[1].textureName, "s006_entry_01__shared");
+    ASSERT_EQ(combined.meshes[0].materials.size(), 1U);
+    ASSERT_EQ(combined.meshes[1].materials.size(), 1U);
+    EXPECT_EQ(combined.meshes[0].materials[0].textureName, "s006_entry_00__shared");
+    EXPECT_EQ(combined.meshes[1].materials[0].textureName, "s006_entry_01__shared");
+
+    ASSERT_TRUE(combined.objectTrees[0].nodes[0].meshIndex.has_value());
+    ASSERT_TRUE(combined.objectTrees[1].nodes[0].meshIndex.has_value());
+    EXPECT_EQ(*combined.objectTrees[0].nodes[0].meshIndex, 0U);
+    EXPECT_EQ(*combined.objectTrees[1].nodes[0].meshIndex, 1U);
+
+    EXPECT_EQ(combined.indexEntries[0].tableIndex, 0U);
+    EXPECT_EQ(combined.indexEntries[1].tableIndex, 1U);
+    ASSERT_EQ(combined.indexEntries[1].meshIndices.size(), 1U);
+    ASSERT_EQ(combined.indexEntries[1].objectTreeIndices.size(), 1U);
+    EXPECT_EQ(combined.indexEntries[1].meshIndices[0], 1U);
+    EXPECT_EQ(combined.indexEntries[1].objectTreeIndices[0], 1U);
+
+    EXPECT_EQ(combined.animations[0].tableIndex, 0U);
+    EXPECT_EQ(combined.animations[0].objectTreeIndex, 0U);
+    EXPECT_EQ(combined.animations[1].tableIndex, 1U);
+    EXPECT_EQ(combined.animations[1].objectTreeIndex, 1U);
+    ASSERT_EQ(combined.animations[1].nodes.size(), 1U);
+    EXPECT_EQ(combined.animations[1].nodes[0].nodeIndex, 0U);
 }

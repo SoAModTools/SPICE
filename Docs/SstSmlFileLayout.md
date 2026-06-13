@@ -40,6 +40,7 @@ research thread.
 - `planning/Analysis/2026-06-12_sst_type6_type7_code_paths`
 - `planning/Analysis/2026-06-12_sml_runtime_table_trace`
 - `planning/Analysis/2026-06-12_sst_type1_lighting_helpers`
+- `planning/Analysis/2026-06-13_s062_sml_overlay_geometry`
 - `<local-analysis>\Analyses\20260611_1448_battle_ui`
 - `<local-analysis>\Analyses\20260611_0843_script_inst_ops`
 
@@ -53,8 +54,10 @@ meaning is needed:
 - `.sst` owns per-stage command blocks that reference runtime objects/models.
 - `FUN_8000cb44` walks both files by the same top-level record index.
 
-`SpiceSstSml` currently provides read-only parsing only. It does not export,
-repack, or wire these formats into `SpiceFileParsing` top-level dispatch.
+`SpiceSstSml` currently provides read-only parsing only. `SpiceFileParsing`
+has explicit research export flags for extracting embedded SML MLD payloads,
+emitting per-entry or combined Blender IR, and writing SST/SML command maps. It
+does not repack these formats or apply SST command effects to Blender IR.
 
 ## Compression and Endian
 
@@ -175,6 +178,41 @@ SML file
      -> embedded payload 1: single-entry MLD-like payload
      -> ...
 ```
+
+### SML Runtime Layering and Overlay Geometry
+
+Evidence level: `US corpus`, user visual annotation, current Blender IR export.
+
+`s062` provides a useful example showing that an SML record is a runtime
+render/effect group, not necessarily a clean spatial scene part. Entries can
+spatially overlap and can represent fallback layers, addressable overlays, or
+small visual-effect carriers.
+
+The annotated `s062` arena has a central circle and concentric rings. Its SML
+records are named sequentially from `s6200.nj` through `s6232.nj`, but the
+runtime grouping is semantic rather than purely spatial:
+
+| Entry range | Embedded MLD name(s) | Observed role |
+| --- | --- | --- |
+| `0` | `s6200.nj` | Central/ring base plus fallback fill patches. |
+| `1..4` | `s6201.nj`..`s6204.nj` | Addressable nub overlay groups. Some are absent in-game, implying runtime enable/disable behavior. |
+| `5` | `s6205.nj` | Large static shell/stage-detail group. |
+| `6..8` | `s6206.nj`..`s6208.nj` | Flat glass/light planes. |
+| `9..12` | `s6209.nj`..`s6212.nj` | Pipe/internal texture-effect geometry. |
+| `13` | `s6213.nj` | Outer pipe meshes. |
+| `14..17`, `20..32` | `s6214.nj`..`s6217.nj`, `s6220.nj`..`s6232.nj` | Sparkle/effect planes. |
+| `18..19` | `s6218.nj`..`s6219.nj` | Untextured ring planes. |
+
+Entry `0` has two meshes. Visual inspection confirms the second mesh contains
+segmented ring fill patches that occupy gaps left when nub overlays are off.
+Entries `1..4` are separate nub groups with their own type `0` selectors
+`2..5`, making them likely addressable overlay slots rather than baked static
+stage geometry.
+
+This example is a warning for parser and research tooling: same-index SML/SST
+correlation is structurally valid, but visual ownership can cross records.
+Extra SST commands may intentionally target runtime slot `0` while attached to
+another SML record's command block.
 
 Across the US corpus, the embedded payload MLD headers and index entries match
 the normal MLD layout closely:
@@ -570,6 +608,14 @@ useful parser validation/reporting aid because command blocks and SML records
 are walked together by top-level index, but it should not be promoted to a
 runtime identity without additional dataflow evidence.
 
+The `s062` overlay-geometry pass gives a concrete example of this caution:
+type `3`, `8`, and `9` commands attached to visual/effect entries `6..12`,
+`14..17`, and `20..32` all carry model index `0`. In the current command-map
+report that resolves to runtime slot/model `0`, while the command block remains
+attached to each entry's own SML record. For this stage, slot `0` corresponds to
+entry `0`, the central arena base/fallback group and the only block with type
+`1` setup.
+
 ## Command Payload Semantics Probe
 
 Evidence level: `US corpus`, `US/EU/JP stable`; use as semantic guidance until
@@ -912,6 +958,12 @@ not static geometry records. Type `8` creates a child type `9` UV/texture
 coordinate animation over a node selected by ordinal traversal of the selected
 model object's node tree. Type `9` creates a child type `10` orientation updater
 for an attached runtime model/object.
+
+In `s062`, all type `8`/`9` commands occur on sparkle/effect-plane entries
+`14..17` and `20..32`, and all target model/runtime slot `0`. Their repeated
+payload shape supports the current interpretation that these are visual-effect
+commands layered on top of ordinary SML embedded MLD geometry rather than
+separate static scene parts.
 
 ### Type 2 Runtime Consumer Pass
 
@@ -1271,7 +1323,7 @@ It intentionally does not model:
 - type `11` trailing bytes as part of the structural walker payload
 - stable semantic names for corpus-only command payload fields
 - export/repackaging
-- production CLI dispatch through `SpiceFileParsing`
+- SST command-effect visualization in Blender IR
 - regional differences beyond reporting/validation metadata
 
 ## Representative Stage Facts
@@ -1284,7 +1336,13 @@ Representative US examples from the command-payload probe:
 | `s002` | `5` | `810676` | `{0: 5, 1: 1, 10: 1}` |
 | `s006` | `28` | `2846288` | `{0: 28, 1: 1, 8: 9}` |
 | `s021` | `4` | `498096` | `{0: 4, 1: 1, 11: 1}` |
+| `s062` | `33` | `1377815` | `{0: 33, 1: 1, 3: 23, 8: 17, 9: 17}` |
 | `s150` | `9` | `731056` | `{0: 9, 1: 1, 3: 1}` |
+
+`s062` is the current best annotated example for SML layering. Entry `0` is a
+base/fallback arena group; entries `1..4` are addressable nub overlays; entries
+`6..12`, `14..17`, and `20..32` are visual-effect carriers whose extra commands
+target runtime slot `0`.
 
 ## Open Questions
 
@@ -1309,7 +1367,9 @@ Representative US examples from the command-payload probe:
   read by another path, or are they padding/unused for this command?
 - For type `3`, are payload `+0x04` and `+0x06` consumed by another
   callback/global path, or are they copied but unused for the currently
-  observed child type `5` behavior?
+  observed child type `5` behavior? In `s062`, the repeated type `3` payloads
+  on entries `6..12` look like node/material/effect bindings back to runtime
+  slot `0`, but exact field names still need direct consumer evidence.
 - For type `2`, what are the formal engine names for the model-data chunks
   `0x20..0x37`, the stride lookup tables at `802f9340`/`802dae90`, and packed
   control byte `0` modes `0..4`?
@@ -1330,6 +1390,10 @@ Representative US examples from the command-payload probe:
   `DAT_80344dec` and `DAT_8034535c`, and do those groups correspond to known
   engine concepts such as world/model lighting layers, material-light sets, or
   battle-specific render passes?
+- In stages like `s062`, what game-state path enables/disables addressable SML
+  overlay entries such as the nub groups `1..4`, and is this controlled through
+  the type `0` selector buckets, a later runtime table, or battle script/state
+  outside the SST command block?
 
 ## Next Milestones
 
@@ -1354,3 +1418,6 @@ Representative US examples from the command-payload probe:
 6. Add Ghidra annotations for the type `11` child type `12` local block:
    target vector pointer, related ramp object pointer, vector delta fields,
    ramp state, axis selector, cycle count, and frame counter.
+7. Use `s062` as the first annotated stage for runtime visual toggles: trace how
+   selector buckets `2..5` are enabled/disabled and whether entry `0` fallback
+   mesh visibility is controlled by the same runtime path.

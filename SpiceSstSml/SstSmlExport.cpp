@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <span>
 #include <string_view>
+#include <system_error>
 
 namespace spice::sstsml {
 namespace {
@@ -394,6 +396,199 @@ void writeSmlRecord(std::ostream& out,
     out << "\n" << indent << "}";
 }
 
+void writeBlenderIrSummary(std::ostream& out, const SmlBlenderIrEntrySummary* summary, const std::string& indent) {
+    if (summary == nullptr) {
+        out << "null";
+        return;
+    }
+
+    out << "{\n"
+        << indent << "  \"meshCount\":" << summary->meshCount
+        << ",\n" << indent << "  \"objectTreeCount\":" << summary->objectTreeCount
+        << ",\n" << indent << "  \"indexEntryCount\":" << summary->indexEntryCount
+        << ",\n" << indent << "  \"textureCount\":" << summary->textureCount
+        << ",\n" << indent << "  \"animationCount\":" << summary->animationCount
+        << ",\n" << indent << "  \"animationNodeCount\":" << summary->animationNodeCount
+        << ",\n" << indent << "  \"animationPositionKeyCount\":" << summary->animationPositionKeyCount
+        << ",\n" << indent << "  \"animationRotationKeyCount\":" << summary->animationRotationKeyCount
+        << ",\n" << indent << "  \"animationScaleKeyCount\":" << summary->animationScaleKeyCount
+        << ",\n" << indent << "  \"animationQuaternionKeyCount\":" << summary->animationQuaternionKeyCount
+        << ",\n" << indent << "  \"varyingAnimationChannelCount\":" << summary->varyingAnimationChannelCount
+        << ",\n" << indent << "  \"hasVaryingAnimation\":" << (summary->varyingAnimationChannelCount > 0U ? "true" : "false")
+        << ",\n" << indent << "  \"indexEntryNames\":";
+    writeStringArray(out, summary->indexEntryNames, indent + "  ");
+    out << ",\n" << indent << "  \"varyingAnimationChannels\":";
+    writeStringArray(out, summary->varyingAnimationChannels, indent + "  ");
+    out << "\n" << indent << "}";
+}
+
+void writeCommandTypeArray(std::ostream& out, const SstCommandBlock* block) {
+    out << "[";
+    if (block != nullptr) {
+        for (std::size_t i = 0; i < block->commands.size(); ++i) {
+            out << (i == 0 ? "" : ",") << block->commands[i].type;
+        }
+    }
+    out << "]";
+}
+
+void writeCommandTypeHistogram(std::ostream& out, const SstCommandBlock* block, const std::string& indent) {
+    std::map<int, std::size_t> histogram{};
+    if (block != nullptr) {
+        for (const auto& command : block->commands) {
+            ++histogram[command.type];
+        }
+    }
+
+    out << "{";
+    std::size_t index = 0U;
+    for (const auto& [type, count] : histogram) {
+        out << (index == 0U ? "\n" : ",\n") << indent << "  ";
+        writeJsonString(out, std::to_string(type));
+        out << ":" << count;
+        ++index;
+    }
+    if (!histogram.empty()) {
+        out << "\n" << indent;
+    }
+    out << "}";
+}
+
+void writeAnnotationCommand(std::ostream& out,
+    const SstCommandRecord& command,
+    std::size_t smlRecordCount,
+    const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"index\":" << command.index
+        << ",\n" << indent << "  \"type\":" << command.type
+        << ",\n" << indent << "  \"argument\":" << command.argument
+        << ",\n" << indent << "  \"payloadOffset\":" << command.payloadOffset
+        << ",\n" << indent << "  \"payloadSize\":" << command.payloadSize
+        << ",\n" << indent << "  \"modelIndex\":";
+    if (command.modelIndex.has_value()) {
+        out << *command.modelIndex;
+    } else {
+        out << "null";
+    }
+    out << ",\n" << indent << "  \"resolvedSmlRecordIndex\":";
+    if (command.modelIndex.has_value() && *command.modelIndex >= 0 &&
+        static_cast<std::size_t>(*command.modelIndex) < smlRecordCount) {
+        out << *command.modelIndex;
+    } else {
+        out << "null";
+    }
+    out << ",\n" << indent << "  \"type0Summary\":";
+    writeType0Summary(out, command, indent + "  ");
+    out << ",\n" << indent << "  \"fieldSummaryNames\":[";
+    for (std::size_t i = 0; i < command.fieldSummaries.size(); ++i) {
+        out << (i == 0U ? "" : ",");
+        writeJsonString(out, command.fieldSummaries[i].name);
+    }
+    out << "]\n" << indent << "}";
+}
+
+void writeHumanAnnotationTemplate(std::ostream& out, const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"visualRole\":\"\",\n"
+        << indent << "  \"description\":\"\",\n"
+        << indent << "  \"visibleInGame\":null,\n"
+        << indent << "  \"blenderNotes\":\"\",\n"
+        << indent << "  \"overlayOrFallbackRole\":\"\",\n"
+        << indent << "  \"animationNotes\":\"\",\n"
+        << indent << "  \"suspectedRuntimeBehavior\":\"\",\n"
+        << indent << "  \"suspectedCommandSemantics\":\"\",\n"
+        << indent << "  \"confidence\":\"\",\n"
+        << indent << "  \"reviewedBy\":\"\",\n"
+        << indent << "  \"reviewedAt\":\"\",\n"
+        << indent << "  \"media\":[]\n"
+        << indent << "}";
+}
+
+void writeStageAnnotationTemplate(const std::filesystem::path& path,
+    const std::filesystem::path& mediaDir,
+    const SmlParseResult& sml,
+    const SstParseResult* sst,
+    const SmlSstCommandMapExportResult& result,
+    const SmlEmbeddedMldExportOptions& options) {
+    std::ofstream out(path, std::ios::binary);
+    const std::size_t maxRecords = sst == nullptr
+        ? sml.records.size()
+        : std::max(sml.records.size(), sst->commandBlocks.size());
+
+    out << "{\n"
+        << "  \"schema\":\"spice_sst_sml_stage_annotation_v1\",\n"
+        << "  \"documentRole\":\"living_stage_annotation\",\n"
+        << "  \"stageStem\":";
+    writeJsonString(out, options.stem.empty() ? "stage" : options.stem);
+    out << ",\n  \"sourceSml\":";
+    writeJsonString(out, sml.sourcePath);
+    out << ",\n  \"sourceSst\":";
+    if (sst != nullptr) {
+        writeJsonString(out, sst->sourcePath);
+    } else {
+        out << "null";
+    }
+    out << ",\n  \"mediaDirectory\":";
+    writeJsonString(out, mediaDir.filename().generic_string());
+    out << ",\n  \"combinedBlenderIrScene\":";
+    if (result.stageAnnotationCombinedBlenderIrPath.has_value()) {
+        writeJsonString(out, result.stageAnnotationCombinedBlenderIrPath->filename().generic_string());
+    } else {
+        out << "null";
+    }
+    out << ",\n  \"instructions\":\"Fill humanAnnotations from Blender/in-game observation; keep computed fields as the current parser-derived snapshot. Re-exports preserve this file unless overwrite is explicitly requested.\",\n"
+        << "  \"records\":[";
+    for (std::size_t index = 0; index < maxRecords; ++index) {
+        const SmlRecord* smlRecord = index < sml.records.size() ? &sml.records[index] : nullptr;
+        const SmlEmbeddedMldExportedEntry* exported = index < result.entries.size() ? &result.entries[index] : nullptr;
+        const SstCommandBlock* block = sst == nullptr ? nullptr : findBlockForIndex(*sst, index);
+        const auto summaryIt = options.blenderIrSummariesByRecordIndex.find(index);
+        const SmlBlenderIrEntrySummary* blenderSummary =
+            summaryIt == options.blenderIrSummariesByRecordIndex.end() ? nullptr : &summaryIt->second;
+
+        out << (index == 0U ? "\n" : ",\n")
+            << "    {\n"
+            << "      \"index\":" << index
+            << ",\n      \"mediaDirectory\":\"" << mediaDir.filename().generic_string() << "\""
+            << ",\n      \"humanAnnotations\":";
+        writeHumanAnnotationTemplate(out, "      ");
+        out << ",\n      \"computed\":{\n"
+            << "        \"smlRecord\":";
+        writeSmlRecord(out, smlRecord, exported, "        ");
+        out << ",\n        \"blenderIrSummary\":";
+        writeBlenderIrSummary(out, blenderSummary, "        ");
+        out << ",\n        \"sstCommandSummary\":";
+        if (block == nullptr) {
+            out << "null";
+        } else {
+            out << "{\n"
+                << "          \"blockOffset\":" << block->blockOffset
+                << ",\n          \"commandCount\":" << block->commandCount
+                << ",\n          \"valid\":" << (block->valid ? "true" : "false")
+                << ",\n          \"sentinelStatus\":";
+            writeJsonString(out, block->sentinelType < 0 ? "ok" : "invalid");
+            out << ",\n          \"commandTypes\":";
+            writeCommandTypeArray(out, block);
+            out << ",\n          \"commandTypeHistogram\":";
+            writeCommandTypeHistogram(out, block, "          ");
+            out << ",\n          \"commands\":[";
+            for (std::size_t commandIndex = 0; commandIndex < block->commands.size(); ++commandIndex) {
+                out << (commandIndex == 0U ? "\n" : ",\n") << "            ";
+                writeAnnotationCommand(out, block->commands[commandIndex], sml.records.size(), "            ");
+            }
+            if (!block->commands.empty()) {
+                out << "\n          ";
+            }
+            out << "]\n        }";
+        }
+        out << "\n      }\n    }";
+    }
+    if (maxRecords > 0U) {
+        out << "\n  ";
+    }
+    out << "]\n}\n";
+}
+
 void writeManifest(const std::filesystem::path& path,
     const SmlParseResult& sml,
     const SstParseResult* sst,
@@ -530,15 +725,63 @@ SmlSstCommandMapExportResult exportSmlEmbeddedMldsAndCommandMap(
         result.diagnostics.push_back("SML and SST top-level record counts differ; command map preserves parsable records.");
     }
 
-    result.manifestPath = stageOutputDir / (stem + ".sml_embedded_mld_manifest.json");
-    writeManifest(result.manifestPath, sml, sst, result);
-    result.wroteManifest = std::filesystem::exists(result.manifestPath);
-
     if (options.writeCommandMap && sst != nullptr) {
         result.commandMapPath = stageOutputDir / (stem + ".sst_sml_command_map.json");
         writeCommandMap(*result.commandMapPath, sml, *sst, result);
         result.wroteCommandMap = std::filesystem::exists(*result.commandMapPath);
     }
+
+    if (options.writeStageAnnotationTemplate) {
+        const auto stageAnnotationDir = options.stageAnnotationRepositoryDir.empty()
+            ? stageOutputDir
+            : options.stageAnnotationRepositoryDir / stem;
+        std::filesystem::create_directories(stageAnnotationDir);
+        result.stageAnnotationTemplatePath = stageAnnotationDir / (stem + ".stage_annotation.json");
+        result.stageAnnotationMediaDir = stageAnnotationDir / (stem + ".stage_annotation_media");
+        std::filesystem::create_directories(*result.stageAnnotationMediaDir);
+        result.createdStageAnnotationMediaDir = std::filesystem::exists(*result.stageAnnotationMediaDir);
+
+        if (options.combinedBlenderIrPath.has_value()) {
+            if (std::filesystem::exists(*options.combinedBlenderIrPath)) {
+                result.stageAnnotationCombinedBlenderIrPath =
+                    stageAnnotationDir / options.combinedBlenderIrPath->filename();
+                std::error_code ec{};
+                std::filesystem::copy_file(
+                    *options.combinedBlenderIrPath,
+                    *result.stageAnnotationCombinedBlenderIrPath,
+                    std::filesystem::copy_options::overwrite_existing,
+                    ec);
+                if (ec) {
+                    result.diagnostics.push_back(
+                        "Failed to copy combined Blender IR into the stage annotation folder: " + ec.message());
+                } else {
+                    result.copiedStageAnnotationCombinedBlenderIr =
+                        std::filesystem::exists(*result.stageAnnotationCombinedBlenderIrPath);
+                }
+            } else {
+                result.diagnostics.push_back(
+                    "Combined Blender IR path was provided but did not exist; no annotation-folder copy was made.");
+            }
+        }
+
+        if (std::filesystem::exists(*result.stageAnnotationTemplatePath) && !options.overwriteStageAnnotationTemplate) {
+            result.diagnostics.push_back(
+                "Existing stage annotation document was preserved; delete it or enable overwrite to regenerate computed fields.");
+        } else {
+            writeStageAnnotationTemplate(
+                *result.stageAnnotationTemplatePath,
+                *result.stageAnnotationMediaDir,
+                sml,
+                sst,
+                result,
+                options);
+        }
+        result.wroteStageAnnotationTemplate = std::filesystem::exists(*result.stageAnnotationTemplatePath);
+    }
+
+    result.manifestPath = stageOutputDir / (stem + ".sml_embedded_mld_manifest.json");
+    writeManifest(result.manifestPath, sml, sst, result);
+    result.wroteManifest = std::filesystem::exists(result.manifestPath);
 
     return result;
 }
