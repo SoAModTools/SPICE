@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <span>
@@ -65,6 +66,117 @@ std::string toLowerCopy(std::string value) {
     return value;
 }
 
+std::string makeSafeNameComponent(std::string value, std::string fallback) {
+    for (char& c : value) {
+        const auto uc = static_cast<unsigned char>(c);
+        if (!std::isalnum(uc) && c != '_' && c != '-') {
+            c = '_';
+        }
+    }
+
+    const auto first = std::find_if(value.begin(), value.end(), [](char c) {
+        return c != '_';
+    });
+    const auto last = std::find_if(value.rbegin(), value.rend(), [](char c) {
+        return c != '_';
+    }).base();
+    if (first >= last) {
+        return fallback;
+    }
+    return std::string(first, last);
+}
+
+std::string makeSmlEntryPrefix(const std::string& stem, std::size_t recordIndex) {
+    const auto safeStem = makeSafeNameComponent(stem, "sml");
+    return safeStem + "_entry_" + (recordIndex < 10U ? "0" : "") +
+        std::to_string(recordIndex) + "__";
+}
+
+void namespaceBlenderIrSceneForSmlEntry(
+    spice::mld::model::BlenderIrScene& scene,
+    const std::string& stem,
+    std::size_t recordIndex) {
+    const auto prefix = makeSmlEntryPrefix(stem, recordIndex);
+    std::unordered_map<std::string, std::string> renamedByOriginalName{};
+
+    for (auto& texture : scene.textures) {
+        const auto originalName = texture.textureName;
+        const auto fallback = texture.hasTextureId
+            ? "texture_" + std::to_string(texture.textureId)
+            : "texture";
+        const auto safeTextureName = makeSafeNameComponent(originalName, fallback);
+        const auto namespacedName = prefix + safeTextureName;
+        texture.textureName = namespacedName;
+        if (!originalName.empty()) {
+            renamedByOriginalName.emplace(originalName, namespacedName);
+        }
+        scene.diagnostics.push_back("SML export namespaced texture " + originalName + " -> " + namespacedName);
+    }
+
+    for (auto& mesh : scene.meshes) {
+        for (auto& material : mesh.materials) {
+            const auto it = renamedByOriginalName.find(material.textureName);
+            if (it != renamedByOriginalName.end()) {
+                material.textureName = it->second;
+            } else if (!material.textureName.empty()) {
+                material.textureName = prefix + makeSafeNameComponent(material.textureName, "texture");
+            }
+        }
+    }
+
+    for (auto& tree : scene.objectTrees) {
+        tree.label = prefix + makeSafeNameComponent(tree.label, "object_tree");
+    }
+}
+
+void appendSmlEntryBlenderIrScene(
+    spice::mld::model::BlenderIrScene& combined,
+    spice::mld::model::BlenderIrScene entryScene,
+    const std::string& stem,
+    std::size_t recordIndex) {
+    namespaceBlenderIrSceneForSmlEntry(entryScene, stem, recordIndex);
+
+    const auto meshIndexBase = combined.meshes.size();
+    const auto objectTreeIndexBase = combined.objectTrees.size();
+
+    for (auto& tree : entryScene.objectTrees) {
+        for (auto& node : tree.nodes) {
+            if (node.meshIndex.has_value()) {
+                *node.meshIndex += meshIndexBase;
+            }
+        }
+    }
+
+    for (auto& indexEntry : entryScene.indexEntries) {
+        for (auto& meshIndex : indexEntry.meshIndices) {
+            meshIndex += meshIndexBase;
+        }
+        for (auto& objectTreeIndex : indexEntry.objectTreeIndices) {
+            objectTreeIndex += objectTreeIndexBase;
+        }
+        combined.indexEntries.push_back(std::move(indexEntry));
+    }
+
+    combined.meshes.insert(
+        combined.meshes.end(),
+        std::make_move_iterator(entryScene.meshes.begin()),
+        std::make_move_iterator(entryScene.meshes.end()));
+    combined.objectTrees.insert(
+        combined.objectTrees.end(),
+        std::make_move_iterator(entryScene.objectTrees.begin()),
+        std::make_move_iterator(entryScene.objectTrees.end()));
+    combined.textures.insert(
+        combined.textures.end(),
+        std::make_move_iterator(entryScene.textures.begin()),
+        std::make_move_iterator(entryScene.textures.end()));
+    combined.diagnostics.push_back("SML combined Blender IR appended entry " + std::to_string(recordIndex) +
+        " from prefix " + makeSmlEntryPrefix(stem, recordIndex));
+    combined.diagnostics.insert(
+        combined.diagnostics.end(),
+        std::make_move_iterator(entryScene.diagnostics.begin()),
+        std::make_move_iterator(entryScene.diagnostics.end()));
+}
+
 enum class GvrGlobalIndexPolicy {
     Preserve,
     None,
@@ -99,6 +211,7 @@ struct CliOptions {
     bool exportMldEntryListOnly = false;
     bool exportSmlEmbeddedMld = false;
     bool exportSmlEmbeddedMldBlenderIr = false;
+    bool exportSmlCombinedBlenderIr = false;
     bool exportSstSmlCommandMap = false;
     bool parseSctOnly = false;
     bool decodeSctUnreachedCode = false;
@@ -126,7 +239,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sst-sml-command-map] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
         << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
         << "  SpiceFileParsing --replace-mld-texture source.mld input.png output.mld (--mld-texture-index <n>|--mld-texture-name <name>) [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-global-index preserve|none|<u32>] [--mld-aklz preserve|raw|compressed] [--mld-allow-dimension-change] [--mld-allow-post-archive-shift]\n"
@@ -140,6 +253,7 @@ void printUsage() {
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
         << "  - --export-sml-embedded-mld extracts each SML embedded MLD payload under output/<stem>/embedded_mld.\n"
         << "  - --export-sml-embedded-mld-blender-ir also parses each embedded MLD payload and writes Blender IR under output/<stem>/blender_ir/entry_<index>.\n"
+        << "  - --export-sml-combined-blender-ir writes output/<stem>/<stem>_combined_blender_ir_scene.json by appending all embedded SML MLD Blender IR scenes.\n"
         << "  - --export-sst-sml-command-map writes output/<stem>/<stem>.sst_sml_command_map.json when a same-stem .sst exists.\n"
         << "  - --sample-mld-gvr-formats writes compact embedded GVR format inventory and priority reports for .mld files.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
@@ -335,6 +449,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         if (arg == "--export-sml-embedded-mld-blender-ir") {
             options.exportSmlEmbeddedMld = true;
             options.exportSmlEmbeddedMldBlenderIr = true;
+            continue;
+        }
+        if (arg == "--export-sml-combined-blender-ir") {
+            options.exportSmlCombinedBlenderIr = true;
             continue;
         }
         if (arg == "--export-sst-sml-command-map") {
@@ -2914,12 +3032,14 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        if (cliOptions->exportSmlEmbeddedMld || cliOptions->exportSstSmlCommandMap) {
+        if (cliOptions->exportSmlEmbeddedMld
+            || cliOptions->exportSmlCombinedBlenderIr
+            || cliOptions->exportSstSmlCommandMap) {
             if (extension != ".sml") {
                 continue;
             }
 
-            std::cout << "[SpiceFileParsing]   - Exporting SML embedded MLD payloads: "
+            std::cout << "[SpiceFileParsing]   - Exporting SML research artifacts: "
                       << entry.path().filename().string() << "\n";
             const auto stem = entry.path().stem().string();
             const auto stageOutputDir = outputDir / stem;
@@ -2941,7 +3061,12 @@ int main(int argc, char** argv) {
                 }
 
                 std::map<std::size_t, std::filesystem::path> blenderIrPaths{};
-                if (cliOptions->exportSmlEmbeddedMldBlenderIr) {
+                std::optional<spice::mld::model::BlenderIrScene> combinedBlenderIrScene{};
+                if (cliOptions->exportSmlCombinedBlenderIr) {
+                    combinedBlenderIrScene.emplace();
+                }
+
+                if (cliOptions->exportSmlEmbeddedMldBlenderIr || cliOptions->exportSmlCombinedBlenderIr) {
                     for (const auto& record : smlParsed.records) {
                         if (!record.embeddedMldInBounds || record.embeddedMldBytes.empty()) {
                             continue;
@@ -2951,18 +3076,48 @@ int main(int argc, char** argv) {
                             ("entry_" + std::to_string(record.index));
                         spice::mld::parsing::ParseOptions embeddedMldOptions{};
                         embeddedMldOptions.buildBlenderIntermediateIr = true;
-                        embeddedMldOptions.exportBlenderIrJson = true;
+                        embeddedMldOptions.exportBlenderIrJson = false;
                         embeddedMldOptions.blenderIrOutputDir = blenderIrDir.string();
                         try {
-                            const auto parsedEmbeddedMld = mldParser.parse(
+                            auto parsedEmbeddedMld = mldParser.parse(
                                 std::span<const std::uint8_t>(
                                     record.embeddedMldBytes.data(),
                                     record.embeddedMldBytes.size()),
                                 embeddedMldOptions);
-                            const auto blenderIrPath = blenderIrDir / "blender_ir_scene.json";
-                            if (parsedEmbeddedMld.blenderIrScene.has_value() &&
-                                std::filesystem::exists(blenderIrPath)) {
-                                blenderIrPaths[record.index] = blenderIrPath;
+                            if (parsedEmbeddedMld.blenderIrScene.has_value()) {
+                                if (combinedBlenderIrScene.has_value()) {
+                                    if (cliOptions->exportSmlEmbeddedMldBlenderIr) {
+                                        appendSmlEntryBlenderIrScene(
+                                            *combinedBlenderIrScene,
+                                            *parsedEmbeddedMld.blenderIrScene,
+                                            stem,
+                                            record.index);
+                                    } else {
+                                        appendSmlEntryBlenderIrScene(
+                                            *combinedBlenderIrScene,
+                                            std::move(*parsedEmbeddedMld.blenderIrScene),
+                                            stem,
+                                            record.index);
+                                    }
+                                }
+
+                                if (cliOptions->exportSmlEmbeddedMldBlenderIr) {
+                                    const auto blenderIrPath = blenderIrDir / "blender_ir_scene.json";
+                                    std::filesystem::create_directories(blenderIrDir);
+                                    namespaceBlenderIrSceneForSmlEntry(
+                                        *parsedEmbeddedMld.blenderIrScene,
+                                        stem,
+                                        record.index);
+                                    std::ofstream blenderIrOut(blenderIrPath, std::ios::binary);
+                                    blenderIrOut << exporter.toJson(*parsedEmbeddedMld.blenderIrScene);
+                                    if (!blenderIrOut.good()) {
+                                        std::cerr << "[SpiceFileParsing] WARNING: failed to write embedded MLD Blender IR for "
+                                                  << entry.path().filename().string()
+                                                  << " record " << record.index << "\n";
+                                        continue;
+                                    }
+                                    blenderIrPaths[record.index] = blenderIrPath;
+                                }
                             } else {
                                 std::cerr << "[SpiceFileParsing] WARNING: embedded MLD Blender IR was not produced for "
                                           << entry.path().filename().string()
@@ -2972,6 +3127,17 @@ int main(int argc, char** argv) {
                             std::cerr << "[SpiceFileParsing] WARNING: embedded MLD parse failed for "
                                       << entry.path().filename().string()
                                       << " record " << record.index << ": " << ex.what() << "\n";
+                        }
+                    }
+
+                    if (combinedBlenderIrScene.has_value()) {
+                        const auto combinedPath = stageOutputDir / (stem + "_combined_blender_ir_scene.json");
+                        std::filesystem::create_directories(stageOutputDir);
+                        std::ofstream combinedOut(combinedPath, std::ios::binary);
+                        combinedOut << exporter.toJson(*combinedBlenderIrScene);
+                        if (!combinedOut.good()) {
+                            std::cerr << "[SpiceFileParsing] WARNING: failed to write combined SML Blender IR for "
+                                      << entry.path().filename().string() << "\n";
                         }
                     }
                 }
