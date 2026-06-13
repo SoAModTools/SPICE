@@ -8,12 +8,6 @@
 
 namespace spice::mlk {
 
-enum class MlkTableShape {
-    Normal,
-    FirstPayloadCountCandidate,
-    MalformedRecordSpans,
-};
-
 struct MlkEmbeddedMldParseSummary {
     bool attempted{ false };
     bool parseOk{ false };
@@ -56,8 +50,6 @@ struct MlkCorpusWriteResult {
     std::filesystem::path word12ByKindCsvPath{};
     std::filesystem::path embeddedMldSummaryCsvPath{};
 };
-
-[[nodiscard]] const char* toString(MlkTableShape shape);
 
 [[nodiscard]] MlkCorpusScanResult scanMlkCorpus(const std::filesystem::path& inputPath);
 

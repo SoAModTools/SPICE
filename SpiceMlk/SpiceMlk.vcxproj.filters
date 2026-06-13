@@ -14,6 +14,9 @@
     <Filter Include="Corpus">
       <UniqueIdentifier>{4E8B7799-5E68-4DD5-9F82-A58385B78F52}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Parser">
+      <UniqueIdentifier>{78504B58-640F-4909-962A-0E0F49E5513D}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SpiceMlk.h">
@@ -28,6 +31,9 @@
     <ClInclude Include="MlkCorpus.h">
       <Filter>Corpus</Filter>
     </ClInclude>
+    <ClInclude Include="MlkParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MlkScanner.cpp">
@@ -35,6 +41,9 @@
     </ClCompile>
     <ClCompile Include="MlkCorpus.cpp">
       <Filter>Corpus</Filter>
+    </ClCompile>
+    <ClCompile Include="MlkParser.cpp">
+      <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

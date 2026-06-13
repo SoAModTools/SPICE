@@ -1,5 +1,6 @@
 #include "MlkCorpus.h"
 
+#include "MlkParser.h"
 #include "MlkScanner.h"
 
 #include "../Compression/Aklz.h"
@@ -336,17 +337,7 @@ std::string parentDirectoryForHistogram(const std::string& relativePath) {
 }
 
 MlkTableShape tableShapeForFile(const MlkCorpusFileSummary& file) {
-    const auto& scan = file.scan;
-    const auto outOfBounds = outOfBoundsPayloadCount(file);
-    if (scan.recordCountInferredFromFirstPayloadOffset > 0U &&
-        scan.recordCountInferredFromFirstPayloadOffset != scan.selectedRecordCount &&
-        scan.firstPayloadOffset >= scan.recordsOffset) {
-        return MlkTableShape::FirstPayloadCountCandidate;
-    }
-    if (outOfBounds > 0U || diagnosticCount(scan, DiagnosticSeverity::Error) > 0U) {
-        return MlkTableShape::MalformedRecordSpans;
-    }
-    return MlkTableShape::Normal;
+    return classifyMlkTableShape(file.scan);
 }
 
 std::string joinSampleNames(const std::vector<std::string>& values) {
@@ -361,18 +352,6 @@ std::string joinSampleNames(const std::vector<std::string>& values) {
 }
 
 } // namespace
-
-const char* toString(MlkTableShape shape) {
-    switch (shape) {
-    case MlkTableShape::Normal:
-        return "normal";
-    case MlkTableShape::FirstPayloadCountCandidate:
-        return "first-payload-count-candidate";
-    case MlkTableShape::MalformedRecordSpans:
-        return "malformed-record-spans";
-    }
-    return "unknown";
-}
 
 MlkCorpusScanResult scanMlkCorpus(const std::filesystem::path& inputPath) {
     MlkCorpusScanResult corpus{};

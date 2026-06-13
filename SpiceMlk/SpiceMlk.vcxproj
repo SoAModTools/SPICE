@@ -101,11 +101,13 @@
   <ItemGroup>
     <ClInclude Include="MlkCorpus.h" />
     <ClInclude Include="MlkModel.h" />
+    <ClInclude Include="MlkParser.h" />
     <ClInclude Include="MlkScanner.h" />
     <ClInclude Include="SpiceMlk.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MlkCorpus.cpp" />
+    <ClCompile Include="MlkParser.cpp" />
     <ClCompile Include="MlkScanner.cpp" />
   </ItemGroup>
   <ItemGroup>

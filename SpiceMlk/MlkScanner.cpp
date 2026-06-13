@@ -236,6 +236,18 @@ const char* toString(MlkRecordCountSource source) {
     return "unknown";
 }
 
+const char* toString(MlkTableShape shape) {
+    switch (shape) {
+    case MlkTableShape::Normal:
+        return "normal";
+    case MlkTableShape::FirstPayloadCountCandidate:
+        return "first-payload-count-candidate";
+    case MlkTableShape::MalformedRecordSpans:
+        return "malformed-record-spans";
+    }
+    return "unknown";
+}
+
 MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string sourcePath) {
     MlkScanResult result{};
     result.sourcePath = std::move(sourcePath);
