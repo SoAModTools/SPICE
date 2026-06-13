@@ -2956,6 +2956,9 @@ int main(int argc, char** argv) {
             std::cout << "[SpiceFileParsing]   - Wrote " << written.filesCsvPath.string() << "\n";
             std::cout << "[SpiceFileParsing]   - Wrote " << written.recordsCsvPath.string() << "\n";
             std::cout << "[SpiceFileParsing]   - Wrote " << written.word12HistogramCsvPath.string() << "\n";
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.anomaliesCsvPath.string() << "\n";
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.word12ByKindCsvPath.string() << "\n";
+            std::cout << "[SpiceFileParsing]   - Wrote " << written.embeddedMldSummaryCsvPath.string() << "\n";
             std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
             std::cout << "SpiceFileParsing finished.\nFilesProcessed=" << corpus.files.size()
                       << "\ninputDir=" << inputDir.string()

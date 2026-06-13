@@ -178,11 +178,23 @@ MlkEmbeddedMldParseSummary parseEmbeddedMld(
         const auto parsed = parser.parse(payload, options);
         summary.entryCount = parsed.entryList.size();
         summary.diagnosticCount = parsed.diagnostics.size();
+        summary.textureArchivePresent = parsed.textureArchive.has_value();
         for (const auto& diagnostic : parsed.diagnostics) {
             if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Warning) {
                 ++summary.warningCount;
             } else if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Error) {
                 ++summary.errorCount;
+            }
+        }
+        std::set<std::string> sampledFxnNames{};
+        for (const auto& entry : parsed.entryList) {
+            summary.objectReferenceCount += entry.objectAddresses.size();
+            summary.groundReferenceCount += entry.groundAddresses.size();
+            summary.motionReferenceCount += entry.motionAddresses.size();
+            summary.textureReferenceCount += entry.textureNames.size();
+            if (!entry.fxnName.empty() && sampledFxnNames.insert(entry.fxnName).second &&
+                summary.sampleFxnNames.size() < 8U) {
+                summary.sampleFxnNames.push_back(entry.fxnName);
             }
         }
         summary.parseOk = summary.errorCount == 0U && summary.entryCount > 0U;
@@ -323,7 +335,44 @@ std::string parentDirectoryForHistogram(const std::string& relativePath) {
     return relativePath.substr(0U, slash);
 }
 
+MlkTableShape tableShapeForFile(const MlkCorpusFileSummary& file) {
+    const auto& scan = file.scan;
+    const auto outOfBounds = outOfBoundsPayloadCount(file);
+    if (scan.recordCountInferredFromFirstPayloadOffset > 0U &&
+        scan.recordCountInferredFromFirstPayloadOffset != scan.selectedRecordCount &&
+        scan.firstPayloadOffset >= scan.recordsOffset) {
+        return MlkTableShape::FirstPayloadCountCandidate;
+    }
+    if (outOfBounds > 0U || diagnosticCount(scan, DiagnosticSeverity::Error) > 0U) {
+        return MlkTableShape::MalformedRecordSpans;
+    }
+    return MlkTableShape::Normal;
+}
+
+std::string joinSampleNames(const std::vector<std::string>& values) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0U) {
+            out << "|";
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
 } // namespace
+
+const char* toString(MlkTableShape shape) {
+    switch (shape) {
+    case MlkTableShape::Normal:
+        return "normal";
+    case MlkTableShape::FirstPayloadCountCandidate:
+        return "first-payload-count-candidate";
+    case MlkTableShape::MalformedRecordSpans:
+        return "malformed-record-spans";
+    }
+    return "unknown";
+}
 
 MlkCorpusScanResult scanMlkCorpus(const std::filesystem::path& inputPath) {
     MlkCorpusScanResult corpus{};
@@ -371,6 +420,9 @@ std::string formatMlkCorpusJson(const MlkCorpusScanResult& corpus) {
         out << "      \"recordCountSource\": ";
         writeJsonString(out, toString(scan.recordCountSource));
         out << ",\n";
+        out << "      \"tableShape\": ";
+        writeJsonString(out, toString(tableShapeForFile(file)));
+        out << ",\n";
         out << "      \"firstPayloadOffset\": " << scan.firstPayloadOffset << ",\n";
         out << "      \"recordCountInferredFromFirstPayloadOffset\": "
             << scan.recordCountInferredFromFirstPayloadOffset << ",\n";
@@ -416,7 +468,20 @@ std::string formatMlkCorpusJson(const MlkCorpusScanResult& corpus) {
             out << "          \"embeddedMldParseAttempted\": " << boolText(parse.attempted) << ",\n";
             out << "          \"embeddedMldEntryListParseOk\": " << boolText(parse.parseOk) << ",\n";
             out << "          \"embeddedMldEntryCountParsed\": " << parse.entryCount << ",\n";
-            out << "          \"embeddedMldDiagnosticsCount\": " << parse.diagnosticCount << "\n";
+            out << "          \"embeddedMldDiagnosticsCount\": " << parse.diagnosticCount << ",\n";
+            out << "          \"embeddedMldTextureArchivePresent\": " << boolText(parse.textureArchivePresent) << ",\n";
+            out << "          \"embeddedMldObjectReferenceCount\": " << parse.objectReferenceCount << ",\n";
+            out << "          \"embeddedMldGroundReferenceCount\": " << parse.groundReferenceCount << ",\n";
+            out << "          \"embeddedMldMotionReferenceCount\": " << parse.motionReferenceCount << ",\n";
+            out << "          \"embeddedMldTextureReferenceCount\": " << parse.textureReferenceCount << ",\n";
+            out << "          \"embeddedMldSampleFxnNames\": [";
+            for (std::size_t nameIndex = 0; nameIndex < parse.sampleFxnNames.size(); ++nameIndex) {
+                if (nameIndex != 0U) {
+                    out << ", ";
+                }
+                writeJsonString(out, parse.sampleFxnNames[nameIndex]);
+            }
+            out << "]\n";
             out << "        }";
             if (recordIndex + 1U != file.records.size()) {
                 out << ",";
@@ -452,7 +517,7 @@ std::string formatMlkCorpusJson(const MlkCorpusScanResult& corpus) {
 std::string formatMlkCorpusFilesCsv(const MlkCorpusScanResult& corpus) {
     std::ostringstream out;
     out << "path,rawSize,decodedSize,sourceWasCompressedAklz,headerWord0,headerWord1,headerWord2,headerWord3,"
-           "recordCountCandidate,selectedRecordCount,recordCountSource,firstPayloadOffset,"
+           "recordCountCandidate,selectedRecordCount,recordCountSource,tableShape,firstPayloadOffset,"
            "recordCountInferredFromFirstPayloadOffset,recordCountMatchesFirstPayloadOffset,recordTableEndOffset,"
            "recordTableInBounds,infoCount,warningCount,errorCount,embeddedMldPlausibleRecordCount,"
            "embeddedMldEntryListAcceptedCount,payloadOutOfBoundsCount,duplicateKeyCount\n";
@@ -469,6 +534,7 @@ std::string formatMlkCorpusFilesCsv(const MlkCorpusScanResult& corpus) {
             << scan.recordCountCandidate << ","
             << scan.selectedRecordCount << ","
             << csvEscape(toString(scan.recordCountSource)) << ","
+            << csvEscape(toString(tableShapeForFile(file))) << ","
             << scan.firstPayloadOffset << ","
             << scan.recordCountInferredFromFirstPayloadOffset << ","
             << boolText(scan.recordCountMatchesFirstPayloadOffset) << ","
@@ -491,7 +557,9 @@ std::string formatMlkCorpusRecordsCsv(const MlkCorpusScanResult& corpus) {
            "payloadOverlapsRecordTable,duplicateKey,payloadKind,payloadSignature,embeddedMldHeaderPlausible,"
            "embeddedMldEntryCount,embeddedMldIndexTableOffset,embeddedMldFunctionParametersOffset,"
            "embeddedMldRealDataOffset,embeddedMldTextureTableOffset,embeddedMldParseAttempted,"
-           "embeddedMldEntryListParseOk,embeddedMldEntryCountParsed,embeddedMldDiagnosticsCount\n";
+           "embeddedMldEntryListParseOk,embeddedMldEntryCountParsed,embeddedMldDiagnosticsCount,"
+           "embeddedMldTextureArchivePresent,embeddedMldObjectReferenceCount,embeddedMldGroundReferenceCount,"
+           "embeddedMldMotionReferenceCount,embeddedMldTextureReferenceCount,embeddedMldSampleFxnNames\n";
     for (const auto& file : corpus.files) {
         for (const auto& recordSummary : file.records) {
             const auto& record = recordSummary.record;
@@ -518,7 +586,13 @@ std::string formatMlkCorpusRecordsCsv(const MlkCorpusScanResult& corpus) {
                 << boolText(parse.attempted) << ","
                 << boolText(parse.parseOk) << ","
                 << parse.entryCount << ","
-                << parse.diagnosticCount << "\n";
+                << parse.diagnosticCount << ","
+                << boolText(parse.textureArchivePresent) << ","
+                << parse.objectReferenceCount << ","
+                << parse.groundReferenceCount << ","
+                << parse.motionReferenceCount << ","
+                << parse.textureReferenceCount << ","
+                << csvEscape(joinSampleNames(parse.sampleFxnNames)) << "\n";
         }
     }
     return out.str();
@@ -546,6 +620,103 @@ std::string formatMlkCorpusWord12HistogramCsv(const MlkCorpusScanResult& corpus)
     return out.str();
 }
 
+std::string formatMlkCorpusAnomaliesCsv(const MlkCorpusScanResult& corpus) {
+    std::ostringstream out;
+    out << "path,tableShape,recordCountCandidate,selectedRecordCount,recordCountSource,"
+           "firstPayloadOffset,recordCountInferredFromFirstPayloadOffset,recordCountMatchesFirstPayloadOffset,"
+           "recordTableEndOffset,recordTableInBounds,infoCount,warningCount,errorCount,"
+           "payloadOutOfBoundsCount,duplicateKeyCount,embeddedMldPlausibleRecordCount,"
+           "embeddedMldEntryListAcceptedCount\n";
+    for (const auto& file : corpus.files) {
+        const auto shape = tableShapeForFile(file);
+        const auto& scan = file.scan;
+        if (shape == MlkTableShape::Normal &&
+            diagnosticCount(scan, DiagnosticSeverity::Warning) == 0U &&
+            duplicateKeyCount(file) == 0U) {
+            continue;
+        }
+        out << csvEscape(file.relativePath) << ","
+            << csvEscape(toString(shape)) << ","
+            << scan.recordCountCandidate << ","
+            << scan.selectedRecordCount << ","
+            << csvEscape(toString(scan.recordCountSource)) << ","
+            << scan.firstPayloadOffset << ","
+            << scan.recordCountInferredFromFirstPayloadOffset << ","
+            << boolText(scan.recordCountMatchesFirstPayloadOffset) << ","
+            << scan.recordTableEndOffset << ","
+            << boolText(scan.recordTableInBounds) << ","
+            << diagnosticCount(scan, DiagnosticSeverity::Info) << ","
+            << diagnosticCount(scan, DiagnosticSeverity::Warning) << ","
+            << diagnosticCount(scan, DiagnosticSeverity::Error) << ","
+            << outOfBoundsPayloadCount(file) << ","
+            << duplicateKeyCount(file) << ","
+            << plausibleEmbeddedMldRecordCount(file) << ","
+            << parsedEmbeddedMldRecordCount(file) << "\n";
+    }
+    return out.str();
+}
+
+std::string formatMlkCorpusRawWord12ByKindCsv(const MlkCorpusScanResult& corpus) {
+    std::map<std::tuple<std::string, std::string, std::string, std::uint32_t>, std::size_t> histogram{};
+    for (const auto& file : corpus.files) {
+        const auto directory = parentDirectoryForHistogram(file.relativePath);
+        const auto tableShape = std::string(toString(tableShapeForFile(file)));
+        for (const auto& record : file.records) {
+            ++histogram[std::make_tuple(
+                directory,
+                tableShape,
+                std::string(toString(record.record.payloadKind)),
+                record.record.rawWord12)];
+        }
+    }
+
+    std::ostringstream out;
+    out << "directory,tableShape,payloadKind,rawWord12,count\n";
+    for (const auto& [key, count] : histogram) {
+        const auto& [directory, tableShape, payloadKind, rawWord12] = key;
+        out << csvEscape(directory) << ","
+            << csvEscape(tableShape) << ","
+            << csvEscape(payloadKind) << ","
+            << rawWord12 << ","
+            << count << "\n";
+    }
+    return out.str();
+}
+
+std::string formatMlkCorpusEmbeddedMldSummaryCsv(const MlkCorpusScanResult& corpus) {
+    std::ostringstream out;
+    out << "filePath,recordIndex,key,rawWord12,payloadOffset,payloadSize,parseOk,entryCount,"
+           "diagnosticCount,warningCount,errorCount,textureArchivePresent,objectReferenceCount,"
+           "groundReferenceCount,motionReferenceCount,textureReferenceCount,sampleFxnNames\n";
+    for (const auto& file : corpus.files) {
+        for (const auto& recordSummary : file.records) {
+            const auto& parse = recordSummary.embeddedMldParse;
+            if (!parse.attempted) {
+                continue;
+            }
+            const auto& record = recordSummary.record;
+            out << csvEscape(file.relativePath) << ","
+                << record.index << ","
+                << record.key << ","
+                << record.rawWord12 << ","
+                << record.payloadOffset << ","
+                << record.payloadSize << ","
+                << boolText(parse.parseOk) << ","
+                << parse.entryCount << ","
+                << parse.diagnosticCount << ","
+                << parse.warningCount << ","
+                << parse.errorCount << ","
+                << boolText(parse.textureArchivePresent) << ","
+                << parse.objectReferenceCount << ","
+                << parse.groundReferenceCount << ","
+                << parse.motionReferenceCount << ","
+                << parse.textureReferenceCount << ","
+                << csvEscape(joinSampleNames(parse.sampleFxnNames)) << "\n";
+        }
+    }
+    return out.str();
+}
+
 MlkCorpusWriteResult writeMlkCorpusArtifacts(
     const MlkCorpusScanResult& corpus,
     const std::filesystem::path& outputDir) {
@@ -556,11 +727,17 @@ MlkCorpusWriteResult writeMlkCorpusArtifacts(
     result.filesCsvPath = outputDir / "mlk_corpus_files.csv";
     result.recordsCsvPath = outputDir / "mlk_corpus_records.csv";
     result.word12HistogramCsvPath = outputDir / "mlk_corpus_word12_histogram.csv";
+    result.anomaliesCsvPath = outputDir / "mlk_corpus_anomalies.csv";
+    result.word12ByKindCsvPath = outputDir / "mlk_corpus_raw_word12_by_kind.csv";
+    result.embeddedMldSummaryCsvPath = outputDir / "mlk_corpus_embedded_mld_summary.csv";
 
     writeTextFile(result.jsonPath, formatMlkCorpusJson(corpus));
     writeTextFile(result.filesCsvPath, formatMlkCorpusFilesCsv(corpus));
     writeTextFile(result.recordsCsvPath, formatMlkCorpusRecordsCsv(corpus));
     writeTextFile(result.word12HistogramCsvPath, formatMlkCorpusWord12HistogramCsv(corpus));
+    writeTextFile(result.anomaliesCsvPath, formatMlkCorpusAnomaliesCsv(corpus));
+    writeTextFile(result.word12ByKindCsvPath, formatMlkCorpusRawWord12ByKindCsv(corpus));
+    writeTextFile(result.embeddedMldSummaryCsvPath, formatMlkCorpusEmbeddedMldSummaryCsv(corpus));
     return result;
 }
 

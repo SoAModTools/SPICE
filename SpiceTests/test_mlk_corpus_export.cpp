@@ -62,6 +62,16 @@ std::vector<std::uint8_t> makeMlkWithEmbeddedMldFixture() {
     return bytes;
 }
 
+std::vector<std::uint8_t> makeMlkWithFirstPayloadCountCandidateFixture() {
+    auto bytes = makeMlkProbeFixture();
+    writeBeU32(bytes, 0x0cU, 0x00000038U);
+    bytes[0x38U] = 'N';
+    bytes[0x39U] = 'J';
+    bytes[0x3aU] = 'C';
+    bytes[0x3bU] = 'M';
+    return bytes;
+}
+
 std::filesystem::path makeTempOutputDir(const std::string& name) {
     const auto path = std::filesystem::temp_directory_path() / name;
     std::filesystem::remove_all(path);
@@ -104,20 +114,30 @@ TEST(SpiceMlkCorpusExport, ScansDirectoryAndWritesJsonCsvArtifacts) {
     const auto filesCsv = spice::mlk::formatMlkCorpusFilesCsv(corpus);
     const auto recordsCsv = spice::mlk::formatMlkCorpusRecordsCsv(corpus);
     const auto histogramCsv = spice::mlk::formatMlkCorpusWord12HistogramCsv(corpus);
+    const auto anomaliesCsv = spice::mlk::formatMlkCorpusAnomaliesCsv(corpus);
+    const auto word12ByKindCsv = spice::mlk::formatMlkCorpusRawWord12ByKindCsv(corpus);
     EXPECT_EQ(filesCsv.rfind("path,rawSize,decodedSize", 0U), 0U);
     EXPECT_NE(filesCsv.find("\"dir,one/sample.mlk\""), std::string::npos);
+    EXPECT_NE(filesCsv.find(",normal,"), std::string::npos);
     EXPECT_EQ(recordsCsv.rfind("filePath,recordIndex,recordOffset", 0U), 0U);
     EXPECT_NE(histogramCsv.find("directory,recordCountSource,rawWord12,count"), std::string::npos);
+    EXPECT_EQ(anomaliesCsv.find("dir,one/sample.mlk"), std::string::npos);
+    EXPECT_NE(word12ByKindCsv.find("directory,tableShape,payloadKind,rawWord12,count"), std::string::npos);
+    EXPECT_NE(word12ByKindCsv.find("normal,ninja-chunk,48,1"), std::string::npos);
 
     const auto written = spice::mlk::writeMlkCorpusArtifacts(corpus, outputDir);
     EXPECT_TRUE(std::filesystem::exists(written.jsonPath));
     EXPECT_TRUE(std::filesystem::exists(written.filesCsvPath));
     EXPECT_TRUE(std::filesystem::exists(written.recordsCsvPath));
     EXPECT_TRUE(std::filesystem::exists(written.word12HistogramCsvPath));
+    EXPECT_TRUE(std::filesystem::exists(written.anomaliesCsvPath));
+    EXPECT_TRUE(std::filesystem::exists(written.word12ByKindCsvPath));
+    EXPECT_TRUE(std::filesystem::exists(written.embeddedMldSummaryCsvPath));
 
     const auto json = readText(written.jsonPath);
     EXPECT_NE(json.find("\"fileCount\": 1"), std::string::npos);
     EXPECT_NE(json.find("\"recordCountSource\": \"header-u16-at-0x04\""), std::string::npos);
+    EXPECT_NE(json.find("\"tableShape\": \"normal\""), std::string::npos);
 }
 
 TEST(SpiceMlkCorpusExport, AttemptsEntryListParseForPlausibleEmbeddedMldPayloads) {
@@ -139,4 +159,25 @@ TEST(SpiceMlkCorpusExport, AttemptsEntryListParseForPlausibleEmbeddedMldPayloads
 
     const auto json = spice::mlk::formatMlkCorpusJson(corpus);
     EXPECT_NE(json.find("\"embeddedMldParseAttempted\": true"), std::string::npos);
+    EXPECT_NE(json.find("\"embeddedMldObjectReferenceCount\""), std::string::npos);
+    EXPECT_NE(json.find("\"embeddedMldSampleFxnNames\""), std::string::npos);
+
+    const auto embeddedSummaryCsv = spice::mlk::formatMlkCorpusEmbeddedMldSummaryCsv(corpus);
+    EXPECT_EQ(embeddedSummaryCsv.rfind("filePath,recordIndex,key,rawWord12", 0U), 0U);
+    EXPECT_NE(embeddedSummaryCsv.find("embedded.mlk,0,"), std::string::npos);
+}
+
+TEST(SpiceMlkCorpusExport, ReportsFirstPayloadCountCandidateAnomalies) {
+    const auto root = makeTempOutputDir("spice_mlk_corpus_export_first_payload_candidate");
+    const auto mlkPath = root / "candidate.mlk";
+    writeBytes(mlkPath, makeMlkWithFirstPayloadCountCandidateFixture());
+
+    const auto corpus = spice::mlk::scanMlkCorpus(mlkPath);
+
+    const auto filesCsv = spice::mlk::formatMlkCorpusFilesCsv(corpus);
+    EXPECT_NE(filesCsv.find("first-payload-count-candidate"), std::string::npos);
+
+    const auto anomaliesCsv = spice::mlk::formatMlkCorpusAnomaliesCsv(corpus);
+    EXPECT_NE(anomaliesCsv.find("candidate.mlk"), std::string::npos);
+    EXPECT_NE(anomaliesCsv.find("first-payload-count-candidate"), std::string::npos);
 }
