@@ -504,6 +504,19 @@ void writeHumanAnnotationTemplate(std::ostream& out, const std::string& indent) 
         << indent << "}";
 }
 
+void writeStageNotesTemplate(std::ostream& out, const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"overview\":\"\",\n"
+        << indent << "  \"layoutNotes\":\"\",\n"
+        << indent << "  \"runtimeNotes\":\"\",\n"
+        << indent << "  \"smlSstNotes\":\"\",\n"
+        << indent << "  \"openQuestions\":\"\",\n"
+        << indent << "  \"reviewedBy\":\"\",\n"
+        << indent << "  \"reviewedAt\":\"\",\n"
+        << indent << "  \"resources\":[]\n"
+        << indent << "}";
+}
+
 void writeStageAnnotationTemplate(const std::filesystem::path& path,
     const std::filesystem::path& mediaDir,
     const SmlParseResult& sml,
@@ -536,8 +549,10 @@ void writeStageAnnotationTemplate(const std::filesystem::path& path,
     } else {
         out << "null";
     }
-    out << ",\n  \"instructions\":\"Fill humanAnnotations from Blender/in-game observation; keep computed fields as the current parser-derived snapshot. Re-exports preserve this file unless overwrite is explicitly requested.\",\n"
-        << "  \"records\":[";
+    out << ",\n  \"instructions\":\"Fill stageNotes and per-record humanAnnotations from Blender/in-game observation; keep computed fields as the current parser-derived snapshot. Re-exports preserve this file unless overwrite is explicitly requested.\",\n"
+        << "  \"stageNotes\":";
+    writeStageNotesTemplate(out, "  ");
+    out << ",\n  \"records\":[";
     for (std::size_t index = 0; index < maxRecords; ++index) {
         const SmlRecord* smlRecord = index < sml.records.size() ? &sml.records[index] : nullptr;
         const SmlEmbeddedMldExportedEntry* exported = index < result.entries.size() ? &result.entries[index] : nullptr;

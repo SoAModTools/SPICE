@@ -757,6 +757,12 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     EXPECT_NE(annotationTemplate.find("\"documentRole\":\"living_stage_annotation\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"mediaDirectory\":\"s777.stage_annotation_media\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"combinedBlenderIrScene\":\"s777_combined_blender_ir_scene.json\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"stageNotes\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"overview\":\"\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"layoutNotes\":\"\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"runtimeNotes\":\"\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"smlSstNotes\":\"\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"resources\":[]"), std::string::npos);
     EXPECT_EQ(annotationTemplate.find("\"mediaDirectory\":\"s777.stage_annotation_media/entry_0\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"humanAnnotations\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"media\":[]"), std::string::npos);
