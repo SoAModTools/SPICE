@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Entry Point">
+      <UniqueIdentifier>{E3DA0F35-0BDE-4966-A5E2-32D9C4F8C557}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;h;hh;hpp;hxx</Extensions>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{E0AB415C-D687-4B1E-95E9-D6D56414CFA0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Scanner">
+      <UniqueIdentifier>{322645F2-F8B8-4D11-9C73-777CF5E62BB0}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="SpiceMlk.h">
+      <Filter>Entry Point</Filter>
+    </ClInclude>
+    <ClInclude Include="MlkModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="MlkScanner.h">
+      <Filter>Scanner</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="MlkScanner.cpp">
+      <Filter>Scanner</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
+
