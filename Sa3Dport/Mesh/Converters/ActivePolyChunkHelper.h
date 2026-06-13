@@ -74,10 +74,20 @@ inline std::vector<std::optional<ActivePolyChunkList>> get_active_poly_chunks(
 
 inline std::vector<Buffer::BufferMesh> buffer_chunk_attach_with_active_poly_chunks(
     const Mesh::Chunk::ChunkAttach& attach,
-    const std::optional<ActivePolyChunkList>& activePolyChunks) {
+    const std::optional<ActivePolyChunkList>& activePolyChunks,
+    ChunkBufferContext& context) {
     return activePolyChunks.has_value()
-        ? buffer_chunk_attach(attach, *activePolyChunks)
-        : buffer_chunk_attach(attach, {});
+        ? buffer_chunk_attach(attach, *activePolyChunks, context)
+        : buffer_chunk_attach(attach, {}, context);
+}
+
+inline std::vector<Buffer::BufferMesh> buffer_chunk_attach_with_active_poly_chunks(
+    const Mesh::Chunk::ChunkAttach& attach,
+    const std::optional<ActivePolyChunkList>& activePolyChunks) {
+    ChunkBufferContext context;
+    return activePolyChunks.has_value()
+        ? buffer_chunk_attach(attach, *activePolyChunks, context)
+        : buffer_chunk_attach(attach, {}, context);
 }
 
 } // namespace Sa3Dport::Mesh::Converters

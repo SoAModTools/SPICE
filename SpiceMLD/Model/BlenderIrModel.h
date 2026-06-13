@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -96,11 +97,18 @@ struct BlenderIrMeshDiagnostics {
     std::size_t cacheReplayTriangleCount = 0;
 };
 
+struct BlenderIrWeightedBinding {
+    std::size_t rootNodeIndex = 0;
+    std::size_t sourceNodeIndex = 0;
+    std::vector<std::size_t> nodeIndices{};
+};
+
 struct BlenderIrMesh {
     std::string label{};
     std::uint32_t sourceObjectAddress = 0;
     std::size_t sourceChunkOffset = 0;
     std::size_t sourceAttachOffset = 0;
+    std::optional<BlenderIrWeightedBinding> weightedBinding{};
     std::vector<BlenderIrVertex> vertices{};
     std::vector<BlenderIrMaterial> materials{};
     std::vector<BlenderIrTriangleSet> triangleSets{};
@@ -128,6 +136,7 @@ struct BlenderIrObjectTree {
 
 struct BlenderIrInstance {
     std::uint32_t sourceEntryId = 0;
+    std::size_t tableIndex = 0;
     std::uint32_t tblId = 0;
     std::string fxnName{};
     Transform transform{};
@@ -137,11 +146,50 @@ struct BlenderIrInstance {
     std::vector<std::size_t> objectTreeIndices{};
 };
 
+struct BlenderIrVec3Keyframe {
+    std::uint32_t frame = 0;
+    Vec3 value{};
+};
+
+struct BlenderIrQuatKeyframe {
+    std::uint32_t frame = 0;
+    Quat value{};
+};
+
+struct BlenderIrUnsupportedAnimationChannel {
+    std::size_t nodeIndex = 0;
+    std::string channel{};
+    std::size_t keyframeCount = 0;
+};
+
+struct BlenderIrNodeAnimation {
+    std::size_t nodeIndex = 0;
+    std::vector<BlenderIrVec3Keyframe> position{};
+    std::vector<BlenderIrVec3Keyframe> eulerRotation{};
+    std::vector<BlenderIrVec3Keyframe> scale{};
+    std::vector<BlenderIrQuatKeyframe> quaternionRotation{};
+};
+
+struct BlenderIrAnimation {
+    std::uint32_t sourceEntryId = 0;
+    std::size_t tableIndex = 0;
+    std::uint32_t sourceObjectAddress = 0;
+    std::uint32_t sourceMotionAddress = 0;
+    std::size_t motionSlot = 0;
+    std::size_t objectTreeIndex = 0;
+    std::uint32_t nodeCount = 0;
+    std::uint32_t frameCount = 0;
+    std::string interpolationMode{};
+    std::vector<BlenderIrNodeAnimation> nodes{};
+    std::vector<BlenderIrUnsupportedAnimationChannel> unsupportedChannels{};
+};
+
 struct BlenderIrScene {
     std::vector<BlenderIrMesh> meshes{};
     std::vector<BlenderIrObjectTree> objectTrees{};
     std::vector<BlenderIrInstance> indexEntries{};
     std::vector<BlenderIrTexture> textures{};
+    std::vector<BlenderIrAnimation> animations{};
     std::vector<std::string> diagnostics{};
 };
 

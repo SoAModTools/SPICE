@@ -4,6 +4,7 @@
 #include "Sa3Dport.h"
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
@@ -14,6 +15,55 @@ namespace {
 
 using namespace Sa3Dport::Testing::Slice1;
 namespace S = Sa3Dport::Structs;
+namespace A = Sa3Dport::Animation;
+namespace F = Sa3Dport::File;
+
+void PutU16(std::vector<std::byte>& data, std::uint32_t offset, std::uint16_t value) {
+    if (data.size() < offset + 2u) {
+        data.resize(offset + 2u);
+    }
+    data[offset] = std::byte(value & 0xFFu);
+    data[offset + 1u] = std::byte((value >> 8u) & 0xFFu);
+}
+
+void PutU32(std::vector<std::byte>& data, std::uint32_t offset, std::uint32_t value) {
+    if (data.size() < offset + 4u) {
+        data.resize(offset + 4u);
+    }
+    data[offset] = std::byte(value & 0xFFu);
+    data[offset + 1u] = std::byte((value >> 8u) & 0xFFu);
+    data[offset + 2u] = std::byte((value >> 16u) & 0xFFu);
+    data[offset + 3u] = std::byte((value >> 24u) & 0xFFu);
+}
+
+void PutF32(std::vector<std::byte>& data, std::uint32_t offset, float value) {
+    PutU32(data, offset, std::bit_cast<std::uint32_t>(value));
+}
+
+void PutVec3(std::vector<std::byte>& data, std::uint32_t offset, S::Vector3 value) {
+    PutF32(data, offset, value.x);
+    PutF32(data, offset + 4u, value.y);
+    PutF32(data, offset + 8u, value.z);
+}
+
+void PutQuaternionWxyz(std::vector<std::byte>& data, std::uint32_t offset, S::Quaternion value) {
+    PutF32(data, offset, value.w);
+    PutF32(data, offset + 4u, value.x);
+    PutF32(data, offset + 8u, value.y);
+    PutF32(data, offset + 12u, value.z);
+}
+
+std::uint32_t MotionPointer(std::uint32_t targetOffset) {
+    constexpr std::uint32_t kMotionPayloadOffset = 8u;
+    return targetOffset - kMotionPayloadOffset;
+}
+
+std::vector<std::byte> MakeAnimationBlock(std::uint32_t size = 0x120u) {
+    std::vector<std::byte> data(size, std::byte {0});
+    PutU32(data, 0, F::FileHeaders::NMDM);
+    PutU32(data, 4, size - 8u);
+    return data;
+}
 
 TEST(Sa3DportStage1, FileHeadersRecognizeNjcmMagic) {
     constexpr std::array<char, 4> candidate {'N', 'J', 'C', 'M'};
@@ -197,6 +247,96 @@ TEST(Sa3DportStructs, BaseLutCachesReadValuesAndWriteAddresses) {
         return std::vector<int> {4, 5};
     });
     EXPECT_EQ(labeledArray.label, "known_label");
+}
+
+TEST(Sa3DportAnimation, ReadsTransformKeyframeValuesFromNjAnimationBlock) {
+    auto data = MakeAnimationBlock();
+    constexpr std::uint32_t motionOffset = 8u;
+    constexpr std::uint32_t keyframeTableOffset = 0x40u;
+    constexpr std::uint32_t positionOffset = 0x60u;
+    constexpr std::uint32_t rotationOffset = 0x90u;
+    constexpr std::uint32_t scaleOffset = 0xA0u;
+    constexpr std::uint32_t quaternionOffset = 0xB4u;
+
+    const auto type = A::KeyframeAttributes::Position |
+        A::KeyframeAttributes::EulerRotation |
+        A::KeyframeAttributes::Scale |
+        A::KeyframeAttributes::QuaternionRotation;
+
+    PutU32(data, motionOffset, MotionPointer(keyframeTableOffset));
+    PutU32(data, motionOffset + 4u, 11u);
+    PutU16(data, motionOffset + 8u, static_cast<std::uint16_t>(type));
+    PutU16(data, motionOffset + 10u, static_cast<std::uint16_t>(A::channel_count(type)));
+
+    PutU32(data, keyframeTableOffset, MotionPointer(positionOffset));
+    PutU32(data, keyframeTableOffset + 4u, MotionPointer(rotationOffset));
+    PutU32(data, keyframeTableOffset + 8u, MotionPointer(scaleOffset));
+    PutU32(data, keyframeTableOffset + 12u, MotionPointer(quaternionOffset));
+    PutU32(data, keyframeTableOffset + 16u, 2u);
+    PutU32(data, keyframeTableOffset + 20u, 1u);
+    PutU32(data, keyframeTableOffset + 24u, 1u);
+    PutU32(data, keyframeTableOffset + 28u, 1u);
+
+    PutU32(data, positionOffset, 0u);
+    PutVec3(data, positionOffset + 4u, {1.0f, 2.0f, 3.0f});
+    PutU32(data, positionOffset + 16u, 10u);
+    PutVec3(data, positionOffset + 20u, {4.0f, 5.0f, 6.0f});
+
+    PutU32(data, rotationOffset, 0u);
+    PutU32(data, rotationOffset + 4u, static_cast<std::uint32_t>(S::BAMSFHelper::RadToBAMSF(S::MathHelper::HalfPi)));
+    PutU32(data, rotationOffset + 8u, 0u);
+    PutU32(data, rotationOffset + 12u, 0u);
+
+    PutU32(data, scaleOffset, 0u);
+    PutVec3(data, scaleOffset + 4u, {2.0f, 3.0f, 4.0f});
+
+    PutU32(data, quaternionOffset, 0u);
+    PutQuaternionWxyz(data, quaternionOffset + 4u, {0.1f, 0.2f, 0.3f, 0.9f});
+
+    const auto animationFile = F::AnimationFile::read_from_bytes(data, 1u);
+    const auto& motion = animationFile.animation;
+    ASSERT_EQ(motion.keyframes.size(), 1u);
+    const auto& keyframes = motion.keyframes.at(0);
+
+    EXPECT_EQ(motion.frame_count(), 11u);
+    EXPECT_EQ(keyframes.position.size(), 2u);
+    EXPECT_EQ(keyframes.position.at(0u), S::Vector3(1.0f, 2.0f, 3.0f));
+    EXPECT_EQ(keyframes.position.at(10u), S::Vector3(4.0f, 5.0f, 6.0f));
+    ASSERT_EQ(keyframes.euler_rotation.size(), 1u);
+    EXPECT_NEAR(keyframes.euler_rotation.at(0u).x, S::MathHelper::HalfPi, 0.001f);
+    EXPECT_EQ(keyframes.scale.at(0u), S::Vector3(2.0f, 3.0f, 4.0f));
+    EXPECT_EQ(keyframes.quaternion_rotation.at(0u), S::Quaternion(0.1f, 0.2f, 0.3f, 0.9f));
+}
+
+TEST(Sa3DportAnimation, ReadsVertexArrayKeyframesThroughLut) {
+    auto data = MakeAnimationBlock();
+    constexpr std::uint32_t motionOffset = 8u;
+    constexpr std::uint32_t vectorArrayOffset = 0x30u;
+    constexpr std::uint32_t keyframeTableOffset = 0x80u;
+    constexpr std::uint32_t vertexSetOffset = 0x90u;
+    constexpr auto type = A::KeyframeAttributes::Vertex;
+
+    PutVec3(data, vectorArrayOffset, {1.0f, 0.0f, 0.0f});
+    PutVec3(data, vectorArrayOffset + 12u, {0.0f, 1.0f, 0.0f});
+    PutVec3(data, vectorArrayOffset + 24u, {0.0f, 0.0f, 1.0f});
+    PutVec3(data, vectorArrayOffset + 36u, {2.0f, 2.0f, 2.0f});
+
+    PutU32(data, motionOffset, MotionPointer(keyframeTableOffset));
+    PutU32(data, motionOffset + 4u, 1u);
+    PutU16(data, motionOffset + 8u, static_cast<std::uint16_t>(type));
+    PutU16(data, motionOffset + 10u, static_cast<std::uint16_t>(A::channel_count(type)));
+
+    PutU32(data, keyframeTableOffset, MotionPointer(vertexSetOffset));
+    PutU32(data, keyframeTableOffset + 4u, 1u);
+    PutU32(data, vertexSetOffset, 0u);
+    PutU32(data, vertexSetOffset + 4u, MotionPointer(vectorArrayOffset));
+
+    const auto motion = A::Motion::read(S::EndianStackReader(data, S::Endian::Little), motionOffset, 1u, 0u - motionOffset);
+    const auto& vertex = motion.keyframes.at(0).vertex;
+    ASSERT_EQ(vertex.size(), 1u);
+    EXPECT_EQ(vertex.at(0u).values.size(), 8u);
+    EXPECT_EQ(vertex.at(0u).values[0], S::Vector3(1.0f, 0.0f, 0.0f));
+    EXPECT_EQ(vertex.at(0u).label, "vertex__0x30");
 }
 
 TEST(Sa3DportStructs, BoundsRecalculatesMatrixAndPositionNormalHashesExactBits) {

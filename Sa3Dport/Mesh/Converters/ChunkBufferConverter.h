@@ -14,6 +14,15 @@
 
 namespace Sa3Dport::Mesh::Converters {
 
+struct ChunkBufferContext {
+    Buffer::BufferMaterial material {};
+    std::vector<Chunk::Structs::ChunkVertex> vertex_cache;
+
+    ChunkBufferContext()
+        : vertex_cache(0x10000) {
+    }
+};
+
 inline std::vector<Buffer::BufferCorner> convert_strip_chunk(
     const Chunk::PolyChunks::StripChunk& chunk,
     const std::vector<Chunk::Structs::ChunkVertex>& vertexCache) {
@@ -44,9 +53,8 @@ inline std::vector<Buffer::BufferCorner> convert_strip_chunk(
 
 inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
     const Chunk::ChunkAttach& attach,
-    const std::vector<std::optional<Chunk::PolyChunkPtr>>& polyChunks) {
-    Buffer::BufferMaterial material;
-    std::vector<Chunk::Structs::ChunkVertex> vertexCache(0x10000);
+    const std::vector<std::optional<Chunk::PolyChunkPtr>>& polyChunks,
+    ChunkBufferContext& context) {
     std::vector<Buffer::BufferMesh> meshes;
 
     std::vector<Buffer::BufferVertex> pendingVertices;
@@ -68,12 +76,12 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
         if (!chunk.has_weight()) {
             for (std::size_t j = 0; j < chunk.vertices.size(); ++j) {
                 const auto& source = chunk.vertices[j];
-                vertexCache[j + chunk.index_offset] = source;
+                context.vertex_cache[j + chunk.index_offset] = source;
                 vertices.push_back({source.position, source.normal, static_cast<std::uint16_t>(j), 1.0f});
             }
         } else {
             for (const auto& source : chunk.vertices) {
-                vertexCache[source.index() + chunk.index_offset] = source;
+                context.vertex_cache[source.index() + chunk.index_offset] = source;
                 vertices.push_back({source.position, source.normal, source.index(), source.weight()});
             }
         }
@@ -103,14 +111,14 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
         if (const auto bits = std::dynamic_pointer_cast<Chunk::PolyChunks::BitsChunk>(chunk)) {
             switch (bits->type) {
             case Chunk::PolyChunkType::BlendAlpha:
-                material.source_blend_mode = bits->source_alpha();
-                material.destination_blend_mode = bits->destination_alpha();
+                context.material.source_blend_mode = bits->source_alpha();
+                context.material.destination_blend_mode = bits->destination_alpha();
                 break;
             case Chunk::PolyChunkType::MipmapDistanceMultiplier:
-                material.mipmap_distance_multiplier = bits->mipmap_distance_multiplier();
+                context.material.mipmap_distance_multiplier = bits->mipmap_distance_multiplier();
                 break;
             case Chunk::PolyChunkType::SpecularExponent:
-                material.specular_exponent = static_cast<float>(bits->specular_exponent());
+                context.material.specular_exponent = static_cast<float>(bits->specular_exponent());
                 break;
             default:
                 break;
@@ -119,20 +127,20 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
         }
 
         if (const auto texture = std::dynamic_pointer_cast<Chunk::PolyChunks::TextureChunk>(chunk)) {
-            material.texture_index = texture->texture_id();
-            material.mipmap_distance_multiplier = texture->mipmap_distance_multiplier();
-            material.texture_filtering = texture->filter_mode();
-            material.anisotropic_filtering = texture->super_sample();
-            material.mirror_u = texture->mirror_u();
-            material.mirror_v = texture->mirror_v();
-            material.clamp_u = texture->clamp_u();
-            material.clamp_v = texture->clamp_v();
+            context.material.texture_index = texture->texture_id();
+            context.material.mipmap_distance_multiplier = texture->mipmap_distance_multiplier();
+            context.material.texture_filtering = texture->filter_mode();
+            context.material.anisotropic_filtering = texture->super_sample();
+            context.material.mirror_u = texture->mirror_u();
+            context.material.mirror_v = texture->mirror_v();
+            context.material.clamp_u = texture->clamp_u();
+            context.material.clamp_v = texture->clamp_v();
             continue;
         }
 
         if (const auto materialChunk = std::dynamic_pointer_cast<Chunk::PolyChunks::MaterialChunk>(chunk)) {
-            material.source_blend_mode = materialChunk->source_alpha();
-            material.destination_blend_mode = materialChunk->destination_alpha();
+            context.material.source_blend_mode = materialChunk->source_alpha();
+            context.material.destination_blend_mode = materialChunk->destination_alpha();
             continue;
         }
 
@@ -141,13 +149,13 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
             continue;
         }
 
-        const auto corners = convert_strip_chunk(*strip, vertexCache);
+        const auto corners = convert_strip_chunk(*strip, context.vertex_cache);
         if (corners.empty()) {
             continue;
         }
 
         Buffer::BufferMesh mesh;
-        mesh.material = material;
+        mesh.material = context.material;
         mesh.corners = corners;
         mesh.strippified = true;
         mesh.has_colors = strip->has_colors() || hasVertexColors;
@@ -185,7 +193,15 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
 }
 
 inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(const Chunk::ChunkAttach& attach) {
-    return buffer_chunk_attach(attach, attach.poly_chunks);
+    ChunkBufferContext context;
+    return buffer_chunk_attach(attach, attach.poly_chunks, context);
+}
+
+inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
+    const Chunk::ChunkAttach& attach,
+    const std::vector<std::optional<Chunk::PolyChunkPtr>>& polyChunks) {
+    ChunkBufferContext context;
+    return buffer_chunk_attach(attach, polyChunks, context);
 }
 
 } // namespace Sa3Dport::Mesh::Converters

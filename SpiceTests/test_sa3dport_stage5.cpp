@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 
+#include "Mesh/Converters/ChunkBufferConverter.h"
 #include "Testing/Slice5TestApi.h"
 
 #include <bit>
@@ -160,6 +161,45 @@ TEST(Sa3DportStage5, ChunkAttachRoutesPolyPointerIntoParsedChunks) {
     ASSERT_EQ(attach->poly_chunks.size(), 1u);
     ASSERT_TRUE(attach->poly_chunks[0].has_value());
     EXPECT_EQ((*attach->poly_chunks[0])->type, PolyChunkType::BlendAlpha);
+}
+
+TEST(Sa3DportStage5, ChunkBufferContextSharesVertexCacheAcrossAttaches) {
+    ChunkAttach vertexAttach{};
+    Sa3Dport::Mesh::Chunk::VertexChunk vertexChunk{};
+    vertexChunk.type = Sa3Dport::Mesh::Chunk::VertexChunkType::Blank;
+    vertexChunk.index_offset = 0;
+    vertexChunk.vertices.resize(3);
+    vertexChunk.vertices[0].position = {1.0f, 2.0f, 3.0f};
+    vertexChunk.vertices[1].position = {4.0f, 5.0f, 6.0f};
+    vertexChunk.vertices[1].diffuse = S::Color(0x12, 0x34, 0x56, 0x78);
+    vertexChunk.vertices[2].position = {7.0f, 8.0f, 9.0f};
+    vertexAttach.vertex_chunks.push_back(vertexChunk);
+
+    ChunkAttach stripAttach{};
+    auto strip = std::make_shared<StripChunk>(PolyChunkType::Strip_Blank);
+    Sa3Dport::Mesh::Chunk::Structs::ChunkStrip chunkStrip{};
+    chunkStrip.corners.resize(3);
+    chunkStrip.corners[0].index = 0;
+    chunkStrip.corners[1].index = 1;
+    chunkStrip.corners[2].index = 2;
+    strip->strips.push_back(chunkStrip);
+    stripAttach.poly_chunks.push_back(strip);
+
+    Sa3Dport::Mesh::Converters::ChunkBufferContext context{};
+    const auto vertexMeshes = Sa3Dport::Mesh::Converters::buffer_chunk_attach(vertexAttach, {}, context);
+    const auto stripMeshes = Sa3Dport::Mesh::Converters::buffer_chunk_attach(stripAttach, stripAttach.poly_chunks, context);
+
+    ASSERT_EQ(vertexMeshes.size(), 1u);
+    ASSERT_FALSE(vertexMeshes[0].has_corners());
+    ASSERT_EQ(stripMeshes.size(), 1u);
+    ASSERT_TRUE(stripMeshes[0].has_corners());
+
+    const auto triangles = stripMeshes[0].corner_triangle_list();
+    ASSERT_EQ(triangles.size(), 3u);
+    EXPECT_EQ(triangles[0].vertex_index, 0u);
+    EXPECT_FLOAT_EQ(triangles[0].normal.y, 1.0f);
+    EXPECT_EQ(triangles[1].vertex_index, 1u);
+    EXPECT_EQ(triangles[1].color.argb(), 0x78123456u);
 }
 
 TEST(Sa3DportStage5, RejectsVolumeChunksForThisSlice) {

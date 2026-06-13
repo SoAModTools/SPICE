@@ -8,11 +8,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace Sa3Dport::Animation {
+struct Motion;
+}
 
 namespace spice::mld::parsing {
 
@@ -70,6 +75,7 @@ struct ParsedEntryListItem {
 };
 
 struct ParsedRawEntry {
+    std::size_t tableIndex = 0;
     std::uint32_t sourceEntryId = 0;
     std::string fxnName{};
     std::uint32_t tblId = 0;
@@ -78,6 +84,16 @@ struct ParsedRawEntry {
     std::vector<std::uint32_t> groundAddresses{};
     std::vector<std::uint32_t> motionAddresses{};
     std::vector<std::uint8_t> payload{};
+};
+
+struct ParsedMldAnimation {
+    std::uint32_t sourceEntryId = 0;
+    std::size_t tableIndex = 0;
+    std::uint32_t sourceObjectAddress = 0;
+    std::uint32_t sourceMotionAddress = 0;
+    std::size_t motionSlot = 0;
+    std::uint32_t nodeCount = 0;
+    std::shared_ptr<Sa3Dport::Animation::Motion> motion{};
 };
 
 struct ExtractedNjBlock {
@@ -128,6 +144,7 @@ struct ParseResult {
     std::vector<std::pair<std::string, std::size_t>> fxnHistogram{};
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
     std::vector<ExtractedNjBlock> extractedNjBlocks{};
+    std::vector<ParsedMldAnimation> animations{};
     std::vector<ExtractedMldSpatialBlock> extractedSpatialBlocks{};
     std::optional<model::MldTextureArchive> textureArchive{};
     std::optional<model::BlenderIrScene> blenderIrScene{};

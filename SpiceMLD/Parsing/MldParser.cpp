@@ -10,6 +10,7 @@
 #include "MldTextureArchiveParser.h"
 
 #include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../Sa3Dport/Sa3Dport.h"
 
 #include <algorithm>
 #include <array>
@@ -57,6 +58,12 @@ constexpr std::uint32_t makeTag(const char a, const char b, const char c, const 
         }
     }
     return std::string(out.data());
+}
+
+[[nodiscard]] std::span<const std::byte> asByteSpan(const std::vector<std::uint8_t>& bytes) {
+    return std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(bytes.data()),
+        bytes.size());
 }
 
 [[nodiscard]] Vec3 applyCoordinates(const Vec3& value, const CoordinatePolicy& policy) {
@@ -203,6 +210,141 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
     }
 
     return blocks;
+}
+
+[[nodiscard]] const ExtractedNjBlock* findContainingObjectBlock(
+    const std::vector<ExtractedNjBlock>& blocks,
+    const std::uint32_t objectAddress) {
+    for (const auto& block : blocks) {
+        if (block.kind != ExtractedNjBlock::Kind::Object) {
+            continue;
+        }
+        if (objectAddress >= block.offset &&
+            static_cast<std::uint64_t>(objectAddress) < static_cast<std::uint64_t>(block.offset) + block.size) {
+            return &block;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const ExtractedNjBlock* findMotionBlock(
+    const std::vector<ExtractedNjBlock>& blocks,
+    const std::uint32_t motionAddress) {
+    for (const auto& block : blocks) {
+        if (block.kind == ExtractedNjBlock::Kind::Motion && block.offset == motionAddress) {
+            return &block;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] std::optional<std::uint32_t> tryReadObjectNodeCount(const ExtractedNjBlock& block) {
+    auto tryRead = [&](const std::size_t trim) -> std::optional<std::uint32_t> {
+        if (trim >= block.bytes.size()) {
+            return std::nullopt;
+        }
+        try {
+            const auto bytes = asByteSpan(block.bytes).subspan(trim);
+            const auto modelFile = Sa3Dport::File::ModelFile::read_from_bytes(bytes);
+            if (!modelFile.model) {
+                return std::nullopt;
+            }
+            return static_cast<std::uint32_t>(modelFile.model->tree_nodes().size());
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    };
+
+    if (auto nodeCount = tryRead(0U); nodeCount.has_value()) {
+        return nodeCount;
+    }
+    constexpr std::size_t kMldObjectHeaderSize = 0x10U;
+    return tryRead(kMldObjectHeaderSize);
+}
+
+[[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> findAnimationTarget(
+    const ParsedRawEntry& entry,
+    const std::vector<ExtractedNjBlock>& blocks,
+    std::vector<ParseDiagnostic>& diagnostics) {
+    for (const auto objectAddress : entry.objectAddresses) {
+        const auto* objectBlock = findContainingObjectBlock(blocks, objectAddress);
+        if (objectBlock == nullptr) {
+            continue;
+        }
+        if (auto nodeCount = tryReadObjectNodeCount(*objectBlock); nodeCount.has_value()) {
+            return std::make_pair(objectAddress, *nodeCount);
+        }
+    }
+
+    diagnostics.push_back(ParseDiagnostic{
+        .severity = ParseDiagnostic::Severity::Warning,
+        .message = "Entry " + std::to_string(entry.tableIndex) +
+            " has motion addresses but no parseable object tree for animation node count.",
+    });
+    return std::nullopt;
+}
+
+void parseMldAnimations(ParseResult& result) {
+    for (const auto& entry : result.rawEntries) {
+        bool hasMotion = false;
+        for (const auto address : entry.motionAddresses) {
+            if (address != 0U) {
+                hasMotion = true;
+                break;
+            }
+        }
+        if (!hasMotion) {
+            continue;
+        }
+
+        const auto target = findAnimationTarget(entry, result.extractedNjBlocks, result.diagnostics);
+        if (!target.has_value()) {
+            continue;
+        }
+
+        const auto [objectAddress, nodeCount] = *target;
+        for (std::size_t slot = 0; slot < entry.motionAddresses.size(); ++slot) {
+            const auto motionAddress = entry.motionAddresses[slot];
+            if (motionAddress == 0U) {
+                continue;
+            }
+
+            const auto* block = findMotionBlock(result.extractedNjBlocks, motionAddress);
+            if (block == nullptr) {
+                result.diagnostics.push_back(ParseDiagnostic{
+                    .severity = ParseDiagnostic::Severity::Warning,
+                    .message = "Entry " + std::to_string(entry.tableIndex) +
+                        " motion slot " + std::to_string(slot) +
+                        " points to missing block " + std::to_string(motionAddress) + ".",
+                });
+                continue;
+            }
+
+            try {
+                const auto animationFile = Sa3Dport::File::AnimationFile::read_from_bytes(asByteSpan(block->bytes), nodeCount);
+                result.animations.push_back(ParsedMldAnimation{
+                    .sourceEntryId = entry.sourceEntryId,
+                    .tableIndex = entry.tableIndex,
+                    .sourceObjectAddress = objectAddress,
+                    .sourceMotionAddress = motionAddress,
+                    .motionSlot = slot,
+                    .nodeCount = nodeCount,
+                    .motion = std::make_shared<Sa3Dport::Animation::Motion>(animationFile.animation),
+                });
+            } catch (const std::exception& ex) {
+                result.diagnostics.push_back(ParseDiagnostic{
+                    .severity = ParseDiagnostic::Severity::Warning,
+                    .message = "Failed to parse animation for entry " + std::to_string(entry.tableIndex) +
+                        " motion slot " + std::to_string(slot) + ": " + ex.what(),
+                });
+            }
+        }
+    }
+
+    result.diagnostics.push_back(ParseDiagnostic{
+        .severity = ParseDiagnostic::Severity::Info,
+        .message = "Decoded MLD animations: " + std::to_string(result.animations.size()),
+    });
 }
 
 using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwnerRef>>;
@@ -1186,6 +1328,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             .payload = std::span<const std::uint8_t>(payload.data() + static_cast<std::ptrdiff_t>(entryOffset), entrySize),
         };
         result.rawEntries.push_back(ParsedRawEntry{
+            .tableIndex = entry.tableIndex,
             .sourceEntryId = entry.entryId,
             .fxnName = entry.fxnName,
             .tblId = entry.tblId,
@@ -1295,6 +1438,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         .severity = ParseDiagnostic::Severity::Info,
         .message = "Extracted NJ blocks from MLD payload: " + std::to_string(result.extractedNjBlocks.size()),
     });
+    parseMldAnimations(result);
     if (options.extractGrndGobjBlocks || options.buildBlenderIntermediateIr) {
         result.extractedSpatialBlocks = buildExtractedSpatialBlocks(
             payload,

@@ -42,6 +42,32 @@ void writeTransform(std::ostringstream& out, const model::Transform& tx) {
     out << '}';
 }
 
+void writeVec3Keyframes(std::ostringstream& out, const std::vector<model::BlenderIrVec3Keyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":";
+        writeVec3(out, keys[i].value);
+        out << '}';
+    }
+    out << ']';
+}
+
+void writeQuatKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrQuatKeyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":";
+        writeQuat(out, keys[i].value);
+        out << '}';
+    }
+    out << ']';
+}
+
 [[nodiscard]] std::string toBase64(std::span<const std::uint8_t> data) {
     static constexpr char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out{};
@@ -96,6 +122,21 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << ",\"sourceObjectAddress\":" << mesh.sourceObjectAddress;
         out << ",\"sourceChunkOffset\":" << mesh.sourceChunkOffset;
         out << ",\"sourceAttachOffset\":" << mesh.sourceAttachOffset;
+        out << ",\"weightedBinding\":";
+        if (mesh.weightedBinding.has_value()) {
+            out << "{\"rootNodeIndex\":" << mesh.weightedBinding->rootNodeIndex
+                << ",\"sourceNodeIndex\":" << mesh.weightedBinding->sourceNodeIndex
+                << ",\"nodeIndices\":[";
+            for (std::size_t ni = 0; ni < mesh.weightedBinding->nodeIndices.size(); ++ni) {
+                if (ni != 0) {
+                    out << ',';
+                }
+                out << mesh.weightedBinding->nodeIndices[ni];
+            }
+            out << "]}";
+        } else {
+            out << "null";
+        }
 
         out << ",\"vertices\":[";
         for (std::size_t vIdx = 0; vIdx < mesh.vertices.size(); ++vIdx) {
@@ -263,6 +304,7 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         const auto& entry = scene.indexEntries[idx];
         out << '{';
         out << "\"sourceEntryId\":" << entry.sourceEntryId;
+        out << ",\"tableIndex\":" << entry.tableIndex;
         out << ",\"tblId\":" << entry.tblId;
         out << ",\"fxnName\":";
         writeJsonString(out, entry.fxnName);
@@ -305,6 +347,57 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << ']';
 
         out << '}';
+    }
+
+    out << "],\"animations\":[";
+    for (std::size_t ai = 0; ai < scene.animations.size(); ++ai) {
+        if (ai != 0) {
+            out << ',';
+        }
+        const auto& animation = scene.animations[ai];
+        out << '{'
+            << "\"sourceEntryId\":" << animation.sourceEntryId
+            << ",\"tableIndex\":" << animation.tableIndex
+            << ",\"sourceObjectAddress\":" << animation.sourceObjectAddress
+            << ",\"sourceMotionAddress\":" << animation.sourceMotionAddress
+            << ",\"motionSlot\":" << animation.motionSlot
+            << ",\"objectTreeIndex\":" << animation.objectTreeIndex
+            << ",\"nodeCount\":" << animation.nodeCount
+            << ",\"frameCount\":" << animation.frameCount
+            << ",\"interpolationMode\":";
+        writeJsonString(out, animation.interpolationMode);
+
+        out << ",\"nodes\":[";
+        for (std::size_t ni = 0; ni < animation.nodes.size(); ++ni) {
+            if (ni != 0) {
+                out << ',';
+            }
+            const auto& node = animation.nodes[ni];
+            out << "{\"nodeIndex\":" << node.nodeIndex
+                << ",\"position\":";
+            writeVec3Keyframes(out, node.position);
+            out << ",\"eulerRotation\":";
+            writeVec3Keyframes(out, node.eulerRotation);
+            out << ",\"scale\":";
+            writeVec3Keyframes(out, node.scale);
+            out << ",\"quaternionRotation\":";
+            writeQuatKeyframes(out, node.quaternionRotation);
+            out << '}';
+        }
+        out << ']';
+
+        out << ",\"unsupportedChannels\":[";
+        for (std::size_t ui = 0; ui < animation.unsupportedChannels.size(); ++ui) {
+            if (ui != 0) {
+                out << ',';
+            }
+            const auto& unsupported = animation.unsupportedChannels[ui];
+            out << "{\"nodeIndex\":" << unsupported.nodeIndex
+                << ",\"channel\":";
+            writeJsonString(out, unsupported.channel);
+            out << ",\"keyframeCount\":" << unsupported.keyframeCount << '}';
+        }
+        out << "]}";
     }
 
     out << "],\"textures\":[";

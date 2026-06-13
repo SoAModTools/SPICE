@@ -15,6 +15,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -24,6 +25,7 @@ namespace spice::mld::parsing {
 namespace {
 
 using Sa3Dport::Mesh::Buffer::BufferMesh;
+using Sa3Dport::Mesh::Converters::ChunkBufferContext;
 using Sa3Dport::Mesh::Converters::buffer_chunk_attach_with_active_poly_chunks;
 using Sa3Dport::Mesh::Converters::get_active_poly_chunks;
 using Sa3Dport::ObjectData::NodePtr;
@@ -47,6 +49,46 @@ using Sa3Dport::ObjectData::NodePtr;
     return model::Quat{ value.x, value.y, value.z, value.w };
 }
 
+[[nodiscard]] Sa3Dport::Structs::Vector3 transformPoint(
+    const Sa3Dport::Structs::Vector3& point,
+    const Sa3Dport::Structs::Matrix4x4& matrix) {
+    return {
+        point.x * matrix.m11 + point.y * matrix.m21 + point.z * matrix.m31 + matrix.m41,
+        point.x * matrix.m12 + point.y * matrix.m22 + point.z * matrix.m32 + matrix.m42,
+        point.x * matrix.m13 + point.y * matrix.m23 + point.z * matrix.m33 + matrix.m43,
+    };
+}
+
+[[nodiscard]] Sa3Dport::Structs::Vector3 transformNormal(
+    const Sa3Dport::Structs::Vector3& normal,
+    const Sa3Dport::Structs::Matrix4x4& matrix) {
+    return {
+        normal.x * matrix.m11 + normal.y * matrix.m21 + normal.z * matrix.m31,
+        normal.x * matrix.m12 + normal.y * matrix.m22 + normal.z * matrix.m32,
+        normal.x * matrix.m13 + normal.y * matrix.m23 + normal.z * matrix.m33,
+    };
+}
+
+[[nodiscard]] std::optional<Sa3Dport::Structs::Matrix4x4> inverseMatrix(const Sa3Dport::Structs::Matrix4x4& matrix) {
+    Sa3Dport::Structs::Matrix4x4 inverse{};
+    if (!Sa3Dport::Structs::invert(matrix, inverse)) {
+        return std::nullopt;
+    }
+    return inverse;
+}
+
+[[nodiscard]] std::string interpolationModeName(const Sa3Dport::Animation::InterpolationMode mode) {
+    switch (mode) {
+    case Sa3Dport::Animation::InterpolationMode::Linear:
+        return "linear";
+    case Sa3Dport::Animation::InterpolationMode::Spline:
+        return "spline";
+    case Sa3Dport::Animation::InterpolationMode::User:
+        return "user";
+    }
+    return "unknown";
+}
+
 [[nodiscard]] model::Transform toTransform(const NodePtr& node) {
     model::Transform result{};
     result.position = toVec3(node->position);
@@ -54,6 +96,89 @@ using Sa3Dport::ObjectData::NodePtr;
     result.rotation = toQuat(node->quaternion_rotation);
     result.scale = toVec3(node->scale);
     return result;
+}
+
+[[nodiscard]] Sa3Dport::Structs::Matrix4x4 effectiveLocalMatrix(const NodePtr& node) {
+    auto position = node->position;
+    auto rotation = node->quaternion_rotation;
+    auto scale = node->scale;
+    if (node->no_position()) {
+        position = Sa3Dport::Structs::Vector3::zero();
+    }
+    if (node->no_rotation()) {
+        rotation = Sa3Dport::Structs::Quaternion::identity();
+    }
+    if (node->no_scale()) {
+        scale = Sa3Dport::Structs::Vector3::one();
+    }
+    return Sa3Dport::Structs::MatrixUtilities::create_transform_matrix(position, rotation, scale);
+}
+
+[[nodiscard]] std::vector<Sa3Dport::Structs::Matrix4x4> buildWorldMatrices(const std::vector<NodePtr>& nodes) {
+    std::unordered_map<const Sa3Dport::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
+    nodeIndexByPtr.reserve(nodes.size());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodeIndexByPtr[nodes[i].get()] = i;
+    }
+
+    std::vector<Sa3Dport::Structs::Matrix4x4> matrices(nodes.size(), Sa3Dport::Structs::identity());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const auto local = effectiveLocalMatrix(nodes[i]);
+        if (const auto parent = nodes[i]->parent()) {
+            if (const auto found = nodeIndexByPtr.find(parent.get()); found != nodeIndexByPtr.end()) {
+                matrices[i] = local * matrices[found->second];
+                continue;
+            }
+        }
+        matrices[i] = local;
+    }
+    return matrices;
+}
+
+[[nodiscard]] std::vector<std::optional<std::size_t>> buildParentIndices(const std::vector<NodePtr>& nodes) {
+    std::unordered_map<const Sa3Dport::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
+    nodeIndexByPtr.reserve(nodes.size());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodeIndexByPtr[nodes[i].get()] = i;
+    }
+
+    std::vector<std::optional<std::size_t>> result(nodes.size());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        if (const auto parent = nodes[i]->parent()) {
+            if (const auto found = nodeIndexByPtr.find(parent.get()); found != nodeIndexByPtr.end()) {
+                result[i] = found->second;
+            }
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] std::size_t computeCommonNodeIndex(
+    const std::set<std::size_t>& nodeIndices,
+    const std::vector<std::optional<std::size_t>>& parentIndices) {
+    if (nodeIndices.empty()) {
+        return 0U;
+    }
+    if (nodeIndices.size() == 1U) {
+        return *nodeIndices.begin();
+    }
+
+    std::vector<std::size_t> ancestorCounts(parentIndices.size(), 0U);
+    for (const auto nodeIndex : nodeIndices) {
+        std::optional<std::size_t> current = nodeIndex;
+        while (current.has_value() && *current < ancestorCounts.size()) {
+            ++ancestorCounts[*current];
+            current = parentIndices[*current];
+        }
+    }
+
+    for (std::size_t i = ancestorCounts.size(); i > 0U; --i) {
+        const auto index = i - 1U;
+        if (ancestorCounts[index] == nodeIndices.size()) {
+            return index;
+        }
+    }
+    return 0U;
 }
 
 [[nodiscard]] std::uint64_t hashMaterial(const Sa3Dport::Mesh::Buffer::BufferMaterial& material,
@@ -300,13 +425,13 @@ struct SplitVertexKeyHash {
 [[nodiscard]] model::BlenderIrVertex toIrVertex(const Sa3Dport::Mesh::Buffer::BufferVertex& sourceVertex,
     const Sa3Dport::Structs::Vector3& normal,
     const bool hasNormal,
-    const BufferMesh& bufferMesh) {
+    const bool continueWeight) {
     model::BlenderIrVertex vertex{};
     vertex.position = toVec3(sourceVertex.position);
     vertex.normal = toVec3(normal);
     vertex.hasPosition = true;
     vertex.hasNormal = hasNormal;
-    if (sourceVertex.weight != 1.0f || bufferMesh.continue_weight) {
+    if (sourceVertex.weight != 1.0f || continueWeight) {
         vertex.weights.push_back(model::BlenderIrWeight{
             .boneOrNodeIndex = 0,
             .weight = sourceVertex.weight,
@@ -315,22 +440,111 @@ struct SplitVertexKeyHash {
     return vertex;
 }
 
-void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
-    const std::vector<std::string>& localTextureNames,
-    model::BlenderIrMesh& outMesh,
-    std::unordered_map<std::uint32_t, std::uint32_t>& vertexIndexByKey) {
-    std::unordered_map<std::uint32_t, const Sa3Dport::Mesh::Buffer::BufferVertex*> sourceVertexByKey{};
-    sourceVertexByKey.reserve(bufferMesh.vertices.size());
-    for (const auto& sourceVertex : bufferMesh.vertices) {
-        const auto key = vertexKey(sourceVertex, bufferMesh);
-        sourceVertexByKey[key] = &sourceVertex;
-        if (vertexIndexByKey.find(key) != vertexIndexByKey.end()) {
+[[nodiscard]] model::BlenderIrVertex toIrVertex(const Sa3Dport::Mesh::Buffer::BufferVertex& sourceVertex,
+    const Sa3Dport::Structs::Vector3& normal,
+    const bool hasNormal,
+    const BufferMesh& bufferMesh) {
+    return toIrVertex(sourceVertex, normal, hasNormal, bufferMesh.continue_weight);
+}
+
+struct SourceVertexContribution {
+    Sa3Dport::Mesh::Buffer::BufferVertex vertex{};
+    bool hasNormals = false;
+    std::size_t nodeIndex = 0;
+};
+
+struct SourceVertexRecord {
+    std::vector<SourceVertexContribution> contributions{};
+};
+
+[[nodiscard]] bool hasWeightedContributions(const SourceVertexRecord& source) {
+    if (source.contributions.size() > 1U) {
+        return true;
+    }
+    if (source.contributions.empty()) {
+        return false;
+    }
+    return source.contributions.front().vertex.weight != 1.0f;
+}
+
+[[nodiscard]] model::BlenderIrVertex toWeightedIrVertex(
+    const SourceVertexRecord& source,
+    const Sa3Dport::Structs::Vector3& fallbackNormal,
+    const bool hasNormal,
+    const std::size_t rootNodeIndex,
+    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices) {
+    model::BlenderIrVertex vertex{};
+    vertex.hasPosition = true;
+    vertex.hasNormal = hasNormal;
+
+    auto inverseRoot = rootNodeIndex < worldMatrices.size()
+        ? inverseMatrix(worldMatrices[rootNodeIndex])
+        : std::optional<Sa3Dport::Structs::Matrix4x4>{};
+
+    float weightSum = 0.0f;
+    Sa3Dport::Structs::Vector3 position{};
+    Sa3Dport::Structs::Vector3 normal{};
+    for (const auto& contribution : source.contributions) {
+        if (contribution.vertex.weight <= 0.0f) {
             continue;
         }
 
-        auto vertex = toIrVertex(sourceVertex, sourceVertex.normal, bufferMesh.has_normals, bufferMesh);
-        vertexIndexByKey[key] = static_cast<std::uint32_t>(outMesh.vertices.size());
-        outMesh.vertices.push_back(std::move(vertex));
+        auto weightedPosition = contribution.vertex.position;
+        auto weightedNormal = hasNormal ? contribution.vertex.normal : fallbackNormal;
+        if (inverseRoot.has_value() &&
+            contribution.nodeIndex < worldMatrices.size() &&
+            contribution.nodeIndex != rootNodeIndex) {
+            const auto sourceToRoot = worldMatrices[contribution.nodeIndex] * *inverseRoot;
+            weightedPosition = transformPoint(weightedPosition, sourceToRoot);
+            weightedNormal = transformNormal(weightedNormal, sourceToRoot);
+        }
+
+        position += weightedPosition * contribution.vertex.weight;
+        normal += weightedNormal * contribution.vertex.weight;
+        weightSum += contribution.vertex.weight;
+    }
+
+    if (weightSum > 0.0f && weightSum != 1.0f) {
+        position /= weightSum;
+        normal /= weightSum;
+    }
+    vertex.position = toVec3(position);
+    vertex.normal = toVec3(Sa3Dport::Structs::normalize(normal));
+
+    for (const auto& contribution : source.contributions) {
+        if (contribution.vertex.weight <= 0.0f) {
+            continue;
+        }
+        vertex.weights.push_back(model::BlenderIrWeight{
+            .boneOrNodeIndex = static_cast<std::uint32_t>(contribution.nodeIndex),
+            .weight = weightSum > 0.0f ? contribution.vertex.weight / weightSum : contribution.vertex.weight,
+        });
+    }
+    return vertex;
+}
+
+void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
+    const std::vector<std::string>& localTextureNames,
+    model::BlenderIrMesh& outMesh,
+    std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
+    std::unordered_map<std::uint32_t, std::uint32_t>& vertexIndexByKey,
+    const std::size_t targetNodeIndex,
+    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
+    const std::vector<std::optional<std::size_t>>& parentIndices) {
+    for (const auto& sourceVertex : bufferMesh.vertices) {
+        const auto key = vertexKey(sourceVertex, bufferMesh);
+        auto& record = sourceVertexByKey[key];
+        if (!bufferMesh.continue_weight) {
+            record.contributions.clear();
+        }
+        if (bufferMesh.continue_weight && sourceVertex.weight <= 0.0f) {
+            continue;
+        }
+        record.contributions.push_back(SourceVertexContribution{
+            .vertex = sourceVertex,
+            .hasNormals = bufferMesh.has_normals,
+            .nodeIndex = targetNodeIndex,
+        });
     }
 
     if (!bufferMesh.has_corners()) {
@@ -384,32 +598,91 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
     triangleSet.fromCacheReplay = false;
 
     const auto corners = bufferMesh.corner_triangle_list();
-    std::unordered_map<SplitVertexKey, std::uint32_t, SplitVertexKeyHash> splitVertexIndexByKey{};
-    triangleSet.corners.reserve(corners.size());
+    std::set<std::size_t> dependencyNodeIndices{};
+    bool hasWeightedBinding = false;
     for (const auto& sourceCorner : corners) {
         const auto key = cornerKey(sourceCorner, bufferMesh);
+        const auto sourceVertex = sourceVertexByKey.find(key);
+        if (sourceVertex == sourceVertexByKey.end()) {
+            continue;
+        }
+        hasWeightedBinding = hasWeightedBinding || hasWeightedContributions(sourceVertex->second);
+        for (const auto& contribution : sourceVertex->second.contributions) {
+            if (contribution.vertex.weight > 0.0f) {
+                dependencyNodeIndices.insert(contribution.nodeIndex);
+            }
+        }
+    }
+
+    std::size_t rootNodeIndex = targetNodeIndex;
+    if (!dependencyNodeIndices.empty()) {
+        rootNodeIndex = computeCommonNodeIndex(dependencyNodeIndices, parentIndices);
+    }
+    hasWeightedBinding = hasWeightedBinding || rootNodeIndex != targetNodeIndex || dependencyNodeIndices.size() > 1U;
+    if (hasWeightedBinding && !outMesh.weightedBinding.has_value()) {
+        outMesh.weightedBinding = model::BlenderIrWeightedBinding{
+            .rootNodeIndex = rootNodeIndex,
+            .sourceNodeIndex = targetNodeIndex,
+            .nodeIndices = std::vector<std::size_t>(dependencyNodeIndices.begin(), dependencyNodeIndices.end()),
+        };
+    } else if (hasWeightedBinding && outMesh.weightedBinding.has_value()) {
+        outMesh.weightedBinding->sourceNodeIndex = targetNodeIndex;
+        std::set<std::size_t> merged(outMesh.weightedBinding->nodeIndices.begin(), outMesh.weightedBinding->nodeIndices.end());
+        merged.insert(dependencyNodeIndices.begin(), dependencyNodeIndices.end());
+        outMesh.weightedBinding->rootNodeIndex = computeCommonNodeIndex(merged, parentIndices);
+        outMesh.weightedBinding->nodeIndices.assign(merged.begin(), merged.end());
+    }
+
+    std::unordered_map<SplitVertexKey, std::uint32_t, SplitVertexKeyHash> splitVertexIndexByKey{};
+    triangleSet.corners.reserve(corners.size());
+    auto convertSourceVertex = [&](const SourceVertexRecord& source, const Sa3Dport::Structs::Vector3& normal, const bool hasNormal) {
+        if (hasWeightedBinding) {
+            return toWeightedIrVertex(source, normal, hasNormal, rootNodeIndex, worldMatrices);
+        }
+
+        auto converted = source.contributions.front().vertex;
+        auto convertedNormal = normal;
+        const auto sourceNodeIndex = source.contributions.front().nodeIndex;
+        if (sourceNodeIndex != targetNodeIndex &&
+            sourceNodeIndex < worldMatrices.size() &&
+            targetNodeIndex < worldMatrices.size()) {
+            if (auto inverseTarget = inverseMatrix(worldMatrices[targetNodeIndex]); inverseTarget.has_value()) {
+                const auto sourceToTarget = worldMatrices[sourceNodeIndex] * *inverseTarget;
+                converted.position = transformPoint(converted.position, sourceToTarget);
+                converted.normal = transformNormal(converted.normal, sourceToTarget);
+                convertedNormal = transformNormal(convertedNormal, sourceToTarget);
+            }
+        }
+        return toIrVertex(converted, convertedNormal, hasNormal, false);
+    };
+
+    auto resolveCorner = [&](const Sa3Dport::Mesh::Buffer::BufferCorner& sourceCorner) -> std::optional<model::BlenderIrCorner> {
+        const auto key = cornerKey(sourceCorner, bufferMesh);
         model::BlenderIrCorner corner{};
+        const auto sourceVertex = sourceVertexByKey.find(key);
+        if (sourceVertex == sourceVertexByKey.end() || sourceVertex->second.contributions.empty()) {
+            return std::nullopt;
+        }
+
         if (sourceCorner.has_normal) {
-            const auto sourceVertex = sourceVertexByKey.find(key);
-            if (sourceVertex != sourceVertexByKey.end()) {
-                const auto splitKey = makeSplitVertexKey(key, sourceCorner.normal);
-                if (const auto splitFound = splitVertexIndexByKey.find(splitKey); splitFound != splitVertexIndexByKey.end()) {
-                    corner.vertexIndex = splitFound->second;
-                } else {
-                    auto vertex = toIrVertex(*sourceVertex->second, sourceCorner.normal, true, bufferMesh);
-                    corner.vertexIndex = static_cast<std::uint32_t>(outMesh.vertices.size());
-                    outMesh.vertices.push_back(std::move(vertex));
-                    splitVertexIndexByKey.emplace(splitKey, corner.vertexIndex);
-                }
-            } else if (const auto found = vertexIndexByKey.find(key); found != vertexIndexByKey.end()) {
-                corner.vertexIndex = found->second;
+            const auto splitKey = makeSplitVertexKey(key, sourceCorner.normal);
+            if (const auto splitFound = splitVertexIndexByKey.find(splitKey); splitFound != splitVertexIndexByKey.end()) {
+                corner.vertexIndex = splitFound->second;
             } else {
-                corner.vertexIndex = key;
+                auto vertex = convertSourceVertex(sourceVertex->second, sourceCorner.normal, true);
+                corner.vertexIndex = static_cast<std::uint32_t>(outMesh.vertices.size());
+                outMesh.vertices.push_back(std::move(vertex));
+                splitVertexIndexByKey.emplace(splitKey, corner.vertexIndex);
             }
         } else if (const auto found = vertexIndexByKey.find(key); found != vertexIndexByKey.end()) {
             corner.vertexIndex = found->second;
         } else {
-            corner.vertexIndex = key;
+            auto vertex = convertSourceVertex(sourceVertex->second,
+                sourceVertex->second.contributions.front().vertex.normal,
+                sourceVertex->second.contributions.front().hasNormals);
+            corner.vertexIndex = static_cast<std::uint32_t>(outMesh.vertices.size());
+            outMesh.vertices.push_back(std::move(vertex));
+            vertexIndexByKey[key] = corner.vertexIndex;
         }
         corner.u = sourceCorner.texcoord.x;
         corner.v = sourceCorner.texcoord.y;
@@ -419,7 +692,20 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
         corner.colorB = sourceCorner.color.blue_f();
         corner.colorA = sourceCorner.color.alpha_f();
         corner.hasColor = bufferMesh.has_colors;
-        triangleSet.corners.push_back(corner);
+        return corner;
+    };
+
+    for (std::size_t i = 0; i + 2U < corners.size(); i += 3U) {
+        auto c0 = resolveCorner(corners[i]);
+        auto c1 = resolveCorner(corners[i + 1U]);
+        auto c2 = resolveCorner(corners[i + 2U]);
+        if (!c0.has_value() || !c1.has_value() || !c2.has_value()) {
+            continue;
+        }
+
+        triangleSet.corners.push_back(*c0);
+        triangleSet.corners.push_back(*c1);
+        triangleSet.corners.push_back(*c2);
     }
 
     if (!triangleSet.corners.empty()) {
@@ -433,13 +719,17 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
     const std::size_t sourceChunkOffset,
     const std::optional<Sa3Dport::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
     const std::vector<std::string>& localTextureNames,
+    ChunkBufferContext& bufferContext,
+    std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
+    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
+    const std::vector<std::optional<std::size_t>>& parentIndices,
     model::BlenderIrScene& out) {
     const auto chunkAttach = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::ChunkAttach>(node->attach);
     if (!chunkAttach) {
         return std::nullopt;
     }
 
-    const auto bufferMeshes = buffer_chunk_attach_with_active_poly_chunks(*chunkAttach, activePolyChunks);
+    const auto bufferMeshes = buffer_chunk_attach_with_active_poly_chunks(*chunkAttach, activePolyChunks, bufferContext);
     if (bufferMeshes.empty()) {
         return std::nullopt;
     }
@@ -453,7 +743,19 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
 
     std::unordered_map<std::uint32_t, std::uint32_t> vertexIndexByKey{};
     for (const auto& bufferMesh : bufferMeshes) {
-        appendBufferMeshGeometry(bufferMesh, localTextureNames, mesh, vertexIndexByKey);
+        appendBufferMeshGeometry(
+            bufferMesh,
+            localTextureNames,
+            mesh,
+            sourceVertexByKey,
+            vertexIndexByKey,
+            nodeIndex,
+            worldMatrices,
+            parentIndices);
+    }
+
+    if (mesh.vertices.empty() || mesh.triangleSets.empty()) {
+        return std::nullopt;
     }
 
     BlenderIrDiagnostics::finalizeMesh(mesh);
@@ -556,6 +858,102 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
         }
 
         out.textures.push_back(std::move(outTexture));
+    }
+}
+
+void appendUnsupportedChannel(std::vector<model::BlenderIrUnsupportedAnimationChannel>& out,
+    const std::size_t nodeIndex,
+    const std::string& channel,
+    const std::size_t count) {
+    if (count == 0U) {
+        return;
+    }
+    out.push_back(model::BlenderIrUnsupportedAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = channel,
+        .keyframeCount = count,
+    });
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrVec3Keyframe> toVec3Keyframes(const Map& values) {
+    std::vector<model::BlenderIrVec3Keyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrVec3Keyframe{
+            .frame = frame,
+            .value = toVec3(value),
+        });
+    }
+    return out;
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrQuatKeyframe> toQuatKeyframes(const Map& values) {
+    std::vector<model::BlenderIrQuatKeyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrQuatKeyframe{
+            .frame = frame,
+            .value = toQuat(value),
+        });
+    }
+    return out;
+}
+
+void appendAnimations(const ParseResult& parseResult,
+    const std::unordered_map<std::uint32_t, std::vector<std::size_t>>& treeIndicesByObjectAddress,
+    model::BlenderIrScene& out) {
+    for (const auto& source : parseResult.animations) {
+        if (!source.motion) {
+            continue;
+        }
+        const auto foundTrees = treeIndicesByObjectAddress.find(source.sourceObjectAddress);
+        if (foundTrees == treeIndicesByObjectAddress.end() || foundTrees->second.empty()) {
+            out.diagnostics.push_back("Animation for entry " + std::to_string(source.tableIndex) +
+                " could not bind to object tree " + std::to_string(source.sourceObjectAddress) + ".");
+            continue;
+        }
+
+        model::BlenderIrAnimation animation{};
+        animation.sourceEntryId = source.sourceEntryId;
+        animation.tableIndex = source.tableIndex;
+        animation.sourceObjectAddress = source.sourceObjectAddress;
+        animation.sourceMotionAddress = source.sourceMotionAddress;
+        animation.motionSlot = source.motionSlot;
+        animation.objectTreeIndex = foundTrees->second.front();
+        animation.nodeCount = source.nodeCount;
+        animation.frameCount = source.motion->frame_count();
+        animation.interpolationMode = interpolationModeName(source.motion->interpolation_mode);
+
+        for (const auto& [nodeIndex, keyframes] : source.motion->keyframes) {
+            model::BlenderIrNodeAnimation nodeAnimation{};
+            nodeAnimation.nodeIndex = static_cast<std::size_t>(nodeIndex);
+            nodeAnimation.position = toVec3Keyframes(keyframes.position);
+            nodeAnimation.eulerRotation = toVec3Keyframes(keyframes.euler_rotation);
+            nodeAnimation.scale = toVec3Keyframes(keyframes.scale);
+            nodeAnimation.quaternionRotation = toQuatKeyframes(keyframes.quaternion_rotation);
+
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "vector", keyframes.vector.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "vertex", keyframes.vertex.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "normal", keyframes.normal.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "target", keyframes.target.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "roll", keyframes.roll.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "angle", keyframes.angle.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "lightColor", keyframes.light_color.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "intensity", keyframes.intensity.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "spot", keyframes.spot.size());
+            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "point", keyframes.point.size());
+
+            if (!nodeAnimation.position.empty() ||
+                !nodeAnimation.eulerRotation.empty() ||
+                !nodeAnimation.scale.empty() ||
+                !nodeAnimation.quaternionRotation.empty()) {
+                animation.nodes.push_back(std::move(nodeAnimation));
+            }
+        }
+
+        out.animations.push_back(std::move(animation));
     }
 }
 
@@ -684,6 +1082,10 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         }
         const auto nodes = parsed->model.model->tree_nodes();
         const auto activePolyChunks = get_active_poly_chunks(nodes);
+        const auto worldMatrices = buildWorldMatrices(nodes);
+        const auto parentIndices = buildParentIndices(nodes);
+        ChunkBufferContext bufferContext{};
+        std::unordered_map<std::uint32_t, SourceVertexRecord> sourceVertexByKey{};
 
         model::BlenderIrObjectTree tree{};
         tree.label = "SA3D_obj_" + std::to_string(objectAddress);
@@ -704,6 +1106,10 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
                 tree.sourceChunkOffset,
                 nodeIndex < activePolyChunks.size() ? activePolyChunks[nodeIndex] : std::nullopt,
                 localTextureNames,
+                bufferContext,
+                sourceVertexByKey,
+                worldMatrices,
+                parentIndices,
                 out);
             if (meshIndexByNodeIndex[nodeIndex].has_value()) {
                 meshIndicesByObjectAddress[objectAddress].push_back(*meshIndexByNodeIndex[nodeIndex]);
@@ -746,6 +1152,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
     for (const auto& entry : parseResult.rawEntries) {
         model::BlenderIrInstance instance{};
         instance.sourceEntryId = entry.sourceEntryId;
+        instance.tableIndex = entry.tableIndex;
         instance.tblId = entry.tblId;
         instance.fxnName = entry.fxnName;
         instance.transform = entry.transform;
@@ -777,6 +1184,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         out.indexEntries.push_back(std::move(instance));
     }
 
+    appendAnimations(parseResult, treeIndicesByObjectAddress, out);
     appendTextureArchive(parseResult, out);
     out.diagnostics.push_back("SA3D adapter produced " + std::to_string(out.meshes.size()) + " meshes, " +
         std::to_string(out.objectTrees.size()) + " object trees and " +

@@ -17,11 +17,11 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 import bpy
 import mathutils
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import Collection, Image, Material, Mesh, Object
 from bpy_extras.io_utils import ImportHelper
 
@@ -40,8 +40,10 @@ bl_info = {
 class ImportStats:
     mesh_count: int = 0
     object_count: int = 0
+    armature_count: int = 0
     texture_count: int = 0
     material_count: int = 0
+    animation_action_count: int = 0
     warnings: int = 0
     warning_messages: list[str] = field(default_factory=list)
     debug_lines: int = 0
@@ -121,6 +123,8 @@ def _parse_json(path: str) -> dict[str, Any]:
             raise ValueError(f"Missing required top-level key: {required_key}")
     if "objectTrees" not in payload:
         payload["objectTrees"] = []
+    if "animations" not in payload:
+        payload["animations"] = []
 
     return payload
 
@@ -296,6 +300,21 @@ def _node_object_name(entry_name: str, node_idx: int, tree: dict[str, Any]) -> s
 
 def _attach_object_name(entry_name: str, node_idx: int, attach_offset: Any) -> str:
     return f"{entry_name}_Node_{node_idx}_attach_{_hex_name_part(attach_offset)}"
+
+
+def _mesh_weighted_binding(mesh_data: dict[str, Any]) -> dict[str, Any] | None:
+    binding = mesh_data.get("weightedBinding")
+    return binding if isinstance(binding, dict) else None
+
+
+def _weighted_root_node_index(mesh_data: dict[str, Any], fallback_node_index: int) -> int:
+    binding = _mesh_weighted_binding(mesh_data)
+    if binding is None:
+        return fallback_node_index
+    try:
+        return int(binding.get("rootNodeIndex", fallback_node_index))
+    except (TypeError, ValueError):
+        return fallback_node_index
 
 
 def _configure_material_alpha(
@@ -856,6 +875,25 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
         stats,
         field_name=f"{mesh_field_name}.sourceAttachOffset",
     )
+    binding = _mesh_weighted_binding(mesh_data)
+    if binding is not None:
+        _set_custom_int_property(
+            mesh,
+            "spice_weighted_root_node_index",
+            binding.get("rootNodeIndex", 0),
+            stats,
+            field_name=f"{mesh_field_name}.weightedBinding.rootNodeIndex",
+        )
+        _set_custom_int_property(
+            mesh,
+            "spice_weighted_source_node_index",
+            binding.get("sourceNodeIndex", 0),
+            stats,
+            field_name=f"{mesh_field_name}.weightedBinding.sourceNodeIndex",
+        )
+        mesh["spice_weighted_node_indices"] = ",".join(
+            str(int(node_index)) for node_index in binding.get("nodeIndices", [])
+        )
     _set_custom_int_property(
         mesh,
         "spice_diag_degenerate",
@@ -889,6 +927,343 @@ def _set_parent_with_identity_inverse(obj: Object, parent: Object) -> None:
     obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
 
 
+def _bone_name(node_index: int) -> str:
+    return f"SoaNode_{node_index}"
+
+
+def _node_local_matrix(node: dict[str, Any]) -> mathutils.Matrix:
+    return _transform_to_matrix(_resolve_node_transform(node))
+
+
+def _link_object_next_to(source_obj: Object, new_obj: Object) -> None:
+    if source_obj.users_collection:
+        source_obj.users_collection[0].objects.link(new_obj)
+    else:
+        bpy.context.scene.collection.objects.link(new_obj)
+
+
+def _restore_object_mode(active_obj: Object | None, mode: str | None) -> None:
+    if active_obj is None:
+        return
+    try:
+        bpy.context.view_layer.objects.active = active_obj
+        if mode is not None and active_obj.mode != mode:
+            bpy.ops.object.mode_set(mode=mode)
+    except (AttributeError, RuntimeError, TypeError):
+        pass
+
+
+def _create_weighted_armature(
+    attach_obj: Object,
+    node_indices: list[int],
+    node_objects: list[Object | None],
+    stats: ImportStats,
+) -> Object | None:
+    parent_obj = attach_obj.parent
+    armature_data = bpy.data.armatures.new(f"{attach_obj.name}_ArmatureData")
+    armature_obj = bpy.data.objects.new(f"{attach_obj.name}_Armature", armature_data)
+    armature_obj.display_type = "WIRE"
+    armature_obj.show_in_front = False
+    armature_obj["spice_weighted_armature"] = True
+    _link_object_next_to(attach_obj, armature_obj)
+
+    if parent_obj is not None:
+        _set_parent_with_identity_inverse(armature_obj, parent_obj)
+    _apply_identity_local_transform(armature_obj)
+
+    previous_active = bpy.context.view_layer.objects.active
+    previous_mode = getattr(previous_active, "mode", None) if previous_active is not None else None
+    try:
+        bpy.context.view_layer.objects.active = armature_obj
+        armature_obj.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        edit_bones = armature_data.edit_bones
+        for bone in list(edit_bones):
+            edit_bones.remove(bone)
+
+        armature_inverse = armature_obj.matrix_world.inverted()
+        for node_index in node_indices:
+            if node_index < 0 or node_index >= len(node_objects) or node_objects[node_index] is None:
+                continue
+            target = node_objects[node_index]
+            assert target is not None
+            rest_matrix = armature_inverse @ target.matrix_world
+            bone = edit_bones.new(f"SoaNode_{node_index}")
+            head = rest_matrix.to_translation()
+            rest_basis = rest_matrix.to_3x3()
+            y_axis = rest_basis @ mathutils.Vector((0.0, 1.0, 0.0))
+            z_axis = rest_basis @ mathutils.Vector((0.0, 0.0, 1.0))
+            if y_axis.length_squared <= 1.0e-10:
+                y_axis = mathutils.Vector((0.0, 1.0, 0.0))
+            y_axis.normalize()
+            bone.head = head
+            bone.tail = head + y_axis * 0.05
+            if z_axis.length_squared > 1.0e-10:
+                z_axis.normalize()
+                bone.align_roll(z_axis)
+
+        bpy.ops.object.mode_set(mode="POSE")
+        for node_index in node_indices:
+            pose_bone = armature_obj.pose.bones.get(f"SoaNode_{node_index}")
+            if pose_bone is None:
+                continue
+            target = node_objects[node_index]
+            if target is None:
+                continue
+            constraint = pose_bone.constraints.new(type="COPY_TRANSFORMS")
+            constraint.name = f"SoaCopy_Node_{node_index}"
+            constraint.target = target
+            constraint.target_space = "WORLD"
+            constraint.owner_space = "WORLD"
+        bpy.ops.object.mode_set(mode="OBJECT")
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        stats.add_warning(f"Unable to create weighted armature for {attach_obj.name}: {exc}")
+        bpy.data.objects.remove(armature_obj, do_unlink=True)
+        bpy.data.armatures.remove(armature_data, do_unlink=True)
+        armature_obj = None
+    finally:
+        if armature_obj is not None:
+            armature_obj.select_set(False)
+        _restore_object_mode(previous_active, previous_mode)
+
+    return armature_obj
+
+
+def _create_object_tree_armature(
+    entry_root: Object,
+    entry_name: str,
+    tree_index: int,
+    tree: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    node_objects: list[Object | None],
+    stats: ImportStats,
+) -> Object | None:
+    armature_data = bpy.data.armatures.new(f"{entry_name}_Tree_{tree_index}_ArmatureData")
+    armature_obj = bpy.data.objects.new(f"{entry_name}_Tree_{tree_index}_Armature", armature_data)
+    armature_obj.display_type = "WIRE"
+    armature_obj.show_in_front = True
+    armature_obj["spice_object_tree_armature"] = True
+    _set_custom_int_property(
+        armature_obj,
+        "spice_tree_index",
+        tree_index,
+        stats,
+        field_name=f"objectTrees[{tree_index}]",
+    )
+    _set_custom_int_property(
+        armature_obj,
+        "spice_source_object_address",
+        tree.get("sourceObjectAddress", 0),
+        stats,
+        field_name=f"objectTrees[{tree_index}].sourceObjectAddress",
+    )
+    _link_object_next_to(entry_root, armature_obj)
+    _set_parent_with_identity_inverse(armature_obj, entry_root)
+    _apply_identity_local_transform(armature_obj)
+
+    previous_active = bpy.context.view_layer.objects.active
+    previous_mode = getattr(previous_active, "mode", None) if previous_active is not None else None
+    try:
+        bpy.context.view_layer.objects.active = armature_obj
+        armature_obj.select_set(True)
+        bpy.ops.object.mode_set(mode="EDIT")
+        edit_bones = armature_data.edit_bones
+        for bone in list(edit_bones):
+            edit_bones.remove(bone)
+
+        armature_inverse = armature_obj.matrix_world.inverted()
+        for node_index, target in enumerate(node_objects):
+            if target is None:
+                continue
+            rest_matrix = armature_inverse @ target.matrix_world
+            bone = edit_bones.new(_bone_name(node_index))
+            head = rest_matrix.to_translation()
+            rest_basis = rest_matrix.to_3x3()
+            y_axis = rest_basis @ mathutils.Vector((0.0, 1.0, 0.0))
+            z_axis = rest_basis @ mathutils.Vector((0.0, 0.0, 1.0))
+            if y_axis.length_squared <= 1.0e-10:
+                y_axis = mathutils.Vector((0.0, 1.0, 0.0))
+            y_axis.normalize()
+            bone.head = head
+            bone.tail = head + y_axis * 0.05
+            if z_axis.length_squared > 1.0e-10:
+                z_axis.normalize()
+                bone.align_roll(z_axis)
+
+        for node_index, node in enumerate(nodes):
+            parent_index = node.get("parentNodeIndex")
+            if parent_index is None:
+                continue
+            bone = edit_bones.get(_bone_name(node_index))
+            parent_bone = edit_bones.get(_bone_name(int(parent_index)))
+            if bone is not None and parent_bone is not None:
+                bone.parent = parent_bone
+                bone.use_connect = False
+
+        bpy.ops.object.mode_set(mode="OBJECT")
+        for node_index, node in enumerate(nodes):
+            bone = armature_obj.data.bones.get(_bone_name(node_index))
+            if bone is None:
+                continue
+            bone["spice_node_index"] = node_index
+            bone["spice_source_node_offset"] = int(node.get("sourceNodeOffset", 0))
+            bone["spice_source_eval_flags"] = int(node.get("sourceEvalFlags", 0))
+            bone["spice_source_attach_offset"] = int(node.get("sourceAttachOffset", 0))
+        stats.armature_count += 1
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        stats.add_warning(f"Unable to create object tree armature for {entry_name}: {exc}")
+        bpy.data.objects.remove(armature_obj, do_unlink=True)
+        bpy.data.armatures.remove(armature_data, do_unlink=True)
+        armature_obj = None
+    finally:
+        if armature_obj is not None:
+            armature_obj.select_set(False)
+        _restore_object_mode(previous_active, previous_mode)
+
+    return armature_obj
+
+
+def _create_armature_bound_attach(
+    source_obj: Object,
+    mesh_data: dict[str, Any],
+    attach_name: str,
+    source_node_index: int,
+    armature_obj: Object,
+    node_objects: list[Object | None],
+    stats: ImportStats,
+) -> Object:
+    binding = _mesh_weighted_binding(mesh_data)
+    local_node_index = source_node_index
+    if binding is not None:
+        local_node_index = _weighted_root_node_index(mesh_data, source_node_index)
+
+    mesh = source_obj.data.copy()
+    mesh.name = f"{attach_name}_Mesh"
+    if 0 <= local_node_index < len(node_objects) and node_objects[local_node_index] is not None:
+        local_to_armature = armature_obj.matrix_world.inverted() @ node_objects[local_node_index].matrix_world
+        for vertex in mesh.vertices:
+            vertex.co = local_to_armature @ vertex.co
+        mesh.update()
+    else:
+        stats.add_warning(
+            f"Armature-bound mesh {attach_name} has invalid local node index {local_node_index}."
+        )
+
+    attach_obj = bpy.data.objects.new(attach_name, mesh)
+    _set_parent_with_identity_inverse(attach_obj, armature_obj)
+    _apply_identity_local_transform(attach_obj)
+    attach_obj["spice_armature_bound"] = True
+
+    if binding is None:
+        group = attach_obj.vertex_groups.new(name=_bone_name(source_node_index))
+        if len(mesh.vertices) > 0:
+            group.add(list(range(len(mesh.vertices))), 1.0, "REPLACE")
+        attach_obj["spice_rigid_node_index"] = source_node_index
+    else:
+        groups: dict[int, Any] = {}
+        for raw_node_index in binding.get("nodeIndices", []):
+            try:
+                node_index = int(raw_node_index)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= node_index < len(node_objects) and node_objects[node_index] is not None:
+                groups[node_index] = attach_obj.vertex_groups.new(name=_bone_name(node_index))
+            else:
+                stats.add_warning(f"Weighted mesh {attach_name} references invalid nodeIndex={node_index}.")
+        for vertex_index, vertex in enumerate(mesh_data.get("vertices", [])):
+            assigned = False
+            for weight_data in vertex.get("weights", []):
+                try:
+                    node_index = int(weight_data.get("boneOrNodeIndex", -1))
+                    weight = float(weight_data.get("weight", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if weight <= 0.0 or node_index not in groups:
+                    continue
+                groups[node_index].add([vertex_index], weight, "ADD")
+                assigned = True
+            if not assigned and source_node_index in groups:
+                groups[source_node_index].add([vertex_index], 1.0, "ADD")
+        attach_obj["spice_weighted_binding"] = True
+        attach_obj["spice_weighted_node_indices"] = ",".join(str(i) for i in sorted(groups.keys()))
+
+    modifier = attach_obj.modifiers.new(name="SoaArmature", type="ARMATURE")
+    modifier.object = armature_obj
+    modifier.use_vertex_groups = True
+    modifier.use_bone_envelopes = False
+    try:
+        modifier.use_deform_preserve_volume = False
+    except AttributeError:
+        pass
+
+    return attach_obj
+
+
+def _configure_weighted_deformation(
+    attach_obj: Object,
+    mesh_data: dict[str, Any],
+    node_objects: list[Object | None],
+    stats: ImportStats,
+) -> None:
+    binding = _mesh_weighted_binding(mesh_data)
+    if binding is None:
+        return
+
+    node_indices: list[int] = []
+    for raw_node_index in binding.get("nodeIndices", []):
+        try:
+            node_index = int(raw_node_index)
+        except (TypeError, ValueError):
+            continue
+        if node_index not in node_indices:
+            node_indices.append(node_index)
+
+    if not node_indices:
+        stats.add_warning(f"Weighted mesh {attach_obj.name} has no node influences.")
+        return
+
+    groups: dict[int, Any] = {}
+    for node_index in node_indices:
+        if node_index < 0 or node_index >= len(node_objects) or node_objects[node_index] is None:
+            stats.add_warning(
+                f"Weighted mesh {attach_obj.name} references invalid nodeIndex={node_index}."
+            )
+            continue
+        groups[node_index] = attach_obj.vertex_groups.new(name=f"SoaNode_{node_index}")
+
+    for vertex_index, vertex in enumerate(mesh_data.get("vertices", [])):
+        for weight_data in vertex.get("weights", []):
+            try:
+                node_index = int(weight_data.get("boneOrNodeIndex", -1))
+                weight = float(weight_data.get("weight", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if weight <= 0.0 or node_index not in groups:
+                continue
+            groups[node_index].add([vertex_index], weight, "ADD")
+
+    valid_node_indices = [node_index for node_index in node_indices if node_index in groups]
+    armature_obj = _create_weighted_armature(attach_obj, valid_node_indices, node_objects, stats)
+    if armature_obj is not None:
+        modifier = attach_obj.modifiers.new(name="SoaWeightedArmature", type="ARMATURE")
+        modifier.object = armature_obj
+        modifier.use_vertex_groups = True
+        modifier.use_bone_envelopes = False
+        try:
+            modifier.use_deform_preserve_volume = False
+        except AttributeError:
+            pass
+
+    attach_obj["spice_weighted_binding"] = True
+    _set_custom_int_property(
+        attach_obj,
+        "spice_weighted_root_node_index",
+        binding.get("rootNodeIndex", 0),
+        stats,
+        field_name=f"{attach_obj.name}.weightedBinding.rootNodeIndex",
+    )
+
+
 def _transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:
     position = transform.get("position", [0.0, 0.0, 0.0])
     quat = transform.get("rotation", [0.0, 0.0, 0.0, 1.0])
@@ -903,6 +1278,345 @@ def _transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:
     blender_rotation = NJCM_TO_BLENDER_AXIS @ source_rotation @ NJCM_TO_BLENDER_AXIS.conjugated()
     blender_scale = mathutils.Vector((float(scale[0]), float(scale[1]), float(scale[2])))
     return mathutils.Matrix.LocRotScale(blender_position, blender_rotation, blender_scale)
+
+def _source_vec3_to_blender(value: list[Any]) -> mathutils.Vector:
+    source = mathutils.Vector((float(value[0]), float(value[1]), float(value[2])))
+    return NJCM_TO_BLENDER_AXIS @ source
+
+
+def _source_quat_to_blender(value: list[Any]) -> mathutils.Quaternion:
+    source = mathutils.Quaternion(
+        (float(value[3]), float(value[0]), float(value[1]), float(value[2]))
+    )
+    return NJCM_TO_BLENDER_AXIS @ source @ NJCM_TO_BLENDER_AXIS.conjugated()
+
+
+def _source_euler_to_blender_quat(value: list[Any]) -> mathutils.Quaternion:
+    source = mathutils.Euler(
+        (float(value[0]), float(value[1]), float(value[2])),
+        "XYZ",
+    ).to_quaternion()
+    return NJCM_TO_BLENDER_AXIS @ source @ NJCM_TO_BLENDER_AXIS.conjugated()
+
+
+def _animation_action_name(animation: dict[str, Any], node_index: int) -> str:
+    source_entry_id = int(animation.get("sourceEntryId", animation.get("tableIndex", 0)))
+    motion_slot = int(animation.get("motionSlot", 0))
+    source_motion_address = int(animation.get("sourceMotionAddress", 0))
+    return (
+        f"SoaAnim_{source_entry_id:03d}_slot_{motion_slot:02d}"
+        f"_motion_0x{source_motion_address:X}_node_{node_index:03d}"
+    )
+
+
+def _armature_animation_action_name(animation: dict[str, Any]) -> str:
+    source_entry_id = int(animation.get("sourceEntryId", animation.get("tableIndex", 0)))
+    motion_slot = int(animation.get("motionSlot", 0))
+    source_motion_address = int(animation.get("sourceMotionAddress", 0))
+    return f"SoaAnim_{source_entry_id:03d}_slot_{motion_slot:02d}_motion_0x{source_motion_address:X}"
+
+
+def _animation_track_name(animation: dict[str, Any]) -> str:
+    motion_slot = int(animation.get("motionSlot", 0))
+    source_motion_address = int(animation.get("sourceMotionAddress", 0))
+    return f"SoaSlot_{motion_slot:02d}_0x{source_motion_address:X}"
+
+
+def _set_action_interpolation(action: Any, interpolation_mode: str) -> None:
+    interpolation = "LINEAR" if interpolation_mode.strip().lower() == "linear" else None
+    if interpolation is None:
+        return
+    for fcurve in action.fcurves:
+        for keyframe in fcurve.keyframe_points:
+            keyframe.interpolation = interpolation
+
+
+def _add_muted_nla_strip(obj: Object, action: Any, animation: dict[str, Any], stats: ImportStats) -> None:
+    try:
+        animation_data = obj.animation_data_create()
+        track_name = _animation_track_name(animation)
+        track = animation_data.nla_tracks.new()
+        track.name = track_name
+        strip = track.strips.new(track_name, 0, action)
+        strip.name = track_name
+        track.mute = True
+    except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        stats.add_warning(f"Could not create muted NLA strip for action {action.name}: {exc}")
+
+
+def _parse_optional_motion_slot(value: str) -> int | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError as exc:
+        raise ValueError(f"Invalid Preview Motion Slot value: {value!r}") from exc
+
+
+def _apply_vec3_keyframes(
+    obj: Object,
+    keyframes: list[dict[str, Any]],
+    data_path: str,
+    convert: Callable[[list[Any]], Any],
+) -> None:
+    for keyframe in keyframes:
+        frame = int(keyframe.get("frame", 0))
+        setattr(obj, data_path, convert(keyframe.get("value", [0.0, 0.0, 0.0])))
+        obj.keyframe_insert(data_path=data_path, frame=frame)
+
+
+def _apply_quat_keyframes(
+    obj: Object,
+    keyframes: list[dict[str, Any]],
+    convert: Callable[[list[Any]], mathutils.Quaternion],
+) -> None:
+    if not keyframes:
+        return
+    obj.rotation_mode = "QUATERNION"
+    for keyframe in keyframes:
+        frame = int(keyframe.get("frame", 0))
+        obj.rotation_quaternion = convert(keyframe.get("value", [0.0, 0.0, 0.0, 1.0]))
+        obj.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+
+def _keyframe_pose_bone_channels(pose_bone: Any, frame: int) -> None:
+    pose_bone.keyframe_insert(data_path="location", frame=frame)
+    pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+    pose_bone.keyframe_insert(data_path="scale", frame=frame)
+
+
+def _apply_pose_position_keyframes(
+    pose_bone: Any,
+    keyframes: list[dict[str, Any]],
+    rest_location: mathutils.Vector,
+) -> None:
+    for keyframe in keyframes:
+        frame = int(keyframe.get("frame", 0))
+        pose_bone.location = _source_vec3_to_blender(keyframe.get("value", [0.0, 0.0, 0.0])) - rest_location
+        pose_bone.keyframe_insert(data_path="location", frame=frame)
+
+
+def _apply_pose_scale_keyframes(
+    pose_bone: Any,
+    keyframes: list[dict[str, Any]],
+    rest_scale: mathutils.Vector,
+) -> None:
+    for keyframe in keyframes:
+        frame = int(keyframe.get("frame", 0))
+        desired = mathutils.Vector(tuple(float(v) for v in keyframe.get("value", [1.0, 1.0, 1.0])))
+        pose_bone.scale = mathutils.Vector((
+            desired.x / rest_scale.x if abs(rest_scale.x) > 1.0e-10 else desired.x,
+            desired.y / rest_scale.y if abs(rest_scale.y) > 1.0e-10 else desired.y,
+            desired.z / rest_scale.z if abs(rest_scale.z) > 1.0e-10 else desired.z,
+        ))
+        pose_bone.keyframe_insert(data_path="scale", frame=frame)
+
+
+def _apply_pose_rotation_keyframes(
+    pose_bone: Any,
+    keyframes: list[dict[str, Any]],
+    rest_rotation: mathutils.Quaternion,
+    convert: Callable[[list[Any]], mathutils.Quaternion],
+) -> None:
+    if not keyframes:
+        return
+    pose_bone.rotation_mode = "QUATERNION"
+    rest_inverse = rest_rotation.conjugated()
+    for keyframe in keyframes:
+        frame = int(keyframe.get("frame", 0))
+        rotation = rest_inverse @ convert(keyframe.get("value", [0.0, 0.0, 0.0, 1.0]))
+        rotation.normalize()
+        pose_bone.rotation_quaternion = rotation
+        pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+
+
+def _apply_ir_armature_animations(
+    animations: list[dict[str, Any]],
+    tree_armature_bindings: dict[tuple[int, int], Object],
+    tree_nodes_by_binding: dict[tuple[int, int], list[dict[str, Any]]],
+    stats: ImportStats,
+    preview_motion_slot: int | None,
+    create_nla_tracks: bool,
+) -> None:
+    fallback_preview_actions: dict[Object, Any] = {}
+    selected_preview_actions: dict[Object, Any] = {}
+    for animation in animations:
+        table_index = int(animation.get("tableIndex", animation.get("sourceEntryId", 0)))
+        tree_index = int(animation.get("objectTreeIndex", -1))
+        motion_slot = int(animation.get("motionSlot", 0))
+        binding_key = (table_index, tree_index)
+        armature_obj = tree_armature_bindings.get(binding_key)
+        nodes = tree_nodes_by_binding.get(binding_key)
+        if armature_obj is None or nodes is None:
+            stats.add_warning(
+                f"Animation motionSlot={animation.get('motionSlot')} for tableIndex={table_index} "
+                f"could not bind to armature objectTreeIndex={tree_index}."
+            )
+            continue
+
+        animation_data = armature_obj.animation_data_create()
+        previous_action = animation_data.action
+        action = bpy.data.actions.new(_armature_animation_action_name(animation))
+        action.use_fake_user = True
+        action["spice_source_entry_id"] = int(animation.get("sourceEntryId", table_index))
+        action["spice_table_index"] = table_index
+        action["spice_motion_slot"] = motion_slot
+        action["spice_source_motion_address"] = int(animation.get("sourceMotionAddress", 0))
+        action["spice_object_tree_index"] = tree_index
+        animation_data.action = action
+
+        for node_animation in animation.get("nodes", []):
+            node_index = int(node_animation.get("nodeIndex", -1))
+            if node_index < 0 or node_index >= len(nodes):
+                stats.add_warning(
+                    f"Animation motionSlot={animation.get('motionSlot')} references invalid nodeIndex={node_index}."
+                )
+                continue
+            pose_bone = armature_obj.pose.bones.get(_bone_name(node_index))
+            if pose_bone is None:
+                stats.add_warning(
+                    f"Animation motionSlot={animation.get('motionSlot')} references missing bone nodeIndex={node_index}."
+                )
+                continue
+
+            rest_location, rest_rotation, rest_scale = _node_local_matrix(nodes[node_index]).decompose()
+            _apply_pose_position_keyframes(pose_bone, node_animation.get("position", []), rest_location)
+            _apply_pose_scale_keyframes(pose_bone, node_animation.get("scale", []), rest_scale)
+            _apply_pose_rotation_keyframes(
+                pose_bone,
+                node_animation.get("eulerRotation", []),
+                rest_rotation,
+                _source_euler_to_blender_quat,
+            )
+            _apply_pose_rotation_keyframes(
+                pose_bone,
+                node_animation.get("quaternionRotation", []),
+                rest_rotation,
+                _source_quat_to_blender,
+            )
+
+        _set_action_interpolation(action, str(animation.get("interpolationMode", "")))
+        if create_nla_tracks:
+            _add_muted_nla_strip(armature_obj, action, animation, stats)
+        stats.animation_action_count += 1
+        if armature_obj not in fallback_preview_actions:
+            fallback_preview_actions[armature_obj] = action
+        if preview_motion_slot is not None and motion_slot == preview_motion_slot and armature_obj not in selected_preview_actions:
+            selected_preview_actions[armature_obj] = action
+        animation_data.action = previous_action
+
+        for channel in animation.get("unsupportedChannels", []):
+            stats.add_warning(
+                f"Animation motionSlot={animation.get('motionSlot')} parsed unsupported "
+                f"channel={channel.get('channel')} nodeIndex={channel.get('nodeIndex')} "
+                f"keyframes={channel.get('keyframeCount')}."
+            )
+
+    if preview_motion_slot is not None and not selected_preview_actions:
+        stats.add_warning(f"Preview Motion Slot {preview_motion_slot} did not match any imported armature actions.")
+
+    for obj, fallback_action in fallback_preview_actions.items():
+        action = selected_preview_actions.get(obj, fallback_action) if preview_motion_slot is not None else fallback_action
+        animation_data = obj.animation_data_create()
+        animation_data.action = action
+        if action is not None:
+            obj["spice_preview_action"] = action.name
+            obj["spice_preview_motion_slot"] = int(action.get("spice_motion_slot", 0))
+
+
+def _apply_ir_animations(
+    animations: list[dict[str, Any]],
+    tree_node_bindings: dict[tuple[int, int], list[Object | None]],
+    stats: ImportStats,
+    preview_motion_slot: int | None,
+    create_nla_tracks: bool,
+) -> None:
+    fallback_preview_actions: dict[Object, Any] = {}
+    selected_preview_actions: dict[Object, Any] = {}
+    for animation in animations:
+        table_index = int(animation.get("tableIndex", animation.get("sourceEntryId", 0)))
+        tree_index = int(animation.get("objectTreeIndex", -1))
+        motion_slot = int(animation.get("motionSlot", 0))
+        node_objects = tree_node_bindings.get((table_index, tree_index))
+        if node_objects is None:
+            stats.add_warning(
+                f"Animation motionSlot={animation.get('motionSlot')} for tableIndex={table_index} "
+                f"could not bind to objectTreeIndex={tree_index}."
+            )
+            continue
+
+        for node_animation in animation.get("nodes", []):
+            node_index = int(node_animation.get("nodeIndex", -1))
+            if node_index < 0 or node_index >= len(node_objects) or node_objects[node_index] is None:
+                stats.add_warning(
+                    f"Animation motionSlot={animation.get('motionSlot')} references invalid nodeIndex={node_index}."
+                )
+                continue
+            node_obj = node_objects[node_index]
+            assert node_obj is not None
+
+            animation_data = node_obj.animation_data_create()
+            previous_action = animation_data.action
+            action = bpy.data.actions.new(_animation_action_name(animation, node_index))
+            action.use_fake_user = True
+            action["spice_source_entry_id"] = int(animation.get("sourceEntryId", table_index))
+            action["spice_table_index"] = table_index
+            action["spice_motion_slot"] = motion_slot
+            action["spice_source_motion_address"] = int(animation.get("sourceMotionAddress", 0))
+            action["spice_object_tree_index"] = tree_index
+            action["spice_node_index"] = node_index
+            animation_data.action = action
+
+            _apply_vec3_keyframes(
+                node_obj,
+                node_animation.get("position", []),
+                "location",
+                _source_vec3_to_blender,
+            )
+            _apply_vec3_keyframes(
+                node_obj,
+                node_animation.get("scale", []),
+                "scale",
+                lambda value: mathutils.Vector((float(value[0]), float(value[1]), float(value[2]))),
+            )
+            _apply_quat_keyframes(
+                node_obj,
+                node_animation.get("eulerRotation", []),
+                _source_euler_to_blender_quat,
+            )
+            _apply_quat_keyframes(
+                node_obj,
+                node_animation.get("quaternionRotation", []),
+                _source_quat_to_blender,
+            )
+            _set_action_interpolation(action, str(animation.get("interpolationMode", "")))
+            if create_nla_tracks:
+                _add_muted_nla_strip(node_obj, action, animation, stats)
+            stats.animation_action_count += 1
+            if node_obj not in fallback_preview_actions:
+                fallback_preview_actions[node_obj] = action
+            if preview_motion_slot is not None and motion_slot == preview_motion_slot and node_obj not in selected_preview_actions:
+                selected_preview_actions[node_obj] = action
+            animation_data.action = previous_action
+
+        for channel in animation.get("unsupportedChannels", []):
+            stats.add_warning(
+                f"Animation motionSlot={animation.get('motionSlot')} parsed unsupported "
+                f"channel={channel.get('channel')} nodeIndex={channel.get('nodeIndex')} "
+                f"keyframes={channel.get('keyframeCount')}."
+            )
+
+    if preview_motion_slot is not None and not selected_preview_actions:
+        stats.add_warning(f"Preview Motion Slot {preview_motion_slot} did not match any imported animation actions.")
+
+    for obj, fallback_action in fallback_preview_actions.items():
+        action = selected_preview_actions.get(obj, fallback_action) if preview_motion_slot is not None else fallback_action
+        animation_data = obj.animation_data_create()
+        animation_data.action = action
+        if action is not None:
+            obj["spice_preview_action"] = action.name
+            obj["spice_preview_motion_slot"] = int(action.get("spice_motion_slot", 0))
 
 
 def _entry_transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:
@@ -989,9 +1703,14 @@ def import_blender_ir_json(
     clear_target_collection: bool,
     target_collection_name: str,
     emit_parity_debug: bool,
+    animation_preview_slot: str = "",
+    object_tree_import_mode: str = "ARMATURE",
+    create_nla_tracks: bool = False,
 ) -> ImportStats:
     payload = _parse_json(json_path)
     stats = ImportStats()
+    preview_motion_slot = _parse_optional_motion_slot(animation_preview_slot)
+    use_armatures = object_tree_import_mode == "ARMATURE"
 
     root_collection = _ensure_collection(target_collection_name)
     source_collection = _ensure_collection(f"{target_collection_name}_SourceMeshes", parent=root_collection)
@@ -1002,8 +1721,9 @@ def import_blender_ir_json(
 
     texture_lookup = _build_texture_lookup(payload.get("textures", []), stats)
 
+    mesh_payloads: list[dict[str, Any]] = payload.get("meshes", [])
     mesh_objects: list[Object] = []
-    for mesh_data in payload.get("meshes", []):
+    for mesh_data in mesh_payloads:
         mesh_obj = _build_mesh(mesh_data, texture_lookup, stats)
         source_collection.objects.link(mesh_obj)
         mesh_obj.hide_viewport = True
@@ -1012,10 +1732,14 @@ def import_blender_ir_json(
 
     object_trees: list[dict[str, Any]] = payload.get("objectTrees", [])
     debug_lines: list[str] = []
+    tree_node_bindings: dict[tuple[int, int], list[Object | None]] = {}
+    tree_armature_bindings: dict[tuple[int, int], Object] = {}
+    tree_nodes_by_binding: dict[tuple[int, int], list[dict[str, Any]]] = {}
 
     for entry_index, entry in enumerate(payload.get("indexEntries", [])):
         transform = entry.get("transform", {})
         entry_id = int(entry.get("sourceEntryId", 0))
+        table_index = int(entry.get("tableIndex", entry_index))
         fxn_name = str(entry.get("fxnName", ""))
         entry_root = _create_empty(_entry_root_name(entry_index, entry_id, fxn_name))
         _apply_entry_transform(entry_root, transform)
@@ -1041,6 +1765,13 @@ def import_blender_ir_json(
             entry.get("tblId", 0),
             stats,
             field_name=f"indexEntries[{entry_id}].tblId",
+        )
+        _set_custom_int_property(
+            entry_root,
+            "spice_table_index",
+            table_index,
+            stats,
+            field_name=f"indexEntries[{entry_id}].tableIndex",
         )
         entry_root["spice_fxn_name"] = fxn_name
         entry_root["spice_object_addresses"] = ",".join(
@@ -1079,6 +1810,8 @@ def import_blender_ir_json(
             tree = object_trees[ti]
             nodes = tree.get("nodes", [])
             node_objects: list[Object | None] = [None] * len(nodes)
+            binding_key = (table_index, ti)
+            tree_node_bindings[binding_key] = node_objects
             for node_idx, node in enumerate(nodes):
                 node_name = _node_object_name(entry_root.name, node_idx, tree)
                 node_obj = _create_empty(node_name)
@@ -1164,6 +1897,26 @@ def import_blender_ir_json(
                         )
                     )
 
+            armature_obj: Object | None = None
+            if use_armatures:
+                armature_obj = _create_object_tree_armature(
+                    entry_root,
+                    entry_root.name,
+                    ti,
+                    tree,
+                    nodes,
+                    node_objects,
+                    stats,
+                )
+                if armature_obj is not None:
+                    tree_armature_bindings[binding_key] = armature_obj
+                    tree_nodes_by_binding[binding_key] = nodes
+                    for node_obj in node_objects:
+                        if node_obj is not None:
+                            node_obj.hide_viewport = True
+                            node_obj.hide_render = True
+
+            for node_idx, node in enumerate(nodes):
                 mesh_index = node.get("meshIndex")
                 if mesh_index is None:
                     continue
@@ -1175,10 +1928,34 @@ def import_blender_ir_json(
                     continue
 
                 source_obj = mesh_objects[mi]
+                mesh_data = mesh_payloads[mi]
                 attach_name = _attach_object_name(entry_root.name, node_idx, node.get("sourceAttachOffset", 0))
-                attach_obj = bpy.data.objects.new(attach_name, source_obj.data)
-                _set_parent_with_identity_inverse(attach_obj, node_obj)
-                _apply_identity_local_transform(attach_obj)
+                if use_armatures and armature_obj is not None:
+                    attach_obj = _create_armature_bound_attach(
+                        source_obj,
+                        mesh_data,
+                        attach_name,
+                        node_idx,
+                        armature_obj,
+                        node_objects,
+                        stats,
+                    )
+                else:
+                    node_obj = node_objects[node_idx]
+                    if node_obj is None:
+                        continue
+                    attach_obj = bpy.data.objects.new(attach_name, source_obj.data)
+                    parent_obj = node_obj
+                    weighted_root_index = _weighted_root_node_index(mesh_data, node_idx)
+                    if weighted_root_index != node_idx:
+                        if 0 <= weighted_root_index < len(node_objects) and node_objects[weighted_root_index] is not None:
+                            parent_obj = node_objects[weighted_root_index]
+                        else:
+                            stats.add_warning(
+                                f"Weighted mesh index {mi} has invalid rootNodeIndex={weighted_root_index}."
+                            )
+                    _set_parent_with_identity_inverse(attach_obj, parent_obj)
+                    _apply_identity_local_transform(attach_obj)
                 attach_obj["spice_mesh_index"] = mi
                 _set_custom_int_property(
                     attach_obj,
@@ -1195,6 +1972,8 @@ def import_blender_ir_json(
                     field_name=f"objectTrees[{ti}].nodes[{node_idx}].sourceAttachOffset",
                 )
                 root_collection.objects.link(attach_obj)
+                if not use_armatures:
+                    _configure_weighted_deformation(attach_obj, mesh_data, node_objects, stats)
                 stats.object_count += 1
 
         for slot, mesh_index in enumerate(entry.get("meshIndices", [])):
@@ -1212,6 +1991,24 @@ def import_blender_ir_json(
             instance_obj["spice_mesh_index"] = mi
             root_collection.objects.link(instance_obj)
             stats.object_count += 1
+
+    if use_armatures:
+        _apply_ir_armature_animations(
+            payload.get("animations", []),
+            tree_armature_bindings,
+            tree_nodes_by_binding,
+            stats,
+            preview_motion_slot,
+            create_nla_tracks,
+        )
+    else:
+        _apply_ir_animations(
+            payload.get("animations", []),
+            tree_node_bindings,
+            stats,
+            preview_motion_slot,
+            create_nla_tracks,
+        )
 
     if emit_parity_debug:
         _write_debug_log(debug_lines, target_collection_name, stats)
@@ -1248,6 +2045,42 @@ class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
         ),
     )
 
+    object_tree_import_mode: EnumProperty(
+        name="Object Tree Mode",
+        default="ARMATURE",
+        items=(
+            (
+                "ARMATURE",
+                "Armature",
+                "Import each SA3D object tree as one armature with one Action per motion slot.",
+            ),
+            (
+                "EMPTY",
+                "Empty Debug",
+                "Import SA3D nodes as separate empties for transform parity debugging.",
+            ),
+        ),
+        description="Controls how SA3D object tree nodes are represented in Blender.",
+    )
+
+    animation_preview_slot: StringProperty(
+        name="Preview Motion Slot",
+        default="",
+        description=(
+            "Optional motion slot to assign as the active preview action. "
+            "Leave blank to use the first imported animation per object tree; all slots are still imported as Actions."
+        ),
+    )
+
+    create_nla_tracks: BoolProperty(
+        name="Create NLA Tracks",
+        default=False,
+        description=(
+            "Also create muted NLA strips for imported animation actions. "
+            "Leave disabled to use the Action Editor as the primary slot selector."
+        ),
+    )
+
     def execute(self, context: bpy.types.Context) -> set[str]:
         del context
         json_path = str(Path(self.filepath))
@@ -1258,6 +2091,9 @@ class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
                 clear_target_collection=self.clear_target_collection,
                 target_collection_name=self.target_collection_name,
                 emit_parity_debug=self.emit_parity_debug,
+                animation_preview_slot=self.animation_preview_slot,
+                object_tree_import_mode=self.object_tree_import_mode,
+                create_nla_tracks=self.create_nla_tracks,
             )
         except Exception as exc:  # Blender operator-level error boundary
             self.report({"ERROR"}, f"Spice import failed: {exc}")
@@ -1276,7 +2112,9 @@ class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
             (
                 "Spice import complete: "
                 f"meshes={stats.mesh_count}, objects={stats.object_count}, "
-                f"textures={stats.texture_count}, materials={stats.material_count}, "
+                f"armatures={stats.armature_count}, textures={stats.texture_count}, "
+                f"materials={stats.material_count}, "
+                f"actions={stats.animation_action_count}, "
                 f"warnings={stats.warnings}, debugLines={stats.debug_lines}"
             ),
         )
