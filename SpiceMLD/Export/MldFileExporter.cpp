@@ -100,7 +100,7 @@ void writeIndexEntry(std::vector<std::uint8_t>& out,
     }
 
     writeU32(out, offset + 0x00U, record.entry.entryId, endian);
-    writeU32(out, offset + 0x04U, record.entry.tblId, endian);
+    writeU32(out, offset + 0x04U, std::bit_cast<std::uint32_t>(record.entry.tblId), endian);
     writeU32(out, offset + 0x08U, record.groundLinksPointer, endian);
     writeU32(out, offset + 0x0CU, record.paramList2Pointer, endian);
     writeU32(out, offset + 0x10U, record.functionParametersPointer, endian);

@@ -19,7 +19,7 @@ struct GrndSurface {
 struct CollisionVolume {
     std::uint32_t sourceEntryId = 0;
     std::string fxnName{};
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
     MeshData debugMesh{};
@@ -28,7 +28,7 @@ struct CollisionVolume {
 struct TriggerVolume {
     std::uint32_t sourceEntryId = 0;
     std::string fxnName{};
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
     MeshData debugMesh{};
@@ -37,7 +37,7 @@ struct TriggerVolume {
 struct UnknownEntry {
     std::uint32_t sourceEntryId = 0;
     std::string fxnName{};
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     Transform transform{};
     std::vector<std::uint8_t> rawPayload{};
 };

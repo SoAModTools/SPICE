@@ -58,7 +58,7 @@ struct ParseOptions {
 struct ParsedEntryListItem {
     std::size_t tableIndex = 0;
     std::uint32_t entryId = 0;
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     std::string fxnName{};
     std::size_t objectCount = 0;
     std::size_t groundCount = 0;
@@ -78,7 +78,7 @@ struct ParsedRawEntry {
     std::size_t tableIndex = 0;
     std::uint32_t sourceEntryId = 0;
     std::string fxnName{};
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     model::Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
     std::vector<std::uint32_t> groundAddresses{};

@@ -1378,7 +1378,7 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
         result.diagnostics.push_back(ParseDiagnostic{
             .severity = ParseDiagnostic::Severity::Info,
             .message = "Entry " + std::to_string(entry.tableIndex) + ": id=" + std::to_string(entry.entryId) +
-                ", tblId=0x" + std::to_string(entry.tblId) +
+                ", tblId=" + std::to_string(entry.tblId) +
                 ", fxn=\"" + entry.fxnName + "\"" +
                 ", groundLinks=" + std::to_string(entry.groundLinks->values.size()) +
                 ", params2=" + std::to_string(entry.paramList2->values.size()) +

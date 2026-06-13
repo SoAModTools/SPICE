@@ -4,6 +4,7 @@
 #include "U32List.h"
 #include "../../SpiceCore/Binary/EndianReader.h"
 
+#include <bit>
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
@@ -94,7 +95,7 @@ struct IndexEntry {
 
     std::size_t tableIndex = 0;
     std::uint32_t entryId = 0;
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     std::string fxnName{};
     Transform transform{};
 
@@ -166,7 +167,7 @@ inline void countNotZero(U32List& list, std::size_t& count) {
     IndexEntry entry{};
     entry.tableIndex = tableIndex;
     entry.entryId = *entryId;
-    entry.tblId = *tblId;
+    entry.tblId = std::bit_cast<std::int32_t>(*tblId);
     entry.texturesPointer = *ptrTextures;
 
     Transform transform{};

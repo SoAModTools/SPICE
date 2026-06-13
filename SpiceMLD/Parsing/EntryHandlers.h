@@ -12,7 +12,7 @@ namespace spice::mld::parsing {
 struct RawEntry {
     std::uint32_t sourceEntryId = 0;
     std::string_view fxnName{};
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     model::Transform transform{};
     std::vector<std::uint32_t> objectAddresses{};
     std::span<const std::uint8_t> payload{};

@@ -17,7 +17,7 @@ struct WalkSurfaceNode {
 struct EncounterOrTriggerRegion {
     std::uint32_t sourceEntryId = 0;
     std::string fxnName{};
-    std::uint32_t tblId = 0;
+    std::int32_t tblId = 0;
     Transform transform{};
 };
 
