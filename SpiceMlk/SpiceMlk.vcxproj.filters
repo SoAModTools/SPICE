@@ -14,6 +14,9 @@
     <Filter Include="Corpus">
       <UniqueIdentifier>{4E8B7799-5E68-4DD5-9F82-A58385B78F52}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Blender IR">
+      <UniqueIdentifier>{EA9B54E3-FE6D-4E6D-B412-2B2A1C3A6087}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Parser">
       <UniqueIdentifier>{78504B58-640F-4909-962A-0E0F49E5513D}</UniqueIdentifier>
     </Filter>
@@ -34,6 +37,9 @@
     <ClInclude Include="MlkParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="MlkBlenderIrExport.h">
+      <Filter>Blender IR</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MlkScanner.cpp">
@@ -44,6 +50,9 @@
     </ClCompile>
     <ClCompile Include="MlkParser.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="MlkBlenderIrExport.cpp">
+      <Filter>Blender IR</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

@@ -99,6 +99,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="MlkBlenderIrExport.h" />
     <ClInclude Include="MlkCorpus.h" />
     <ClInclude Include="MlkModel.h" />
     <ClInclude Include="MlkParser.h" />
@@ -106,6 +107,7 @@
     <ClInclude Include="SpiceMlk.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="MlkBlenderIrExport.cpp" />
     <ClCompile Include="MlkCorpus.cpp" />
     <ClCompile Include="MlkParser.cpp" />
     <ClCompile Include="MlkScanner.cpp" />

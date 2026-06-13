@@ -42,6 +42,34 @@ void writeTransform(std::ostringstream& out, const model::Transform& tx) {
     out << '}';
 }
 
+void writeSourceRecord(std::ostringstream& out, const model::BlenderIrSourceRecord& record) {
+    out << "{\"containerKind\":";
+    writeJsonString(out, record.containerKind);
+    out << ",\"containerPath\":";
+    writeJsonString(out, record.containerPath);
+    out << ",\"recordIndex\":" << record.recordIndex
+        << ",\"recordOffset\":" << record.recordOffset
+        << ",\"key\":" << record.key
+        << ",\"generatedMldName\":";
+    writeJsonString(out, record.generatedMldName);
+    out << ",\"rawWord12\":" << record.rawWord12
+        << ",\"payloadOffset\":" << record.payloadOffset
+        << ",\"payloadSize\":" << record.payloadSize
+        << ",\"payloadKind\":";
+    writeJsonString(out, record.payloadKind);
+    out << '}';
+}
+
+void writeOptionalSourceRecordProperty(
+    std::ostringstream& out,
+    const std::optional<model::BlenderIrSourceRecord>& record) {
+    if (!record.has_value()) {
+        return;
+    }
+    out << ",\"sourceRecord\":";
+    writeSourceRecord(out, *record);
+}
+
 void writeVec3Keyframes(std::ostringstream& out, const std::vector<model::BlenderIrVec3Keyframe>& keys) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
@@ -119,6 +147,7 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << '{';
         out << "\"label\":";
         writeJsonString(out, mesh.label);
+        writeOptionalSourceRecordProperty(out, mesh.sourceRecord);
         out << ",\"sourceObjectAddress\":" << mesh.sourceObjectAddress;
         out << ",\"sourceChunkOffset\":" << mesh.sourceChunkOffset;
         out << ",\"sourceAttachOffset\":" << mesh.sourceAttachOffset;
@@ -247,6 +276,7 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << '{';
         out << "\"label\":";
         writeJsonString(out, tree.label);
+        writeOptionalSourceRecordProperty(out, tree.sourceRecord);
         out << ",\"sourceObjectAddress\":" << tree.sourceObjectAddress;
         out << ",\"sourceChunkOffset\":" << tree.sourceChunkOffset;
         out << ",\"rootNodeIndices\":[";
@@ -304,6 +334,7 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         const auto& entry = scene.indexEntries[idx];
         out << '{';
         out << "\"sourceEntryId\":" << entry.sourceEntryId;
+        writeOptionalSourceRecordProperty(out, entry.sourceRecord);
         out << ",\"tableIndex\":" << entry.tableIndex;
         out << ",\"tblId\":" << entry.tblId;
         out << ",\"fxnName\":";
@@ -356,7 +387,9 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         }
         const auto& animation = scene.animations[ai];
         out << '{'
-            << "\"sourceEntryId\":" << animation.sourceEntryId
+            << "\"sourceEntryId\":" << animation.sourceEntryId;
+        writeOptionalSourceRecordProperty(out, animation.sourceRecord);
+        out
             << ",\"tableIndex\":" << animation.tableIndex
             << ",\"sourceObjectAddress\":" << animation.sourceObjectAddress
             << ",\"sourceMotionAddress\":" << animation.sourceMotionAddress
@@ -445,6 +478,7 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
             writeJsonString(out, t.decodeWarnings[wi]);
         }
         out << ']';
+        writeOptionalSourceRecordProperty(out, t.sourceRecord);
         out
             << '}';
     }
