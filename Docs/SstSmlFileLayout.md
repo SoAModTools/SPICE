@@ -54,6 +54,14 @@ meaning is needed:
 - `.sst` owns per-stage command blocks that reference runtime objects/models.
 - `FUN_8000cb44` walks both files by the same top-level record index.
 
+Treat these files as battle-stage data first. Most command consumers live inside
+the battle thread, battle camera/view, combatant worksheet, lighting, and
+runtime model-object systems. Those battle-system paths are therefore expected
+primary context for naming fields; they should not be dismissed as unrelated
+just because they are not generic file-loader code. Conversely, do not apply
+field names from non-battle systems unless direct dataflow shows the SST/SML
+values reaching them.
+
 `SpiceSstSml` currently provides read-only parsing only. `SpiceFileParsing`
 has explicit research export flags for extracting embedded SML MLD payloads,
 emitting per-entry or combined Blender IR, and writing SST/SML command maps. It
@@ -128,14 +136,24 @@ confirmed SML table walk. Keep `rawHeader0` and record raw fields intact.
 
 | Offset in record | Size | Field | Current meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 4 | `rawWord0` | Likely model/index/name component. Preserve raw. |
+| `0x00` | 4 | `embeddedMldResourceIndex` | Low signed halfword is used as the second number in generated `s%02d%02d.mld` resource names. It equals the record index in every US/EU/JP battle row checked. High halfword is `0`. |
 | `0x04` | 4 | `embeddedMldOffset` | Base-relative file offset of embedded MLD payload. Patched to a runtime pointer by the game. |
 | `0x08` | 4 | `embeddedMldSize` | Embedded MLD payload byte size. |
-| `0x0C` | 4 | `rawWord12` | Unknown. Preserve raw. |
+| `0x0C` | 4 | `reservedSentinel` | Always `0xffffffff` in the current US/EU/JP battle corpora; no direct read in the audited load path. Preserve raw. |
 
 `FUN_8000c8ac` formats `s%02d%02d.mld`, allocates `embeddedMldSize` bytes,
 copies from `embeddedMldOffset`, and passes the copied payload to
 `loadTextures_801db124` as MLD data.
+
+Direct Gekko evidence:
+
+- `8000c8d4`: reads SML record `+0x00`.
+- `8000c8e0`: sign-extends the low halfword from that word.
+- `8000c8e8`: passes it to `sprintf("s%02d%02d.mld", stageId, recordValue)`.
+- `8000c900`, `8000c908`, and `8000c910`: read `+0x08`, patched `+0x04`, and
+  `+0x08` for allocation and copy.
+- no direct read of record `+0x0c` was found in `FUN_8000cb44` or
+  `FUN_8000c8ac`.
 
 Across US, EU, and JP:
 
@@ -143,6 +161,8 @@ Across US, EU, and JP:
 - embedded MLD size range: `384..1052140`
 - unique embedded MLD hashes: `922`
 - out-of-bounds embedded MLD spans: `0`
+- SML record `+0x00` equals the record index in `1285/1285` rows per region
+- SML record `+0x0c` is `0xffffffff` in `1285/1285` rows per region
 
 ### Embedded MLD Payloads
 
@@ -211,8 +231,20 @@ stage geometry.
 
 This example is a warning for parser and research tooling: same-index SML/SST
 correlation is structurally valid, but visual ownership can cross records.
-Extra SST commands may intentionally target runtime slot `0` while attached to
-another SML record's command block.
+Extra SST commands may intentionally target local model/object slot `0` inside
+their own active SML/SST record while the visible effect relates to a broader
+stage element.
+
+The annotated `s044` damaged-homebase stage confirms that entry `0` can also be
+ordinary primary stage geometry. After the MLD parser fix that restored record
+`0` geometry, `s044` entry `0` resolves to the floor mesh with textures. Its SST
+block contains types `[0, 1, 10]`, so this stage is a useful counterexample to
+the earlier suspicion that record `0` was malformed or that this primary floor
+geometry had to come from another already-loaded MLD.
+
+The current `s044` annotation still leaves the elevator unresolved: the floor is
+accounted for by SML entry `0`, but the elevator may come from an already-loaded
+area MLD, another runtime resource, or a path outside the per-stage SML wrapper.
 
 Across the US corpus, the embedded payload MLD headers and index entries match
 the normal MLD layout closely:
@@ -320,9 +352,11 @@ This proves that SML embedded payloads become normal loaded MLD resources.
 However, it does not prove that SST command model-index fields index SML
 records directly at runtime.
 
-The later SST command paths call `FUN_8006b6f4(modelIndex)`, which reads a
+Some later SST runtime paths call `FUN_8006b6f4(modelIndex)`, which reads a
 separate four-slot runtime table rooted at `DAT_80309e88`. This table is
 `0x40` bytes total: four `0x10`-byte slots initialized by `FUN_8006b71c`.
+Do not confuse this table with the per-SML-entry model/object table rooted at
+`DAT_80309e84`.
 
 | Slot offset | Size | Current meaning |
 | --- | ---: | --- |
@@ -350,16 +384,21 @@ So the current best model is:
 SML record
   -> embedded MLD payload
   -> loaded MLD resource list at DAT_803473a0
+  -> per-record model/object row at DAT_80309e84 + recordIndex * 0x14
+  -> local model/object indices in SST types 2/3/4/8/9/10/11
 
 SST type 1 row
   -> copied child-local runtime row
   -> four-slot runtime table at DAT_80309e88
-  -> model-index fields in SST types 2/3/4/8/9/10/11
+  -> separate lighting/render-environment/runtime rows used by type 1 helpers
+     and selected later consumers
 ```
 
 The corpus fact that all observed model-index candidates are `0` remains useful
 for structural validation, but parser-facing wording should treat these fields
-as runtime-slot indices. A direct SML-record identity is not currently proven.
+as local model/object slot indices in the active SML/SST top-level record unless
+a specific Gekko path proves use of the separate four-slot table. A direct
+SML-record identity is not currently proven.
 
 ### Type 1 Runtime Row Consumer
 
@@ -446,13 +485,29 @@ the parser preserves the raw record fields as well.
 
 | Offset in record | Size | Field | Current meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 4 | `rawWord0` | Unknown top-level field. Preserve raw. |
-| `0x04` | 4 | `rawWord4` | High halfword of record 0 matches record count. Preserve raw. |
-| `0x08` | 4 | `rawWord8` | Unknown top-level field. Preserve raw. |
+| `0x00` | 4 | `stageIdOrPreviousBlockLength` | In record `0`, high halfword is the stage id and low halfword is `0xffff`. In records `1+`, this is the previous command block's unaligned byte length. |
+| `0x04` | 4 | `recordCountOrSentinel` | In record `0`, high halfword is the top-level record count and low halfword is `0xffff`; in records `1+`, this is `0xffffffff` in all checked battle rows. |
+| `0x08` | 4 | `topLevelRecordIndex` | Equals the top-level record index in every checked battle row. |
 | `0x0C` | 4 | `commandBlockOffset` | Base-relative SST command-block offset. Patched to a runtime pointer by the game. |
 
 The SML and SST top-level record counts agree for every US, EU, and JP
 same-stem battle pair checked so far.
+
+`FUN_8000cb44` only needs SST top-level `+0x0c` at runtime:
+
+- `8000cc3c`: reads the current top-level record's `+0x0c` command-block
+  offset.
+- `8000cc44..8000cc48`: patches that offset to a runtime pointer in place.
+- `8000cc50`: passes the patched command-block pointer to `FUN_8000c7c0`.
+
+The other top-level fields are still useful structural metadata:
+
+- record `0 +0x00` follows the same stage-id-word shape as SML header `+0x00`
+- record `0 +0x04` is the count-bearing word read at file offset `+0x04`
+- records `1+ +0x04` are `0xffffffff`
+- all `+0x08` words equal the record index
+- for every US/EU/JP nonzero top-level record checked,
+  `blockOffset[i] == align8(blockOffset[i - 1] + topRecord[i].stageIdOrPreviousBlockLength)`
 
 ## SST Command Block
 
@@ -602,11 +657,14 @@ Across US, EU, and JP:
 - type `1` appears exactly once per battle stage: `136/136` stages per region
 
 In the current corpus every observed model-index candidate is `0`. Direct
-runtime evidence now shows these fields index the four-slot table at
-`DAT_80309e88`, not SML records directly. The same-index SML link remains a
-useful parser validation/reporting aid because command blocks and SML records
-are walked together by top-level index, but it should not be promoted to a
-runtime identity without additional dataflow evidence.
+runtime evidence now shows these fields generally index local model/object slots
+inside the active top-level SML/SST record. Some later command/runtime paths use
+the separate four-slot table at `DAT_80309e88`, but that table should not be
+conflated with the per-record model/object table rooted at `DAT_80309e84`.
+The same-index SML link remains a useful parser validation/reporting aid because
+command blocks and SML records are walked together by top-level index, but it
+should not be promoted to a runtime identity without additional dataflow
+evidence.
 
 The `s062` overlay-geometry pass gives a concrete example of this caution:
 type `3`, `8`, and `9` commands attached to visual/effect entries `6..12`,
@@ -639,9 +697,9 @@ that run:
 - type `1` is one-per-stage and appears in the block for top-level record `0`
   in representative stage samples
 - model-index candidate fields for types `2`, `3`, `4`, `8`, `9`, `10`, and
-  `11` are always runtime slot `0` in the current corpus; the old
-  same-index/SML-record resolution report is structural, not a proven runtime
-  SML-record lookup
+  `11` all carry value `0` in the current corpus; current direct evidence reads
+  this as local model/object slot `0` in the active record unless a specific
+  command path proves use of the separate type `1` four-slot table
 - top command-block patterns include `[0]`, `[0, 1]`, `[0, 8]`, `[0, 4]`,
   `[0, 8, 9]`, `[0, 3]`, `[0, 9]`, and `[0, 1, 10]`
 
@@ -851,6 +909,8 @@ The focused type `8`/`9` pass is tracked locally under:
 ```text
 planning/Analysis/2026-06-12_sst_type8_type9_semantics/
 planning/Analysis/2026-06-12_sst_type8_type9_runtime_consumers/
+planning/Analysis/2026-06-13_sst_type8_9_fire_effect_semantics/
+planning/Analysis/2026-06-13_sst_type9_orientation_source/
 ```
 
 Generated local-only artifacts are under:
@@ -858,8 +918,10 @@ Generated local-only artifacts are under:
 ```text
 SpiceSstSml/research/results/20260612_095327_type8_type9_command_correlation/
 SpiceSstSml/research/results/20260612_102035_type8_type9_command_correlation/
+SpiceSstSml/research/results/20260613_221148_type8_type9_command_correlation/
 tools/ghidra/analyses/20260612_100000_sst_type8_type9_semantics/
 tools/ghidra/analyses/20260612_103000_sst_type8_type9_runtime_consumers/
+tools/ghidra/analyses/20260613_223000_sst_type9_orientation_source/
 ```
 
 The analysis reuses baseline `FUN_8000c19c` evidence from:
@@ -878,11 +940,12 @@ Corpus results are identical across US, EU, and JP:
 | block pattern `[0, 8]` | `107` |
 | block pattern `[0, 9]` | `10` |
 
-Both type `8` and type `9` model-index fields resolve to a valid runtime slot in
-every observed row. In the current corpus every observed model index is `0`, so
-these commands attach behavior or child state to runtime slot `0`. This is
-stable corpus behavior, but the slot is populated by SST type `1` setup rather
-than by a direct SML-record lookup.
+Both type `8` and type `9` model-index fields resolve to a valid local
+model/object slot in every observed row. In the current corpus every observed
+model index is `0`, so these commands attach behavior or child state to slot `0`
+of the active SML/SST top-level record. This is stable corpus behavior; it is
+not a direct SML-record lookup and it is not the same as the separate type `1`
+four-slot runtime table.
 
 Direct Gekko evidence for type `8` in `FUN_8000c19c`:
 
@@ -927,7 +990,7 @@ Type `8` corpus field distributions per region:
 | `+0x04/+0x06` | `64` in `101`, `32` in `83`, `8` in `10`; consumed as texture tile/cell width and height |
 | `+0x08` | `256` in `101`, `128` in `66`, `64` in `27`; consumed as atlas/page dimension for UV scaling |
 | `+0x0a` | `16` in `172`, `4` in `17`, `64` in `5`; consumed as frame count |
-| `+0x0c` | mostly `0`; smaller nonzero values occur; consumed as final-frame hold duration |
+| `+0x0c` | `0` in `148`, `2` in `22`, and other smaller/sparse values plus large values such as `60`, `150`, `160`, `170`, `190`; copied as the on-disk hold/delay duration |
 | `+0x10` | `0` in `153`, `0x0000ffff` in `41`; no direct read in current Gekko window |
 
 Type `9` corpus field distributions per region:
@@ -949,9 +1012,19 @@ Runtime callback evidence:
   node/model-part data offsets `+0x1a`, `+0x1c`, `+0x20`, `+0x22`, `+0x26`,
   `+0x28`, `+0x2c`, and `+0x2e`, then calls `DCStoreRange` and
   `GXInvalidateVtxCache`.
+- In that child-local parameter block, offsets `+0x0a` and `+0x0c` are
+  runtime-only counters zero-filled by `alloc_fill_80061f58`: `+0x0a` is a hold
+  counter and `+0x0c` is the current frame. They are not on-disk type `8`
+  payload offsets. The on-disk type `8 +0x0c` value is copied to parameter
+  `+0x08` and is read as the hold/delay duration.
 - child type `10` (`FUN_8000d8fc`) reads the type `9 +0x08` value from child
   parameter block `+0x04`, calls `FUN_800120d0`, and writes an orientation/Y
   angle at the attached runtime model/object pointer `+0x2c`.
+- `FUN_800120d0` copies the published battle view orientation vector from global
+  state `80309ec8 +0x64` (`80309f2c`). The per-frame publisher
+  `FUN_800149ac` is called from `Battle::ThreadMethods::runBattleThreads`
+  before `Thread::run_threads_8022642c`, and it calls `FUN_80014808` to publish
+  the active view record into global position/target/orientation vectors.
 
 Current interpretation: types `8` and `9` are battle child/menu setup commands,
 not static geometry records. Type `8` creates a child type `9` UV/texture
@@ -960,10 +1033,43 @@ model object's node tree. Type `9` creates a child type `10` orientation updater
 for an attached runtime model/object.
 
 In `s062`, all type `8`/`9` commands occur on sparkle/effect-plane entries
-`14..17` and `20..32`, and all target model/runtime slot `0`. Their repeated
-payload shape supports the current interpretation that these are visual-effect
-commands layered on top of ordinary SML embedded MLD geometry rather than
-separate static scene parts.
+`14..17` and `20..32`, and all target local model/object slot `0` in their
+active records. Their repeated payload shape supports the current interpretation
+that these are visual-effect commands layered on top of ordinary SML embedded
+MLD geometry rather than separate static scene parts.
+
+In the annotated `s044` damaged-homebase stage, entries `6..11` and `17..20`
+are fire planes. Every one has command block shape `[0, 8, 9]`, type `0` class
+selector `6`, and the same type `8` payload:
+
+```text
+rawHex = 0000000200400040010000100000000000000000
+localModelIndex = 0
+nodeLookupOrdinal = 2
+tileWidth = 64
+tileHeight = 64
+texturePageSize = 256
+frameCount = 16
+frameHoldDuration = 0
+rawWord10 = 0
+```
+
+That is a 4x4 texture-page animation: `256 / 64 = 4` tiles per axis and `16`
+frames total. The fire SML entries have no embedded motion animation, so the
+visible burning behavior is explained by SST type `8` UV animation.
+
+The same `s044` fire-plane entries split type `9 +0x08` by plane axis:
+
+| Entries | Type `9 +0x08` | Exported plane axis |
+| --- | ---: | --- |
+| `6`, `7`, `8`, `11`, `17`, `18`, `20` | `1` | X-constant |
+| `9`, `10`, `19` | `2` | Z-constant |
+
+This supports naming type `9 +0x08` as a battle-view/camera-facing
+orientation/Y-angle mode. The conservative parser-facing name should remain
+`orientationMode` or `viewOrientationMode`; the broader command should not be
+renamed to a general-purpose billboard command until more non-fire type `9`
+examples are visually checked.
 
 ### Type 2 Runtime Consumer Pass
 
@@ -1261,6 +1367,53 @@ observed corpus, mode `2` is likely an oscillating/bouncing endpoint mode, but
 the parser-facing name should remain conservative until the target runtime
 vector is identified.
 
+### Type 2/8/9/10 Model-Index Resolution
+
+Evidence level: `US+Gekko`, with `US/EU/JP stable` corpus support for observed
+payload values.
+
+The focused resolution packet is under:
+
+```text
+planning/Analysis/2026-06-13_sst_command_types_8_9_10_2_resolution/
+```
+
+The direct setup paths resolve the old ambiguity around payload `+0x00`.
+For types `2`, `8`, `9`, and `10`, payload `+0x00` is not a global SML record
+index. It is checked against the active top-level record's model/object count,
+then used within that active record's runtime model/object row.
+
+`FUN_8000cb44` establishes the active top-level record context:
+
+- `8000cbb0`: stores the allocated per-record runtime table at `DAT_80309e84`.
+- `8000cbc0`: stores the active top-level record index at `DAT_80309e7c`.
+- `8000cbd8`: consumes the same-index SML record.
+- `8000cc50`: walks the same-index SST command block.
+
+The command setup paths then repeatedly follow this pattern:
+
+```text
+activeIndex = DAT_80309e7c
+activeRow = DAT_80309e84 + activeIndex * 0x14
+modelCount = activeRow + 0x0c
+payloadModelIndex = payload + 0x00
+payloadModelIndex is bounds-checked against modelCount
+selected object/node is loaded from the active row, not from SML record 0
+```
+
+Representative Gekko anchors:
+
+| Type | Active-row evidence | Payload-index evidence | Result |
+| ---: | --- | --- | --- |
+| `2` | `8000c304..8000c310` loads active index/table; `8000c31c` reads active row count. | `8000c314` reads `payload +0x00`; `8000c374` selects `payloadIndex * 0x4c` from the active row. | Local object plus node lookup, then deformation child setup. |
+| `8` | `8000c62c..8000c638` loads active index/table; `8000c644` reads active row count. | `8000c63c` reads `payload +0x00`; `8000c69c` selects `payloadIndex * 0x4c` from the active row. | Local object plus node lookup, then UV animation child setup. |
+| `9` | `8000c6f8..8000c704` loads active index/table; `8000c710` reads active row count. | `8000c708` reads `payload +0x00`; `8000c780..8000c788` stores the selected local model/object pointer in child data. | Local object pointer plus orientation-mode child setup. |
+| `10` | `8000bf68..8000bf7c` loads active index/table and active row count. | `8000bf74` reads `payload +0x00` and `8000bf80` bounds-checks it. | Local object selector is validated; current exported setup window copies vector/duration data for child type `11`. |
+
+This resolves the annotation-facing interpretation: if a command on SML entry
+`N` has model index `0`, it targets slot `0` inside entry `N`'s loaded runtime
+object data. It does not target SML entry `0`.
+
 ## Runtime Interpretation From SoAInvestigate
 
 Evidence level: external Ghidra analysis reference; use as semantic guidance,
@@ -1336,21 +1489,29 @@ Representative US examples from the command-payload probe:
 | `s002` | `5` | `810676` | `{0: 5, 1: 1, 10: 1}` |
 | `s006` | `28` | `2846288` | `{0: 28, 1: 1, 8: 9}` |
 | `s021` | `4` | `498096` | `{0: 4, 1: 1, 11: 1}` |
+| `s044` | `22` | `2501128` | `{0: 22, 1: 1, 8: 10, 9: 10, 10: 1}` |
 | `s062` | `33` | `1377815` | `{0: 33, 1: 1, 3: 23, 8: 17, 9: 17}` |
 | `s150` | `9` | `731056` | `{0: 9, 1: 1, 3: 1}` |
 
 `s062` is the current best annotated example for SML layering. Entry `0` is a
 base/fallback arena group; entries `1..4` are addressable nub overlays; entries
 `6..12`, `14..17`, and `20..32` are visual-effect carriers whose extra commands
-target runtime slot `0`.
+target local model/object slot `0` in their active records.
+
+`s044` is the current best annotated damaged-environment example. Entry `0` is
+the floor; entries `1..5` contain damaged scene props; entries `6..11` and
+`17..20` are fire planes with type `8`/`9` effect commands; entries `12..16`
+are sky bands; and entry `21` is a cliff/wall piece. The floor is no longer an
+open parse issue; the still-missing elevator is the remaining visible-stage
+asset to explain.
 
 ## Open Questions
 
-- What do SML record `+0x00` and `+0x0c` mean, and are they directly related to
-  the embedded payload function name, MLD entry identity, or SST top-level
-  record index?
-- What do SST top-level record `+0x00`, `+0x04`, and `+0x08` mean beyond the
-  observed count-bearing high halfword in record `0`?
+- Does any later system retain and inspect the original SML/SST top-level
+  tables after `FUN_8000cb44` finishes? Current direct evidence resolves the
+  loader meanings of SML record `+0x00/+0x0c` and SST top-level
+  `+0x00/+0x04/+0x08`, but no later read of SML `+0x0c` or SST
+  `+0x04/+0x08` has been found.
 - Are `NMDM` payloads motion/model data blocks, and how do they relate to the
   embedded MLD motion address list and the runtime motion lookup helpers?
 - What is the exact per-entry `texturesPointer` substructure for embedded SML
@@ -1359,12 +1520,16 @@ target runtime slot `0`.
 - For type `0`, which copied fields after `+0x18` are later consumed as
   transforms, flags, or runtime state? Current direct evidence names `+0x16`
   and `+0x18`; `+0x34/+0x38/+0x3c` and `+0x44` remain corpus-backed only.
-- For type `8`, are the texture-coordinate animation field names exact enough
-  to expose as parser-facing semantic metadata, or should they remain
-  conservative UV/tile/frame descriptors until the selected node/model-part
-  structure is named?
+- For type `8`, what is the formal engine name and exact in-memory structure for
+  the selected node/model-part whose texture-coordinate halfwords are updated?
+  The payload fields are now Gekko-backed, but the target structure name remains
+  provisional.
 - For type `9`, are corpus-only payload fields `+0x02`, `+0x04`, and `+0x0a`
   read by another path, or are they padding/unused for this command?
+- For type `9`, should the parser expose only the raw `orientationMode`, or also
+  a higher-level `viewFacingMode` alias? Direct evidence now ties the mode to
+  published battle view orientation, but visual checks outside fire-plane stages
+  are still needed before naming the whole command as billboard-like behavior.
 - For type `3`, are payload `+0x04` and `+0x06` consumed by another
   callback/global path, or are they copied but unused for the currently
   observed child type `5` behavior? In `s062`, the repeated type `3` payloads
@@ -1386,6 +1551,10 @@ target runtime slot `0`.
   `DAT_803473a0` and the copied SST type `1` lighting/render-environment rows
   placed in the `DAT_80309e88` four-slot table? Current evidence proves both
   structures, but not a direct pointer/dataflow from one into the other.
+- In `s044`, where does the elevator geometry come from now that SML entry `0`
+  is confirmed as the floor? Candidate sources are an already-loaded area MLD,
+  a separate runtime resource loaded by script/state, or a stage element hidden
+  behind an SST command path not yet linked to the visible elevator.
 - What are the formal engine names for the type `1` lighting helper groups at
   `DAT_80344dec` and `DAT_8034535c`, and do those groups correspond to known
   engine concepts such as world/model lighting layers, material-light sets, or
@@ -1397,9 +1566,10 @@ target runtime slot `0`.
 
 ## Next Milestones
 
-1. Add optional parser/research metadata that reports model-index fields as
-   runtime-slot candidates while preserving the older same-index SML/SST context
-   as structural evidence.
+1. Refine parser/research metadata naming so payload `+0x00` fields are reported
+   as local model/object slots in the active SML/SST entry, while preserving
+   same-index SML/SST context as structural evidence and keeping the separate
+   type `1` four-slot runtime table distinct.
 2. Add Ghidra annotations for the type `1` lighting helpers:
    `FUN_801d9d2c`, `FUN_8028708c`, `FUN_8028703c`, `FUN_80287124`,
    `FUN_802871d8`, `FUN_80287274`, `FUN_80286fec`, `FUN_8028b59c`,
@@ -1415,9 +1585,13 @@ target runtime slot `0`.
    model-data chunk pointer, source-coordinate snapshot buffer, distance/weight
    buffer, and target coordinate selector before promoting those names into the
    parser metadata.
-6. Add Ghidra annotations for the type `11` child type `12` local block:
+6. Add Ghidra annotations for the active battle view record fields used by
+   `FUN_800149ac` / `FUN_80014808`: primary/secondary view record pointers
+   `field40_0x40` and `field41_0x44`, record vectors `field9_0x20`,
+   `field10_0x2c`, `field11_0x38`, and one-frame global offsets `+0x70/+0x7c`.
+7. Add Ghidra annotations for the type `11` child type `12` local block:
    target vector pointer, related ramp object pointer, vector delta fields,
    ramp state, axis selector, cycle count, and frame counter.
-7. Use `s062` as the first annotated stage for runtime visual toggles: trace how
+8. Use `s062` as the first annotated stage for runtime visual toggles: trace how
    selector buckets `2..5` are enabled/disabled and whether entry `0` fallback
    mesh visibility is controlled by the same runtime path.
