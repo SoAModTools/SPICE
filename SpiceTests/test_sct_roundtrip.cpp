@@ -257,6 +257,18 @@ std::vector<std::uint8_t> makeOpcode119LoopScript(std::uint32_t iterations)
     return section;
 }
 
+std::vector<std::uint8_t> makeOpcode100TwoParameterScript()
+{
+    std::vector<std::uint8_t> section{};
+    appendU32(section, 100u);
+    appendU32(section, 0x50000001u);
+    appendU32(section, 0x1du);
+    appendU32(section, 0x50000002u);
+    appendU32(section, 0x1du);
+    appendU32(section, 12u);
+    return section;
+}
+
 std::vector<std::uint8_t> makeCrossRowJumpFirstSection()
 {
     std::vector<std::uint8_t> section{};
@@ -919,6 +931,25 @@ TEST(SctRoundTrip, Opcode119ExternalBreakSkipsLoopBody)
     EXPECT_EQ(119u, instructions[0].opcode);
     EXPECT_EQ(20u, instructions[0].sizeBytes);
     ASSERT_EQ(2u, instructions[0].parameters.size());
+    EXPECT_EQ(12u, instructions[1].opcode);
+    EXPECT_EQ(20u, instructions[1].offset);
+}
+
+TEST(SctRoundTrip, Opcode100ConsumesTwoScptParameters)
+{
+    const std::vector<std::vector<std::uint8_t>> sections = {
+        makeOpcode100TwoParameterScript(),
+    };
+    const auto parsed = spice::sct::SctParser{}.parse(makeSct(sections), "opcode100_two_params.sct");
+    ASSERT_TRUE(parsed.parseOk);
+
+    const auto& instructions = parsed.file.sections.front().instructions;
+    ASSERT_EQ(2u, instructions.size());
+    EXPECT_EQ(100u, instructions[0].opcode);
+    EXPECT_EQ(20u, instructions[0].sizeBytes);
+    ASSERT_EQ(2u, instructions[0].parameters.size());
+    EXPECT_EQ(spice::sct::SctParameterValueKind::Expression, instructions[0].parameters[0].valueKind);
+    EXPECT_EQ(spice::sct::SctParameterValueKind::Expression, instructions[0].parameters[1].valueKind);
     EXPECT_EQ(12u, instructions[1].opcode);
     EXPECT_EQ(20u, instructions[1].offset);
 }

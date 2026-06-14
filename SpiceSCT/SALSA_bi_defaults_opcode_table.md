@@ -2,6 +2,8 @@
 
 Generated from `jahorta/SALSA` `SALSA/BaseInstructions/bi_defaults.py`.
 
+Local correction: opcode `100` uses two SCPT parameters; the generated SALSA source listed three.
+
 | Opcode | Param Count | SCPT Params | Loop Params | Jump Param | Notes |
 |---:|---:|---|---|---:|---|
 | 0 | 2 | 0:scpt|float |  | 1 | Jump |
@@ -104,7 +106,7 @@ Generated from `jahorta/SALSA` `SALSA/BaseInstructions/bi_defaults.py`.
 | 97 | 3 | 0:scpt|short, 1:scpt|int, 2:scpt|int |  |  |  |
 | 98 | 2 | 1:scpt|short |  |  |  |
 | 99 | 2 | 1:scpt|short |  |  |  |
-| 100 | 3 | 0:scpt|short, 1:scpt|int, 2:scpt|float |  |  |  |
+| 100 | 2 | 0:scpt|short, 1:scpt|int |  |  |  |
 | 101 | 1 | 0:scpt|int |  |  |  |
 | 102 | 1 | 0:scpt|int |  |  |  |
 | 103 | 0 |  |  |  |  |

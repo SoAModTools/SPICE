@@ -154,7 +154,7 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 97
     SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 98
     SctOpcodeParamPattern{2, 0x2ull, 1, 1, 0, -1, -1}, // opcode 99
-    SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 100
+    SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 100
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 101
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 102
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 103
