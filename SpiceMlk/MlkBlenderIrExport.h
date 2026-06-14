@@ -8,6 +8,15 @@
 
 namespace spice::mlk {
 
+struct MlkBlenderIrEntryMetadata {
+    std::size_t combinedEntryIndex{ 0U };
+    std::uint32_t combinedSourceEntryId{ 0U };
+    std::uint32_t originalSourceEntryId{ 0U };
+    std::size_t originalTableIndex{ 0U };
+    std::string originalFxnName{};
+    std::string adjustedFxnName{};
+};
+
 struct MlkBlenderIrRecordExportSummary {
     std::string filePath{};
     std::size_t recordIndex{ 0U };
@@ -31,6 +40,12 @@ struct MlkBlenderIrRecordExportSummary {
     std::size_t indexEntryCount{ 0U };
     std::size_t textureCount{ 0U };
     std::size_t animationCount{ 0U };
+    std::size_t combinedMeshIndexStart{ 0U };
+    std::size_t combinedObjectTreeIndexStart{ 0U };
+    std::size_t combinedEntryIndexStart{ 0U };
+    std::size_t combinedTextureIndexStart{ 0U };
+    std::size_t combinedAnimationIndexStart{ 0U };
+    std::vector<MlkBlenderIrEntryMetadata> entries{};
     std::vector<std::string> sampleFxnNames{};
 };
 
@@ -39,10 +54,18 @@ struct MlkBlenderIrFileExportResult {
     std::filesystem::path outputDir{};
     std::filesystem::path combinedBlenderIrPath{};
     std::filesystem::path manifestPath{};
+    std::filesystem::path metadataPath{};
     std::filesystem::path recordsCsvPath{};
+    std::filesystem::path annotationPath{};
+    std::filesystem::path annotationMediaDir{};
+    std::filesystem::path annotationCombinedBlenderIrPath{};
     std::size_t recordCount{ 0U };
     std::size_t parsedRecordCount{ 0U };
     std::size_t skippedRecordCount{ 0U };
+    bool wroteAnnotation{ false };
+    bool preservedExistingAnnotation{ false };
+    bool createdAnnotationMediaDir{ false };
+    bool copiedAnnotationCombinedBlenderIr{ false };
     std::vector<MlkBlenderIrRecordExportSummary> records{};
 };
 
@@ -52,10 +75,20 @@ struct MlkBlenderIrExportResult {
     std::vector<MlkBlenderIrFileExportResult> files{};
 };
 
+struct MlkBlenderIrExportOptions {
+    std::filesystem::path annotationRepositoryDir{};
+    bool overwriteMlkAnnotations{ false };
+};
+
 [[nodiscard]] std::string generatedMldNameForKey(std::uint32_t key);
 
 [[nodiscard]] MlkBlenderIrExportResult exportMlkBlenderIr(
     const std::filesystem::path& inputPath,
     const std::filesystem::path& outputDir);
+
+[[nodiscard]] MlkBlenderIrExportResult exportMlkBlenderIr(
+    const std::filesystem::path& inputPath,
+    const std::filesystem::path& outputDir,
+    const MlkBlenderIrExportOptions& options);
 
 } // namespace spice::mlk

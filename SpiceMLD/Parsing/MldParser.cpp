@@ -105,6 +105,87 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
     return normalized;
 }
 
+[[nodiscard]] bool isNjModelTag(const std::uint32_t tag) {
+    return tag == 0x4E4A434DU || // NJCM
+        tag == 0x4E4A424DU;      // NJBM
+}
+
+[[nodiscard]] bool isNjTextureListTag(const std::uint32_t tag) {
+    return tag == 0x4E4A544CU; // NJTL
+}
+
+[[nodiscard]] bool tagAt(
+    std::span<const std::uint8_t> payload,
+    const std::size_t offset,
+    bool (*predicate)(std::uint32_t)) {
+    const auto tag = common::readU32AtBE(payload, offset);
+    return tag.has_value() && predicate(*tag);
+}
+
+[[nodiscard]] std::optional<std::uint32_t> findAlignedTag(
+    std::span<const std::uint8_t> payload,
+    const std::size_t begin,
+    const std::size_t end,
+    bool (*predicate)(std::uint32_t)) {
+    if (begin >= end || begin + 4U > payload.size()) {
+        return std::nullopt;
+    }
+
+    const auto boundedEnd = std::min(end, payload.size());
+    for (std::size_t offset = begin; offset + 4U <= boundedEnd; offset += 4U) {
+        if (tagAt(payload, offset, predicate)) {
+            return static_cast<std::uint32_t>(offset);
+        }
+    }
+    return std::nullopt;
+}
+
+void resolveObjectNjLayout(
+    ExtractedNjBlock& block,
+    std::span<const std::uint8_t> payload,
+    const std::size_t begin,
+    const std::size_t end) {
+    if (block.kind != ExtractedNjBlock::Kind::Object || begin >= end) {
+        return;
+    }
+
+    if (auto textureListOffset = findAlignedTag(payload, begin, end, isNjTextureListTag);
+        textureListOffset.has_value()) {
+        block.textureListOffset = *textureListOffset;
+    }
+
+    const auto setModelOffset = [&](const std::uint32_t absoluteOffset, std::string layout) {
+        block.modelBlockOffset = absoluteOffset;
+        block.modelReadOffset = static_cast<std::size_t>(absoluteOffset) - begin;
+        block.wrapperLayout = std::move(layout);
+    };
+
+    if (tagAt(payload, begin, isNjModelTag)) {
+        setModelOffset(static_cast<std::uint32_t>(begin), "raw-nj");
+        return;
+    }
+
+    const auto relativeModelOffset = common::readU32AtBE(payload, begin);
+    if (relativeModelOffset.has_value() && *relativeModelOffset > 0U) {
+        const auto absoluteModelOffset = begin + static_cast<std::size_t>(*relativeModelOffset);
+        if (absoluteModelOffset < end && tagAt(payload, absoluteModelOffset, isNjModelTag)) {
+            setModelOffset(static_cast<std::uint32_t>(absoluteModelOffset), "mld-object-wrapper");
+            return;
+        }
+    }
+
+    constexpr std::size_t kLegacyWrapperTrim = 0x10U;
+    if (begin + kLegacyWrapperTrim < end && tagAt(payload, begin + kLegacyWrapperTrim, isNjModelTag)) {
+        setModelOffset(static_cast<std::uint32_t>(begin + kLegacyWrapperTrim), "legacy-0x10-wrapper");
+        return;
+    }
+
+    if (auto modelOffset = findAlignedTag(payload, begin, end, isNjModelTag);
+        modelOffset.has_value()) {
+        setModelOffset(*modelOffset, "scanned-nj-model");
+    }
+}
+
 [[nodiscard]] std::vector<ExtractedNjBlock> buildExtractedNjBlocks(
     std::span<const std::uint8_t> payload,
     const std::unordered_set<std::uint32_t>& objectAddresses,
@@ -179,12 +260,13 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
         }
 
         bool includesNjtlPrefix = false;
+        std::optional<std::uint32_t> sourceObjectAddress{};
         std::size_t effectiveEnd = std::min(end, payload.size());
         if (candidate.kind == CandidateAddress::Kind::TextureList && i + 1 < candidates.size()) {
             const auto currentTag = readTag(candidate.offset).value_or(0U);
             const auto nextTag = readTag(candidates[i + 1].offset).value_or(0U);
-            const bool currentIsNjtl = currentTag == makeTag('N', 'J', 'T', 'L') || currentTag == makeTag('G', 'J', 'T', 'L');
-            const bool nextIsNjcm = nextTag == makeTag('N', 'J', 'C', 'M') || nextTag == makeTag('G', 'J', 'C', 'M');
+            const bool currentIsNjtl = isNjTextureListTag(currentTag);
+            const bool nextIsNjcm = isNjModelTag(nextTag);
             const bool nextIsObject = candidates[i + 1].kind == CandidateAddress::Kind::Object;
             if (currentIsNjtl && nextIsNjcm && nextIsObject) {
                 const auto objectEnd = (i + 2 < candidates.size())
@@ -192,8 +274,12 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
                     : payload.size();
                 effectiveEnd = std::min(objectEnd, payload.size());
                 includesNjtlPrefix = true;
+                sourceObjectAddress = candidates[i + 1].offset;
                 ++i; // consume the NJCM start with its preceding NJTL as one extracted NJ block.
             }
+        }
+        if (!sourceObjectAddress.has_value() && candidate.kind == CandidateAddress::Kind::Object) {
+            sourceObjectAddress = candidate.offset;
         }
 
         ExtractedNjBlock block{};
@@ -203,9 +289,11 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
         block.offset = candidate.offset;
         block.size = effectiveEnd - begin;
         block.includesNjtlPrefix = includesNjtlPrefix;
+        block.sourceObjectAddress = sourceObjectAddress;
         block.bytes.assign(
             payload.begin() + static_cast<std::ptrdiff_t>(begin),
             payload.begin() + static_cast<std::ptrdiff_t>(effectiveEnd));
+        resolveObjectNjLayout(block, payload, begin, effectiveEnd);
         blocks.push_back(std::move(block));
     }
 
@@ -239,6 +327,18 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
 }
 
 [[nodiscard]] std::optional<std::uint32_t> tryReadObjectNodeCount(const ExtractedNjBlock& block) {
+    std::vector<std::size_t> readOffsets{};
+    const auto appendReadOffset = [&](const std::size_t offset) {
+        if (std::find(readOffsets.begin(), readOffsets.end(), offset) == readOffsets.end()) {
+            readOffsets.push_back(offset);
+        }
+    };
+    if (block.modelReadOffset.has_value()) {
+        appendReadOffset(*block.modelReadOffset);
+    }
+    appendReadOffset(0U);
+    appendReadOffset(0x10U);
+
     auto tryRead = [&](const std::size_t trim) -> std::optional<std::uint32_t> {
         if (trim >= block.bytes.size()) {
             return std::nullopt;
@@ -255,11 +355,12 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
         }
     };
 
-    if (auto nodeCount = tryRead(0U); nodeCount.has_value()) {
-        return nodeCount;
+    for (const auto readOffset : readOffsets) {
+        if (auto nodeCount = tryRead(readOffset); nodeCount.has_value()) {
+            return nodeCount;
+        }
     }
-    constexpr std::size_t kMldObjectHeaderSize = 0x10U;
-    return tryRead(kMldObjectHeaderSize);
+    return std::nullopt;
 }
 
 [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> findAnimationTarget(

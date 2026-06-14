@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spice.local/schemas/mlk-annotation.schema.json",
+  "title": "SPICE MLK Living Annotation",
+  "type": "object",
+  "required": [
+    "schema",
+    "documentRole",
+    "schemaVersion",
+    "fileStem",
+    "sourceMlk",
+    "relativePath",
+    "mediaDirectory",
+    "combinedBlenderIrScene",
+    "metadata",
+    "manifest",
+    "recordsCsv",
+    "instructions",
+    "fileNotes",
+    "computed",
+    "records"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "spice_mlk_annotation_v1"
+    },
+    "documentRole": {
+      "const": "living_mlk_annotation"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "fileStem": {
+      "type": "string"
+    },
+    "sourceMlk": {
+      "type": "string"
+    },
+    "relativePath": {
+      "type": "string"
+    },
+    "mediaDirectory": {
+      "type": "string"
+    },
+    "combinedBlenderIrScene": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "string"
+    },
+    "manifest": {
+      "type": "string"
+    },
+    "recordsCsv": {
+      "type": "string"
+    },
+    "instructions": {
+      "type": "string"
+    },
+    "fileNotes": {
+      "$ref": "#/$defs/fileNotes"
+    },
+    "computed": {
+      "$ref": "#/$defs/computed"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      }
+    }
+  },
+  "$defs": {
+    "fileNotes": {
+      "type": "object",
+      "required": [
+        "likelyUse",
+        "filenamePatternNotes",
+        "battleContextNotes",
+        "runtimeCorrelationNotes",
+        "rawWord12Hypothesis",
+        "openQuestions",
+        "reviewedBy",
+        "reviewedAt",
+        "resources"
+      ],
+      "properties": {
+        "likelyUse": { "type": "string" },
+        "filenamePatternNotes": { "type": "string" },
+        "battleContextNotes": { "type": "string" },
+        "runtimeCorrelationNotes": { "type": "string" },
+        "rawWord12Hypothesis": { "type": "string" },
+        "openQuestions": { "type": "string" },
+        "reviewedBy": { "type": "string" },
+        "reviewedAt": { "type": "string" },
+        "resources": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "computed": {
+      "type": "object",
+      "required": [
+        "rawSize",
+        "decodedSize",
+        "sourceWasCompressedAklz",
+        "headerWords",
+        "headerRecordCountCandidate",
+        "selectedRecordCount",
+        "recordCountSource",
+        "firstPayloadOffset",
+        "recordCountInferredFromFirstPayloadOffset",
+        "recordTableBoundsStatus",
+        "diagnosticCounts",
+        "exports"
+      ],
+      "properties": {
+        "rawSize": { "type": "integer", "minimum": 0 },
+        "decodedSize": { "type": "integer", "minimum": 0 },
+        "sourceWasCompressedAklz": { "type": "boolean" },
+        "headerWords": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "headerRecordCountCandidate": { "type": "integer", "minimum": 0 },
+        "selectedRecordCount": { "type": "integer", "minimum": 0 },
+        "recordCountSource": { "type": "string" },
+        "firstPayloadOffset": { "type": "integer", "minimum": 0 },
+        "recordCountInferredFromFirstPayloadOffset": { "type": "integer", "minimum": 0 },
+        "recordTableBoundsStatus": { "type": "string" },
+        "diagnosticCounts": { "$ref": "#/$defs/diagnosticCounts" },
+        "exports": { "$ref": "#/$defs/exportPaths" }
+      },
+      "additionalProperties": false
+    },
+    "diagnosticCounts": {
+      "type": "object",
+      "required": [ "info", "warning", "error" ],
+      "properties": {
+        "info": { "type": "integer", "minimum": 0 },
+        "warning": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "exportPaths": {
+      "type": "object",
+      "required": [ "combinedBlenderIrScene", "metadata", "manifest", "recordsCsv" ],
+      "properties": {
+        "combinedBlenderIrScene": { "type": "string" },
+        "metadata": { "type": "string" },
+        "manifest": { "type": "string" },
+        "recordsCsv": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "required": [
+        "recordIndex",
+        "recordOffset",
+        "key",
+        "rawWord12",
+        "payloadOffset",
+        "payloadSize",
+        "payloadKind",
+        "payloadInBounds",
+        "status",
+        "skipReason",
+        "generatedMldName",
+        "combinedRanges",
+        "entries",
+        "humanAnnotations"
+      ],
+      "properties": {
+        "recordIndex": { "type": "integer", "minimum": 0 },
+        "recordOffset": { "type": "integer", "minimum": 0 },
+        "key": { "type": "integer", "minimum": 0 },
+        "rawWord12": { "type": "integer", "minimum": 0 },
+        "payloadOffset": { "type": "integer", "minimum": 0 },
+        "payloadSize": { "type": "integer", "minimum": 0 },
+        "payloadKind": { "type": "string" },
+        "payloadInBounds": { "type": "boolean" },
+        "status": { "type": "string" },
+        "skipReason": { "type": "string" },
+        "generatedMldName": { "type": "string" },
+        "combinedRanges": { "$ref": "#/$defs/combinedRanges" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/entry" }
+        },
+        "humanAnnotations": { "$ref": "#/$defs/humanAnnotations" }
+      },
+      "additionalProperties": false
+    },
+    "combinedRanges": {
+      "type": "object",
+      "required": [
+        "meshIndexStart",
+        "meshCount",
+        "objectTreeIndexStart",
+        "objectTreeCount",
+        "entryIndexStart",
+        "entryCount",
+        "textureIndexStart",
+        "textureCount",
+        "animationIndexStart",
+        "animationCount"
+      ],
+      "properties": {
+        "meshIndexStart": { "type": "integer", "minimum": 0 },
+        "meshCount": { "type": "integer", "minimum": 0 },
+        "objectTreeIndexStart": { "type": "integer", "minimum": 0 },
+        "objectTreeCount": { "type": "integer", "minimum": 0 },
+        "entryIndexStart": { "type": "integer", "minimum": 0 },
+        "entryCount": { "type": "integer", "minimum": 0 },
+        "textureIndexStart": { "type": "integer", "minimum": 0 },
+        "textureCount": { "type": "integer", "minimum": 0 },
+        "animationIndexStart": { "type": "integer", "minimum": 0 },
+        "animationCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "required": [
+        "combinedEntryIndex",
+        "combinedSourceEntryId",
+        "originalSourceEntryId",
+        "originalTableIndex",
+        "originalFxnName",
+        "adjustedFxnName"
+      ],
+      "properties": {
+        "combinedEntryIndex": { "type": "integer", "minimum": 0 },
+        "combinedSourceEntryId": { "type": "integer", "minimum": 0 },
+        "originalSourceEntryId": { "type": "integer", "minimum": 0 },
+        "originalTableIndex": { "type": "integer", "minimum": 0 },
+        "originalFxnName": { "type": "string" },
+        "adjustedFxnName": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "humanAnnotations": {
+      "type": "object",
+      "required": [
+        "visualRole",
+        "description",
+        "visibleInBlender",
+        "visibleInGame",
+        "actorOrEffectRole",
+        "animationNotes",
+        "cameraOrHelperNotes",
+        "rawWord12Notes",
+        "relatedRecords",
+        "suspectedRuntimeBehavior",
+        "confidence",
+        "reviewedBy",
+        "reviewedAt",
+        "media"
+      ],
+      "properties": {
+        "visualRole": { "type": "string" },
+        "description": { "type": "string" },
+        "visibleInBlender": { "type": [ "boolean", "null" ] },
+        "visibleInGame": { "type": [ "boolean", "null" ] },
+        "actorOrEffectRole": { "type": "string" },
+        "animationNotes": { "type": "string" },
+        "cameraOrHelperNotes": { "type": "string" },
+        "rawWord12Notes": { "type": "string" },
+        "relatedRecords": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "suspectedRuntimeBehavior": { "type": "string" },
+        "confidence": { "type": "string" },
+        "reviewedBy": { "type": "string" },
+        "reviewedAt": { "type": "string" },
+        "media": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

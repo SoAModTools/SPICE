@@ -106,6 +106,11 @@ struct ExtractedNjBlock {
     std::uint32_t offset = 0;
     std::size_t size = 0;
     bool includesNjtlPrefix = false;
+    std::optional<std::uint32_t> sourceObjectAddress{};
+    std::optional<std::uint32_t> modelBlockOffset{};
+    std::optional<std::size_t> modelReadOffset{};
+    std::optional<std::uint32_t> textureListOffset{};
+    std::string wrapperLayout{};
     std::vector<std::uint8_t> bytes{};
 };
 

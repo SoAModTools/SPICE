@@ -192,6 +192,7 @@ struct CliOptions {
     bool exportSstSmlCommandMap = false;
     bool exportMlkCorpus = false;
     bool exportMlkBlenderIr = false;
+    bool overwriteMlkAnnotations = false;
     std::filesystem::path smlStageAnnotationRepositoryDir{};
     bool parseSctOnly = false;
     bool decodeSctUnreachedCode = false;
@@ -219,7 +220,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--export-mlk-corpus] [--export-mlk-blender-ir] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--export-mlk-corpus] [--export-mlk-blender-ir] [--overwrite-mlk-annotations] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --decompress-aklz input.aklz output.bin\n"
         << "  SpiceFileParsing --compress-aklz input.bin output.aklz\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
@@ -239,7 +240,8 @@ void printUsage() {
         << "  - --export-sml-combined-blender-ir writes output/<stem>/<stem>_combined_blender_ir_scene.json by appending all embedded SML MLD Blender IR scenes.\n"
         << "  - --export-sst-sml-command-map writes output/<stem>/<stem>.sst_sml_command_map.json when a same-stem .sst exists.\n"
         << "  - --export-mlk-corpus scans .mlk files and writes mlk_corpus.json plus CSV summaries.\n"
-        << "  - --export-mlk-blender-ir writes one combined Blender IR scene plus metadata sidecars per .mlk file.\n"
+        << "  - --export-mlk-blender-ir writes one combined Blender IR scene plus metadata sidecars per .mlk file and seeds missing living annotations under SpiceMlk/annotations.\n"
+        << "  - --overwrite-mlk-annotations allows --export-mlk-blender-ir to regenerate existing MLK annotation JSON.\n"
         << "  - SML research exports also create living stage annotation JSON/media under SpiceSstSml/research/results/state_annotations/<stem> when run from the repo; existing annotation JSON is preserved, and combined Blender IR is copied there when available.\n"
         << "  - --sample-mld-gvr-formats writes compact embedded GVR format inventory and priority reports for .mld files.\n"
         << "  - --sct-only parses .sct files and skips other input extensions.\n"
@@ -291,6 +293,33 @@ std::filesystem::path defaultSmlStageAnnotationRepositoryDir(const std::filesyst
         }
     }
     return outputDir / "state_annotations";
+}
+
+std::filesystem::path defaultMlkAnnotationRepositoryDir(const std::filesystem::path& sourceDir) {
+    const auto direct = sourceDir.parent_path() / "SpiceMlk";
+    std::error_code ec{};
+    if (std::filesystem::exists(direct, ec) && !ec) {
+        return direct / "annotations";
+    }
+    ec.clear();
+
+    auto current = std::filesystem::current_path(ec);
+    if (!ec) {
+        while (!current.empty()) {
+            const auto candidate = current / "SpiceMlk";
+            if (std::filesystem::exists(candidate, ec) && !ec) {
+                return candidate / "annotations";
+            }
+            ec.clear();
+
+            const auto parent = current.parent_path();
+            if (parent == current) {
+                break;
+            }
+            current = parent;
+        }
+    }
+    return sourceDir.parent_path() / "SpiceMlk" / "annotations";
 }
 
 std::optional<spice::gvm::model::TextureFormat> parseGvrTextureFormat(std::string value) {
@@ -492,6 +521,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--export-mlk-blender-ir") {
             options.exportMlkBlenderIr = true;
+            continue;
+        }
+        if (arg == "--overwrite-mlk-annotations") {
+            options.overwriteMlkAnnotations = true;
             continue;
         }
         if (arg == "--sml-stage-annotation-repository") {
@@ -722,7 +755,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
             || options.exportSstSmlCommandMap || options.exportMlkCorpus || options.exportMlkBlenderIr
-            || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.overwriteMlkAnnotations || options.parseSctOnly || options.decodeSctUnreachedCode
             || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
             || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
             || options.gvrAklzSpecified || options.gvrFormatPreserve || options.gvrFormatOverride.has_value()
@@ -765,6 +798,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
             || options.exportMlkCorpus)) {
         std::cerr << "--export-mlk-blender-ir cannot be combined with other parse/export modes.\n";
+        return std::nullopt;
+    }
+    if (options.overwriteMlkAnnotations && !options.exportMlkBlenderIr) {
+        std::cerr << "--overwrite-mlk-annotations requires --export-mlk-blender-ir.\n";
         return std::nullopt;
     }
     if (options.sampleMldGvrFormats && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly)) {
@@ -2964,7 +3001,6 @@ void writeSctReport(const std::filesystem::path& outPath, const spice::sct::SctP
     }
 }
 
-
 void ensureOutputParentDirectory(const std::filesystem::path& path) {
     const auto parent = path.parent_path();
     if (!parent.empty()) {
@@ -3009,6 +3045,8 @@ void runAklzUtility(const CliOptions& cliOptions) {
     }
 }
 
+
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3037,6 +3075,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+
     if (cliOptions->createGvrSingle || cliOptions->replaceGvrSingle || cliOptions->replaceMldTextureSingle) {
         try {
             if (cliOptions->createGvrSingle) {
@@ -3100,12 +3139,25 @@ int main(int argc, char** argv) {
         try {
             std::filesystem::create_directories(outputDir);
             std::cout << "[SpiceFileParsing] Step 2/4: Exporting MLK Blender IR contact sheets.\n";
-            const auto exported = spice::mlk::exportMlkBlenderIr(inputDir, outputDir);
+            spice::mlk::MlkBlenderIrExportOptions exportOptions{};
+            exportOptions.annotationRepositoryDir = defaultMlkAnnotationRepositoryDir(source_dir);
+            exportOptions.overwriteMlkAnnotations = cliOptions->overwriteMlkAnnotations;
+            const auto exported = spice::mlk::exportMlkBlenderIr(inputDir, outputDir, exportOptions);
             std::cout << "[SpiceFileParsing] Step 3/4: Writing MLK Blender IR artifacts.\n";
             for (const auto& file : exported.files) {
                 std::cout << "[SpiceFileParsing]   - Wrote " << file.combinedBlenderIrPath.string() << "\n";
                 std::cout << "[SpiceFileParsing]   - Wrote " << file.manifestPath.string() << "\n";
                 std::cout << "[SpiceFileParsing]   - Wrote " << file.recordsCsvPath.string() << "\n";
+                if (file.wroteAnnotation) {
+                    std::cout << "[SpiceFileParsing]   - Wrote " << file.annotationPath.string() << "\n";
+                } else if (file.preservedExistingAnnotation) {
+                    std::cout << "[SpiceFileParsing]   - Preserved existing MLK annotation "
+                              << file.annotationPath.string() << "\n";
+                }
+                if (file.copiedAnnotationCombinedBlenderIr) {
+                    std::cout << "[SpiceFileParsing]   - Copied annotation Blender IR "
+                              << file.annotationCombinedBlenderIrPath.string() << "\n";
+                }
             }
             std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
             std::cout << "SpiceFileParsing finished.\nFilesProcessed=" << exported.files.size()

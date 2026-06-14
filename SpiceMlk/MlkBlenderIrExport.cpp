@@ -160,45 +160,7 @@ std::string makeSafeNameComponent(std::string value, std::string fallback) {
 
 std::string makeRecordPrefix(const std::string& stem, std::size_t recordIndex) {
     const auto safeStem = makeSafeNameComponent(stem, "mlk");
-    return safeStem + "_record_" + (recordIndex < 10U ? "00" : (recordIndex < 100U ? "0" : "")) +
-        std::to_string(recordIndex) + "__";
-}
-
-spice::mld::model::BlenderIrSourceRecord makeSourceRecord(
-    const std::string& relativePath,
-    const MlkRecordProbe& record) {
-    return spice::mld::model::BlenderIrSourceRecord{
-        .containerKind = "mlk",
-        .containerPath = relativePath,
-        .recordIndex = record.index,
-        .recordOffset = record.recordOffset,
-        .key = record.key,
-        .generatedMldName = generatedMldNameForKey(record.key),
-        .rawWord12 = record.rawWord12,
-        .payloadOffset = record.payloadOffset,
-        .payloadSize = record.payloadSize,
-        .payloadKind = toString(record.payloadKind),
-    };
-}
-
-void stampSourceRecord(
-    spice::mld::model::BlenderIrScene& scene,
-    const spice::mld::model::BlenderIrSourceRecord& sourceRecord) {
-    for (auto& mesh : scene.meshes) {
-        mesh.sourceRecord = sourceRecord;
-    }
-    for (auto& tree : scene.objectTrees) {
-        tree.sourceRecord = sourceRecord;
-    }
-    for (auto& entry : scene.indexEntries) {
-        entry.sourceRecord = sourceRecord;
-    }
-    for (auto& texture : scene.textures) {
-        texture.sourceRecord = sourceRecord;
-    }
-    for (auto& animation : scene.animations) {
-        animation.sourceRecord = sourceRecord;
-    }
+    return safeStem + "_" + std::to_string(recordIndex) + "_";
 }
 
 void namespaceRecordScene(
@@ -238,9 +200,18 @@ void namespaceRecordScene(
     }
 }
 
+struct RecordSceneAppendResult {
+    std::size_t meshIndexStart{ 0U };
+    std::size_t objectTreeIndexStart{ 0U };
+    std::size_t entryIndexStart{ 0U };
+    std::size_t textureIndexStart{ 0U };
+    std::size_t animationIndexStart{ 0U };
+    std::vector<MlkBlenderIrEntryMetadata> entries{};
+};
+
 class MlkBlenderIrCombiner {
 public:
-    void appendRecordScene(
+    [[nodiscard]] RecordSceneAppendResult appendRecordScene(
         spice::mld::model::BlenderIrScene recordScene,
         const std::string& stem,
         std::size_t recordIndex) {
@@ -249,6 +220,16 @@ public:
         const auto meshIndexBase = scene_.meshes.size();
         const auto objectTreeIndexBase = scene_.objectTrees.size();
         const auto indexEntryBase = scene_.indexEntries.size();
+        const auto textureIndexBase = scene_.textures.size();
+        const auto animationIndexBase = scene_.animations.size();
+
+        RecordSceneAppendResult appendResult{
+            .meshIndexStart = meshIndexBase,
+            .objectTreeIndexStart = objectTreeIndexBase,
+            .entryIndexStart = indexEntryBase,
+            .textureIndexStart = textureIndexBase,
+            .animationIndexStart = animationIndexBase,
+        };
 
         for (auto& tree : recordScene.objectTrees) {
             for (auto& node : tree.nodes) {
@@ -258,7 +239,16 @@ public:
             }
         }
 
-        for (auto& indexEntry : recordScene.indexEntries) {
+        for (std::size_t localEntryIndex = 0; localEntryIndex < recordScene.indexEntries.size(); ++localEntryIndex) {
+            auto& indexEntry = recordScene.indexEntries[localEntryIndex];
+            const auto combinedEntryIndex = indexEntryBase + localEntryIndex;
+            const auto originalSourceEntryId = indexEntry.sourceEntryId;
+            const auto originalTableIndex = indexEntry.tableIndex;
+            const auto originalFxnName = indexEntry.fxnName;
+            const auto adjustedFxnName = makeRecordPrefix(stem, recordIndex) +
+                makeSafeNameComponent(originalFxnName, "entry");
+            indexEntry.sourceEntryId = static_cast<std::uint32_t>(combinedEntryIndex);
+            indexEntry.fxnName = adjustedFxnName;
             indexEntry.tableIndex += indexEntryBase;
             for (auto& meshIndex : indexEntry.meshIndices) {
                 meshIndex += meshIndexBase;
@@ -266,12 +256,24 @@ public:
             for (auto& objectTreeIndex : indexEntry.objectTreeIndices) {
                 objectTreeIndex += objectTreeIndexBase;
             }
+            appendResult.entries.push_back(MlkBlenderIrEntryMetadata{
+                .combinedEntryIndex = combinedEntryIndex,
+                .combinedSourceEntryId = indexEntry.sourceEntryId,
+                .originalSourceEntryId = originalSourceEntryId,
+                .originalTableIndex = originalTableIndex,
+                .originalFxnName = originalFxnName,
+                .adjustedFxnName = adjustedFxnName,
+            });
             scene_.indexEntries.push_back(std::move(indexEntry));
         }
 
         for (auto& animation : recordScene.animations) {
             animation.tableIndex += indexEntryBase;
             animation.objectTreeIndex += objectTreeIndexBase;
+            if (animation.tableIndex >= indexEntryBase &&
+                animation.tableIndex < indexEntryBase + recordScene.indexEntries.size()) {
+                animation.sourceEntryId = static_cast<std::uint32_t>(animation.tableIndex);
+            }
             scene_.animations.push_back(std::move(animation));
         }
 
@@ -293,6 +295,7 @@ public:
             scene_.diagnostics.end(),
             std::make_move_iterator(recordScene.diagnostics.begin()),
             std::make_move_iterator(recordScene.diagnostics.end()));
+        return appendResult;
     }
 
     [[nodiscard]] const spice::mld::model::BlenderIrScene& scene() const noexcept {
@@ -448,6 +451,9 @@ std::string formatManifestJson(const MlkBlenderIrFileExportResult& file) {
     out << "  \"combinedBlenderIrScene\": ";
     writeJsonString(out, file.combinedBlenderIrPath.filename().generic_string());
     out << ",\n";
+    out << "  \"metadata\": ";
+    writeJsonString(out, file.metadataPath.filename().generic_string());
+    out << ",\n";
     out << "  \"recordsCsv\": ";
     writeJsonString(out, file.recordsCsvPath.filename().generic_string());
     out << ",\n";
@@ -503,6 +509,304 @@ std::string formatManifestJson(const MlkBlenderIrFileExportResult& file) {
     return out.str();
 }
 
+std::string formatMetadataJson(const MlkBlenderIrFileExportResult& file) {
+    std::ostringstream out;
+    out << "{\n";
+    out << "  \"$schema\": \"MlkBlenderIrMetadata.schema.json\",\n";
+    out << "  \"schemaVersion\": 1,\n";
+    out << "  \"containerKind\": \"mlk\",\n";
+    out << "  \"containerPath\": ";
+    writeJsonString(out, file.relativePath);
+    out << ",\n";
+    out << "  \"combinedBlenderIrScene\": ";
+    writeJsonString(out, file.combinedBlenderIrPath.filename().generic_string());
+    out << ",\n";
+    out << "  \"manifest\": ";
+    writeJsonString(out, file.manifestPath.filename().generic_string());
+    out << ",\n";
+    out << "  \"recordsCsv\": ";
+    writeJsonString(out, file.recordsCsvPath.filename().generic_string());
+    out << ",\n";
+    out << "  \"records\": [\n";
+    for (std::size_t i = 0; i < file.records.size(); ++i) {
+        if (i != 0U) {
+            out << ",\n";
+        }
+        const auto& record = file.records[i];
+        out << "    {\n";
+        out << "      \"recordIndex\": " << record.recordIndex << ",\n";
+        out << "      \"recordOffset\": " << record.recordOffset << ",\n";
+        out << "      \"key\": " << record.key << ",\n";
+        out << "      \"generatedMldName\": ";
+        writeJsonString(out, record.generatedMldName);
+        out << ",\n";
+        out << "      \"rawWord12\": " << record.rawWord12 << ",\n";
+        out << "      \"payloadOffset\": " << record.payloadOffset << ",\n";
+        out << "      \"payloadSize\": " << record.payloadSize << ",\n";
+        out << "      \"payloadKind\": ";
+        writeJsonString(out, record.payloadKind);
+        out << ",\n";
+        out << "      \"status\": ";
+        writeJsonString(out, record.status);
+        out << ",\n";
+        out << "      \"skipReason\": ";
+        writeJsonString(out, record.skipReason);
+        out << ",\n";
+        out << "      \"combinedRanges\": {\n";
+        out << "        \"meshIndexStart\": " << record.combinedMeshIndexStart << ",\n";
+        out << "        \"meshCount\": " << record.meshCount << ",\n";
+        out << "        \"objectTreeIndexStart\": " << record.combinedObjectTreeIndexStart << ",\n";
+        out << "        \"objectTreeCount\": " << record.objectTreeCount << ",\n";
+        out << "        \"entryIndexStart\": " << record.combinedEntryIndexStart << ",\n";
+        out << "        \"entryCount\": " << record.indexEntryCount << ",\n";
+        out << "        \"textureIndexStart\": " << record.combinedTextureIndexStart << ",\n";
+        out << "        \"textureCount\": " << record.textureCount << ",\n";
+        out << "        \"animationIndexStart\": " << record.combinedAnimationIndexStart << ",\n";
+        out << "        \"animationCount\": " << record.animationCount << "\n";
+        out << "      },\n";
+        out << "      \"entries\": [\n";
+        for (std::size_t j = 0; j < record.entries.size(); ++j) {
+            if (j != 0U) {
+                out << ",\n";
+            }
+            const auto& entry = record.entries[j];
+            out << "        {\n";
+            out << "          \"combinedEntryIndex\": " << entry.combinedEntryIndex << ",\n";
+            out << "          \"combinedSourceEntryId\": " << entry.combinedSourceEntryId << ",\n";
+            out << "          \"originalSourceEntryId\": " << entry.originalSourceEntryId << ",\n";
+            out << "          \"originalTableIndex\": " << entry.originalTableIndex << ",\n";
+            out << "          \"originalFxnName\": ";
+            writeJsonString(out, entry.originalFxnName);
+            out << ",\n";
+            out << "          \"adjustedFxnName\": ";
+            writeJsonString(out, entry.adjustedFxnName);
+            out << "\n";
+            out << "        }";
+        }
+        out << "\n";
+        out << "      ]\n";
+        out << "    }";
+    }
+    out << "\n";
+    out << "  ]\n";
+    out << "}\n";
+    return out.str();
+}
+
+std::filesystem::path annotationDirForFile(
+    const std::filesystem::path& annotationRepositoryDir,
+    const std::string& relativePath) {
+    return outputDirForFile(annotationRepositoryDir, relativePath);
+}
+
+std::size_t diagnosticCount(const MlkScanResult& scan, DiagnosticSeverity severity) {
+    return static_cast<std::size_t>(std::count_if(scan.diagnostics.begin(), scan.diagnostics.end(), [&](const auto& diagnostic) {
+        return diagnostic.severity == severity;
+    }));
+}
+
+void writeHumanAnnotationTemplate(std::ostream& out, const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"visualRole\": \"\",\n"
+        << indent << "  \"description\": \"\",\n"
+        << indent << "  \"visibleInBlender\": null,\n"
+        << indent << "  \"visibleInGame\": null,\n"
+        << indent << "  \"actorOrEffectRole\": \"\",\n"
+        << indent << "  \"animationNotes\": \"\",\n"
+        << indent << "  \"cameraOrHelperNotes\": \"\",\n"
+        << indent << "  \"rawWord12Notes\": \"\",\n"
+        << indent << "  \"relatedRecords\": [],\n"
+        << indent << "  \"suspectedRuntimeBehavior\": \"\",\n"
+        << indent << "  \"confidence\": \"\",\n"
+        << indent << "  \"reviewedBy\": \"\",\n"
+        << indent << "  \"reviewedAt\": \"\",\n"
+        << indent << "  \"media\": []\n"
+        << indent << "}";
+}
+
+void writeFileNotesTemplate(std::ostream& out, const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"likelyUse\": \"\",\n"
+        << indent << "  \"filenamePatternNotes\": \"\",\n"
+        << indent << "  \"battleContextNotes\": \"\",\n"
+        << indent << "  \"runtimeCorrelationNotes\": \"\",\n"
+        << indent << "  \"rawWord12Hypothesis\": \"\",\n"
+        << indent << "  \"openQuestions\": \"\",\n"
+        << indent << "  \"reviewedBy\": \"\",\n"
+        << indent << "  \"reviewedAt\": \"\",\n"
+        << indent << "  \"resources\": []\n"
+        << indent << "}";
+}
+
+void writeCombinedRanges(std::ostream& out, const MlkBlenderIrRecordExportSummary& record, const std::string& indent) {
+    out << "{\n";
+    out << indent << "  \"meshIndexStart\": " << record.combinedMeshIndexStart << ",\n";
+    out << indent << "  \"meshCount\": " << record.meshCount << ",\n";
+    out << indent << "  \"objectTreeIndexStart\": " << record.combinedObjectTreeIndexStart << ",\n";
+    out << indent << "  \"objectTreeCount\": " << record.objectTreeCount << ",\n";
+    out << indent << "  \"entryIndexStart\": " << record.combinedEntryIndexStart << ",\n";
+    out << indent << "  \"entryCount\": " << record.indexEntryCount << ",\n";
+    out << indent << "  \"textureIndexStart\": " << record.combinedTextureIndexStart << ",\n";
+    out << indent << "  \"textureCount\": " << record.textureCount << ",\n";
+    out << indent << "  \"animationIndexStart\": " << record.combinedAnimationIndexStart << ",\n";
+    out << indent << "  \"animationCount\": " << record.animationCount << "\n";
+    out << indent << "}";
+}
+
+void writeEntryMetadataArray(std::ostream& out,
+    const std::vector<MlkBlenderIrEntryMetadata>& entries,
+    const std::string& indent) {
+    out << "[";
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (i != 0U) {
+            out << ",";
+        }
+        const auto& entry = entries[i];
+        out << "\n" << indent << "{\n";
+        out << indent << "  \"combinedEntryIndex\": " << entry.combinedEntryIndex << ",\n";
+        out << indent << "  \"combinedSourceEntryId\": " << entry.combinedSourceEntryId << ",\n";
+        out << indent << "  \"originalSourceEntryId\": " << entry.originalSourceEntryId << ",\n";
+        out << indent << "  \"originalTableIndex\": " << entry.originalTableIndex << ",\n";
+        out << indent << "  \"originalFxnName\": ";
+        writeJsonString(out, entry.originalFxnName);
+        out << ",\n";
+        out << indent << "  \"adjustedFxnName\": ";
+        writeJsonString(out, entry.adjustedFxnName);
+        out << "\n";
+        out << indent << "}";
+    }
+    if (!entries.empty()) {
+        out << "\n" << indent.substr(2U);
+    }
+    out << "]";
+}
+
+std::string formatAnnotationJson(
+    const MlkBlenderIrFileExportResult& file,
+    const MlkScanResult& scan,
+    const std::filesystem::path& sourcePath) {
+    const auto stem = std::filesystem::path(file.relativePath).stem().generic_string();
+    std::ostringstream out;
+    out << "{\n";
+    out << "  \"$schema\": \"MlkAnnotation.schema.json\",\n";
+    out << "  \"schema\": \"spice_mlk_annotation_v1\",\n";
+    out << "  \"documentRole\": \"living_mlk_annotation\",\n";
+    out << "  \"schemaVersion\": 1,\n";
+    out << "  \"fileStem\": ";
+    writeJsonString(out, stem);
+    out << ",\n";
+    out << "  \"sourceMlk\": ";
+    writeJsonString(out, sourcePath.generic_string());
+    out << ",\n";
+    out << "  \"relativePath\": ";
+    writeJsonString(out, file.relativePath);
+    out << ",\n";
+    out << "  \"mediaDirectory\": ";
+    writeJsonString(out, file.annotationMediaDir.filename().generic_string());
+    out << ",\n";
+    out << "  \"combinedBlenderIrScene\": ";
+    if (!file.annotationCombinedBlenderIrPath.empty()) {
+        writeJsonString(out, file.annotationCombinedBlenderIrPath.filename().generic_string());
+    } else {
+        writeJsonString(out, file.combinedBlenderIrPath.generic_string());
+    }
+    out << ",\n";
+    out << "  \"metadata\": ";
+    writeJsonString(out, file.metadataPath.generic_string());
+    out << ",\n";
+    out << "  \"manifest\": ";
+    writeJsonString(out, file.manifestPath.generic_string());
+    out << ",\n";
+    out << "  \"recordsCsv\": ";
+    writeJsonString(out, file.recordsCsvPath.generic_string());
+    out << ",\n";
+    out << "  \"instructions\": \"Fill fileNotes and per-record humanAnnotations from Blender/in-game observation; keep computed fields as the current parser-derived snapshot. Re-exports preserve this file unless overwrite is explicitly requested.\",\n";
+    out << "  \"fileNotes\": ";
+    writeFileNotesTemplate(out, "  ");
+    out << ",\n";
+    out << "  \"computed\": {\n";
+    out << "    \"rawSize\": " << scan.rawSize << ",\n";
+    out << "    \"decodedSize\": " << scan.decodedSize << ",\n";
+    out << "    \"sourceWasCompressedAklz\": " << boolText(scan.sourceWasCompressedAklz) << ",\n";
+    out << "    \"headerWords\": [";
+    for (std::size_t i = 0; i < scan.headerWords.size(); ++i) {
+        out << (i == 0U ? "" : ", ") << scan.headerWords[i];
+    }
+    out << "],\n";
+    out << "    \"headerRecordCountCandidate\": " << scan.recordCountCandidate << ",\n";
+    out << "    \"selectedRecordCount\": " << scan.selectedRecordCount << ",\n";
+    out << "    \"recordCountSource\": ";
+    writeJsonString(out, toString(scan.recordCountSource));
+    out << ",\n";
+    out << "    \"firstPayloadOffset\": " << scan.firstPayloadOffset << ",\n";
+    out << "    \"recordCountInferredFromFirstPayloadOffset\": " << scan.recordCountInferredFromFirstPayloadOffset << ",\n";
+    out << "    \"recordTableBoundsStatus\": ";
+    writeJsonString(out, scan.recordTableInBounds ? "in-bounds" : "out-of-bounds");
+    out << ",\n";
+    out << "    \"diagnosticCounts\": {\n";
+    out << "      \"info\": " << diagnosticCount(scan, DiagnosticSeverity::Info) << ",\n";
+    out << "      \"warning\": " << diagnosticCount(scan, DiagnosticSeverity::Warning) << ",\n";
+    out << "      \"error\": " << diagnosticCount(scan, DiagnosticSeverity::Error) << "\n";
+    out << "    },\n";
+    out << "    \"exports\": {\n";
+    out << "      \"combinedBlenderIrScene\": ";
+    writeJsonString(out, file.combinedBlenderIrPath.generic_string());
+    out << ",\n";
+    out << "      \"metadata\": ";
+    writeJsonString(out, file.metadataPath.generic_string());
+    out << ",\n";
+    out << "      \"manifest\": ";
+    writeJsonString(out, file.manifestPath.generic_string());
+    out << ",\n";
+    out << "      \"recordsCsv\": ";
+    writeJsonString(out, file.recordsCsvPath.generic_string());
+    out << "\n";
+    out << "    }\n";
+    out << "  },\n";
+    out << "  \"records\": [";
+    for (std::size_t i = 0; i < file.records.size(); ++i) {
+        if (i != 0U) {
+            out << ",";
+        }
+        const auto& record = file.records[i];
+        out << "\n";
+        out << "    {\n";
+        out << "      \"recordIndex\": " << record.recordIndex << ",\n";
+        out << "      \"recordOffset\": " << record.recordOffset << ",\n";
+        out << "      \"key\": " << record.key << ",\n";
+        out << "      \"rawWord12\": " << record.rawWord12 << ",\n";
+        out << "      \"payloadOffset\": " << record.payloadOffset << ",\n";
+        out << "      \"payloadSize\": " << record.payloadSize << ",\n";
+        out << "      \"payloadKind\": ";
+        writeJsonString(out, record.payloadKind);
+        out << ",\n";
+        out << "      \"payloadInBounds\": " << boolText(record.payloadInBounds) << ",\n";
+        out << "      \"status\": ";
+        writeJsonString(out, record.status);
+        out << ",\n";
+        out << "      \"skipReason\": ";
+        writeJsonString(out, record.skipReason);
+        out << ",\n";
+        out << "      \"generatedMldName\": ";
+        writeJsonString(out, record.generatedMldName);
+        out << ",\n";
+        out << "      \"combinedRanges\": ";
+        writeCombinedRanges(out, record, "      ");
+        out << ",\n";
+        out << "      \"entries\": ";
+        writeEntryMetadataArray(out, record.entries, "        ");
+        out << ",\n";
+        out << "      \"humanAnnotations\": ";
+        writeHumanAnnotationTemplate(out, "      ");
+        out << "\n";
+        out << "    }";
+    }
+    out << "\n";
+    out << "  ]\n";
+    out << "}\n";
+    return out.str();
+}
+
 MlkBlenderIrRecordExportSummary makeInitialRecordSummary(
     const std::string& relativePath,
     const MlkRecordProbe& record) {
@@ -524,7 +828,8 @@ MlkBlenderIrFileExportResult exportFile(
     const std::filesystem::path& path,
     const std::filesystem::path& inputPath,
     bool inputWasDirectory,
-    const std::filesystem::path& outputRoot) {
+    const std::filesystem::path& outputRoot,
+    const MlkBlenderIrExportOptions& options) {
     const auto rawBytes = readFileBytes(path);
     const auto relativePath = relativePathString(path, inputPath, inputWasDirectory);
     const auto decodedBytes = decodeForPayloadAccess(rawBytes);
@@ -537,7 +842,14 @@ MlkBlenderIrFileExportResult exportFile(
     result.outputDir = outputDirForFile(outputRoot, relativePath);
     result.combinedBlenderIrPath = result.outputDir / (stem + "_mlk_combined_blender_ir_scene.json");
     result.manifestPath = result.outputDir / (stem + "_mlk_blender_manifest.json");
+    result.metadataPath = result.outputDir / (stem + "_mlk_blender_metadata.json");
     result.recordsCsvPath = result.outputDir / (stem + "_mlk_blender_records.csv");
+    if (!options.annotationRepositoryDir.empty()) {
+        const auto annotationDir = annotationDirForFile(options.annotationRepositoryDir, relativePath);
+        result.annotationPath = annotationDir / (stem + ".mlk_annotation.json");
+        result.annotationMediaDir = annotationDir / (stem + ".mlk_annotation_media");
+        result.annotationCombinedBlenderIrPath = annotationDir / result.combinedBlenderIrPath.filename();
+    }
     result.recordCount = scan.records.size();
     result.records.reserve(scan.records.size());
 
@@ -605,8 +917,13 @@ MlkBlenderIrFileExportResult exportFile(
             summary.parseOk = summary.errorCount == 0U;
             summary.status = summary.parseOk ? "parsed" : "parsed-with-errors";
 
-            stampSourceRecord(*parsed.blenderIrScene, makeSourceRecord(relativePath, record));
-            combiner.appendRecordScene(std::move(*parsed.blenderIrScene), stem, record.index);
+            const auto appendResult = combiner.appendRecordScene(std::move(*parsed.blenderIrScene), stem, record.index);
+            summary.combinedMeshIndexStart = appendResult.meshIndexStart;
+            summary.combinedObjectTreeIndexStart = appendResult.objectTreeIndexStart;
+            summary.combinedEntryIndexStart = appendResult.entryIndexStart;
+            summary.combinedTextureIndexStart = appendResult.textureIndexStart;
+            summary.combinedAnimationIndexStart = appendResult.animationIndexStart;
+            summary.entries = appendResult.entries;
             ++result.parsedRecordCount;
         } catch (const std::exception& ex) {
             summary.status = "skipped";
@@ -620,8 +937,26 @@ MlkBlenderIrFileExportResult exportFile(
 
     std::filesystem::create_directories(result.outputDir);
     writeTextFile(result.combinedBlenderIrPath, exporter.toJson(combiner.scene()));
+    writeTextFile(result.metadataPath, formatMetadataJson(result));
     writeTextFile(result.recordsCsvPath, formatRecordsCsv(result));
     writeTextFile(result.manifestPath, formatManifestJson(result));
+    if (!result.annotationPath.empty()) {
+        const bool mediaDirExisted = std::filesystem::exists(result.annotationMediaDir);
+        std::filesystem::create_directories(result.annotationMediaDir);
+        result.createdAnnotationMediaDir = !mediaDirExisted && std::filesystem::exists(result.annotationMediaDir);
+        std::filesystem::copy_file(
+            result.combinedBlenderIrPath,
+            result.annotationCombinedBlenderIrPath,
+            std::filesystem::copy_options::overwrite_existing);
+        result.copiedAnnotationCombinedBlenderIr = std::filesystem::exists(result.annotationCombinedBlenderIrPath);
+
+        if (std::filesystem::exists(result.annotationPath) && !options.overwriteMlkAnnotations) {
+            result.preservedExistingAnnotation = true;
+        } else {
+            writeTextFile(result.annotationPath, formatAnnotationJson(result, scan, path));
+            result.wroteAnnotation = true;
+        }
+    }
     return result;
 }
 
@@ -674,12 +1009,19 @@ std::string generatedMldNameForKey(std::uint32_t key) {
 MlkBlenderIrExportResult exportMlkBlenderIr(
     const std::filesystem::path& inputPath,
     const std::filesystem::path& outputDir) {
+    return exportMlkBlenderIr(inputPath, outputDir, MlkBlenderIrExportOptions{});
+}
+
+MlkBlenderIrExportResult exportMlkBlenderIr(
+    const std::filesystem::path& inputPath,
+    const std::filesystem::path& outputDir,
+    const MlkBlenderIrExportOptions& options) {
     MlkBlenderIrExportResult result{};
     result.inputPath = inputPath.string();
     const auto paths = collectMlkPaths(inputPath, result.inputWasDirectory);
     result.files.reserve(paths.size());
     for (const auto& path : paths) {
-        result.files.push_back(exportFile(path, inputPath, result.inputWasDirectory, outputDir));
+        result.files.push_back(exportFile(path, inputPath, result.inputWasDirectory, outputDir, options));
     }
     return result;
 }

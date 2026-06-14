@@ -192,25 +192,165 @@ TEST(SpiceMlkBlenderIrExport, WritesCombinedSceneManifestAndRecordsCsv) {
     EXPECT_EQ(file.skippedRecordCount, 0U);
     EXPECT_TRUE(std::filesystem::exists(file.combinedBlenderIrPath));
     EXPECT_TRUE(std::filesystem::exists(file.manifestPath));
+    EXPECT_TRUE(std::filesystem::exists(file.metadataPath));
     EXPECT_TRUE(std::filesystem::exists(file.recordsCsvPath));
 
     const auto json = readText(file.combinedBlenderIrPath);
-    EXPECT_NE(json.find("\"sourceRecord\":{\"containerKind\":\"mlk\""), std::string::npos);
-    EXPECT_NE(json.find("\"containerPath\":\"sample.mlk\""), std::string::npos);
-    EXPECT_NE(json.find("\"recordIndex\":0"), std::string::npos);
-    EXPECT_NE(json.find("\"key\":7704300"), std::string::npos);
-    EXPECT_NE(json.find("\"generatedMldName\":\"E7704300.MLD\""), std::string::npos);
-    EXPECT_NE(json.find("\"rawWord12\":5"), std::string::npos);
-    EXPECT_NE(json.find("sample_record_000__"), std::string::npos);
+    EXPECT_EQ(json.find("\"sourceRecord\""), std::string::npos);
+    EXPECT_EQ(json.find("\"containerKind\""), std::string::npos);
+    EXPECT_EQ(json.find("\"containerPath\""), std::string::npos);
+    EXPECT_EQ(json.find("sample.mlk"), std::string::npos);
+    EXPECT_EQ(json.find("\"generatedMldName\""), std::string::npos);
+    EXPECT_EQ(json.find("\"rawWord12\""), std::string::npos);
+    EXPECT_EQ(json.find("\"payloadKind\""), std::string::npos);
+    EXPECT_NE(json.find("sample_0_"), std::string::npos);
 
     const auto manifest = readText(file.manifestPath);
     EXPECT_NE(manifest.find("\"parsedRecordCount\": 1"), std::string::npos);
+    EXPECT_NE(manifest.find("\"metadata\": \"sample_mlk_blender_metadata.json\""), std::string::npos);
     EXPECT_NE(manifest.find("\"generatedMldName\": \"E7704300.MLD\""), std::string::npos);
     EXPECT_NE(manifest.find("\"status\": \"parsed\""), std::string::npos);
+
+    const auto metadata = readText(file.metadataPath);
+    EXPECT_NE(metadata.find("\"containerKind\": \"mlk\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"containerPath\": \"sample.mlk\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"recordIndex\": 0"), std::string::npos);
+    EXPECT_NE(metadata.find("\"recordOffset\": 8"), std::string::npos);
+    EXPECT_NE(metadata.find("\"key\": 7704300"), std::string::npos);
+    EXPECT_NE(metadata.find("\"generatedMldName\": \"E7704300.MLD\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"rawWord12\": 5"), std::string::npos);
+    EXPECT_NE(metadata.find("\"payloadOffset\": 24"), std::string::npos);
+    EXPECT_NE(metadata.find("\"payloadSize\": 384"), std::string::npos);
+    EXPECT_NE(metadata.find("\"payloadKind\": \"mld\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"combinedRanges\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"meshIndexStart\": 0"), std::string::npos);
+    EXPECT_NE(metadata.find("\"entries\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"originalFxnName\": \"camera\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"adjustedFxnName\": \"sample_0_camera\""), std::string::npos);
 
     const auto csv = readText(file.recordsCsvPath);
     EXPECT_EQ(csv.rfind("filePath,recordIndex,recordOffset,key,generatedMldName", 0U), 0U);
     EXPECT_NE(csv.find("sample.mlk,0,8,7704300,E7704300.MLD,5"), std::string::npos);
+}
+
+TEST(SpiceMlkBlenderIrExport, SeedsMissingAnnotationDocument) {
+    const auto root = makeTempOutputDir("spice_mlk_blender_ir_annotation_seed");
+    const auto mlkPath = root / "sample.mlk";
+    const auto outputDir = root / "out";
+    const auto annotationDir = root / "annotations";
+    writeBytes(mlkPath, makeMlk({
+        MlkRecordFixture{
+            .key = 7704300U,
+            .rawWord12 = 5U,
+            .payload = makeMinimalMld("camera"),
+        },
+    }));
+
+    spice::mlk::MlkBlenderIrExportOptions options{};
+    options.annotationRepositoryDir = annotationDir;
+    const auto exported = spice::mlk::exportMlkBlenderIr(mlkPath, outputDir, options);
+
+    ASSERT_EQ(exported.files.size(), 1U);
+    const auto& file = exported.files[0];
+    EXPECT_EQ(file.annotationPath, annotationDir / "sample" / "sample.mlk_annotation.json");
+    EXPECT_EQ(file.annotationMediaDir, annotationDir / "sample" / "sample.mlk_annotation_media");
+    EXPECT_EQ(
+        file.annotationCombinedBlenderIrPath,
+        annotationDir / "sample" / "sample_mlk_combined_blender_ir_scene.json");
+    EXPECT_TRUE(file.wroteAnnotation);
+    EXPECT_FALSE(file.preservedExistingAnnotation);
+    EXPECT_TRUE(file.copiedAnnotationCombinedBlenderIr);
+    EXPECT_TRUE(std::filesystem::exists(file.annotationPath));
+    EXPECT_TRUE(std::filesystem::exists(file.annotationMediaDir));
+    EXPECT_TRUE(std::filesystem::exists(file.annotationCombinedBlenderIrPath));
+    EXPECT_EQ(readText(file.annotationCombinedBlenderIrPath), readText(file.combinedBlenderIrPath));
+
+    const auto annotation = readText(file.annotationPath);
+    EXPECT_NE(annotation.find("\"schema\": \"spice_mlk_annotation_v1\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"documentRole\": \"living_mlk_annotation\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"fileStem\": \"sample\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"relativePath\": \"sample.mlk\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"mediaDirectory\": \"sample.mlk_annotation_media\""), std::string::npos);
+    EXPECT_NE(
+        annotation.find("\"combinedBlenderIrScene\": \"sample_mlk_combined_blender_ir_scene.json\""),
+        std::string::npos);
+    EXPECT_NE(annotation.find("\"fileNotes\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"likelyUse\": \"\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"rawSize\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"decodedSize\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"sourceWasCompressedAklz\": false"), std::string::npos);
+    EXPECT_NE(annotation.find("\"headerWords\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"selectedRecordCount\": 1"), std::string::npos);
+    EXPECT_NE(annotation.find("\"recordCountSource\": \"header-u16-at-0x04\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"recordTableBoundsStatus\": \"in-bounds\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"recordIndex\": 0"), std::string::npos);
+    EXPECT_NE(annotation.find("\"recordOffset\": 8"), std::string::npos);
+    EXPECT_NE(annotation.find("\"key\": 7704300"), std::string::npos);
+    EXPECT_NE(annotation.find("\"rawWord12\": 5"), std::string::npos);
+    EXPECT_NE(annotation.find("\"payloadKind\": \"mld\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"generatedMldName\": \"E7704300.MLD\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"originalFxnName\": \"camera\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"adjustedFxnName\": \"sample_0_camera\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"humanAnnotations\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"visibleInBlender\": null"), std::string::npos);
+    EXPECT_NE(annotation.find("\"relatedRecords\": []"), std::string::npos);
+}
+
+TEST(SpiceMlkBlenderIrExport, PreservesAndOverwritesAnnotationDocumentExplicitly) {
+    const auto root = makeTempOutputDir("spice_mlk_blender_ir_annotation_preserve");
+    const auto mlkPath = root / "sample.mlk";
+    const auto outputDir = root / "out";
+    const auto annotationDir = root / "annotations";
+    const auto annotationPath = annotationDir / "sample" / "sample.mlk_annotation.json";
+    const auto annotationCombinedIrPath = annotationDir / "sample" / "sample_mlk_combined_blender_ir_scene.json";
+    writeBytes(mlkPath, makeMlk({
+        MlkRecordFixture{
+            .key = 7704300U,
+            .rawWord12 = 5U,
+            .payload = makeMinimalMld("camera"),
+        },
+    }));
+    std::filesystem::create_directories(annotationPath.parent_path());
+    {
+        std::ofstream out(annotationPath, std::ios::binary);
+        out << "{\"manual\":\"keep me\"}\n";
+    }
+
+    spice::mlk::MlkBlenderIrExportOptions options{};
+    options.annotationRepositoryDir = annotationDir;
+    const auto preserved = spice::mlk::exportMlkBlenderIr(mlkPath, outputDir, options);
+
+    ASSERT_EQ(preserved.files.size(), 1U);
+    EXPECT_FALSE(preserved.files[0].wroteAnnotation);
+    EXPECT_TRUE(preserved.files[0].preservedExistingAnnotation);
+    EXPECT_TRUE(preserved.files[0].copiedAnnotationCombinedBlenderIr);
+    EXPECT_TRUE(std::filesystem::exists(preserved.files[0].annotationMediaDir));
+    EXPECT_TRUE(std::filesystem::exists(annotationCombinedIrPath));
+    EXPECT_EQ(readText(annotationCombinedIrPath), readText(preserved.files[0].combinedBlenderIrPath));
+    EXPECT_EQ(readText(annotationPath), "{\"manual\":\"keep me\"}\n");
+
+    options.overwriteMlkAnnotations = true;
+    const auto overwritten = spice::mlk::exportMlkBlenderIr(mlkPath, outputDir, options);
+
+    ASSERT_EQ(overwritten.files.size(), 1U);
+    EXPECT_TRUE(overwritten.files[0].wroteAnnotation);
+    EXPECT_FALSE(overwritten.files[0].preservedExistingAnnotation);
+    const auto annotation = readText(annotationPath);
+    EXPECT_EQ(annotation.find("\"manual\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"schema\": \"spice_mlk_annotation_v1\""), std::string::npos);
+    EXPECT_NE(annotation.find("\"adjustedFxnName\": \"sample_0_camera\""), std::string::npos);
+}
+
+TEST(SpiceMlkBlenderIrExport, AnnotationSchemaDocumentsRequiredLivingFields) {
+    const auto schema = readText(std::filesystem::path("SpiceMlk") / "MlkAnnotation.schema.json");
+    EXPECT_NE(schema.find("\"spice_mlk_annotation_v1\""), std::string::npos);
+    EXPECT_NE(schema.find("\"living_mlk_annotation\""), std::string::npos);
+    EXPECT_NE(schema.find("\"additionalProperties\": false"), std::string::npos);
+    EXPECT_NE(schema.find("\"fileNotes\""), std::string::npos);
+    EXPECT_NE(schema.find("\"computed\""), std::string::npos);
+    EXPECT_NE(schema.find("\"humanAnnotations\""), std::string::npos);
+    EXPECT_NE(schema.find("\"visibleInBlender\""), std::string::npos);
+    EXPECT_NE(schema.find("\"rawWord12Notes\""), std::string::npos);
 }
 
 TEST(SpiceMlkBlenderIrExport, PreservesRelativeParentsAndReportsSkippedRows) {
@@ -249,16 +389,33 @@ TEST(SpiceMlkBlenderIrExport, PreservesRelativeParentsAndReportsSkippedRows) {
     EXPECT_EQ(file.skippedRecordCount, 1U);
 
     const auto json = readText(file.combinedBlenderIrPath);
-    EXPECT_NE(json.find("\"recordIndex\":0"), std::string::npos);
-    EXPECT_NE(json.find("\"recordIndex\":1"), std::string::npos);
-    EXPECT_NE(json.find("\"rawWord12\":5"), std::string::npos);
-    EXPECT_NE(json.find("\"rawWord12\":7"), std::string::npos);
-    EXPECT_NE(json.find("combo_record_000__"), std::string::npos);
-    EXPECT_NE(json.find("combo_record_001__"), std::string::npos);
+    EXPECT_EQ(json.find("\"sourceRecord\""), std::string::npos);
+    EXPECT_EQ(json.find("\"containerKind\""), std::string::npos);
+    EXPECT_EQ(json.find("\"containerPath\""), std::string::npos);
+    EXPECT_EQ(json.find("beff/combo.mlk"), std::string::npos);
+    EXPECT_EQ(json.find("\"generatedMldName\""), std::string::npos);
+    EXPECT_EQ(json.find("\"rawWord12\""), std::string::npos);
+    EXPECT_EQ(json.find("\"payloadKind\""), std::string::npos);
+    EXPECT_NE(json.find("combo_0_"), std::string::npos);
+    EXPECT_NE(json.find("combo_1_"), std::string::npos);
 
     const auto manifest = readText(file.manifestPath);
     EXPECT_NE(manifest.find("\"skippedRecordCount\": 1"), std::string::npos);
     EXPECT_NE(manifest.find("\"skipReason\": \"payload-kind-not-mld\""), std::string::npos);
+
+    const auto metadata = readText(file.metadataPath);
+    EXPECT_NE(metadata.find("\"containerPath\": \"beff/combo.mlk\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"recordIndex\": 0"), std::string::npos);
+    EXPECT_NE(metadata.find("\"recordIndex\": 1"), std::string::npos);
+    EXPECT_NE(metadata.find("\"recordIndex\": 2"), std::string::npos);
+    EXPECT_NE(metadata.find("\"rawWord12\": 5"), std::string::npos);
+    EXPECT_NE(metadata.find("\"rawWord12\": 7"), std::string::npos);
+    EXPECT_NE(metadata.find("\"rawWord12\": 99"), std::string::npos);
+    EXPECT_NE(metadata.find("\"payloadKind\": \"pof0\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"combinedRanges\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"entryIndexStart\": 1"), std::string::npos);
+    EXPECT_NE(metadata.find("\"originalFxnName\": \"camera1\""), std::string::npos);
+    EXPECT_NE(metadata.find("\"adjustedFxnName\": \"combo_1_camera1\""), std::string::npos);
 
     const auto csv = readText(file.recordsCsvPath);
     EXPECT_NE(csv.find("beff/combo.mlk,2,40,1,E0000001.MLD,99"), std::string::npos);

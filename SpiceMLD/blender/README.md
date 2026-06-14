@@ -22,6 +22,8 @@ Once enabled, open:
 
 - **File → Import → Spice Blender IR (.json)**
 
+You can also press **Ctrl+Alt+I** to open the Spice Blender IR JSON import file picker directly.
+
 That opens the importer operator (`import_scene.spice_blender_ir`) with options:
 
 - **Collection** (target collection name, default `Spice_Imported`)

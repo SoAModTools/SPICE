@@ -55,4 +55,12 @@
       <Filter>Blender IR</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="MlkAnnotation.schema.json">
+      <Filter>Blender IR</Filter>
+    </None>
+    <None Include="MlkBlenderIrMetadata.schema.json">
+      <Filter>Blender IR</Filter>
+    </None>
+  </ItemGroup>
 </Project>

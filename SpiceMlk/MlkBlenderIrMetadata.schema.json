@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spice.local/schemas/mlk-blender-ir-metadata.schema.json",
+  "title": "SPICE MLK Blender IR Metadata",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "containerKind",
+    "containerPath",
+    "combinedBlenderIrScene",
+    "manifest",
+    "recordsCsv",
+    "records"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "containerKind": {
+      "const": "mlk"
+    },
+    "containerPath": {
+      "type": "string"
+    },
+    "combinedBlenderIrScene": {
+      "type": "string"
+    },
+    "manifest": {
+      "type": "string"
+    },
+    "recordsCsv": {
+      "type": "string"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/record"
+      }
+    }
+  },
+  "$defs": {
+    "record": {
+      "type": "object",
+      "required": [
+        "recordIndex",
+        "recordOffset",
+        "key",
+        "generatedMldName",
+        "rawWord12",
+        "payloadOffset",
+        "payloadSize",
+        "payloadKind",
+        "status",
+        "skipReason",
+        "combinedRanges",
+        "entries"
+      ],
+      "properties": {
+        "recordIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recordOffset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "key": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generatedMldName": {
+          "type": "string"
+        },
+        "rawWord12": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payloadOffset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payloadSize": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payloadKind": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "skipReason": {
+          "type": "string"
+        },
+        "combinedRanges": {
+          "$ref": "#/$defs/combinedRanges"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entry"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "combinedRanges": {
+      "type": "object",
+      "required": [
+        "meshIndexStart",
+        "meshCount",
+        "objectTreeIndexStart",
+        "objectTreeCount",
+        "entryIndexStart",
+        "entryCount",
+        "textureIndexStart",
+        "textureCount",
+        "animationIndexStart",
+        "animationCount"
+      ],
+      "properties": {
+        "meshIndexStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "meshCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "objectTreeIndexStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "objectTreeCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "entryIndexStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "entryCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "textureIndexStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "textureCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "animationIndexStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "animationCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "entry": {
+      "type": "object",
+      "required": [
+        "combinedEntryIndex",
+        "combinedSourceEntryId",
+        "originalSourceEntryId",
+        "originalTableIndex",
+        "originalFxnName",
+        "adjustedFxnName"
+      ],
+      "properties": {
+        "combinedEntryIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "combinedSourceEntryId": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "originalSourceEntryId": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "originalTableIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "originalFxnName": {
+          "type": "string"
+        },
+        "adjustedFxnName": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

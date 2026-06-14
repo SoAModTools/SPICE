@@ -266,7 +266,9 @@ using Sa3Dport::ObjectData::NodePtr;
         return names;
     }
 
-    std::size_t njtlOffset = 0U;
+    std::size_t njtlOffset = block.textureListOffset.has_value() && *block.textureListOffset >= block.offset
+        ? static_cast<std::size_t>(*block.textureListOffset - block.offset)
+        : 0U;
     auto tag = common::readU32AtBE(block.bytes, njtlOffset).value_or(0U);
     if (tag != 0x4E4A544CU && tag != 0x474A544CU && block.bytes.size() >= 0x10U) {
         const auto wrappedNjtlPointer = common::readU32AtBE(block.bytes, 0x08U).value_or(0U);
@@ -316,6 +318,10 @@ using Sa3Dport::ObjectData::NodePtr;
 }
 
 [[nodiscard]] std::uint32_t resolveObjectAddress(const ExtractedNjBlock& block, const ParseResult& parseResult) {
+    if (block.sourceObjectAddress.has_value()) {
+        return *block.sourceObjectAddress;
+    }
+
     std::vector<std::uint32_t> candidates{};
     for (const auto& entry : parseResult.rawEntries) {
         for (const auto address : entry.objectAddresses) {
@@ -352,6 +358,20 @@ struct ParsedSa3dModel {
         return std::nullopt;
     }
 
+    std::vector<std::size_t> readOffsets{};
+    const auto appendReadOffset = [&](const std::size_t offset) {
+        if (std::find(readOffsets.begin(), readOffsets.end(), offset) == readOffsets.end()) {
+            readOffsets.push_back(offset);
+        }
+    };
+    if (block.modelReadOffset.has_value()) {
+        appendReadOffset(*block.modelReadOffset);
+    }
+    appendReadOffset(0U);
+    if (block.kind == ExtractedNjBlock::Kind::Object) {
+        appendReadOffset(0x10U);
+    }
+
     auto tryRead = [&](const std::size_t trim) -> std::optional<ParsedSa3dModel> {
         if (trim >= block.bytes.size()) {
             return std::nullopt;
@@ -367,14 +387,14 @@ struct ParsedSa3dModel {
         }
     };
 
-    if (auto parsed = tryRead(0U); parsed.has_value()) {
-        return parsed;
-    }
-
-    if (block.kind == ExtractedNjBlock::Kind::Object) {
-        constexpr std::size_t kMldObjectHeaderSize = 0x10U;
-        if (auto parsed = tryRead(kMldObjectHeaderSize); parsed.has_value()) {
-            diagnostics.push_back("SA3D adapter stripped 0x10-byte MLD object wrapper at " + std::to_string(block.offset) + ".");
+    for (const auto readOffset : readOffsets) {
+        if (auto parsed = tryRead(readOffset); parsed.has_value()) {
+            if (readOffset != 0U) {
+                const auto layout = block.wrapperLayout.empty() ? std::string("legacy-offset") : block.wrapperLayout;
+                diagnostics.push_back("SA3D adapter resolved " + layout +
+                    " NJ model at " + std::to_string(block.offset + readOffset) +
+                    " from object block " + std::to_string(block.offset) + ".");
+            }
             return parsed;
         }
     }

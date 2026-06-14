@@ -14,7 +14,6 @@ from __future__ import annotations
 import base64
 import json
 import math
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
@@ -66,20 +65,6 @@ NJD_EVAL_UNIT_POS = 1 << 0
 NJD_EVAL_UNIT_ANG = 1 << 1
 NJD_EVAL_UNIT_SCL = 1 << 2
 GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET = 0.05
-MLK_RAW_WORD12_COLORS = (
-    (0.80, 0.80, 0.80, 1.0),
-    (0.90, 0.35, 0.28, 1.0),
-    (0.25, 0.55, 0.95, 1.0),
-    (0.30, 0.75, 0.45, 1.0),
-    (0.95, 0.75, 0.25, 1.0),
-    (0.70, 0.45, 0.90, 1.0),
-    (0.20, 0.80, 0.80, 1.0),
-    (0.95, 0.45, 0.70, 1.0),
-    (0.60, 0.70, 0.30, 1.0),
-    (0.95, 0.60, 0.30, 1.0),
-    (0.45, 0.45, 0.95, 1.0),
-    (0.35, 0.85, 0.60, 1.0),
-)
 
 
 def _read_int(value: Any, *, field_name: str) -> int:
@@ -126,103 +111,6 @@ def _ensure_collection(name: str, parent: Collection | None = None) -> Collectio
 def _link_object_to_collection(collection: Collection, obj: Object) -> None:
     if collection.objects.get(obj.name) is None:
         collection.objects.link(obj)
-
-
-def _safe_name_component(value: str, fallback: str) -> str:
-    safe = re.sub(r"[^0-9A-Za-z_-]+", "_", value).strip("_")
-    return safe if safe else fallback
-
-
-def _source_record(data: dict[str, Any]) -> dict[str, Any] | None:
-    record = data.get("sourceRecord")
-    if isinstance(record, dict) and record.get("containerKind") == "mlk":
-        return record
-    return None
-
-
-def _mlk_record_collection_name(record: dict[str, Any]) -> str:
-    record_index = int(record.get("recordIndex", 0))
-    raw_word12 = int(record.get("rawWord12", 0))
-    generated_name = _safe_name_component(str(record.get("generatedMldName", "")), "mld")
-    return f"record_{record_index:03d}__raw_{raw_word12}__{generated_name}"
-
-
-def _record_collection_for(
-    root_collection: Collection,
-    record: dict[str, Any] | None,
-) -> Collection:
-    if record is None:
-        return root_collection
-    return _ensure_collection(_mlk_record_collection_name(record), parent=root_collection)
-
-
-def _mlk_record_color(record: dict[str, Any] | None) -> tuple[float, float, float, float] | None:
-    if record is None:
-        return None
-    raw_word12 = int(record.get("rawWord12", 0))
-    return MLK_RAW_WORD12_COLORS[raw_word12 % len(MLK_RAW_WORD12_COLORS)]
-
-
-def _apply_source_record_properties(
-    owner: Any,
-    record: dict[str, Any] | None,
-    stats: ImportStats,
-    *,
-    field_name: str,
-) -> None:
-    if record is None:
-        return
-    owner["spice_mlk_container_path"] = str(record.get("containerPath", ""))
-    owner["spice_mlk_generated_mld_name"] = str(record.get("generatedMldName", ""))
-    owner["spice_mlk_payload_kind"] = str(record.get("payloadKind", ""))
-    _set_custom_int_property(
-        owner,
-        "spice_mlk_record_index",
-        record.get("recordIndex", 0),
-        stats,
-        field_name=f"{field_name}.sourceRecord.recordIndex",
-    )
-    _set_custom_int_property(
-        owner,
-        "spice_mlk_record_offset",
-        record.get("recordOffset", 0),
-        stats,
-        field_name=f"{field_name}.sourceRecord.recordOffset",
-    )
-    _set_custom_int_property(
-        owner,
-        "spice_mlk_key",
-        record.get("key", 0),
-        stats,
-        field_name=f"{field_name}.sourceRecord.key",
-    )
-    _set_custom_int_property(
-        owner,
-        "spice_mlk_raw_word12",
-        record.get("rawWord12", 0),
-        stats,
-        field_name=f"{field_name}.sourceRecord.rawWord12",
-    )
-    _set_custom_int_property(
-        owner,
-        "spice_mlk_payload_offset",
-        record.get("payloadOffset", 0),
-        stats,
-        field_name=f"{field_name}.sourceRecord.payloadOffset",
-    )
-    _set_custom_int_property(
-        owner,
-        "spice_mlk_payload_size",
-        record.get("payloadSize", 0),
-        stats,
-        field_name=f"{field_name}.sourceRecord.payloadSize",
-    )
-
-
-def _apply_source_record_color(obj: Object, record: dict[str, Any] | None) -> None:
-    color = _mlk_record_color(record)
-    if color is not None:
-        obj.color = color
 
 
 def _clear_collection(collection: Collection) -> None:
@@ -868,7 +756,6 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
     mesh_field_name = f"meshes[{mesh_name}]"
     label = str(mesh_data.get("label", ""))
     is_grnd_mesh = label.startswith("GRND_")
-    source_record = _source_record(mesh_data)
 
     vertices_data = mesh_data.get("vertices", [])
     vertices = []
@@ -968,7 +855,6 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
                 color_layer.data[loop_index].color = color
 
     diagnostics = mesh_data.get("diagnostics", {})
-    _apply_source_record_properties(mesh, source_record, stats, field_name=mesh_field_name)
     _set_custom_int_property(
         mesh,
         "spice_source_object_address",
@@ -1035,8 +921,6 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
     )
 
     obj = bpy.data.objects.new(mesh_name, mesh)
-    _apply_source_record_properties(obj, source_record, stats, field_name=mesh_field_name)
-    _apply_source_record_color(obj, source_record)
     stats.mesh_count += 1
     stats.material_count += len(material_slots)
     return obj
@@ -1861,17 +1745,9 @@ def import_blender_ir_json(
         entry_id = int(entry.get("sourceEntryId", 0))
         table_index = int(entry.get("tableIndex", entry_index))
         fxn_name = str(entry.get("fxnName", ""))
-        entry_source_record = _source_record(entry)
-        entry_collection = _record_collection_for(root_collection, entry_source_record)
+        entry_collection = root_collection
         entry_root = _create_empty(_entry_root_name(entry_index, entry_id, fxn_name))
         _apply_entry_transform(entry_root, transform)
-        _apply_source_record_properties(
-            entry_root,
-            entry_source_record,
-            stats,
-            field_name=f"indexEntries[{entry_id}]",
-        )
-        _apply_source_record_color(entry_root, entry_source_record)
         if emit_parity_debug:
             debug_lines.append(
                 (
@@ -1926,13 +1802,6 @@ def import_blender_ir_json(
                 _set_parent_with_identity_inverse(instance_obj, entry_root)
                 _apply_identity_local_transform(instance_obj)
                 instance_obj["spice_mesh_index"] = mi
-                _apply_source_record_properties(
-                    instance_obj,
-                    entry_source_record,
-                    stats,
-                    field_name=f"indexEntries[{entry_id}].meshIndices[{slot}]",
-                )
-                _apply_source_record_color(instance_obj, entry_source_record)
                 _link_object_to_collection(entry_collection, instance_obj)
                 stats.object_count += 1
             continue
@@ -1944,7 +1813,6 @@ def import_blender_ir_json(
                 continue
 
             tree = object_trees[ti]
-            tree_source_record = _source_record(tree) or entry_source_record
             nodes = tree.get("nodes", [])
             node_objects: list[Object | None] = [None] * len(nodes)
             binding_key = (table_index, ti)
@@ -1952,13 +1820,6 @@ def import_blender_ir_json(
             for node_idx, node in enumerate(nodes):
                 node_name = _node_object_name(entry_root.name, node_idx, tree)
                 node_obj = _create_empty(node_name)
-                _apply_source_record_properties(
-                    node_obj,
-                    tree_source_record,
-                    stats,
-                    field_name=f"objectTrees[{ti}].nodes[{node_idx}]",
-                )
-                _apply_source_record_color(node_obj, tree_source_record)
                 _set_custom_int_property(
                     node_obj,
                     "spice_node_index",
@@ -2053,13 +1914,6 @@ def import_blender_ir_json(
                     stats,
                 )
                 if armature_obj is not None:
-                    _apply_source_record_properties(
-                        armature_obj,
-                        tree_source_record,
-                        stats,
-                        field_name=f"objectTrees[{ti}].armature",
-                    )
-                    _apply_source_record_color(armature_obj, tree_source_record)
                     tree_armature_bindings[binding_key] = armature_obj
                     tree_nodes_by_binding[binding_key] = nodes
                     for node_obj in node_objects:
@@ -2108,13 +1962,6 @@ def import_blender_ir_json(
                     _set_parent_with_identity_inverse(attach_obj, parent_obj)
                     _apply_identity_local_transform(attach_obj)
                 attach_obj["spice_mesh_index"] = mi
-                _apply_source_record_properties(
-                    attach_obj,
-                    _source_record(mesh_data) or tree_source_record,
-                    stats,
-                    field_name=f"objectTrees[{ti}].nodes[{node_idx}].meshIndex",
-                )
-                _apply_source_record_color(attach_obj, _source_record(mesh_data) or tree_source_record)
                 _set_custom_int_property(
                     attach_obj,
                     "spice_node_index",
@@ -2147,13 +1994,6 @@ def import_blender_ir_json(
             _set_parent_with_identity_inverse(instance_obj, entry_root)
             _apply_identity_local_transform(instance_obj)
             instance_obj["spice_mesh_index"] = mi
-            _apply_source_record_properties(
-                instance_obj,
-                _source_record(mesh_payloads[mi]) or entry_source_record,
-                stats,
-                field_name=f"indexEntries[{entry_id}].meshIndices[{slot}]",
-            )
-            _apply_source_record_color(instance_obj, _source_record(mesh_payloads[mi]) or entry_source_record)
             _link_object_to_collection(entry_collection, instance_obj)
             stats.object_count += 1
 

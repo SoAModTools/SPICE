@@ -16,19 +16,6 @@ struct BlenderIrWeight {
     float weight = 0.0f;
 };
 
-struct BlenderIrSourceRecord {
-    std::string containerKind{};
-    std::string containerPath{};
-    std::size_t recordIndex = 0;
-    std::uint32_t recordOffset = 0;
-    std::uint32_t key = 0;
-    std::string generatedMldName{};
-    std::uint32_t rawWord12 = 0;
-    std::uint32_t payloadOffset = 0;
-    std::uint32_t payloadSize = 0;
-    std::string payloadKind{};
-};
-
 struct BlenderIrVertex {
     Vec3 position{};
     Vec3 normal{};
@@ -78,7 +65,6 @@ struct BlenderIrMaterial {
 };
 
 struct BlenderIrTexture {
-    std::optional<BlenderIrSourceRecord> sourceRecord{};
     std::uint32_t textureId = 0xFFFFFFFFU;
     bool hasTextureId = false;
     std::string textureName{};
@@ -119,7 +105,6 @@ struct BlenderIrWeightedBinding {
 
 struct BlenderIrMesh {
     std::string label{};
-    std::optional<BlenderIrSourceRecord> sourceRecord{};
     std::uint32_t sourceObjectAddress = 0;
     std::size_t sourceChunkOffset = 0;
     std::size_t sourceAttachOffset = 0;
@@ -143,7 +128,6 @@ struct BlenderIrNode {
 
 struct BlenderIrObjectTree {
     std::string label{};
-    std::optional<BlenderIrSourceRecord> sourceRecord{};
     std::uint32_t sourceObjectAddress = 0;
     std::size_t sourceChunkOffset = 0;
     std::vector<BlenderIrNode> nodes{};
@@ -151,7 +135,6 @@ struct BlenderIrObjectTree {
 };
 
 struct BlenderIrInstance {
-    std::optional<BlenderIrSourceRecord> sourceRecord{};
     std::uint32_t sourceEntryId = 0;
     std::size_t tableIndex = 0;
     std::int32_t tblId = 0;
@@ -188,7 +171,6 @@ struct BlenderIrNodeAnimation {
 };
 
 struct BlenderIrAnimation {
-    std::optional<BlenderIrSourceRecord> sourceRecord{};
     std::uint32_t sourceEntryId = 0;
     std::size_t tableIndex = 0;
     std::uint32_t sourceObjectAddress = 0;
