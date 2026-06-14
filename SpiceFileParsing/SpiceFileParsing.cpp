@@ -172,6 +172,10 @@ struct CliOptions {
     std::filesystem::path replaceMldTextureSourceMld{};
     std::filesystem::path replaceMldTextureInputPng{};
     std::filesystem::path replaceMldTextureOutputMld{};
+    bool decompressAklzSingle = false;
+    bool compressAklzSingle = false;
+    std::filesystem::path aklzInputPath{};
+    std::filesystem::path aklzOutputPath{};
     std::optional<std::size_t> mldTextureIndex{};
     std::optional<std::string> mldTextureName{};
     bool mldAllowDimensionChange = false;
@@ -216,6 +220,8 @@ void printUsage() {
     std::cout
         << "Usage:\n"
         << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--export-mlk-corpus] [--export-mlk-blender-ir] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing --decompress-aklz input.aklz output.bin\n"
+        << "  SpiceFileParsing --compress-aklz input.bin output.aklz\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
         << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
         << "  SpiceFileParsing --replace-mld-texture source.mld input.png output.mld (--mld-texture-index <n>|--mld-texture-name <name>) [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-global-index preserve|none|<u32>] [--mld-aklz preserve|raw|compressed] [--mld-allow-dimension-change] [--mld-allow-post-archive-shift]\n"
@@ -224,6 +230,7 @@ void printUsage() {
         << "Notes:\n"
         << "  - input_dir defaults to SpiceFileParsing/inputs\n"
         << "  - output_dir defaults to SpiceFileParsing/parsed\n"
+        << "  - --decompress-aklz and --compress-aklz are standalone single-file utility modes.\n"
         << "  - --ab-sa3d-port-vs-sa3d-bridge enables A/B mode for .mld files.\n"
         << "  - --extract-grnd-gobj-blocks writes raw GRND/GOBJ candidate blocks and a manifest per .mld file.\n"
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
@@ -415,6 +422,26 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.replaceMldTextureSourceMld = std::filesystem::path(argv[++i]);
             options.replaceMldTextureInputPng = std::filesystem::path(argv[++i]);
             options.replaceMldTextureOutputMld = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--decompress-aklz") {
+            if (i + 2 >= argc) {
+                std::cerr << "--decompress-aklz requires input.aklz and output.bin.\n";
+                return std::nullopt;
+            }
+            options.decompressAklzSingle = true;
+            options.aklzInputPath = std::filesystem::path(argv[++i]);
+            options.aklzOutputPath = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--compress-aklz") {
+            if (i + 2 >= argc) {
+                std::cerr << "--compress-aklz requires input.bin and output.aklz.\n";
+                return std::nullopt;
+            }
+            options.compressAklzSingle = true;
+            options.aklzInputPath = std::filesystem::path(argv[++i]);
+            options.aklzOutputPath = std::filesystem::path(argv[++i]);
             continue;
         }
         if (arg == "--create-gvr-batch") {
@@ -681,6 +708,30 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
 
     if (options.parseSctOnly && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats)) {
         std::cerr << "--sct-only cannot be combined with MLD-only or MLD A/B modes.\n";
+        return std::nullopt;
+    }
+    const int aklzUtilityModeCount = (options.decompressAklzSingle ? 1 : 0)
+        + (options.compressAklzSingle ? 1 : 0);
+    if (aklzUtilityModeCount > 1) {
+        std::cerr << "Only one AKLZ utility mode can be selected.\n";
+        return std::nullopt;
+    }
+    if (aklzUtilityModeCount > 0
+        && (positionalIndex > 0 || options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
+            || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
+            || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
+            || options.exportSstSmlCommandMap || options.exportMlkCorpus || options.exportMlkBlenderIr
+            || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
+            || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
+            || options.gvrAklzSpecified || options.gvrFormatPreserve || options.gvrFormatOverride.has_value()
+            || options.gvrPaletteFormatPreserve || options.gvrPaletteFormatOverride.has_value()
+            || options.gvrMipmapsPreserve || options.gvrMipmapsOverride.has_value()
+            || options.gvrGlobalIndexPolicy != GvrGlobalIndexPolicy::Preserve
+            || options.mldTextureIndex.has_value() || options.mldTextureName.has_value()
+            || options.mldAllowDimensionChange || options.mldAllowPostArchiveShift || options.mldAklzSpecified)) {
+        std::cerr << "AKLZ utility modes cannot be combined with parser/export modes or format options.\n";
         return std::nullopt;
     }
     if (options.exportSctBinary && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats)) {
@@ -2914,6 +2965,49 @@ void writeSctReport(const std::filesystem::path& outPath, const spice::sct::SctP
 }
 
 
+void ensureOutputParentDirectory(const std::filesystem::path& path) {
+    const auto parent = path.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+}
+
+void runAklzUtility(const CliOptions& cliOptions) {
+    if (!std::filesystem::exists(cliOptions.aklzInputPath)) {
+        throw std::runtime_error("AKLZ input file does not exist: " + cliOptions.aklzInputPath.string());
+    }
+    if (!std::filesystem::is_regular_file(cliOptions.aklzInputPath)) {
+        throw std::runtime_error("AKLZ input path is not a file: " + cliOptions.aklzInputPath.string());
+    }
+
+    const auto sourceBytes = readAllBytes(cliOptions.aklzInputPath);
+    std::vector<std::uint8_t> outputBytes{};
+    if (cliOptions.decompressAklzSingle) {
+        if (!spice::compression::aklz::isAklz(sourceBytes)) {
+            throw std::runtime_error("Input is not AKLZ-compressed: " + cliOptions.aklzInputPath.string());
+        }
+        const auto decoded = spice::compression::aklz::decompress(sourceBytes);
+        if (!decoded.ok()) {
+            throw std::runtime_error(
+                "AKLZ decompression failed: " +
+                std::string(spice::compression::aklz::errorToString(decoded.error)));
+        }
+        outputBytes = decoded.bytes;
+    } else {
+        const auto encoded = spice::compression::aklz::compress(sourceBytes);
+        if (!encoded.ok()) {
+            throw std::runtime_error(
+                "AKLZ compression failed: " +
+                std::string(spice::compression::aklz::errorToString(encoded.error)));
+        }
+        outputBytes = encoded.bytes;
+    }
+
+    ensureOutputParentDirectory(cliOptions.aklzOutputPath);
+    if (!writeAllBytes(cliOptions.aklzOutputPath, std::span<const std::uint8_t>(outputBytes.data(), outputBytes.size()))) {
+        throw std::runtime_error("Failed to write AKLZ utility output: " + cliOptions.aklzOutputPath.string());
+    }
+}
 
 } // namespace
 
@@ -2930,6 +3024,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (cliOptions->decompressAklzSingle || cliOptions->compressAklzSingle) {
+        try {
+            std::cout << "[SpiceFileParsing] Step 2/4: Running AKLZ utility mode.\n";
+            runAklzUtility(*cliOptions);
+            std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->aklzOutputPath.string() << "\n";
+            std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
+            std::cout << "SpiceFileParsing finished.\nFilesProcessed=1\n";
+            return 0;
+        } catch (const std::exception& ex) {
+            std::cerr << "[SpiceFileParsing] ERROR: " << ex.what() << "\n";
+            return 1;
+        }
+    }
     if (cliOptions->createGvrSingle || cliOptions->replaceGvrSingle || cliOptions->replaceMldTextureSingle) {
         try {
             if (cliOptions->createGvrSingle) {
