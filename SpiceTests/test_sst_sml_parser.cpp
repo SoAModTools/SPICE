@@ -411,6 +411,28 @@ TEST(SpiceSstSmlParser, ParsesUncompressedSmlTableAndEmbeddedMldSpans) {
     EXPECT_EQ(result.records[1].embeddedMldBytes.size(), 8U);
 }
 
+TEST(SpiceSstSmlParser, SummarizesValidLookingEmbeddedMldHeader) {
+    const auto embeddedMld = makeMinimalEmbeddedMld();
+    const auto result = SmlParser::parse(makeSmlWithEmbeddedMld(embeddedMld));
+
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.records.size(), 1U);
+    ASSERT_TRUE(result.records[0].embeddedMldSummary.has_value());
+    const auto& summary = *result.records[0].embeddedMldSummary;
+    EXPECT_TRUE(summary.parseAttempted);
+    EXPECT_TRUE(summary.validLookingHeader);
+    ASSERT_TRUE(summary.entryCount.has_value());
+    EXPECT_EQ(*summary.entryCount, 1U);
+    ASSERT_TRUE(summary.indexTableOffset.has_value());
+    EXPECT_EQ(*summary.indexTableOffset, 0x20U);
+    ASSERT_TRUE(summary.textureTableOffset.has_value());
+    EXPECT_EQ(*summary.textureTableOffset, 0x170U);
+    ASSERT_TRUE(summary.textureArchiveCount.has_value());
+    EXPECT_EQ(*summary.textureArchiveCount, 0U);
+    EXPECT_FALSE(summary.hasNjcm);
+    EXPECT_FALSE(summary.hasGcix);
+}
+
 TEST(SpiceSstSmlParser, ParsesSstTopRecordsCommandBlocksAndSentinels) {
     const auto bytes = makeSst();
     const auto result = SstParser::parse(bytes);
@@ -445,19 +467,77 @@ TEST(SpiceSstSmlParser, IgnoresCommandRecordWord12AsOnDiskPayloadOffset) {
     EXPECT_EQ(*command.modelIndex, 1);
 }
 
-TEST(SpiceSstSmlParser, JoinedParserDetectsCountAgreementAndModelIndexLinks) {
-    const auto sml = makeSml();
+TEST(SpiceSstSmlParser, JoinedParserDetectsCountAgreementAndLocalObjectSlotLinks) {
+    const auto embeddedMld = makeMinimalEmbeddedMld();
+    const std::uint32_t firstPayloadOffset = 0x28U;
+    const std::uint32_t secondPayloadOffset =
+        firstPayloadOffset + static_cast<std::uint32_t>(embeddedMld.size());
+    std::vector<std::uint8_t> sml(secondPayloadOffset + embeddedMld.size(), 0U);
+    writeBeU32(sml, 0x00U, 0x534D4C30U);
+    writeBeU32(sml, 0x04U, 0x0002FFFFU);
+    writeBeU32(sml, 0x08U, 0x00000100U);
+    writeBeU32(sml, 0x0CU, firstPayloadOffset);
+    writeBeU32(sml, 0x10U, static_cast<std::uint32_t>(embeddedMld.size()));
+    writeBeU32(sml, 0x14U, 0x11111111U);
+    writeBeU32(sml, 0x18U, 0x00000101U);
+    writeBeU32(sml, 0x1CU, secondPayloadOffset);
+    writeBeU32(sml, 0x20U, static_cast<std::uint32_t>(embeddedMld.size()));
+    writeBeU32(sml, 0x24U, 0x22222222U);
+    std::copy(embeddedMld.begin(), embeddedMld.end(), sml.begin() + firstPayloadOffset);
+    std::copy(embeddedMld.begin(), embeddedMld.end(), sml.begin() + secondPayloadOffset);
     const auto sst = makeSst();
     const auto result = BattleStageParser::parsePair(sml, sst, "s999");
 
     ASSERT_TRUE(result.ok());
     EXPECT_TRUE(result.recordCountsAgree);
-    ASSERT_EQ(result.commandLinks.size(), 3U);
-    EXPECT_TRUE(result.commandLinks[0].resolved);
-    EXPECT_EQ(result.commandLinks[0].modelIndex, 1);
-    ASSERT_TRUE(result.commandLinks[0].smlRecordIndex.has_value());
-    EXPECT_EQ(*result.commandLinks[0].smlRecordIndex, 1U);
+    EXPECT_EQ(result.activeRowRuntimeContext.provedRowStride, 0x14U);
+    EXPECT_EQ(result.activeRowRuntimeContext.allocationWidthPerRecord, 0x2CU);
+    ASSERT_EQ(result.localObjectSlotLinks.size(), 3U);
+    EXPECT_EQ(result.localObjectSlotLinks[0].topLevelRecordIndex, 0U);
+    EXPECT_EQ(result.localObjectSlotLinks[0].localSlotIndex, 1);
+    EXPECT_TRUE(result.localObjectSlotLinks[0].slotIndexRangeKnown);
+    EXPECT_FALSE(result.localObjectSlotLinks[0].slotIndexInRange);
+    ASSERT_TRUE(result.localObjectSlotLinks[0].owningSmlRecordIndex.has_value());
+    EXPECT_EQ(*result.localObjectSlotLinks[0].owningSmlRecordIndex, 0U);
+    ASSERT_TRUE(result.localObjectSlotLinks[0].localSlotCount.has_value());
+    EXPECT_EQ(*result.localObjectSlotLinks[0].localSlotCount, 1U);
     EXPECT_EQ(result.commandTypeHistogram.size(), 3U);
+}
+
+TEST(SpiceSstSmlParser, JoinedParserResolvesModelIndexAsSameRecordLocalSlot) {
+    const auto sml = makeSmlWithEmbeddedMld(makeMinimalEmbeddedMld());
+    const auto sst = makeSstWithType0AndExtraCommand();
+    const auto result = BattleStageParser::parsePair(sml, sst, "s777");
+
+    ASSERT_TRUE(result.ok());
+    const auto linkIt = std::find_if(result.localObjectSlotLinks.begin(),
+        result.localObjectSlotLinks.end(),
+        [](const ResolvedLocalObjectSlotLink& link) {
+            return link.commandType == 3;
+        });
+    ASSERT_NE(linkIt, result.localObjectSlotLinks.end());
+    EXPECT_EQ(linkIt->topLevelRecordIndex, 0U);
+    EXPECT_EQ(linkIt->localSlotIndex, 0);
+    EXPECT_TRUE(linkIt->slotIndexRangeKnown);
+    EXPECT_TRUE(linkIt->slotIndexInRange);
+    ASSERT_TRUE(linkIt->owningSmlRecordIndex.has_value());
+    EXPECT_EQ(*linkIt->owningSmlRecordIndex, 0U);
+}
+
+TEST(SpiceSstSmlParser, JoinedParserWarnsForOutOfRangeLocalObjectSlot) {
+    const auto sml = makeSmlWithEmbeddedMld(makeMinimalEmbeddedMld());
+    auto sst = makeSstWithType0AndExtraCommand();
+    constexpr std::size_t type3Payload = 0x54U + 0x4CU;
+    writeBeI16(sst, type3Payload, 2);
+
+    const auto result = BattleStageParser::parsePair(sml, sst, "s776");
+
+    EXPECT_TRUE(result.ok());
+    const auto warning = std::find_if(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Warning &&
+            diagnostic.message.find("local object slot range") != std::string::npos;
+    });
+    EXPECT_NE(warning, result.diagnostics.end());
 }
 
 TEST(SpiceSstSmlParser, JoinedParserReportsCountMismatch) {
@@ -616,6 +696,8 @@ TEST(SpiceSstSmlParser, Type0FieldSummariesUseCallbackBackedTransformMetadata) {
 
 TEST(SpiceSstSmlParser, ConservativeMetadataKeepsEvidenceAndProvisionalStatus) {
     const auto type2Fields = SstParser::fieldSummariesForType(2);
+    const auto type3Fields = SstParser::fieldSummariesForType(3);
+    const auto type8Fields = SstParser::fieldSummariesForType(8);
     const auto type6Fields = SstParser::fieldSummariesForType(6);
 
     ASSERT_FALSE(type2Fields.empty());
@@ -625,6 +707,61 @@ TEST(SpiceSstSmlParser, ConservativeMetadataKeepsEvidenceAndProvisionalStatus) {
     ASSERT_NE(controlWord, type2Fields.end());
     EXPECT_EQ(controlWord->evidence, CommandFieldEvidence::GekkoAndCorpus);
     EXPECT_TRUE(controlWord->provisional);
+
+    const auto minDistance = std::find_if(type2Fields.begin(), type2Fields.end(), [](const auto& field) {
+        return field.name == "minimumDistanceRange";
+    });
+    ASSERT_NE(minDistance, type2Fields.end());
+    EXPECT_EQ(minDistance->offset, 0x1CU);
+    EXPECT_EQ(minDistance->width, CommandFieldWidth::F32);
+
+    const auto yMinimum = std::find_if(type2Fields.begin(), type2Fields.end(), [](const auto& field) {
+        return field.name == "optionalYMinimum";
+    });
+    ASSERT_NE(yMinimum, type2Fields.end());
+    EXPECT_EQ(yMinimum->offset, 0x34U);
+
+    const auto radialMaximum = std::find_if(type2Fields.begin(), type2Fields.end(), [](const auto& field) {
+        return field.name == "optionalXZRadialMaximum";
+    });
+    ASSERT_NE(radialMaximum, type2Fields.end());
+    EXPECT_EQ(radialMaximum->offset, 0x40U);
+
+    ASSERT_EQ(type3Fields.size(), 4U);
+    EXPECT_EQ(type3Fields[0].name, "modelIndex");
+    EXPECT_EQ(type3Fields[0].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_FALSE(type3Fields[0].provisional);
+    EXPECT_EQ(type3Fields[1].name, "nodeTraversalLookupKey");
+    EXPECT_EQ(type3Fields[1].width, CommandFieldWidth::U16);
+    EXPECT_EQ(type3Fields[1].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_TRUE(type3Fields[1].provisional);
+    EXPECT_EQ(type3Fields[2].name, "textureCoordinateDeltaU");
+    EXPECT_EQ(type3Fields[2].width, CommandFieldWidth::I16);
+    EXPECT_EQ(type3Fields[2].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_TRUE(type3Fields[2].provisional);
+    EXPECT_EQ(type3Fields[3].name, "textureCoordinateDeltaV");
+    EXPECT_EQ(type3Fields[3].width, CommandFieldWidth::I16);
+    EXPECT_EQ(type3Fields[3].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_TRUE(type3Fields[3].provisional);
+
+    ASSERT_EQ(type8Fields.size(), 7U);
+    EXPECT_EQ(type8Fields[0].name, "modelIndex");
+    EXPECT_EQ(type8Fields[0].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_FALSE(type8Fields[0].provisional);
+    EXPECT_EQ(type8Fields[1].name, "nodeTraversalLookupKey");
+    EXPECT_EQ(type8Fields[1].kind, CommandFieldKind::LookupKey);
+    EXPECT_EQ(type8Fields[1].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_TRUE(type8Fields[1].provisional);
+    EXPECT_EQ(type8Fields[2].name, "textureTileWidth");
+    EXPECT_EQ(type8Fields[3].name, "textureTileHeight");
+    EXPECT_EQ(type8Fields[4].name, "texturePageSize");
+    EXPECT_EQ(type8Fields[5].name, "textureAnimationFrameCount");
+    EXPECT_EQ(type8Fields[5].kind, CommandFieldKind::Counter);
+    EXPECT_EQ(type8Fields[6].name, "frameHoldDuration");
+    EXPECT_EQ(type8Fields[6].kind, CommandFieldKind::Duration);
+    for (const auto& field : type8Fields) {
+        EXPECT_EQ(field.evidence, CommandFieldEvidence::GekkoAndCorpus);
+    }
 
     ASSERT_FALSE(type6Fields.empty());
     EXPECT_EQ(type6Fields[0].evidence, CommandFieldEvidence::CodeSupportedCorpusAbsent);
@@ -738,7 +875,13 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     EXPECT_NE(commandMap.find("\"battleObjectClassSelector\":3"), std::string::npos);
     EXPECT_NE(commandMap.find("\"lookupResourceIndex\":-3"), std::string::npos);
     EXPECT_NE(commandMap.find("\"renderActionByte\":2"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"resolvedSmlRecordIndex\":0"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"embeddedMldSummary\""), std::string::npos);
+    EXPECT_NE(commandMap.find("\"activeRowRuntimeContext\""), std::string::npos);
+    EXPECT_NE(commandMap.find("\"provedRowStride\":20"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"localObjectSlotLink\""), std::string::npos);
+    EXPECT_NE(commandMap.find("\"owningSmlRecordIndex\":0"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"localSlotIndex\":0"), std::string::npos);
+    EXPECT_EQ(commandMap.find("\"resolvedSmlRecordIndex\""), std::string::npos);
 
     ASSERT_TRUE(result.stageAnnotationTemplatePath.has_value());
     EXPECT_EQ(*result.stageAnnotationTemplatePath, outputDir / "state_annotations" / "s777" / "s777.stage_annotation.json");
@@ -774,6 +917,8 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     EXPECT_NE(annotationTemplate.find("\"hasVaryingAnimation\":true"), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"commandTypes\":[0,3]"), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"commandTypeHistogram\""), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"localObjectSlotLink\""), std::string::npos);
+    EXPECT_EQ(annotationTemplate.find("\"resolvedSmlRecordIndex\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"suspectedRuntimeBehavior\":\"\""), std::string::npos);
 }
 
@@ -907,4 +1052,35 @@ TEST(SpiceSstSmlExport, CombinesSmlBlenderIrScenesAndRemapsAnimations) {
     EXPECT_EQ(combined.animations[1].objectTreeIndex, 1U);
     ASSERT_EQ(combined.animations[1].nodes.size(), 1U);
     EXPECT_EQ(combined.animations[1].nodes[0].nodeIndex, 0U);
+}
+
+TEST(SpiceSstSmlExport, CombinedSmlBlenderIrCanApplySstType0PlacementOverlay) {
+    spice::sstsml::exporting::SmlBlenderIrCombiner combiner{};
+
+    auto scene = makeSingleEntryBlenderIrScene(10U, 0x100U, 0x200U, "shared");
+    scene.indexEntries[0].transform.position = spice::mld::model::Vec3{ 1.0F, 2.0F, 3.0F };
+    scene.indexEntries[0].transform.scale = spice::mld::model::Vec3{ 2.0F, 2.0F, 2.0F };
+
+    spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay overlay{};
+    overlay.hasPosition = true;
+    overlay.position = spice::mld::model::Vec3{ 10.0F, 20.0F, 30.0F };
+    overlay.hasScale = true;
+    overlay.scale = spice::mld::model::Vec3{ 3.0F, 4.0F, 5.0F };
+    overlay.hasRotationRaw = true;
+    overlay.rotationRaw = spice::mld::model::Vec3{ 256.0F, 512.0F, 768.0F };
+    overlay.sourceDescription = "SST record 0 command 0 payloadOffset=0x54";
+
+    combiner.appendEntryScene(std::move(scene), "s006", 0U, overlay);
+
+    const auto& combined = combiner.scene();
+    ASSERT_EQ(combined.indexEntries.size(), 1U);
+    EXPECT_FLOAT_EQ(combined.indexEntries[0].transform.position.x, 11.0F);
+    EXPECT_FLOAT_EQ(combined.indexEntries[0].transform.position.y, 22.0F);
+    EXPECT_FLOAT_EQ(combined.indexEntries[0].transform.position.z, 33.0F);
+    EXPECT_FLOAT_EQ(combined.indexEntries[0].transform.scale.x, 6.0F);
+    EXPECT_FLOAT_EQ(combined.indexEntries[0].transform.scale.y, 8.0F);
+    EXPECT_FLOAT_EQ(combined.indexEntries[0].transform.scale.z, 10.0F);
+    ASSERT_FALSE(combined.diagnostics.empty());
+    EXPECT_NE(combined.diagnostics.back().find("SST type 0 placement overlay"), std::string::npos);
+    EXPECT_NE(combined.diagnostics.back().find("rotationRaw"), std::string::npos);
 }

@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cctype>
 #include <iterator>
+#include <sstream>
 #include <unordered_map>
+#include <utility>
 
 namespace spice::sstsml::exporting {
 namespace {
@@ -26,6 +28,47 @@ std::string makeSafeNameComponent(std::string value, std::string fallback) {
         return fallback;
     }
     return std::string(first, last);
+}
+
+std::string formatVec3(const spice::mld::model::Vec3& value) {
+    std::ostringstream out;
+    out << '[' << value.x << ',' << value.y << ',' << value.z << ']';
+    return out.str();
+}
+
+void applySstPlacementOverlay(
+    spice::mld::model::BlenderIrScene& scene,
+    const SmlBlenderIrSstPlacementOverlay& overlay,
+    std::size_t recordIndex) {
+    for (auto& indexEntry : scene.indexEntries) {
+        if (overlay.hasPosition) {
+            indexEntry.transform.position.x += overlay.position.x;
+            indexEntry.transform.position.y += overlay.position.y;
+            indexEntry.transform.position.z += overlay.position.z;
+        }
+        if (overlay.hasScale) {
+            indexEntry.transform.scale.x *= overlay.scale.x;
+            indexEntry.transform.scale.y *= overlay.scale.y;
+            indexEntry.transform.scale.z *= overlay.scale.z;
+        }
+    }
+
+    std::string diagnostic = "SML combined Blender IR applied SST type 0 placement overlay for entry " +
+        std::to_string(recordIndex);
+    if (!overlay.sourceDescription.empty()) {
+        diagnostic += " from " + overlay.sourceDescription;
+    }
+    if (overlay.hasPosition) {
+        diagnostic += "; position += " + formatVec3(overlay.position);
+    }
+    if (overlay.hasScale) {
+        diagnostic += "; scale *= " + formatVec3(overlay.scale);
+    }
+    if (overlay.hasRotationRaw) {
+        diagnostic += "; rotationRaw " + formatVec3(overlay.rotationRaw) +
+            " recorded but not applied because SST type 0 angle units are still provisional";
+    }
+    scene.diagnostics.push_back(std::move(diagnostic));
 }
 
 } // namespace
@@ -77,7 +120,18 @@ void SmlBlenderIrCombiner::appendEntryScene(
     spice::mld::model::BlenderIrScene entryScene,
     const std::string& stem,
     std::size_t recordIndex) {
+    appendEntryScene(std::move(entryScene), stem, recordIndex, std::nullopt);
+}
+
+void SmlBlenderIrCombiner::appendEntryScene(
+    spice::mld::model::BlenderIrScene entryScene,
+    const std::string& stem,
+    std::size_t recordIndex,
+    const std::optional<SmlBlenderIrSstPlacementOverlay>& sstPlacementOverlay) {
     namespaceSmlEntryBlenderIrScene(entryScene, stem, recordIndex);
+    if (sstPlacementOverlay.has_value()) {
+        applySstPlacementOverlay(entryScene, *sstPlacementOverlay, recordIndex);
+    }
 
     const auto meshIndexBase = m_scene.meshes.size();
     const auto objectTreeIndexBase = m_scene.objectTrees.size();
@@ -137,4 +191,3 @@ spice::mld::model::BlenderIrScene&& SmlBlenderIrCombiner::takeScene() noexcept {
 }
 
 } // namespace spice::sstsml::exporting
-

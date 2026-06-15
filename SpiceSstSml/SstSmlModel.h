@@ -83,6 +83,20 @@ struct CommandConsumerWindow {
     std::string description{};
 };
 
+struct SmlEmbeddedMldSummary {
+    bool parseAttempted{ false };
+    bool validLookingHeader{ false };
+    std::optional<std::uint32_t> entryCount{};
+    std::optional<std::uint32_t> indexTableOffset{};
+    std::optional<std::uint32_t> textureTableOffset{};
+    std::optional<std::uint32_t> textureArchiveCount{};
+    bool hasNjcm{ false };
+    bool hasNjtl{ false };
+    bool hasNmdm{ false };
+    bool hasGcix{ false };
+    bool hasGvrt{ false };
+};
+
 struct SmlRecord {
     std::size_t index{ 0U };
     std::uint32_t recordOffset{ 0U };
@@ -92,6 +106,7 @@ struct SmlRecord {
     std::uint32_t rawWord12{ 0U };
     bool embeddedMldInBounds{ false };
     std::vector<std::uint8_t> embeddedMldBytes{};
+    std::optional<SmlEmbeddedMldSummary> embeddedMldSummary{};
 };
 
 struct SmlParseResult {
@@ -187,13 +202,32 @@ struct SstParseResult {
     [[nodiscard]] bool ok() const;
 };
 
-struct ResolvedCommandLink {
+struct ActiveRowRuntimeField {
+    std::uint32_t offset{ 0U };
+    std::uint32_t size{ 0U };
+    std::string name{};
+    std::string description{};
+};
+
+struct ActiveRowRuntimeContext {
+    std::uint32_t provedRowStride{ 0x14U };
+    std::uint32_t allocationWidthPerRecord{ 0x2CU };
+    std::string allocationWidthNote{
+        "Battle::Stage::JoinSmlSstRecords_8000cb44 allocates recordCount * 0x2c, "
+        "but current direct Gekko evidence addresses active rows with recordIndex * 0x14."
+    };
+    std::vector<ActiveRowRuntimeField> fields{};
+};
+
+struct ResolvedLocalObjectSlotLink {
     std::size_t topLevelRecordIndex{ 0U };
     std::size_t commandIndex{ 0U };
     std::int16_t commandType{ 0 };
-    std::int16_t modelIndex{ 0 };
-    bool resolved{ false };
-    std::optional<std::size_t> smlRecordIndex{};
+    std::int16_t localSlotIndex{ 0 };
+    bool slotIndexRangeKnown{ false };
+    bool slotIndexInRange{ false };
+    std::optional<std::uint32_t> localSlotCount{};
+    std::optional<std::size_t> owningSmlRecordIndex{};
 };
 
 struct BattleStageParseResult {
@@ -201,7 +235,8 @@ struct BattleStageParseResult {
     SmlParseResult sml{};
     SstParseResult sst{};
     bool recordCountsAgree{ false };
-    std::vector<ResolvedCommandLink> commandLinks{};
+    ActiveRowRuntimeContext activeRowRuntimeContext{};
+    std::vector<ResolvedLocalObjectSlotLink> localObjectSlotLinks{};
     std::vector<std::pair<std::int16_t, std::uint32_t>> commandTypeHistogram{};
     std::vector<ParseDiagnostic> diagnostics{};
 

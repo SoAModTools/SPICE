@@ -4,7 +4,9 @@
 #include "../SpiceCore/Binary/EndianReader.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
+#include <string_view>
 
 namespace spice::sstsml {
 namespace {
@@ -33,6 +35,60 @@ std::vector<std::uint8_t> copyRange(std::span<const std::uint8_t> bytes,
         return {};
     }
     return std::vector<std::uint8_t>(bytes.begin() + offset, bytes.begin() + offset + length);
+}
+
+bool containsTag(std::span<const std::uint8_t> bytes, std::string_view tag) {
+    if (tag.size() != 4U || bytes.size() < tag.size()) {
+        return false;
+    }
+
+    const std::array<std::uint8_t, 4U> needle{
+        static_cast<std::uint8_t>(tag[0]),
+        static_cast<std::uint8_t>(tag[1]),
+        static_cast<std::uint8_t>(tag[2]),
+        static_cast<std::uint8_t>(tag[3]),
+    };
+    return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
+}
+
+SmlEmbeddedMldSummary summarizeEmbeddedMld(std::span<const std::uint8_t> bytes) {
+    SmlEmbeddedMldSummary summary{};
+    summary.parseAttempted = true;
+    summary.hasNjcm = containsTag(bytes, "NJCM");
+    summary.hasNjtl = containsTag(bytes, "NJTL");
+    summary.hasNmdm = containsTag(bytes, "NMDM");
+    summary.hasGcix = containsTag(bytes, "GCIX");
+    summary.hasGvrt = containsTag(bytes, "GVRT");
+
+    EndianReader reader(bytes, Endian::Big);
+    const auto entryCount = reader.try_read_u32(0x00U);
+    const auto indexTableOffset = reader.try_read_u32(0x04U);
+    const auto textureTableOffset = reader.try_read_u32(0x10U);
+    if (entryCount.has_value()) {
+        summary.entryCount = *entryCount;
+    }
+    if (indexTableOffset.has_value()) {
+        summary.indexTableOffset = *indexTableOffset;
+    }
+    if (textureTableOffset.has_value()) {
+        summary.textureTableOffset = *textureTableOffset;
+        if (canReadRange(bytes.size(), *textureTableOffset, 4U)) {
+            summary.textureArchiveCount = reader.read_u32(*textureTableOffset);
+        }
+    }
+
+    if (entryCount.has_value() && indexTableOffset.has_value()) {
+        constexpr std::uint32_t kMldIndexEntryStride = 0x68U;
+        const std::uint64_t indexTableEnd =
+            static_cast<std::uint64_t>(*indexTableOffset) +
+            (static_cast<std::uint64_t>(*entryCount) * kMldIndexEntryStride);
+        summary.validLookingHeader =
+            *entryCount > 0U &&
+            *indexTableOffset >= 0x14U &&
+            indexTableEnd <= bytes.size();
+    }
+
+    return summary;
 }
 
 std::span<const std::uint8_t> decodeIfNeeded(std::span<const std::uint8_t> input,
@@ -112,6 +168,7 @@ SmlParseResult SmlParser::parse(std::span<const std::uint8_t> bytes, std::string
         if (record.embeddedMldInBounds) {
             record.embeddedMldBytes =
                 copyRange(decodedBytes, record.embeddedMldOffset, record.embeddedMldSize);
+            record.embeddedMldSummary = summarizeEmbeddedMld(record.embeddedMldBytes);
         } else {
             addDiagnostic(result.diagnostics,
                 DiagnosticSeverity::Error,

@@ -60,6 +60,96 @@ bool writeAllBytes(const std::filesystem::path& path, std::span<const std::uint8
     return out.good();
 }
 
+bool canReadSpan(std::span<const std::uint8_t> bytes, std::size_t offset, std::size_t size) {
+    return offset <= bytes.size() && size <= bytes.size() - offset;
+}
+
+std::optional<std::uint32_t> readBeU32Span(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    if (!canReadSpan(bytes, offset, 4U)) {
+        return std::nullopt;
+    }
+    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
+        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
+        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
+        static_cast<std::uint32_t>(bytes[offset + 3U]);
+}
+
+std::optional<std::int32_t> readBeI32Span(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    const auto raw = readBeU32Span(bytes, offset);
+    if (!raw.has_value()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(*raw);
+}
+
+std::optional<float> readBeF32Span(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    const auto raw = readBeU32Span(bytes, offset);
+    if (!raw.has_value()) {
+        return std::nullopt;
+    }
+    return std::bit_cast<float>(*raw);
+}
+
+std::optional<spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay> sstType0PlacementOverlayForRecord(
+    const std::optional<spice::sstsml::SstParseResult>& sstParsed,
+    std::size_t recordIndex) {
+    if (!sstParsed.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto blockIt = std::find_if(sstParsed->commandBlocks.begin(), sstParsed->commandBlocks.end(), [&](const auto& block) {
+        return block.topLevelRecordIndex == recordIndex;
+    });
+    if (blockIt == sstParsed->commandBlocks.end()) {
+        return std::nullopt;
+    }
+
+    const auto commandIt = std::find_if(blockIt->commands.begin(), blockIt->commands.end(), [](const auto& command) {
+        return command.type == 0 && command.payloadInBounds;
+    });
+    if (commandIt == blockIt->commands.end()) {
+        return std::nullopt;
+    }
+
+    const auto payload = std::span<const std::uint8_t>(commandIt->payloadBytes.data(), commandIt->payloadBytes.size());
+    spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay overlay{};
+
+    const auto px = readBeF32Span(payload, 0x1CU);
+    const auto py = readBeF32Span(payload, 0x20U);
+    const auto pz = readBeF32Span(payload, 0x24U);
+    if (px.has_value() && py.has_value() && pz.has_value()) {
+        overlay.hasPosition = true;
+        overlay.position = spice::mld::model::Vec3{ *px, *py, *pz };
+    }
+
+    const auto sx = readBeF32Span(payload, 0x34U);
+    const auto sy = readBeF32Span(payload, 0x38U);
+    const auto sz = readBeF32Span(payload, 0x3CU);
+    if (sx.has_value() && sy.has_value() && sz.has_value()) {
+        overlay.hasScale = true;
+        overlay.scale = spice::mld::model::Vec3{ *sx, *sy, *sz };
+    }
+
+    const auto rx = readBeI32Span(payload, 0x28U);
+    const auto ry = readBeI32Span(payload, 0x2CU);
+    const auto rz = readBeI32Span(payload, 0x30U);
+    if (rx.has_value() && ry.has_value() && rz.has_value()) {
+        overlay.hasRotationRaw = true;
+        overlay.rotationRaw = spice::mld::model::Vec3{
+            static_cast<float>(*rx),
+            static_cast<float>(*ry),
+            static_cast<float>(*rz),
+        };
+    }
+
+    std::ostringstream source;
+    source << "SST record " << recordIndex
+           << " command " << commandIt->index
+           << " payloadOffset=0x" << std::hex << commandIt->payloadOffset;
+    overlay.sourceDescription = source.str();
+    return overlay;
+}
+
 std::string toLowerCopy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
@@ -189,6 +279,7 @@ struct CliOptions {
     bool exportSmlEmbeddedMld = false;
     bool exportSmlEmbeddedMldBlenderIr = false;
     bool exportSmlCombinedBlenderIr = false;
+    bool exportSmlCombinedBlenderIrRawPlacement = false;
     bool exportSstSmlCommandMap = false;
     bool exportMlkCorpus = false;
     bool exportMlkBlenderIr = false;
@@ -220,7 +311,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sst-sml-command-map] [--export-mlk-corpus] [--export-mlk-blender-ir] [--overwrite-mlk-annotations] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sml-combined-blender-ir-raw-placement] [--export-sst-sml-command-map] [--export-mlk-corpus] [--export-mlk-blender-ir] [--overwrite-mlk-annotations] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --decompress-aklz input.aklz output.bin\n"
         << "  SpiceFileParsing --compress-aklz input.bin output.aklz\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
@@ -237,7 +328,8 @@ void printUsage() {
         << "  - --export-mld-entry-list-only writes per-entry MLD list JSON and skips other .mld exports.\n"
         << "  - --export-sml-embedded-mld extracts each SML embedded MLD payload under output/<stem>/embedded_mld.\n"
         << "  - --export-sml-embedded-mld-blender-ir also parses each embedded MLD payload and writes Blender IR under output/<stem>/blender_ir/entry_<index>.\n"
-        << "  - --export-sml-combined-blender-ir writes output/<stem>/<stem>_combined_blender_ir_scene.json by appending all embedded SML MLD Blender IR scenes.\n"
+        << "  - --export-sml-combined-blender-ir writes output/<stem>/<stem>_combined_blender_ir_scene.json by appending embedded SML MLD Blender IR scenes and applying same-index SST type 0 translation/scale overlays when an SST is present.\n"
+        << "  - --export-sml-combined-blender-ir-raw-placement preserves the old raw SML-only combined Blender IR placement without SST type 0 overlays.\n"
         << "  - --export-sst-sml-command-map writes output/<stem>/<stem>.sst_sml_command_map.json when a same-stem .sst exists.\n"
         << "  - --export-mlk-corpus scans .mlk files and writes mlk_corpus.json plus CSV summaries.\n"
         << "  - --export-mlk-blender-ir writes one combined Blender IR scene plus metadata sidecars per .mlk file and seeds missing living annotations under SpiceMlk/annotations.\n"
@@ -509,6 +601,18 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         }
         if (arg == "--export-sml-combined-blender-ir") {
             options.exportSmlCombinedBlenderIr = true;
+            continue;
+        }
+        if (arg == "--export-sml-combined-blender-ir-sst-placement") {
+            options.exportSmlCombinedBlenderIr = true;
+            // Compatibility alias: SST placement is now the default combined-scene behavior.
+            options.exportSmlCombinedBlenderIrRawPlacement = false;
+            continue;
+        }
+        if (arg == "--export-sml-combined-blender-ir-raw-placement"
+            || arg == "--export-sml-combined-blender-ir-no-sst-placement") {
+            options.exportSmlCombinedBlenderIr = true;
+            options.exportSmlCombinedBlenderIrRawPlacement = true;
             continue;
         }
         if (arg == "--export-sst-sml-command-map") {
@@ -3335,16 +3439,21 @@ int main(int argc, char** argv) {
                             if (parsedEmbeddedMld.blenderIrScene.has_value()) {
                                 blenderIrSummaries[record.index] = summarizeSmlEntryBlenderIr(*parsedEmbeddedMld.blenderIrScene);
                                 if (combinedBlenderIr.has_value()) {
+                                    const auto sstPlacementOverlay = cliOptions->exportSmlCombinedBlenderIrRawPlacement
+                                        ? std::optional<spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay>{}
+                                        : sstType0PlacementOverlayForRecord(sstParsed, record.index);
                                     if (cliOptions->exportSmlEmbeddedMldBlenderIr) {
                                         combinedBlenderIr->appendEntryScene(
                                             *parsedEmbeddedMld.blenderIrScene,
                                             stem,
-                                            record.index);
+                                            record.index,
+                                            sstPlacementOverlay);
                                     } else {
                                         combinedBlenderIr->appendEntryScene(
                                             std::move(*parsedEmbeddedMld.blenderIrScene),
                                             stem,
-                                            record.index);
+                                            record.index,
+                                            sstPlacementOverlay);
                                     }
                                 }
 

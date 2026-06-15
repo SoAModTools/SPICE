@@ -210,6 +210,24 @@ void writeDiagnosticsArray(std::ostream& out, const std::vector<ParseDiagnostic>
     out << "]";
 }
 
+void writeActiveRowRuntimeContext(std::ostream& out, const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"evidenceScope\":\"runtimeContextOnly\",\n"
+        << indent << "  \"provedRowStride\":20,\n"
+        << indent << "  \"allocationWidthPerRecord\":44,\n"
+        << indent << "  \"allocationWidthNote\":";
+    writeJsonString(out,
+        "JoinSmlSstRecords allocates recordCount * 0x2c, but current direct Gekko evidence addresses active rows with recordIndex * 0x14.");
+    out << ",\n" << indent << "  \"fields\":["
+        << "\n" << indent << "    {\"offset\":0,\"size\":4,\"name\":\"localModelObjectSlotTable\"},"
+        << "\n" << indent << "    {\"offset\":4,\"size\":4,\"name\":\"loadedMldResourceRecord\"},"
+        << "\n" << indent << "    {\"offset\":8,\"size\":4,\"name\":\"localRuntimePointerTable\"},"
+        << "\n" << indent << "    {\"offset\":12,\"size\":1,\"name\":\"localSlotCount\"},"
+        << "\n" << indent << "    {\"offset\":16,\"size\":4,\"name\":\"secondaryModelEffectRuntimeBuffer\"}"
+        << "\n" << indent << "  ]\n"
+        << indent << "}";
+}
+
 void writeStringArray(std::ostream& out, const std::vector<std::string>& values, const std::string& indent) {
     out << "[";
     for (std::size_t i = 0; i < values.size(); ++i) {
@@ -289,6 +307,80 @@ void writeType0Summary(std::ostream& out, const SstCommandRecord& command, const
     out << "\n" << indent << "}";
 }
 
+std::optional<std::uint32_t> localSlotCountForRecord(const SmlParseResult& sml, std::size_t topLevelRecordIndex) {
+    if (topLevelRecordIndex >= sml.records.size()) {
+        return std::nullopt;
+    }
+    const auto& summary = sml.records[topLevelRecordIndex].embeddedMldSummary;
+    if (!summary.has_value() || !summary->validLookingHeader || !summary->entryCount.has_value()) {
+        return std::nullopt;
+    }
+    return summary->entryCount;
+}
+
+void writeEmbeddedMldSummary(std::ostream& out,
+    const std::optional<SmlEmbeddedMldSummary>& summary,
+    const std::string& indent) {
+    if (!summary.has_value()) {
+        out << "null";
+        return;
+    }
+
+    out << "{\n"
+        << indent << "  \"parseAttempted\":" << (summary->parseAttempted ? "true" : "false")
+        << ",\n" << indent << "  \"validLookingHeader\":" << (summary->validLookingHeader ? "true" : "false")
+        << ",\n" << indent << "  \"entryCount\":";
+    writeOptionalU32(out, summary->entryCount);
+    out << ",\n" << indent << "  \"indexTableOffset\":";
+    writeOptionalU32(out, summary->indexTableOffset);
+    out << ",\n" << indent << "  \"textureTableOffset\":";
+    writeOptionalU32(out, summary->textureTableOffset);
+    out << ",\n" << indent << "  \"textureArchiveCount\":";
+    writeOptionalU32(out, summary->textureArchiveCount);
+    out << ",\n" << indent << "  \"markers\":{\"NJCM\":" << (summary->hasNjcm ? "true" : "false")
+        << ",\"NJTL\":" << (summary->hasNjtl ? "true" : "false")
+        << ",\"NMDM\":" << (summary->hasNmdm ? "true" : "false")
+        << ",\"GCIX\":" << (summary->hasGcix ? "true" : "false")
+        << ",\"GVRT\":" << (summary->hasGvrt ? "true" : "false")
+        << "}\n" << indent << "}";
+}
+
+void writeLocalObjectSlotLink(std::ostream& out,
+    const SstCommandRecord& command,
+    std::size_t topLevelRecordIndex,
+    const SmlParseResult& sml,
+    const std::string& indent) {
+    if (!command.modelIndexCandidate || !command.modelIndex.has_value()) {
+        out << "null";
+        return;
+    }
+
+    const auto localSlotCount = localSlotCountForRecord(sml, topLevelRecordIndex);
+    const bool rangeKnown = localSlotCount.has_value();
+    const bool inRange = rangeKnown && *command.modelIndex >= 0 &&
+        static_cast<std::uint32_t>(*command.modelIndex) < *localSlotCount;
+
+    out << "{\n"
+        << indent << "  \"owningSmlRecordIndex\":";
+    if (topLevelRecordIndex < sml.records.size()) {
+        out << topLevelRecordIndex;
+    } else {
+        out << "null";
+    }
+    out << ",\n" << indent << "  \"localSlotIndex\":" << *command.modelIndex
+        << ",\n" << indent << "  \"localSlotCount\":";
+    if (localSlotCount.has_value()) {
+        out << *localSlotCount;
+    } else {
+        out << "null";
+    }
+    out << ",\n" << indent << "  \"slotIndexRangeKnown\":" << (rangeKnown ? "true" : "false")
+        << ",\n" << indent << "  \"slotIndexInRange\":" << (inRange ? "true" : "false")
+        << ",\n" << indent << "  \"interpretation\":";
+    writeJsonString(out, "local object/model slot within the same top-level SML/SST record");
+    out << "\n" << indent << "}";
+}
+
 const SstCommandBlock* findBlockForIndex(const SstParseResult& sst, std::size_t index) {
     const auto it = std::find_if(sst.commandBlocks.begin(), sst.commandBlocks.end(), [&](const SstCommandBlock& block) {
         return block.topLevelRecordIndex == index;
@@ -298,7 +390,8 @@ const SstCommandBlock* findBlockForIndex(const SstParseResult& sst, std::size_t 
 
 void writeCommand(std::ostream& out,
     const SstCommandRecord& command,
-    std::size_t smlRecordCount,
+    std::size_t topLevelRecordIndex,
+    const SmlParseResult& sml,
     const std::string& indent) {
     out << "{\n"
         << indent << "  \"index\":" << command.index
@@ -319,13 +412,8 @@ void writeCommand(std::ostream& out,
     } else {
         out << "null";
     }
-    out << ",\n" << indent << "  \"resolvedSmlRecordIndex\":";
-    if (command.modelIndex.has_value() && *command.modelIndex >= 0 &&
-        static_cast<std::size_t>(*command.modelIndex) < smlRecordCount) {
-        out << *command.modelIndex;
-    } else {
-        out << "null";
-    }
+    out << ",\n" << indent << "  \"localObjectSlotLink\":";
+    writeLocalObjectSlotLink(out, command, topLevelRecordIndex, sml, indent + "  ");
     out << ",\n" << indent << "  \"type0Summary\":";
     writeType0Summary(out, command, indent + "  ");
     out << ",\n" << indent << "  \"fieldSummaries\":";
@@ -335,7 +423,7 @@ void writeCommand(std::ostream& out,
 
 void writeCommandBlock(std::ostream& out,
     const SstCommandBlock* block,
-    std::size_t smlRecordCount,
+    const SmlParseResult& sml,
     const std::string& indent) {
     if (block == nullptr) {
         out << "null";
@@ -356,7 +444,7 @@ void writeCommandBlock(std::ostream& out,
         << ",\n" << indent << "  \"commands\":[";
     for (std::size_t i = 0; i < block->commands.size(); ++i) {
         out << (i == 0 ? "\n" : ",\n") << indent << "    ";
-        writeCommand(out, block->commands[i], smlRecordCount, indent + "    ");
+        writeCommand(out, block->commands[i], block->topLevelRecordIndex, sml, indent + "    ");
     }
     if (!block->commands.empty()) {
         out << "\n" << indent << "  ";
@@ -393,6 +481,8 @@ void writeSmlRecord(std::ostream& out,
     } else {
         out << "null";
     }
+    out << ",\n" << indent << "  \"embeddedMldSummary\":";
+    writeEmbeddedMldSummary(out, record->embeddedMldSummary, indent + "  ");
     out << "\n" << indent << "}";
 }
 
@@ -456,7 +546,8 @@ void writeCommandTypeHistogram(std::ostream& out, const SstCommandBlock* block, 
 
 void writeAnnotationCommand(std::ostream& out,
     const SstCommandRecord& command,
-    std::size_t smlRecordCount,
+    std::size_t topLevelRecordIndex,
+    const SmlParseResult& sml,
     const std::string& indent) {
     out << "{\n"
         << indent << "  \"index\":" << command.index
@@ -470,13 +561,8 @@ void writeAnnotationCommand(std::ostream& out,
     } else {
         out << "null";
     }
-    out << ",\n" << indent << "  \"resolvedSmlRecordIndex\":";
-    if (command.modelIndex.has_value() && *command.modelIndex >= 0 &&
-        static_cast<std::size_t>(*command.modelIndex) < smlRecordCount) {
-        out << *command.modelIndex;
-    } else {
-        out << "null";
-    }
+    out << ",\n" << indent << "  \"localObjectSlotLink\":";
+    writeLocalObjectSlotLink(out, command, topLevelRecordIndex, sml, indent + "  ");
     out << ",\n" << indent << "  \"type0Summary\":";
     writeType0Summary(out, command, indent + "  ");
     out << ",\n" << indent << "  \"fieldSummaryNames\":[";
@@ -589,7 +675,11 @@ void writeStageAnnotationTemplate(const std::filesystem::path& path,
             out << ",\n          \"commands\":[";
             for (std::size_t commandIndex = 0; commandIndex < block->commands.size(); ++commandIndex) {
                 out << (commandIndex == 0U ? "\n" : ",\n") << "            ";
-                writeAnnotationCommand(out, block->commands[commandIndex], sml.records.size(), "            ");
+                writeAnnotationCommand(out,
+                    block->commands[commandIndex],
+                    block->topLevelRecordIndex,
+                    sml,
+                    "            ");
             }
             if (!block->commands.empty()) {
                 out << "\n          ";
@@ -665,6 +755,8 @@ void writeCommandMap(const std::filesystem::path& path,
     writeDiagnosticsArray(out, sml.diagnostics, "  ");
     out << ",\n  \"sstDiagnostics\":";
     writeDiagnosticsArray(out, sst.diagnostics, "  ");
+    out << ",\n  \"activeRowRuntimeContext\":";
+    writeActiveRowRuntimeContext(out, "  ");
     out << ",\n  \"records\":[";
     for (std::size_t index = 0; index < maxRecords; ++index) {
         const SmlRecord* smlRecord = index < sml.records.size() ? &sml.records[index] : nullptr;
@@ -677,7 +769,7 @@ void writeCommandMap(const std::filesystem::path& path,
             << ",\n      \"smlRecord\":";
         writeSmlRecord(out, smlRecord, exported, "      ");
         out << ",\n      \"sstCommandBlock\":";
-        writeCommandBlock(out, block, sml.records.size(), "      ");
+        writeCommandBlock(out, block, sml, "      ");
         out << "\n    }";
     }
     if (maxRecords > 0U) {

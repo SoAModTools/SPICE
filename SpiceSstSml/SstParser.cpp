@@ -142,7 +142,8 @@ std::optional<CommandConsumerWindow> type11TrailingConsumerWindow(std::span<cons
     window.fieldSummaries = type11TrailingFieldSummaries();
     window.description =
         "Direct FUN_8000be28 consumer reads outside the 0x18 structural walker span. "
-        "Keep separate from the command payload size.";
+        "Keep separate from the command payload size; child-local +0x04 is sourced from "
+        "active row +0x10, the secondary runtime model/effect buffer pointer.";
 
     window.inBounds = availableUntil >= windowOffset &&
         windowSize <= availableUntil - windowOffset &&
@@ -438,20 +439,22 @@ std::vector<CommandFieldSummary> SstParser::fieldSummariesForType(std::int16_t t
             field(0x10U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "sinePhaseFrequencyScalar", CommandFieldEvidence::GekkoAndCorpus, true),
             field(0x14U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "sineDisplacementScale", CommandFieldEvidence::GekkoAndCorpus, true),
             field(0x18U, CommandFieldWidth::U32, CommandFieldKind::BufferPointer, "distanceWeightBufferPointerRuntime", CommandFieldEvidence::GekkoAndCorpus, false),
-            field(0x20U, CommandFieldWidth::F32, CommandFieldKind::Duration, "maximumDistanceRange", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x1CU, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "minimumDistanceRange", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x20U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "maximumDistanceRange", CommandFieldEvidence::GekkoAndCorpus, true),
             field(0x24U, CommandFieldWidth::U32, CommandFieldKind::BufferPointer, "sourceCoordinateSnapshotPointerRuntime", CommandFieldEvidence::GekkoAndCorpus, false),
             field(0x28U, CommandFieldWidth::U32, CommandFieldKind::RawWord, "packedControlWord", CommandFieldEvidence::GekkoAndCorpus, true),
-            field(0x30U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalYMinimum", CommandFieldEvidence::GekkoAndCorpus, true),
-            field(0x34U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalYMaximum", CommandFieldEvidence::GekkoAndCorpus, true),
-            field(0x38U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalXZRadialMinimum", CommandFieldEvidence::GekkoAndCorpus, true),
-            field(0x3CU, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalXZRadialMaximum", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x30U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "falloffShapeScalar", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x34U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalYMinimum", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x38U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalYMaximum", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x3CU, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalXZRadialMinimum", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x40U, CommandFieldWidth::F32, CommandFieldKind::FloatParameter, "optionalXZRadialMaximum", CommandFieldEvidence::GekkoAndCorpus, true),
         };
     case 3:
         return {
-            field(0x00U, CommandFieldWidth::I16, CommandFieldKind::ModelIndex, "modelIndex"),
-            field(0x02U, CommandFieldWidth::U16, CommandFieldKind::LookupKey, "lookupKey"),
-            field(0x04U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
-            field(0x06U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
+            field(0x00U, CommandFieldWidth::I16, CommandFieldKind::ModelIndex, "modelIndex", CommandFieldEvidence::GekkoAndCorpus, false),
+            field(0x02U, CommandFieldWidth::U16, CommandFieldKind::LookupKey, "nodeTraversalLookupKey", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x04U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "textureCoordinateDeltaU", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x06U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "textureCoordinateDeltaV", CommandFieldEvidence::GekkoAndCorpus, true),
         };
     case 4:
         return {
@@ -476,13 +479,13 @@ std::vector<CommandFieldSummary> SstParser::fieldSummariesForType(std::int16_t t
         };
     case 8:
         return {
-            field(0x00U, CommandFieldWidth::I16, CommandFieldKind::ModelIndex, "modelIndex"),
-            field(0x02U, CommandFieldWidth::U16, CommandFieldKind::LookupKey, "lookupKey"),
-            field(0x04U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
-            field(0x06U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
-            field(0x08U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
-            field(0x0AU, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
-            field(0x0CU, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "halfwordParameter"),
+            field(0x00U, CommandFieldWidth::I16, CommandFieldKind::ModelIndex, "modelIndex", CommandFieldEvidence::GekkoAndCorpus, false),
+            field(0x02U, CommandFieldWidth::U16, CommandFieldKind::LookupKey, "nodeTraversalLookupKey", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x04U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "textureTileWidth", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x06U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "textureTileHeight", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x08U, CommandFieldWidth::I16, CommandFieldKind::HalfwordParameter, "texturePageSize", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x0AU, CommandFieldWidth::I16, CommandFieldKind::Counter, "textureAnimationFrameCount", CommandFieldEvidence::GekkoAndCorpus, true),
+            field(0x0CU, CommandFieldWidth::I16, CommandFieldKind::Duration, "frameHoldDuration", CommandFieldEvidence::GekkoAndCorpus, true),
         };
     case 9:
         return {
