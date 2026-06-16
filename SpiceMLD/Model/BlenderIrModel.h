@@ -151,9 +151,47 @@ struct BlenderIrVec3Keyframe {
     Vec3 value{};
 };
 
+struct BlenderIrVec2Keyframe {
+    std::uint32_t frame = 0;
+    Vec2 value{};
+};
+
 struct BlenderIrQuatKeyframe {
     std::uint32_t frame = 0;
     Quat value{};
+};
+
+struct BlenderIrFloatKeyframe {
+    std::uint32_t frame = 0;
+    float value = 0.0f;
+};
+
+struct BlenderIrColorKeyframe {
+    std::uint32_t frame = 0;
+    ColorRgba8 value{};
+};
+
+struct BlenderIrSpotKeyframe {
+    std::uint32_t frame = 0;
+    SpotlightValue value{};
+};
+
+struct BlenderIrVectorArrayKeyframe {
+    std::uint32_t frame = 0;
+    std::string label{};
+    std::vector<Vec3> values{};
+};
+
+struct BlenderIrAnimationChannel {
+    std::size_t nodeIndex = 0;
+    std::string channel{};
+    std::string valueType{};
+    std::vector<BlenderIrVec3Keyframe> vec3Values{};
+    std::vector<BlenderIrVec2Keyframe> vec2Values{};
+    std::vector<BlenderIrFloatKeyframe> floatValues{};
+    std::vector<BlenderIrColorKeyframe> colorValues{};
+    std::vector<BlenderIrSpotKeyframe> spotValues{};
+    std::vector<BlenderIrVectorArrayKeyframe> vectorArrayValues{};
 };
 
 struct BlenderIrUnsupportedAnimationChannel {
@@ -181,6 +219,7 @@ struct BlenderIrAnimation {
     std::uint32_t frameCount = 0;
     std::string interpolationMode{};
     std::vector<BlenderIrNodeAnimation> nodes{};
+    std::vector<BlenderIrAnimationChannel> channels{};
     std::vector<BlenderIrUnsupportedAnimationChannel> unsupportedChannels{};
 };
 

@@ -26,8 +26,26 @@ void writeVec3(std::ostringstream& out, const model::Vec3& v) {
     out << '[' << v.x << ',' << v.y << ',' << v.z << ']';
 }
 
+void writeVec2(std::ostringstream& out, const model::Vec2& v) {
+    out << '[' << v.x << ',' << v.y << ']';
+}
+
 void writeQuat(std::ostringstream& out, const model::Quat& q) {
     out << '[' << q.x << ',' << q.y << ',' << q.z << ',' << q.w << ']';
+}
+
+void writeColor(std::ostringstream& out, const model::ColorRgba8& c) {
+    out << '[' << static_cast<unsigned int>(c.r)
+        << ',' << static_cast<unsigned int>(c.g)
+        << ',' << static_cast<unsigned int>(c.b)
+        << ',' << static_cast<unsigned int>(c.a) << ']';
+}
+
+void writeSpot(std::ostringstream& out, const model::SpotlightValue& spot) {
+    out << "{\"nearDistance\":" << spot.nearDistance
+        << ",\"farDistance\":" << spot.farDistance
+        << ",\"insideAngle\":" << spot.insideAngle
+        << ",\"outsideAngle\":" << spot.outsideAngle << '}';
 }
 
 void writeTransform(std::ostringstream& out, const model::Transform& tx) {
@@ -66,6 +84,92 @@ void writeQuatKeyframes(std::ostringstream& out, const std::vector<model::Blende
         out << '}';
     }
     out << ']';
+}
+
+void writeVec2Keyframes(std::ostringstream& out, const std::vector<model::BlenderIrVec2Keyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":";
+        writeVec2(out, keys[i].value);
+        out << '}';
+    }
+    out << ']';
+}
+
+void writeFloatKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrFloatKeyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":" << keys[i].value << '}';
+    }
+    out << ']';
+}
+
+void writeColorKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrColorKeyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":";
+        writeColor(out, keys[i].value);
+        out << '}';
+    }
+    out << ']';
+}
+
+void writeSpotKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrSpotKeyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":";
+        writeSpot(out, keys[i].value);
+        out << '}';
+    }
+    out << ']';
+}
+
+void writeVectorArrayKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrVectorArrayKeyframe>& keys) {
+    out << '[';
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << "{\"frame\":" << keys[i].frame << ",\"label\":";
+        writeJsonString(out, keys[i].label);
+        out << ",\"values\":[";
+        for (std::size_t vi = 0; vi < keys[i].values.size(); ++vi) {
+            if (vi != 0) {
+                out << ',';
+            }
+            writeVec3(out, keys[i].values[vi]);
+        }
+        out << "]}";
+    }
+    out << ']';
+}
+
+void writeAnimationChannelKeyframes(std::ostringstream& out, const model::BlenderIrAnimationChannel& channel) {
+    if (!channel.vec3Values.empty()) {
+        writeVec3Keyframes(out, channel.vec3Values);
+    } else if (!channel.vec2Values.empty()) {
+        writeVec2Keyframes(out, channel.vec2Values);
+    } else if (!channel.floatValues.empty()) {
+        writeFloatKeyframes(out, channel.floatValues);
+    } else if (!channel.colorValues.empty()) {
+        writeColorKeyframes(out, channel.colorValues);
+    } else if (!channel.spotValues.empty()) {
+        writeSpotKeyframes(out, channel.spotValues);
+    } else {
+        writeVectorArrayKeyframes(out, channel.vectorArrayValues);
+    }
 }
 
 [[nodiscard]] std::string toBase64(std::span<const std::uint8_t> data) {
@@ -383,6 +487,23 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
             writeVec3Keyframes(out, node.scale);
             out << ",\"quaternionRotation\":";
             writeQuatKeyframes(out, node.quaternionRotation);
+            out << '}';
+        }
+        out << ']';
+
+        out << ",\"channels\":[";
+        for (std::size_t ci = 0; ci < animation.channels.size(); ++ci) {
+            if (ci != 0) {
+                out << ',';
+            }
+            const auto& channel = animation.channels[ci];
+            out << "{\"nodeIndex\":" << channel.nodeIndex
+                << ",\"channel\":";
+            writeJsonString(out, channel.channel);
+            out << ",\"valueType\":";
+            writeJsonString(out, channel.valueType);
+            out << ",\"keyframes\":";
+            writeAnimationChannelKeyframes(out, channel);
             out << '}';
         }
         out << ']';

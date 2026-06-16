@@ -174,7 +174,8 @@ inline void update_summary(Keyframes& result,
             type == Structs::FloatIOType::Short;
         const std::uint32_t frame = shortFrame ? reader.read_u16(address) : reader.read_u32(address);
         address += shortFrame ? 2U : 4U;
-        result.emplace(frame, Structs::EndianIOExtensions::read_vector3(reader, address, type));
+        result.emplace(frame, Structs::EndianIOExtensions::read_vector3(reader, static_cast<std::size_t>(address), type));
+        address += static_cast<std::uint32_t>(3 * Structs::byte_size(type));
     }
     return result;
 }
@@ -246,7 +247,8 @@ inline void update_summary(Keyframes& result,
     for (std::uint32_t i = 0; i < count; ++i) {
         const std::uint32_t frame = reader.read_u32(address);
         address += 4U;
-        result.emplace(frame, Structs::EndianIOExtensions::read_vector2(reader, address, type));
+        result.emplace(frame, Structs::EndianIOExtensions::read_vector2(reader, static_cast<std::size_t>(address), type));
+        address += static_cast<std::uint32_t>(2 * Structs::byte_size(type));
     }
     return result;
 }
@@ -260,7 +262,7 @@ inline void update_summary(Keyframes& result,
     for (std::uint32_t i = 0; i < count; ++i) {
         const std::uint32_t frame = reader.read_u32(address);
         address += 4U;
-        result.emplace(frame, Structs::EndianIOExtensions::read_color(reader, address, type));
+        result.emplace(frame, Structs::EndianIOExtensions::read_color(reader, static_cast<std::size_t>(address), type));
         address += static_cast<std::uint32_t>(Structs::byte_size(type));
     }
     return result;
@@ -304,7 +306,8 @@ inline void update_summary(Keyframes& result,
     for (std::uint32_t i = 0; i < count; ++i) {
         const std::uint32_t frame = reader.read_u32(address);
         address += 4U;
-        result.emplace(frame, Structs::EndianIOExtensions::read_quaternion(reader, address));
+        result.emplace(frame, Structs::EndianIOExtensions::read_quaternion(reader, static_cast<std::size_t>(address)));
+        address += 16U;
     }
     return result;
 }

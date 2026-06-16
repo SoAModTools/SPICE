@@ -93,6 +93,7 @@ struct ParsedMldAnimation {
     std::uint32_t sourceMotionAddress = 0;
     std::size_t motionSlot = 0;
     std::uint32_t nodeCount = 0;
+    bool shortRot = false;
     std::shared_ptr<Sa3Dport::Animation::Motion> motion{};
 };
 

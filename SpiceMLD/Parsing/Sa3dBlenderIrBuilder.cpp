@@ -45,8 +45,25 @@ using Sa3Dport::ObjectData::NodePtr;
     return model::Vec3{ value.x, value.y, value.z };
 }
 
+[[nodiscard]] model::Vec2 toVec2(const Sa3Dport::Structs::Vector2& value) {
+    return model::Vec2{ value.x, value.y };
+}
+
 [[nodiscard]] model::Quat toQuat(const Sa3Dport::Structs::Quaternion& value) {
     return model::Quat{ value.x, value.y, value.z, value.w };
+}
+
+[[nodiscard]] model::ColorRgba8 toColor(const Sa3Dport::Structs::Color& value) {
+    return model::ColorRgba8{ value.red, value.green, value.blue, value.alpha };
+}
+
+[[nodiscard]] model::SpotlightValue toSpotlight(const Sa3Dport::Animation::Spotlight& value) {
+    return model::SpotlightValue{
+        .nearDistance = value.near_distance,
+        .farDistance = value.far_distance,
+        .insideAngle = value.inside_angle,
+        .outsideAngle = value.outside_angle,
+    };
 }
 
 [[nodiscard]] Sa3Dport::Structs::Vector3 transformPoint(
@@ -921,6 +938,165 @@ template <class Map>
     return out;
 }
 
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrVec2Keyframe> toVec2Keyframes(const Map& values) {
+    std::vector<model::BlenderIrVec2Keyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrVec2Keyframe{
+            .frame = frame,
+            .value = toVec2(value),
+        });
+    }
+    return out;
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrFloatKeyframe> toFloatKeyframes(const Map& values) {
+    std::vector<model::BlenderIrFloatKeyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrFloatKeyframe{
+            .frame = frame,
+            .value = value,
+        });
+    }
+    return out;
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrColorKeyframe> toColorKeyframes(const Map& values) {
+    std::vector<model::BlenderIrColorKeyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrColorKeyframe{
+            .frame = frame,
+            .value = toColor(value),
+        });
+    }
+    return out;
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrSpotKeyframe> toSpotKeyframes(const Map& values) {
+    std::vector<model::BlenderIrSpotKeyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrSpotKeyframe{
+            .frame = frame,
+            .value = toSpotlight(value),
+        });
+    }
+    return out;
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrVectorArrayKeyframe> toVectorArrayKeyframes(const Map& values) {
+    std::vector<model::BlenderIrVectorArrayKeyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        model::BlenderIrVectorArrayKeyframe key{};
+        key.frame = frame;
+        key.label = value.label;
+        key.values.reserve(value.values.size());
+        for (const auto& item : value.values) {
+            key.values.push_back(toVec3(item));
+        }
+        out.push_back(std::move(key));
+    }
+    return out;
+}
+
+void appendVec3Channel(std::vector<model::BlenderIrAnimationChannel>& out,
+    std::size_t nodeIndex,
+    std::string channel,
+    const std::vector<model::BlenderIrVec3Keyframe>& values) {
+    if (values.empty()) {
+        return;
+    }
+    out.push_back(model::BlenderIrAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = std::move(channel),
+        .valueType = "vec3",
+        .vec3Values = values,
+    });
+}
+
+void appendVec2Channel(std::vector<model::BlenderIrAnimationChannel>& out,
+    std::size_t nodeIndex,
+    std::string channel,
+    const std::vector<model::BlenderIrVec2Keyframe>& values) {
+    if (values.empty()) {
+        return;
+    }
+    out.push_back(model::BlenderIrAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = std::move(channel),
+        .valueType = "vec2",
+        .vec2Values = values,
+    });
+}
+
+void appendFloatChannel(std::vector<model::BlenderIrAnimationChannel>& out,
+    std::size_t nodeIndex,
+    std::string channel,
+    const std::vector<model::BlenderIrFloatKeyframe>& values) {
+    if (values.empty()) {
+        return;
+    }
+    out.push_back(model::BlenderIrAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = std::move(channel),
+        .valueType = "float",
+        .floatValues = values,
+    });
+}
+
+void appendColorChannel(std::vector<model::BlenderIrAnimationChannel>& out,
+    std::size_t nodeIndex,
+    std::string channel,
+    const std::vector<model::BlenderIrColorKeyframe>& values) {
+    if (values.empty()) {
+        return;
+    }
+    out.push_back(model::BlenderIrAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = std::move(channel),
+        .valueType = "rgba8",
+        .colorValues = values,
+    });
+}
+
+void appendSpotChannel(std::vector<model::BlenderIrAnimationChannel>& out,
+    std::size_t nodeIndex,
+    std::string channel,
+    const std::vector<model::BlenderIrSpotKeyframe>& values) {
+    if (values.empty()) {
+        return;
+    }
+    out.push_back(model::BlenderIrAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = std::move(channel),
+        .valueType = "spot",
+        .spotValues = values,
+    });
+}
+
+void appendVectorArrayChannel(std::vector<model::BlenderIrAnimationChannel>& out,
+    std::size_t nodeIndex,
+    std::string channel,
+    const std::vector<model::BlenderIrVectorArrayKeyframe>& values) {
+    if (values.empty()) {
+        return;
+    }
+    out.push_back(model::BlenderIrAnimationChannel{
+        .nodeIndex = nodeIndex,
+        .channel = std::move(channel),
+        .valueType = "vec3Array",
+        .vectorArrayValues = values,
+    });
+}
+
 void appendAnimations(const ParseResult& parseResult,
     const std::unordered_map<std::uint32_t, std::vector<std::size_t>>& treeIndicesByObjectAddress,
     model::BlenderIrScene& out) {
@@ -943,7 +1119,9 @@ void appendAnimations(const ParseResult& parseResult,
         animation.motionSlot = source.motionSlot;
         animation.objectTreeIndex = foundTrees->second.front();
         animation.nodeCount = source.nodeCount;
-        animation.frameCount = source.motion->frame_count();
+        animation.frameCount = source.motion->declared_frame_count != 0U
+            ? source.motion->declared_frame_count
+            : source.motion->frame_count();
         animation.interpolationMode = interpolationModeName(source.motion->interpolation_mode);
 
         for (const auto& [nodeIndex, keyframes] : source.motion->keyframes) {
@@ -954,16 +1132,16 @@ void appendAnimations(const ParseResult& parseResult,
             nodeAnimation.scale = toVec3Keyframes(keyframes.scale);
             nodeAnimation.quaternionRotation = toQuatKeyframes(keyframes.quaternion_rotation);
 
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "vector", keyframes.vector.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "vertex", keyframes.vertex.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "normal", keyframes.normal.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "target", keyframes.target.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "roll", keyframes.roll.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "angle", keyframes.angle.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "lightColor", keyframes.light_color.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "intensity", keyframes.intensity.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "spot", keyframes.spot.size());
-            appendUnsupportedChannel(animation.unsupportedChannels, nodeAnimation.nodeIndex, "point", keyframes.point.size());
+            appendVec3Channel(animation.channels, nodeAnimation.nodeIndex, "vector", toVec3Keyframes(keyframes.vector));
+            appendVectorArrayChannel(animation.channels, nodeAnimation.nodeIndex, "vertex", toVectorArrayKeyframes(keyframes.vertex));
+            appendVectorArrayChannel(animation.channels, nodeAnimation.nodeIndex, "normal", toVectorArrayKeyframes(keyframes.normal));
+            appendVec3Channel(animation.channels, nodeAnimation.nodeIndex, "target", toVec3Keyframes(keyframes.target));
+            appendFloatChannel(animation.channels, nodeAnimation.nodeIndex, "roll", toFloatKeyframes(keyframes.roll));
+            appendFloatChannel(animation.channels, nodeAnimation.nodeIndex, "angle", toFloatKeyframes(keyframes.angle));
+            appendColorChannel(animation.channels, nodeAnimation.nodeIndex, "lightColor", toColorKeyframes(keyframes.light_color));
+            appendFloatChannel(animation.channels, nodeAnimation.nodeIndex, "intensity", toFloatKeyframes(keyframes.intensity));
+            appendSpotChannel(animation.channels, nodeAnimation.nodeIndex, "spot", toSpotKeyframes(keyframes.spot));
+            appendVec2Channel(animation.channels, nodeAnimation.nodeIndex, "point", toVec2Keyframes(keyframes.point));
 
             if (!nodeAnimation.position.empty() ||
                 !nodeAnimation.eulerRotation.empty() ||

@@ -308,6 +308,87 @@ TEST(Sa3DportAnimation, ReadsTransformKeyframeValuesFromNjAnimationBlock) {
     EXPECT_EQ(keyframes.quaternion_rotation.at(0u), S::Quaternion(0.1f, 0.2f, 0.3f, 0.9f));
 }
 
+TEST(Sa3DportAnimation, ProbesMotionNodeCountAndDeclaredFrameCount) {
+    auto data = MakeAnimationBlock(0x60u);
+    constexpr std::uint32_t motionOffset = 8u;
+    constexpr std::uint32_t keyframeTableOffset = 0x30u;
+    constexpr std::uint32_t positionOffset = 0x40u;
+    constexpr auto type = A::KeyframeAttributes::Position;
+
+    PutU32(data, motionOffset, MotionPointer(keyframeTableOffset));
+    PutU32(data, motionOffset + 4u, 7u);
+    PutU16(data, motionOffset + 8u, static_cast<std::uint16_t>(type));
+    PutU16(data, motionOffset + 10u, static_cast<std::uint16_t>(A::channel_count(type)));
+    PutU32(data, keyframeTableOffset, MotionPointer(positionOffset));
+    PutU32(data, keyframeTableOffset + 4u, 1u);
+    PutU32(data, keyframeTableOffset + 8u, MotionPointer(0x58u));
+    PutU32(data, keyframeTableOffset + 12u, 1u);
+    PutU32(data, positionOffset, 6u);
+    PutVec3(data, positionOffset + 4u, {1.0f, 0.0f, 0.0f});
+
+    const auto valid = F::AnimationFile::probe_from_bytes(data, 1u);
+    EXPECT_TRUE(valid.valid);
+    EXPECT_EQ(valid.declared_frame_count, 7u);
+    EXPECT_EQ(valid.node_count, 1u);
+    EXPECT_FALSE(valid.short_rot);
+
+    const auto invalid = F::AnimationFile::probe_from_bytes(data, 2u);
+    EXPECT_FALSE(invalid.valid);
+    EXPECT_FALSE(invalid.failure_reason.empty());
+
+    const auto animationFile = F::AnimationFile::read_from_bytes(data, 1u);
+    EXPECT_EQ(animationFile.animation.declared_frame_count, 7u);
+}
+
+TEST(Sa3DportAnimation, ProbesDefaultMotionDeclaredFrameCount) {
+    auto data = MakeAnimationBlock(0x30u);
+    constexpr std::uint32_t motionOffset = 8u;
+
+    PutU32(data, motionOffset, 0u);
+    PutU32(data, motionOffset + 4u, 23u);
+    PutU16(data, motionOffset + 8u, static_cast<std::uint16_t>(A::KeyframeAttributes::None));
+    PutU16(data, motionOffset + 10u, 0u);
+
+    const auto probe = F::AnimationFile::probe_from_bytes(data, 4u);
+    EXPECT_TRUE(probe.valid);
+    EXPECT_EQ(probe.declared_frame_count, 23u);
+    EXPECT_EQ(probe.consumed_end, motionOffset + A::Motion::StructSize);
+
+    const auto animationFile = F::AnimationFile::read_from_bytes(data, 4u);
+    EXPECT_EQ(animationFile.animation.declared_frame_count, 23u);
+    EXPECT_EQ(animationFile.animation.frame_count(), 0u);
+}
+
+TEST(Sa3DportAnimation, ProbesShortRotationMotion) {
+    auto data = MakeAnimationBlock(0x50u);
+    constexpr std::uint32_t motionOffset = 8u;
+    constexpr std::uint32_t keyframeTableOffset = 0x30u;
+    constexpr std::uint32_t rotationOffset = 0x48u;
+    constexpr auto type = A::KeyframeAttributes::EulerRotation;
+
+    PutU32(data, motionOffset, MotionPointer(keyframeTableOffset));
+    PutU32(data, motionOffset + 4u, 3u);
+    PutU16(data, motionOffset + 8u, static_cast<std::uint16_t>(type));
+    PutU16(data, motionOffset + 10u, static_cast<std::uint16_t>(A::channel_count(type)));
+    PutU32(data, keyframeTableOffset, MotionPointer(rotationOffset));
+    PutU32(data, keyframeTableOffset + 4u, 1u);
+    PutU16(data, rotationOffset, 0u);
+    PutU16(data, rotationOffset + 2u, static_cast<std::uint16_t>(S::BAMSFHelper::RadToBAMSF(S::MathHelper::HalfPi)));
+    PutU16(data, rotationOffset + 4u, 0u);
+    PutU16(data, rotationOffset + 6u, 0u);
+
+    const auto normal = F::AnimationFile::probe_from_bytes(data, 1u, false);
+    EXPECT_FALSE(normal.valid);
+
+    const auto shortRot = F::AnimationFile::probe_from_bytes(data, 1u, true);
+    EXPECT_TRUE(shortRot.valid);
+    EXPECT_TRUE(shortRot.short_rot);
+
+    const auto animationFile = F::AnimationFile::read_from_bytes(data, 1u, true);
+    ASSERT_EQ(animationFile.animation.keyframes.at(0).euler_rotation.size(), 1u);
+    EXPECT_NEAR(animationFile.animation.keyframes.at(0).euler_rotation.at(0u).x, S::MathHelper::HalfPi, 0.001f);
+}
+
 TEST(Sa3DportAnimation, ReadsVertexArrayKeyframesThroughLut) {
     auto data = MakeAnimationBlock();
     constexpr std::uint32_t motionOffset = 8u;

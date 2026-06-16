@@ -15,6 +15,7 @@ struct Motion {
     static constexpr std::uint32_t StructSize = 16;
 
     std::uint32_t node_count = 0;
+    std::uint32_t declared_frame_count = 0;
     InterpolationMode interpolation_mode = InterpolationMode::Linear;
     bool short_rot = false;
     KeyframeAttributes manual_keyframe_types = KeyframeAttributes::None;
@@ -66,11 +67,13 @@ struct Motion {
                                      std::uint32_t imageBase,
                                      bool shortRot = false) {
         std::uint32_t keyframeAddress = read_motion_pointer(reader, address, imageBase).value_or(0);
+        const std::uint32_t declaredFrameCount = reader.read_u32(address + 4);
         const auto keyframeType = static_cast<KeyframeAttributes>(reader.read_u16(address + 8));
         const std::uint16_t tmp = reader.read_u16(address + 10);
         const auto mode = static_cast<InterpolationMode>((tmp >> 6) & 0x3u);
 
         Motion result;
+        result.declared_frame_count = declaredFrameCount;
         result.interpolation_mode = mode;
         result.node_count = modelCount;
         result.short_rot = shortRot;

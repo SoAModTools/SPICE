@@ -1510,12 +1510,7 @@ def _apply_ir_armature_animations(
             selected_preview_actions[armature_obj] = action
         animation_data.action = previous_action
 
-        for channel in animation.get("unsupportedChannels", []):
-            stats.add_warning(
-                f"Animation motionSlot={animation.get('motionSlot')} parsed unsupported "
-                f"channel={channel.get('channel')} nodeIndex={channel.get('nodeIndex')} "
-                f"keyframes={channel.get('keyframeCount')}."
-            )
+        _warn_unapplied_animation_channels(animation, stats)
 
     if preview_motion_slot is not None and not selected_preview_actions:
         stats.add_warning(f"Preview Motion Slot {preview_motion_slot} did not match any imported armature actions.")
@@ -1604,12 +1599,7 @@ def _apply_ir_animations(
                 selected_preview_actions[node_obj] = action
             animation_data.action = previous_action
 
-        for channel in animation.get("unsupportedChannels", []):
-            stats.add_warning(
-                f"Animation motionSlot={animation.get('motionSlot')} parsed unsupported "
-                f"channel={channel.get('channel')} nodeIndex={channel.get('nodeIndex')} "
-                f"keyframes={channel.get('keyframeCount')}."
-            )
+        _warn_unapplied_animation_channels(animation, stats)
 
     if preview_motion_slot is not None and not selected_preview_actions:
         stats.add_warning(f"Preview Motion Slot {preview_motion_slot} did not match any imported animation actions.")
@@ -1621,6 +1611,21 @@ def _apply_ir_animations(
         if action is not None:
             obj["spice_preview_action"] = action.name
             obj["spice_preview_motion_slot"] = int(action.get("spice_motion_slot", 0))
+
+
+def _warn_unapplied_animation_channels(animation: dict[str, Any], stats: ImportStats) -> None:
+    for channel in animation.get("channels", []):
+        stats.add_warning(
+            f"Animation motionSlot={animation.get('motionSlot')} parsed non-transform "
+            f"channel={channel.get('channel')} nodeIndex={channel.get('nodeIndex')} "
+            f"keyframes={len(channel.get('keyframes', []))}; it was not visually applied."
+        )
+    for channel in animation.get("unsupportedChannels", []):
+        stats.add_warning(
+            f"Animation motionSlot={animation.get('motionSlot')} parsed unsupported "
+            f"channel={channel.get('channel')} nodeIndex={channel.get('nodeIndex')} "
+            f"keyframes={channel.get('keyframeCount')}."
+        )
 
 
 def _entry_transform_to_matrix(transform: dict[str, Any]) -> mathutils.Matrix:

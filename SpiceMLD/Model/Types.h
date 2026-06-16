@@ -11,11 +11,30 @@ struct Vec3 {
     float z = 0.0f;
 };
 
+struct Vec2 {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
 struct Quat {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
     float w = 1.0f;
+};
+
+struct ColorRgba8 {
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+    std::uint8_t a = 0;
+};
+
+struct SpotlightValue {
+    float nearDistance = 0.0f;
+    float farDistance = 0.0f;
+    float insideAngle = 0.0f;
+    float outsideAngle = 0.0f;
 };
 
 struct Transform {

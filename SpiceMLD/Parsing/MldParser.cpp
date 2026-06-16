@@ -363,26 +363,80 @@ void resolveObjectNjLayout(
     return std::nullopt;
 }
 
-[[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>> findAnimationTarget(
+struct AnimationTargetCandidate {
+    std::uint32_t objectAddress = 0;
+    std::uint32_t nodeCount = 0;
+};
+
+struct AnimationBindingProbe {
+    AnimationTargetCandidate target{};
+    Sa3Dport::File::AnimationProbeResult probe{};
+};
+
+[[nodiscard]] std::vector<AnimationTargetCandidate> collectAnimationTargets(
     const ParsedRawEntry& entry,
-    const std::vector<ExtractedNjBlock>& blocks,
-    std::vector<ParseDiagnostic>& diagnostics) {
+    const std::vector<ExtractedNjBlock>& blocks) {
+    std::vector<AnimationTargetCandidate> candidates{};
     for (const auto objectAddress : entry.objectAddresses) {
         const auto* objectBlock = findContainingObjectBlock(blocks, objectAddress);
         if (objectBlock == nullptr) {
             continue;
         }
         if (auto nodeCount = tryReadObjectNodeCount(*objectBlock); nodeCount.has_value()) {
-            return std::make_pair(objectAddress, *nodeCount);
+            candidates.push_back(AnimationTargetCandidate{
+                .objectAddress = objectAddress,
+                .nodeCount = *nodeCount,
+            });
         }
     }
 
-    diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Warning,
-        .message = "Entry " + std::to_string(entry.tableIndex) +
-            " has motion addresses but no parseable object tree for animation node count.",
-    });
-    return std::nullopt;
+    return candidates;
+}
+
+[[nodiscard]] std::string describeAnimationProbe(
+    const AnimationBindingProbe& probe) {
+    std::ostringstream message;
+    message << "object=0x" << std::hex << std::setw(8) << std::setfill('0') << probe.target.objectAddress
+        << std::dec << "/nodes=" << probe.target.nodeCount
+        << "/shortRot=" << (probe.probe.short_rot ? "true" : "false")
+        << '/' << (probe.probe.valid ? "valid" : "invalid");
+    if (probe.probe.valid) {
+        message << "/consumedEnd=" << probe.probe.consumed_end;
+    } else if (!probe.probe.failure_reason.empty()) {
+        message << '/' << probe.probe.failure_reason;
+    }
+    return message.str();
+}
+
+[[nodiscard]] std::optional<AnimationBindingProbe> chooseAnimationBinding(
+    const std::vector<AnimationTargetCandidate>& targets,
+    const ExtractedNjBlock& motionBlock,
+    std::vector<std::string>& rejectedCandidates) {
+    std::optional<AnimationBindingProbe> best{};
+
+    for (const auto& target : targets) {
+        for (const bool shortRot : {false, true}) {
+            auto probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
+                asByteSpan(motionBlock.bytes), target.nodeCount, shortRot);
+            AnimationBindingProbe candidate{
+                .target = target,
+                .probe = std::move(probe),
+            };
+            if (!candidate.probe.valid) {
+                rejectedCandidates.push_back(describeAnimationProbe(candidate));
+                continue;
+            }
+
+            if (!best.has_value() ||
+                candidate.probe.consumed_end > best->probe.consumed_end ||
+                (candidate.probe.consumed_end == best->probe.consumed_end &&
+                    best->probe.short_rot && !candidate.probe.short_rot)) {
+                best = std::move(candidate);
+            }
+        }
+    }
+
+    return best;
 }
 
 void parseMldAnimations(ParseResult& result) {
@@ -398,12 +452,16 @@ void parseMldAnimations(ParseResult& result) {
             continue;
         }
 
-        const auto target = findAnimationTarget(entry, result.extractedNjBlocks, result.diagnostics);
-        if (!target.has_value()) {
+        const auto targets = collectAnimationTargets(entry, result.extractedNjBlocks);
+        if (targets.empty()) {
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = ParseDiagnostic::Severity::Warning,
+                .message = "Entry " + std::to_string(entry.tableIndex) +
+                    " has motion addresses but no parseable object tree for animation node count.",
+            });
             continue;
         }
 
-        const auto [objectAddress, nodeCount] = *target;
         for (std::size_t slot = 0; slot < entry.motionAddresses.size(); ++slot) {
             const auto motionAddress = entry.motionAddresses[slot];
             if (motionAddress == 0U) {
@@ -421,22 +479,51 @@ void parseMldAnimations(ParseResult& result) {
                 continue;
             }
 
+            std::vector<std::string> rejectedCandidates{};
+            const auto binding = chooseAnimationBinding(targets, *block, rejectedCandidates);
+            if (!binding.has_value()) {
+                std::ostringstream message;
+                message << "Failed to bind animation for entry " << entry.tableIndex
+                    << " fxn=\"" << entry.fxnName << "\" motion slot " << slot
+                    << " motion=0x" << std::hex << std::setw(8) << std::setfill('0') << motionAddress
+                    << std::dec << ". Candidates: ";
+                for (std::size_t i = 0; i < rejectedCandidates.size(); ++i) {
+                    if (i != 0U) {
+                        message << "; ";
+                    }
+                    message << rejectedCandidates[i];
+                }
+                result.diagnostics.push_back(ParseDiagnostic{
+                    .severity = ParseDiagnostic::Severity::Warning,
+                    .message = message.str(),
+                });
+                continue;
+            }
+
             try {
-                const auto animationFile = Sa3Dport::File::AnimationFile::read_from_bytes(asByteSpan(block->bytes), nodeCount);
+                const auto animationFile = Sa3Dport::File::AnimationFile::read_from_bytes(
+                    asByteSpan(block->bytes), binding->target.nodeCount, binding->probe.short_rot);
                 result.animations.push_back(ParsedMldAnimation{
                     .sourceEntryId = entry.sourceEntryId,
                     .tableIndex = entry.tableIndex,
-                    .sourceObjectAddress = objectAddress,
+                    .sourceObjectAddress = binding->target.objectAddress,
                     .sourceMotionAddress = motionAddress,
                     .motionSlot = slot,
-                    .nodeCount = nodeCount,
+                    .nodeCount = binding->target.nodeCount,
+                    .shortRot = binding->probe.short_rot,
                     .motion = std::make_shared<Sa3Dport::Animation::Motion>(animationFile.animation),
                 });
             } catch (const std::exception& ex) {
                 result.diagnostics.push_back(ParseDiagnostic{
                     .severity = ParseDiagnostic::Severity::Warning,
                     .message = "Failed to parse animation for entry " + std::to_string(entry.tableIndex) +
-                        " motion slot " + std::to_string(slot) + ": " + ex.what(),
+                        " fxn=\"" + entry.fxnName +
+                        "\" motion slot " + std::to_string(slot) +
+                        " motion=" + std::to_string(motionAddress) +
+                        " object=" + std::to_string(binding->target.objectAddress) +
+                        " nodes=" + std::to_string(binding->target.nodeCount) +
+                        " shortRot=" + (binding->probe.short_rot ? std::string("true") : std::string("false")) +
+                        ": " + ex.what(),
                 });
             }
         }
