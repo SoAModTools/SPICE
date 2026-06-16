@@ -310,6 +310,7 @@ struct MllFile {
     MllTableShape tableShape{ MllTableShape::Normal };
     std::vector<MllMember> members{};
     std::vector<MllDiagnostic> diagnostics{};
+    std::vector<std::uint8_t> originalDecodedBytes{};
 
     [[nodiscard]] bool ok() const;
 };

@@ -1340,6 +1340,7 @@ MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string source
     std::vector<std::uint8_t> decodedStorage;
     const auto decodedBytes = decodeIfNeeded(bytes, file, decodedStorage);
     file.decodedSize = clampSize(decodedBytes.size());
+    file.originalDecodedBytes.assign(decodedBytes.begin(), decodedBytes.end());
     if (!file.ok()) {
         return file;
     }

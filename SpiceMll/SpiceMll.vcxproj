@@ -101,6 +101,8 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="MllArchiveIr.h" />
+    <ClInclude Include="MllBinaryExporter.h" />
     <ClInclude Include="MllCorpus.h" />
     <ClInclude Include="MllModel.h" />
     <ClInclude Include="MllParser.h" />
@@ -108,6 +110,8 @@
     <ClInclude Include="StandaloneMldTextureScan.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="MllArchiveIr.cpp" />
+    <ClCompile Include="MllBinaryExporter.cpp" />
     <ClCompile Include="MllCorpus.cpp" />
     <ClCompile Include="MllParser.cpp" />
     <ClCompile Include="SpiceMll.cpp" />
