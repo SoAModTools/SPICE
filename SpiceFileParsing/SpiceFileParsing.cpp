@@ -60,6 +60,13 @@ bool writeAllBytes(const std::filesystem::path& path, std::span<const std::uint8
     return out.good();
 }
 
+bool writeAllBytesCreatingParents(const std::filesystem::path& path, std::span<const std::uint8_t> bytes) {
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    return writeAllBytes(path, bytes);
+}
+
 bool canReadSpan(std::span<const std::uint8_t> bytes, std::size_t offset, std::size_t size) {
     return offset <= bytes.size() && size <= bytes.size() - offset;
 }
@@ -252,6 +259,9 @@ struct CliOptions {
     bool createGvrSingle = false;
     bool replaceGvrSingle = false;
     bool replaceMldTextureSingle = false;
+    bool extractMldTextureGvrSingle = false;
+    bool extractMldTexturePngSingle = false;
+    bool gvrToPngSingle = false;
     bool createGvrBatch = false;
     bool replaceGvrBatch = false;
     std::filesystem::path createGvrInputPng{};
@@ -262,6 +272,13 @@ struct CliOptions {
     std::filesystem::path replaceMldTextureSourceMld{};
     std::filesystem::path replaceMldTextureInputPng{};
     std::filesystem::path replaceMldTextureOutputMld{};
+    std::filesystem::path extractMldTextureSourceMld{};
+    std::filesystem::path extractMldTextureOutputGvr{};
+    std::filesystem::path extractMldTextureOutputPng{};
+    std::filesystem::path gvrToPngSourceGvr{};
+    std::filesystem::path gvrToPngOutputPng{};
+    bool writeExtractedGvr = false;
+    std::filesystem::path writeExtractedGvrPath{};
     bool decompressAklzSingle = false;
     bool compressAklzSingle = false;
     std::filesystem::path aklzInputPath{};
@@ -316,6 +333,9 @@ void printUsage() {
         << "  SpiceFileParsing --compress-aklz input.bin output.aklz\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
         << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
+        << "  SpiceFileParsing --gvr-to-png source.gvr output.png\n"
+        << "  SpiceFileParsing --extract-mld-texture-gvr source.mld output.gvr (--mld-texture-index <n>|--mld-texture-name <name>)\n"
+        << "  SpiceFileParsing --extract-mld-texture-png source.mld output.png (--mld-texture-index <n>|--mld-texture-name <name>) [--write-extracted-gvr output.gvr]\n"
         << "  SpiceFileParsing --replace-mld-texture source.mld input.png output.mld (--mld-texture-index <n>|--mld-texture-name <name>) [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-global-index preserve|none|<u32>] [--mld-aklz preserve|raw|compressed] [--mld-allow-dimension-change] [--mld-allow-post-archive-shift]\n"
         << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --create-gvr-batch [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr]\n"
         << "  SpiceFileParsing input_png_dir output_gvr_dir --gvr-only --replace-gvr-batch source_gvr_dir [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr]\n\n"
@@ -346,6 +366,9 @@ void printUsage() {
         << "  - --export-gvr-image-ir writes PNG plus .gvr.json sidecar files for standalone .gvr files.\n"
         << "  - --import-gvr-image-ir writes standalone RGBA8 .gvr files from .gvr.json sidecars.\n"
         << "  - --create-gvr and --replace-gvr encode PNGs directly to standalone GVR files without sidecars.\n"
+        << "  - --gvr-to-png decodes one standalone GVR to one PNG without writing a sidecar.\n"
+        << "  - --extract-mld-texture-gvr copies one embedded MLD texture's preserved GVR bytes to a standalone .gvr.\n"
+        << "  - --extract-mld-texture-png decodes one embedded MLD texture to PNG and can optionally write the exact intermediate .gvr.\n"
         << "  - --replace-mld-texture rebuilds an embedded MLD texture archive and allows larger replacement GVR payloads.\n"
         << "  - --gvr-aklz controls GVR import wrapping; default preserve uses sourceWasAklz from the sidecar.\n"
         << "  - Bridge executable path is auto-discovered at <SpiceFileParsing.exe_dir>/sa3d_bridge/SA3DRefRunner.exe.\n"
@@ -501,6 +524,10 @@ bool usesAnyGvrMode(const CliOptions& options) {
     return usesGvrDirectMode(options) || options.exportGvrImageIr || options.importGvrImageIr;
 }
 
+bool usesSingleTextureUtilityMode(const CliOptions& options) {
+    return options.extractMldTextureGvrSingle || options.extractMldTexturePngSingle || options.gvrToPngSingle;
+}
+
 std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::filesystem::path& sourceDir) {
     CliOptions options{};
     options.inputDir = sourceDir / "inputs";
@@ -543,6 +570,36 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.replaceMldTextureSourceMld = std::filesystem::path(argv[++i]);
             options.replaceMldTextureInputPng = std::filesystem::path(argv[++i]);
             options.replaceMldTextureOutputMld = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--extract-mld-texture-gvr") {
+            if (i + 2 >= argc) {
+                std::cerr << "--extract-mld-texture-gvr requires source.mld and output.gvr.\n";
+                return std::nullopt;
+            }
+            options.extractMldTextureGvrSingle = true;
+            options.extractMldTextureSourceMld = std::filesystem::path(argv[++i]);
+            options.extractMldTextureOutputGvr = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--extract-mld-texture-png") {
+            if (i + 2 >= argc) {
+                std::cerr << "--extract-mld-texture-png requires source.mld and output.png.\n";
+                return std::nullopt;
+            }
+            options.extractMldTexturePngSingle = true;
+            options.extractMldTextureSourceMld = std::filesystem::path(argv[++i]);
+            options.extractMldTextureOutputPng = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--gvr-to-png") {
+            if (i + 2 >= argc) {
+                std::cerr << "--gvr-to-png requires source.gvr and output.png.\n";
+                return std::nullopt;
+            }
+            options.gvrToPngSingle = true;
+            options.gvrToPngSourceGvr = std::filesystem::path(argv[++i]);
+            options.gvrToPngOutputPng = std::filesystem::path(argv[++i]);
             continue;
         }
         if (arg == "--decompress-aklz") {
@@ -800,6 +857,15 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.mldAllowPostArchiveShift = true;
             continue;
         }
+        if (arg == "--write-extracted-gvr") {
+            if (i + 1 >= argc) {
+                std::cerr << "--write-extracted-gvr requires output.gvr.\n";
+                return std::nullopt;
+            }
+            options.writeExtractedGvr = true;
+            options.writeExtractedGvrPath = std::filesystem::path(argv[++i]);
+            continue;
+        }
         if (arg == "--mld-aklz") {
             if (i + 1 >= argc) {
                 std::cerr << "--mld-aklz requires preserve, compressed, or raw.\n";
@@ -855,6 +921,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
     }
     if (aklzUtilityModeCount > 0
         && (positionalIndex > 0 || options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || usesSingleTextureUtilityMode(options)
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
@@ -867,7 +934,8 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             || options.gvrMipmapsPreserve || options.gvrMipmapsOverride.has_value()
             || options.gvrGlobalIndexPolicy != GvrGlobalIndexPolicy::Preserve
             || options.mldTextureIndex.has_value() || options.mldTextureName.has_value()
-            || options.mldAllowDimensionChange || options.mldAllowPostArchiveShift || options.mldAklzSpecified)) {
+            || options.mldAllowDimensionChange || options.mldAllowPostArchiveShift || options.mldAklzSpecified
+            || options.writeExtractedGvr)) {
         std::cerr << "AKLZ utility modes cannot be combined with parser/export modes or format options.\n";
         return std::nullopt;
     }
@@ -882,6 +950,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
     }
     if (options.exportMlkCorpus
         && (options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || usesSingleTextureUtilityMode(options)
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
@@ -894,6 +963,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
     }
     if (options.exportMlkBlenderIr
         && (options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || usesSingleTextureUtilityMode(options)
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
@@ -920,12 +990,39 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         std::cerr << "Only one direct GVR mode can be selected.\n";
         return std::nullopt;
     }
+    const int singleTextureUtilityModeCount = (options.extractMldTextureGvrSingle ? 1 : 0)
+        + (options.extractMldTexturePngSingle ? 1 : 0)
+        + (options.gvrToPngSingle ? 1 : 0);
+    if (singleTextureUtilityModeCount > 1) {
+        std::cerr << "Only one single-file texture utility mode can be selected.\n";
+        return std::nullopt;
+    }
     if (options.exportGvrImageIr && options.importGvrImageIr) {
         std::cerr << "--export-gvr-image-ir cannot be combined with --import-gvr-image-ir.\n";
         return std::nullopt;
     }
     if (directGvrModeCount > 0 && (options.exportGvrImageIr || options.importGvrImageIr)) {
         std::cerr << "Direct GVR modes cannot be combined with GVR image IR import/export modes.\n";
+        return std::nullopt;
+    }
+    if (usesSingleTextureUtilityMode(options)
+        && (positionalIndex > 0 || options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
+            || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
+            || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
+            || options.exportSstSmlCommandMap || options.exportMlkCorpus || options.exportMlkBlenderIr
+            || options.overwriteMlkAnnotations || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
+            || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr)) {
+        std::cerr << "Single-file texture utility modes cannot be combined with parser/export modes.\n";
+        return std::nullopt;
+    }
+    if (usesSingleTextureUtilityMode(options)
+        && (options.gvrAklzSpecified || options.gvrFormatPreserve || options.gvrFormatOverride.has_value()
+            || options.gvrPaletteFormatPreserve || options.gvrPaletteFormatOverride.has_value()
+            || options.gvrMipmapsPreserve || options.gvrMipmapsOverride.has_value()
+            || options.gvrGlobalIndexPolicy != GvrGlobalIndexPolicy::Preserve)) {
+        std::cerr << "GVR encode options cannot be used with single-file texture utility modes.\n";
         return std::nullopt;
     }
     if (options.replaceMldTextureSingle && (usesAnyGvrMode(options) || options.runAbSa3dPortVsSa3dBridge
@@ -938,15 +1035,26 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         std::cerr << "--gvr-aklz is for standalone GVR output; use --mld-aklz for --replace-mld-texture.\n";
         return std::nullopt;
     }
+    const bool usesMldTextureSelectorMode = options.replaceMldTextureSingle
+        || options.extractMldTextureGvrSingle
+        || options.extractMldTexturePngSingle;
+    if (!usesMldTextureSelectorMode
+        && (options.mldTextureIndex.has_value() || options.mldTextureName.has_value())) {
+        std::cerr << "MLD texture selectors require --replace-mld-texture, --extract-mld-texture-gvr, or --extract-mld-texture-png.\n";
+        return std::nullopt;
+    }
     if (!options.replaceMldTextureSingle
-        && (options.mldTextureIndex.has_value() || options.mldTextureName.has_value()
-            || options.mldAllowDimensionChange || options.mldAllowPostArchiveShift || options.mldAklzSpecified)) {
+        && (options.mldAllowDimensionChange || options.mldAllowPostArchiveShift || options.mldAklzSpecified)) {
         std::cerr << "MLD texture replacement options require --replace-mld-texture.\n";
         return std::nullopt;
     }
-    if (options.replaceMldTextureSingle
+    if (usesMldTextureSelectorMode
         && options.mldTextureIndex.has_value() == options.mldTextureName.has_value()) {
-        std::cerr << "--replace-mld-texture requires exactly one selector: --mld-texture-index or --mld-texture-name.\n";
+        std::cerr << "MLD texture modes require exactly one selector: --mld-texture-index or --mld-texture-name.\n";
+        return std::nullopt;
+    }
+    if (options.writeExtractedGvr && !options.extractMldTexturePngSingle) {
+        std::cerr << "--write-extracted-gvr requires --extract-mld-texture-png.\n";
         return std::nullopt;
     }
     if (usesAnyGvrMode(options)
@@ -1262,6 +1370,120 @@ std::size_t selectMldTextureIndex(
     return *match;
 }
 
+struct ExtractedMldTexture {
+    spice::mld::model::MldFile parsed{};
+    std::size_t textureIndex = 0;
+    spice::mld::model::MldTextureEntry texture{};
+};
+
+ExtractedMldTexture extractMldTexture(
+    const CliOptions& cliOptions,
+    const std::filesystem::path& sourceMldPath) {
+    const auto sourceBytes = readAllBytes(sourceMldPath);
+    if (sourceBytes.empty()) {
+        throw std::runtime_error("failed to read source MLD: " + sourceMldPath.string());
+    }
+
+    spice::mld::parsing::MldParser parser{};
+    auto parsed = parser.parseFile(std::span<const std::uint8_t>(sourceBytes.data(), sourceBytes.size()));
+    if (!parsed.textureArchive.has_value() || parsed.textureArchive->entries.empty()) {
+        throw std::runtime_error("source MLD has no parsed texture archive");
+    }
+
+    const auto textureIndex = selectMldTextureIndex(cliOptions, *parsed.textureArchive);
+    const auto texture = parsed.textureArchive->entries[textureIndex];
+    if (texture.gvrData.empty()) {
+        throw std::runtime_error("selected source texture has no preserved GVR payload");
+    }
+
+    return ExtractedMldTexture{
+        .parsed = std::move(parsed),
+        .textureIndex = textureIndex,
+        .texture = texture,
+    };
+}
+
+void writeMldTextureExtractReport(
+    const std::filesystem::path& reportPath,
+    const std::filesystem::path& sourceMldPath,
+    const std::filesystem::path& outputPath,
+    const ExtractedMldTexture& extracted,
+    const char* outputKind,
+    const std::optional<spice::gvm::ir::GvrPngExportResult>& pngResult = std::nullopt,
+    const std::optional<std::filesystem::path>& intermediateGvrPath = std::nullopt) {
+    if (reportPath.has_parent_path()) {
+        std::filesystem::create_directories(reportPath.parent_path());
+    }
+    std::ofstream reportOut(reportPath, std::ios::binary);
+    const auto& texture = extracted.texture;
+    reportOut << "sourceMld=" << sourceMldPath.string() << "\n";
+    reportOut << "output" << outputKind << "=" << outputPath.string() << "\n";
+    if (intermediateGvrPath.has_value()) {
+        reportOut << "intermediateGvr=" << intermediateGvrPath->string() << "\n";
+    }
+    reportOut << "textureIndex=" << texture.archiveTextureIndex << "\n";
+    reportOut << "textureName=" << texture.textureName << "\n";
+    reportOut << "sourceTextureFormat=" << texture.sourceFormat << "\n";
+    reportOut << "sourcePaletteFormat=" << texture.sourcePaletteFormat << "\n";
+    reportOut << "sourceWidth=" << texture.width << "\n";
+    reportOut << "sourceHeight=" << texture.height << "\n";
+    reportOut << "sourceHasMipmaps=" << (texture.hasMipmaps ? "true" : "false") << "\n";
+    reportOut << "sourceHasGlobalIndex=" << (texture.hasGlobalIndex ? "true" : "false") << "\n";
+    reportOut << "sourceGlobalIndex=" << texture.globalIndex << "\n";
+    reportOut << "archiveTextureIndex=" << texture.archiveTextureIndex << "\n";
+    reportOut << "archiveOffset=" << texture.archiveOffset << "\n";
+    reportOut << "gvrDataOffset=" << texture.gvrDataOffset << "\n";
+    reportOut << "gvrDataSize=" << texture.gvrDataSize << "\n";
+    reportOut << "sourceFileSize=" << extracted.parsed.originalBytes.size() << "\n";
+    reportOut << "sourceWasAklz=" << (extracted.parsed.sourceWasCompressedAklz ? "true" : "false") << "\n";
+    for (const auto& diagnostic : extracted.parsed.diagnostics) {
+        reportOut << "mldDiagnostic=" << diagnostic << "\n";
+    }
+    for (const auto& diagnostic : texture.diagnostics) {
+        reportOut << "textureDiagnostic=" << diagnostic << "\n";
+    }
+    if (pngResult.has_value()) {
+        const auto& textureMetadata = pngResult->texture;
+        reportOut << "pngWidth=" << textureMetadata.width << "\n";
+        reportOut << "pngHeight=" << textureMetadata.height << "\n";
+        reportOut << "pngTextureFormat=" << spice::gvm::model::to_string(textureMetadata.textureFormat) << "\n";
+        reportOut << "pngPaletteFormat=" << spice::gvm::model::to_string(textureMetadata.paletteFormat) << "\n";
+        reportOut << "pngHasMipmaps=" << (textureMetadata.hasMipmaps ? "true" : "false") << "\n";
+        reportOut << "pngHasGlobalIndex=" << (textureMetadata.hasGlobalIndex ? "true" : "false") << "\n";
+        reportOut << "pngGlobalIndex=" << textureMetadata.globalIndex << "\n";
+        reportOut << "gvrSourceWasAklz=" << (pngResult->sourceWasAklz ? "true" : "false") << "\n";
+        for (const auto& diagnostic : pngResult->diagnostics) {
+            reportOut << "gvrDiagnostic=" << diagnostic << "\n";
+        }
+    }
+}
+
+void writeGvrToPngReport(
+    const std::filesystem::path& reportPath,
+    const std::filesystem::path& sourceGvrPath,
+    const std::filesystem::path& outputPngPath,
+    const spice::gvm::ir::GvrPngExportResult& result) {
+    if (reportPath.has_parent_path()) {
+        std::filesystem::create_directories(reportPath.parent_path());
+    }
+    std::ofstream reportOut(reportPath, std::ios::binary);
+    const auto& texture = result.texture;
+    reportOut << "sourceGvr=" << sourceGvrPath.string() << "\n";
+    reportOut << "outputPng=" << outputPngPath.string() << "\n";
+    reportOut << "width=" << texture.width << "\n";
+    reportOut << "height=" << texture.height << "\n";
+    reportOut << "textureFormat=" << spice::gvm::model::to_string(texture.textureFormat) << "\n";
+    reportOut << "paletteFormat=" << spice::gvm::model::to_string(texture.paletteFormat) << "\n";
+    reportOut << "hasMipmaps=" << (texture.hasMipmaps ? "true" : "false") << "\n";
+    reportOut << "hasGlobalIndex=" << (texture.hasGlobalIndex ? "true" : "false") << "\n";
+    reportOut << "globalIndex=" << texture.globalIndex << "\n";
+    reportOut << "sourceWasAklz=" << (result.sourceWasAklz ? "true" : "false") << "\n";
+    reportOut << "sourceSize=" << texture.sourceSize << "\n";
+    for (const auto& diagnostic : result.diagnostics) {
+        reportOut << "diagnostic=" << diagnostic << "\n";
+    }
+}
+
 bool shouldCompressMldOutput(
     const spice::gvm::ir::AklzPolicy policy,
     const bool sourceWasCompressed) {
@@ -1409,6 +1631,69 @@ void replaceMldTextureFromPngFile(
         exported.size(),
         parser,
         std::span<const std::uint8_t>(exported.data(), exported.size()));
+}
+
+void extractMldTextureToGvrFile(
+    const CliOptions& cliOptions,
+    const std::filesystem::path& sourceMldPath,
+    const std::filesystem::path& outputPath) {
+    const auto extracted = extractMldTexture(cliOptions, sourceMldPath);
+    if (!writeAllBytesCreatingParents(outputPath,
+        std::span<const std::uint8_t>(extracted.texture.gvrData.data(), extracted.texture.gvrData.size()))) {
+        throw std::runtime_error("failed to write extracted GVR output: " + outputPath.string());
+    }
+
+    writeMldTextureExtractReport(
+        outputPath.parent_path() / (outputPath.stem().string() + ".mld_texture_extract_gvr.txt"),
+        sourceMldPath,
+        outputPath,
+        extracted,
+        "Gvr");
+}
+
+void convertGvrToPngFile(
+    const std::filesystem::path& sourceGvrPath,
+    const std::filesystem::path& outputPath) {
+    const auto sourceBytes = readAllBytes(sourceGvrPath);
+    if (sourceBytes.empty()) {
+        throw std::runtime_error("failed to read source GVR: " + sourceGvrPath.string());
+    }
+
+    const auto exported = spice::gvm::ir::exportGvrPng(
+        std::span<const std::uint8_t>(sourceBytes.data(), sourceBytes.size()),
+        outputPath);
+    writeGvrToPngReport(
+        outputPath.parent_path() / (outputPath.stem().string() + ".gvr_to_png.txt"),
+        sourceGvrPath,
+        outputPath,
+        exported);
+}
+
+void extractMldTextureToPngFile(
+    const CliOptions& cliOptions,
+    const std::filesystem::path& sourceMldPath,
+    const std::filesystem::path& outputPath) {
+    const auto extracted = extractMldTexture(cliOptions, sourceMldPath);
+    if (cliOptions.writeExtractedGvr) {
+        if (!writeAllBytesCreatingParents(cliOptions.writeExtractedGvrPath,
+            std::span<const std::uint8_t>(extracted.texture.gvrData.data(), extracted.texture.gvrData.size()))) {
+            throw std::runtime_error("failed to write intermediate extracted GVR: " + cliOptions.writeExtractedGvrPath.string());
+        }
+    }
+
+    const auto exported = spice::gvm::ir::exportGvrPng(
+        std::span<const std::uint8_t>(extracted.texture.gvrData.data(), extracted.texture.gvrData.size()),
+        outputPath);
+    writeMldTextureExtractReport(
+        outputPath.parent_path() / (outputPath.stem().string() + ".mld_texture_extract_png.txt"),
+        sourceMldPath,
+        outputPath,
+        extracted,
+        "Png",
+        exported,
+        cliOptions.writeExtractedGvr
+            ? std::optional<std::filesystem::path>(cliOptions.writeExtractedGvrPath)
+            : std::nullopt);
 }
 
 std::string gvrSidecarStem(const std::filesystem::path& path) {
@@ -3180,7 +3465,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (cliOptions->createGvrSingle || cliOptions->replaceGvrSingle || cliOptions->replaceMldTextureSingle) {
+    if (cliOptions->createGvrSingle
+        || cliOptions->replaceGvrSingle
+        || cliOptions->replaceMldTextureSingle
+        || cliOptions->extractMldTextureGvrSingle
+        || cliOptions->extractMldTexturePngSingle
+        || cliOptions->gvrToPngSingle) {
         try {
             if (cliOptions->createGvrSingle) {
                 std::cout << "[SpiceFileParsing] Step 2/4: Creating standalone GVR.\n";
@@ -3193,13 +3483,29 @@ int main(int argc, char** argv) {
                     cliOptions->replaceGvrInputPng,
                     cliOptions->replaceGvrOutputGvr);
                 std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->replaceGvrOutputGvr.string() << "\n";
-            } else {
+            } else if (cliOptions->replaceMldTextureSingle) {
                 std::cout << "[SpiceFileParsing] Step 2/4: Replacing embedded MLD texture.\n";
                 replaceMldTextureFromPngFile(*cliOptions,
                     cliOptions->replaceMldTextureSourceMld,
                     cliOptions->replaceMldTextureInputPng,
                     cliOptions->replaceMldTextureOutputMld);
                 std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->replaceMldTextureOutputMld.string() << "\n";
+            } else if (cliOptions->extractMldTextureGvrSingle) {
+                std::cout << "[SpiceFileParsing] Step 2/4: Extracting embedded MLD texture GVR.\n";
+                extractMldTextureToGvrFile(*cliOptions,
+                    cliOptions->extractMldTextureSourceMld,
+                    cliOptions->extractMldTextureOutputGvr);
+                std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->extractMldTextureOutputGvr.string() << "\n";
+            } else if (cliOptions->extractMldTexturePngSingle) {
+                std::cout << "[SpiceFileParsing] Step 2/4: Extracting embedded MLD texture PNG.\n";
+                extractMldTextureToPngFile(*cliOptions,
+                    cliOptions->extractMldTextureSourceMld,
+                    cliOptions->extractMldTextureOutputPng);
+                std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->extractMldTextureOutputPng.string() << "\n";
+            } else {
+                std::cout << "[SpiceFileParsing] Step 2/4: Decoding standalone GVR to PNG.\n";
+                convertGvrToPngFile(cliOptions->gvrToPngSourceGvr, cliOptions->gvrToPngOutputPng);
+                std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->gvrToPngOutputPng.string() << "\n";
             }
             std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
             std::cout << "SpiceFileParsing finished.\nFilesProcessed=1\n";

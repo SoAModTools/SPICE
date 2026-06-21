@@ -29,6 +29,13 @@ struct GvrImageIrImportResult {
     std::vector<std::string> diagnostics{};
 };
 
+struct GvrPngExportResult {
+    std::filesystem::path pngPath{};
+    bool sourceWasAklz = false;
+    model::GvrTexture texture{};
+    std::vector<std::string> diagnostics{};
+};
+
 struct GvrPngEncodeOptions {
     encoding::EncodeOptions encodeOptions{};
     AklzPolicy aklzPolicy = AklzPolicy::Raw;
@@ -45,6 +52,10 @@ struct GvrSourceMetadata {
     std::span<const std::uint8_t> sourceBytes,
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& outputDir);
+
+[[nodiscard]] GvrPngExportResult exportGvrPng(
+    std::span<const std::uint8_t> sourceBytes,
+    const std::filesystem::path& outputPath);
 
 [[nodiscard]] GvrImageIrImportResult importGvrImageIr(
     const std::filesystem::path& jsonPath,

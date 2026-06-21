@@ -327,6 +327,32 @@ GvrImageIrExportResult exportGvrImageIr(
     return result;
 }
 
+GvrPngExportResult exportGvrPng(
+    std::span<const std::uint8_t> sourceBytes,
+    const std::filesystem::path& outputPath) {
+    GvrPngExportResult result{};
+    result.pngPath = outputPath;
+
+    auto parseBytes = decodeAklzIfNeeded(sourceBytes, result.diagnostics, result.sourceWasAklz);
+    result.texture = parsing::parseGvrTexture(std::span<const std::uint8_t>(parseBytes.data(), parseBytes.size()), 0U);
+    result.diagnostics.insert(result.diagnostics.end(), result.texture.diagnostics.begin(), result.texture.diagnostics.end());
+    if (result.texture.textureFormat == model::TextureFormat::Unknown) {
+        throw std::runtime_error("GVR PNG export failed: unsupported or unrecognized texture format");
+    }
+    if (result.texture.width == 0U || result.texture.height == 0U) {
+        throw std::runtime_error("GVR PNG export failed: invalid texture dimensions");
+    }
+    if (!result.texture.decodedBaseLevel.has_value() || result.texture.decodedBaseLevel->rgba8.empty()) {
+        throw std::runtime_error("GVR PNG export failed: decoded RGBA8 image was not available");
+    }
+
+    if (outputPath.has_parent_path()) {
+        std::filesystem::create_directories(outputPath.parent_path());
+    }
+    image::writePngRgba8(result.pngPath, *result.texture.decodedBaseLevel);
+    return result;
+}
+
 GvrImageIrImportResult importGvrImageIr(const std::filesystem::path& jsonPath, const AklzPolicy aklzPolicy) {
     GvrImageIrImportResult result{};
     const auto json = readText(jsonPath);

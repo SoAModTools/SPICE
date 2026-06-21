@@ -376,6 +376,62 @@ TEST(GvrImageIr, ExportImportRoundTripsThroughPngSidecar) {
     EXPECT_EQ(reparsed.decodedBaseLevel->rgba8, image.rgba8);
 }
 
+TEST(GvrImageIr, ExportsSingleGvrToPngWithoutSidecar) {
+    const auto dir = testOutDir("single_gvr_to_png");
+    const auto image = makeTestImage();
+    spice::gvm::encoding::EncodeOptions options{};
+    options.textureFormat = spice::gvm::model::TextureFormat::RGBA8;
+    options.hasGlobalIndex = true;
+    options.globalIndex = 23;
+    const auto sourceBytes = spice::gvm::encoding::encodeGvr(image, options);
+
+    const auto pngPath = dir / "decoded.png";
+    const auto exported = spice::gvm::ir::exportGvrPng(
+        std::span<const std::uint8_t>(sourceBytes.data(), sourceBytes.size()),
+        pngPath);
+    const auto decoded = spice::gvm::image::readPngRgba8(pngPath);
+
+    EXPECT_EQ(exported.pngPath, pngPath);
+    EXPECT_FALSE(exported.sourceWasAklz);
+    EXPECT_TRUE(exported.texture.hasGlobalIndex);
+    EXPECT_EQ(exported.texture.globalIndex, 23U);
+    EXPECT_EQ(decoded.width, image.width);
+    EXPECT_EQ(decoded.height, image.height);
+    EXPECT_EQ(decoded.rgba8, image.rgba8);
+    EXPECT_FALSE(std::filesystem::exists(dir / "decoded.gvr.json"));
+}
+
+TEST(GvrImageIr, ExportsAklzWrappedSingleGvrToPng) {
+    const auto dir = testOutDir("single_gvr_to_png_aklz");
+    const auto image = makeTestImage();
+    spice::gvm::encoding::EncodeOptions options{};
+    options.textureFormat = spice::gvm::model::TextureFormat::RGBA8;
+    const auto sourceBytes = spice::gvm::encoding::encodeGvr(image, options);
+    const auto compressed = spice::compression::aklz::compress(sourceBytes);
+    ASSERT_TRUE(compressed.ok());
+
+    const auto pngPath = dir / "decoded.png";
+    const auto exported = spice::gvm::ir::exportGvrPng(
+        std::span<const std::uint8_t>(compressed.bytes.data(), compressed.bytes.size()),
+        pngPath);
+    const auto decoded = spice::gvm::image::readPngRgba8(pngPath);
+
+    EXPECT_TRUE(exported.sourceWasAklz);
+    EXPECT_EQ(decoded.width, image.width);
+    EXPECT_EQ(decoded.height, image.height);
+    EXPECT_EQ(decoded.rgba8, image.rgba8);
+}
+
+TEST(GvrImageIr, SingleGvrToPngRejectsMalformedInput) {
+    const auto dir = testOutDir("single_gvr_to_png_bad");
+    const std::vector<std::uint8_t> badBytes{ 1U, 2U, 3U, 4U };
+
+    EXPECT_THROW((void)spice::gvm::ir::exportGvrPng(
+                     std::span<const std::uint8_t>(badBytes.data(), badBytes.size()),
+                     dir / "decoded.png"),
+        std::runtime_error);
+}
+
 TEST(GvrImageIr, ExportSidecarDefaultsToSourceImportFormatForCmprAndCi4) {
     const auto dir = testOutDir("source_format_sidecar");
     const auto image = makeEncoderImage();
