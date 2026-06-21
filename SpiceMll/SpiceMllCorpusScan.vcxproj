@@ -117,6 +117,9 @@
     <ProjectReference Include="SpiceMll.vcxproj">
       <Project>{3F9BA4A5-F9B0-4293-97A1-9A7E1F8E7F86}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
+      <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

@@ -98,7 +98,7 @@ std::size_t diagnosticCount(const MllFile& file, DiagnosticSeverity severity) {
 
 std::size_t mldLikeMemberCount(const MllCorpusFileSummary& file) {
     return static_cast<std::size_t>(std::count_if(file.members.begin(), file.members.end(), [](const auto& member) {
-        return member.member.embeddedMldHeader.plausible || member.member.payloadKind == MllPayloadKind::MldFile;
+        return member.member.payloadKind == MllPayloadKind::MldFile;
     }));
 }
 

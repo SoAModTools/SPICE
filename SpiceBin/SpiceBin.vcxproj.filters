@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="EntryPoint">
+      <UniqueIdentifier>{15FABA5A-493C-4936-9DBA-794A74CE2811}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{23BA9BF5-AC77-4E16-91C0-CDF65D1FECF4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Parser">
+      <UniqueIdentifier>{CB371FDD-811C-4B03-82BE-2980CF83A560}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Corpus">
+      <UniqueIdentifier>{AA13E7A4-F53D-4FB3-8CB4-0E2C2355F6E4}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="SpiceBin.h">
+      <Filter>EntryPoint</Filter>
+    </ClInclude>
+    <ClInclude Include="BinModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="BinParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="BinCorpus.h">
+      <Filter>Corpus</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="SpiceBin.cpp">
+      <Filter>EntryPoint</Filter>
+    </ClCompile>
+    <ClCompile Include="BinParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="BinCorpus.cpp">
+      <Filter>Corpus</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>

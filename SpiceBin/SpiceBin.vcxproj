@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{3F9BA4A5-F9B0-4293-97A1-9A7E1F8E7F86}</ProjectGuid>
-    <RootNamespace>SpiceMll</RootNamespace>
+    <ProjectGuid>{CADB9B1C-FB06-4BDE-9B5E-2AA1836DEE05}</ProjectGuid>
+    <RootNamespace>SpiceBin</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -68,12 +68,6 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
-  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -101,34 +95,19 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="MllArchiveIr.h" />
-    <ClInclude Include="MllBinaryExporter.h" />
-    <ClInclude Include="MllCorpus.h" />
-    <ClInclude Include="MllModel.h" />
-    <ClInclude Include="MllParser.h" />
-    <ClInclude Include="SpiceMll.h" />
-    <ClInclude Include="StandaloneMldTextureScan.h" />
+    <ClInclude Include="BinCorpus.h" />
+    <ClInclude Include="BinModel.h" />
+    <ClInclude Include="BinParser.h" />
+    <ClInclude Include="SpiceBin.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="MllArchiveIr.cpp" />
-    <ClCompile Include="MllBinaryExporter.cpp" />
-    <ClCompile Include="MllCorpus.cpp" />
-    <ClCompile Include="MllParser.cpp" />
-    <ClCompile Include="SpiceMll.cpp" />
-    <ClCompile Include="StandaloneMldTextureScan.cpp" />
+    <ClCompile Include="BinCorpus.cpp" />
+    <ClCompile Include="BinParser.cpp" />
+    <ClCompile Include="SpiceBin.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Compression\Compression.vcxproj">
       <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceBin\SpiceBin.vcxproj">
-      <Project>{CADB9B1C-FB06-4BDE-9B5E-2AA1836DEE05}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
-      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
-      <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

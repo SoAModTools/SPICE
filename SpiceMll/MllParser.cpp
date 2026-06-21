@@ -1,6 +1,7 @@
 #include "MllParser.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceBin/BinParser.h"
 #include "../SpiceGvm/Parsing/GvmParser.h"
 #include "../SpiceCore/Binary/EndianReader.h"
 
@@ -28,7 +29,6 @@ constexpr std::uint32_t kMldIndexEntryStride = 0x68U;
 constexpr std::uint32_t kMldFunctionNameOffset = 0x24U;
 constexpr std::uint32_t kMldFunctionNameLength = 0x14U;
 constexpr std::uint32_t kMldObjectListSampleLimit = 8U;
-constexpr std::uint32_t kIndexedBinRecordSampleLimit = 8U;
 constexpr std::uint32_t kPreTextureTableCountSize = sizeof(std::uint32_t);
 constexpr std::array<std::uint32_t, 3U> kMldObjectListFieldOffsets{ 0x14U, 0x18U, 0x1CU };
 constexpr std::array<std::uint32_t, 6U> kMldCountedListFieldOffsets{ 0x08U, 0x0CU, 0x10U, 0x14U, 0x18U, 0x1CU };
@@ -846,111 +846,6 @@ MllPreTextureTableProbe probePreTextureTable(
     return probe;
 }
 
-std::string previewU32List(const std::vector<std::uint32_t>& values, std::size_t limit) {
-    std::ostringstream out;
-    const auto count = std::min(values.size(), limit);
-    for (std::size_t i = 0U; i < count; ++i) {
-        if (i != 0U) {
-            out << " ";
-        }
-        out << values[i];
-    }
-    if (values.size() > count) {
-        out << " ...";
-    }
-    return out.str();
-}
-
-MllIndexedBinTableProbe probeIndexedBinTable(std::span<const std::uint8_t> payload) {
-    MllIndexedBinTableProbe probe{};
-    probe.headerInBounds = canReadRange(payload.size(), 0U, sizeof(std::uint32_t));
-    if (!probe.headerInBounds) {
-        return probe;
-    }
-
-    EndianReader reader(payload, Endian::Big);
-    probe.count = reader.read_u32(0U);
-    if (probe.count == 0U) {
-        return probe;
-    }
-
-    const auto offsetTableByteSize64 = static_cast<std::uint64_t>(probe.count) * sizeof(std::uint32_t);
-    const auto offsetTableEnd64 = static_cast<std::uint64_t>(probe.offsetTableOffset) + offsetTableByteSize64;
-    if (offsetTableEnd64 > std::numeric_limits<std::uint32_t>::max()) {
-        return probe;
-    }
-
-    probe.offsetTableEndOffset = static_cast<std::uint32_t>(offsetTableEnd64);
-    probe.dataBaseOffset = probe.offsetTableEndOffset;
-    probe.offsetTableInBounds = canReadRange(
-        payload.size(),
-        probe.offsetTableOffset,
-        probe.offsetTableEndOffset - probe.offsetTableOffset);
-    if (!probe.offsetTableInBounds) {
-        return probe;
-    }
-
-    std::vector<std::uint32_t> offsets{};
-    offsets.reserve(probe.count);
-    probe.offsetsInBounds = true;
-    probe.offsetsMonotonic = true;
-    std::uint32_t previousOffset = 0U;
-    for (std::uint32_t i = 0U; i < probe.count; ++i) {
-        const auto offsetEntryOffset = probe.offsetTableOffset + i * sizeof(std::uint32_t);
-        const auto relativeRecordOffset = reader.read_u32(offsetEntryOffset);
-        offsets.push_back(relativeRecordOffset);
-        if (i != 0U && relativeRecordOffset < previousOffset) {
-            probe.offsetsMonotonic = false;
-        }
-        previousOffset = relativeRecordOffset;
-
-        const auto recordOffset64 =
-            static_cast<std::uint64_t>(probe.dataBaseOffset) + relativeRecordOffset;
-        if (recordOffset64 > payload.size()) {
-            probe.offsetsInBounds = false;
-        }
-    }
-
-    probe.present = probe.offsetTableInBounds;
-    probe.offsetsPreview = previewU32List(offsets, 16U);
-    if (!offsets.empty()) {
-        probe.firstRecordOffset = probe.dataBaseOffset + offsets.front();
-        probe.lastRecordOffset = probe.dataBaseOffset + offsets.back();
-    }
-
-    const auto sampleCount = std::min<std::uint32_t>(probe.count, kIndexedBinRecordSampleLimit);
-    probe.sampledRecordCount = sampleCount;
-    probe.samples.reserve(sampleCount);
-    for (std::uint32_t i = 0U; i < sampleCount; ++i) {
-        MllIndexedBinRecordSample sample{};
-        sample.sampleIndex = i;
-        sample.tableOffset = probe.offsetTableOffset + i * sizeof(std::uint32_t);
-        sample.recordOffset = probe.dataBaseOffset + offsets[i];
-        sample.recordInBounds = canReadRange(payload.size(), sample.recordOffset, 8U);
-        if (sample.recordInBounds) {
-            sample.word0 = reader.read_u32(sample.recordOffset);
-            sample.word0EqualsDataBaseOffset = sample.word0 == probe.dataBaseOffset;
-            sample.word4 = reader.read_u32(sample.recordOffset + 4U);
-            sample.word4TargetInBounds = sample.word4 < payload.size();
-            sample.bytes16Hex = makeHexBytes(payload, sample.recordOffset, 16U);
-            sample.bytes32Hex = makeHexBytes(payload, sample.recordOffset, 32U);
-            if (canReadRange(payload.size(), sample.recordOffset, 0x1cU)) {
-                sample.word8 = reader.read_u32(sample.recordOffset + 0x08U);
-                sample.word12 = reader.read_u32(sample.recordOffset + 0x0cU);
-                sample.word16 = reader.read_u32(sample.recordOffset + 0x10U);
-                sample.word20 = reader.read_u32(sample.recordOffset + 0x14U);
-                sample.word24 = reader.read_u32(sample.recordOffset + 0x18U);
-            }
-        } else if (sample.recordOffset < payload.size()) {
-            sample.bytes16Hex = makeHexBytes(payload, sample.recordOffset, 16U);
-            sample.bytes32Hex = makeHexBytes(payload, sample.recordOffset, 32U);
-        }
-        probe.samples.push_back(std::move(sample));
-    }
-
-    return probe;
-}
-
 MllEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> payload) {
     MllEmbeddedMldHeaderProbe probe{};
     if (payload.size() < 0x14U) {
@@ -1158,16 +1053,41 @@ std::vector<MllEmbeddedMldObjectListProbe> probeEmbeddedMldObjectLists(
     return probes;
 }
 
+bool indexedBinProbeLooksPlausible(const spice::bin::BinIndexedTableProbe& probe) {
+    return probe.present &&
+        probe.count != 0U &&
+        probe.offsetTableInBounds &&
+        probe.offsetsInBounds &&
+        probe.offsetsMonotonic;
+}
+
 MllPayloadKind classifyPayload(std::span<const std::uint8_t> payload,
+    std::string_view memberName,
     const std::string& signature,
-    const MllEmbeddedMldHeaderProbe& embeddedMldHeader) {
+    const MllEmbeddedMldHeaderProbe& embeddedMldHeader,
+    const MllTextureTableProbe& textureTableProbe,
+    const MllPreTextureTableProbe& preTextureTableProbe,
+    const std::vector<MllEmbeddedGvrTextureProbe>& embeddedGvrTextureProbes,
+    const spice::bin::BinIndexedTableProbe& indexedBinTableProbe) {
     if (payload.empty()) {
         return MllPayloadKind::Empty;
     }
     if (spice::compression::aklz::isAklz(payload)) {
         return MllPayloadKind::AklzCompressed;
     }
-    if (embeddedMldHeader.plausible) {
+    const bool memberNameLooksBin = endsWithCaseInsensitive(memberName, ".bin");
+    const bool indexedBinLooksPlausible = indexedBinProbeLooksPlausible(indexedBinTableProbe);
+    if (indexedBinLooksPlausible && (memberNameLooksBin || !embeddedMldHeader.indexEntryShapePlausible)) {
+        return MllPayloadKind::IndexedBin;
+    }
+
+    const bool memberNameLooksMld = endsWithCaseInsensitive(memberName, ".mld");
+    const bool hasMldTextureEvidence =
+        textureTableProbe.hasTextures ||
+        preTextureTableProbe.present ||
+        !embeddedGvrTextureProbes.empty();
+    if (embeddedMldHeader.plausible &&
+        (embeddedMldHeader.indexEntryShapePlausible || memberNameLooksMld || hasMldTextureEvidence)) {
         return MllPayloadKind::MldFile;
     }
     if (signature == "POF0") {
@@ -1298,6 +1218,8 @@ const char* toString(MllPayloadKind kind) {
         return "unknown";
     case MllPayloadKind::AklzCompressed:
         return "aklz";
+    case MllPayloadKind::IndexedBin:
+        return "indexed-bin";
     case MllPayloadKind::MldFile:
         return "mld";
     case MllPayloadKind::NinjaChunk:
@@ -1440,11 +1362,19 @@ MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string source
                     member.embeddedMldHeader,
                     member.textureTableProbe,
                     member.embeddedGvrTextureProbes);
-            member.payloadKind = classifyPayload(payload, member.payloadSignature, member.embeddedMldHeader);
-            if (member.payloadKind == MllPayloadKind::Unknown ||
-                endsWithCaseInsensitive(member.name, ".bin")) {
-                member.indexedBinTableProbe = probeIndexedBinTable(payload);
+            if (endsWithCaseInsensitive(member.name, ".bin") ||
+                !member.embeddedMldHeader.indexEntryShapePlausible) {
+                member.indexedBinTableProbe = spice::bin::probeIndexedTable(payload);
             }
+            member.payloadKind = classifyPayload(
+                payload,
+                member.name,
+                member.payloadSignature,
+                member.embeddedMldHeader,
+                member.textureTableProbe,
+                member.preTextureTableProbe,
+                member.embeddedGvrTextureProbes,
+                member.indexedBinTableProbe);
         } else {
             addDiagnostic(file.diagnostics,
                 DiagnosticSeverity::Error,

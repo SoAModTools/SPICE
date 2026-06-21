@@ -21,32 +21,32 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{3F9BA4A5-F9B0-4293-97A1-9A7E1F8E7F86}</ProjectGuid>
-    <RootNamespace>SpiceMll</RootNamespace>
+    <ProjectGuid>{9249E57F-55B0-4EE6-BEAF-497EDC7ABCE5}</ProjectGuid>
+    <RootNamespace>SpiceBinCorpusScan</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
-    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
@@ -78,13 +78,17 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_LIB;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
       <AdditionalIncludeDirectories>$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -92,43 +96,26 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;_LIB;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
       <AdditionalIncludeDirectories>$(SolutionDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="MllArchiveIr.h" />
-    <ClInclude Include="MllBinaryExporter.h" />
-    <ClInclude Include="MllCorpus.h" />
-    <ClInclude Include="MllModel.h" />
-    <ClInclude Include="MllParser.h" />
-    <ClInclude Include="SpiceMll.h" />
-    <ClInclude Include="StandaloneMldTextureScan.h" />
+    <ClCompile Include="BinCorpusScanMain.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="MllArchiveIr.cpp" />
-    <ClCompile Include="MllBinaryExporter.cpp" />
-    <ClCompile Include="MllCorpus.cpp" />
-    <ClCompile Include="MllParser.cpp" />
-    <ClCompile Include="SpiceMll.cpp" />
-    <ClCompile Include="StandaloneMldTextureScan.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Compression\Compression.vcxproj">
-      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceBin\SpiceBin.vcxproj">
+    <ProjectReference Include="SpiceBin.vcxproj">
       <Project>{CADB9B1C-FB06-4BDE-9B5E-2AA1836DEE05}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
-      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
-    </ProjectReference>
-    <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
-      <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

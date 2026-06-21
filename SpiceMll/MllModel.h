@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../SpiceBin/BinModel.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -23,6 +25,7 @@ enum class MllPayloadKind {
     Empty,
     Unknown,
     AklzCompressed,
+    IndexedBin,
     MldFile,
     NinjaChunk,
     Pof0,
@@ -233,41 +236,6 @@ struct MllPreTextureTableProbe {
     std::vector<MllPreTextureTableEntryProbe> entries{};
 };
 
-struct MllIndexedBinRecordSample {
-    std::uint32_t sampleIndex{ 0U };
-    std::uint32_t tableOffset{ 0U };
-    std::uint32_t recordOffset{ 0U };
-    bool recordInBounds{ false };
-    std::uint32_t word0{ 0U };
-    bool word0EqualsDataBaseOffset{ false };
-    std::uint32_t word4{ 0U };
-    bool word4TargetInBounds{ false };
-    std::uint32_t word8{ 0U };
-    std::uint32_t word12{ 0U };
-    std::uint32_t word16{ 0U };
-    std::uint32_t word20{ 0U };
-    std::uint32_t word24{ 0U };
-    std::string bytes16Hex{};
-    std::string bytes32Hex{};
-};
-
-struct MllIndexedBinTableProbe {
-    bool present{ false };
-    bool headerInBounds{ false };
-    std::uint32_t count{ 0U };
-    std::uint32_t offsetTableOffset{ 0x04U };
-    std::uint32_t offsetTableEndOffset{ 0U };
-    std::uint32_t dataBaseOffset{ 0U };
-    bool offsetTableInBounds{ false };
-    bool offsetsInBounds{ false };
-    bool offsetsMonotonic{ false };
-    std::uint32_t firstRecordOffset{ 0U };
-    std::uint32_t lastRecordOffset{ 0U };
-    std::uint32_t sampledRecordCount{ 0U };
-    std::string offsetsPreview{};
-    std::vector<MllIndexedBinRecordSample> samples{};
-};
-
 struct MllMember {
     std::size_t index{ 0U };
     std::uint32_t recordOffset{ 0U };
@@ -285,7 +253,7 @@ struct MllMember {
     std::vector<MllEmbeddedGvrTextureProbe> embeddedGvrTextureProbes{};
     MllTextureTableProbe textureTableProbe{};
     MllPreTextureTableProbe preTextureTableProbe{};
-    MllIndexedBinTableProbe indexedBinTableProbe{};
+    spice::bin::BinIndexedTableProbe indexedBinTableProbe{};
 };
 
 struct MllFile {
