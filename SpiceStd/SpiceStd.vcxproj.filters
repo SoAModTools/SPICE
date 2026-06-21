@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="EntryPoint">
+      <UniqueIdentifier>{80E7BC75-F786-452A-B727-561C206838AC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{11516E13-CE99-4908-94CE-57A8DF214AA2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Usage">
+      <UniqueIdentifier>{88B0E9E7-F7FB-43C0-9C8B-1DD09810B360}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Parser">
+      <UniqueIdentifier>{45B5E465-857A-457D-9F40-8F5D4F709771}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="SpiceStd.h">
+      <Filter>EntryPoint</Filter>
+    </ClInclude>
+    <ClInclude Include="StdModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="StdParser.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="StdUsage.h">
+      <Filter>Usage</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="SpiceStd.cpp">
+      <Filter>EntryPoint</Filter>
+    </ClCompile>
+    <ClCompile Include="StdParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="StdUsage.cpp">
+      <Filter>Usage</Filter>
+    </ClCompile>
+  </ItemGroup>
+</Project>
