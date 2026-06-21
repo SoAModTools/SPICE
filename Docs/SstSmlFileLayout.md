@@ -50,6 +50,7 @@ research thread.
 - `planning/Analysis/2026-06-14_sst_sml_unresolved_runtime_links`
 - `planning/Analysis/2026-06-14_sst_type1_type3_drilldown`
 - `planning/Analysis/2026-06-14_sst_shared_model_data_helpers`
+- `planning/Analysis/2026-06-14_sst_type3_strip_uv_fixup`
 - `planning/Analysis/2026-06-14_sst_type2_writeback_path`
 - `<local-analysis>\Analyses\20260611_1448_battle_ui`
 - `<local-analysis>\Analyses\20260611_0843_script_inst_ops`
@@ -750,7 +751,7 @@ provisional unless noted.
 | `0` | One command appears first in every command block and aggregate count equals the SML top-level record count. `FUN_8000c19c` copies the full `0x4c` payload as words into a runtime row; setup consumers read `+0x16` as a signed lookup/resource index and `+0x18` as a signed battle object class selector. The callback selected through `FUN_800300c4` now proves selector `3` consumes `+0x1c/+0x20/+0x24` as transform vector floats, `+0x28/+0x2c/+0x30` as signed rotation/angle words, `+0x34/+0x38/+0x3c` as scale floats, and `+0x44` as a render/model action byte. Names remain provisional outside the directly traced selector path. |
 | `1` | Stage lighting/render-environment setup command. `FUN_8006b774` walks up to `32` `0x68`-byte subrecords until a negative first byte at `+0x00`; current on-disk payload holds two structural rows, one active and one sentinel. `+0x02 i16` is the class/menu selector, `+0x04 u32` is a flag word, `+0x08 i16` is the runtime slot id, `+0x0c/+0x10/+0x14` are a light direction/position vector, `+0x30..+0x44` are per-slot and global/ambient RGB triplets, and `+0x48/+0x4c` are attenuation/spot scalar fields. `FUN_8006bdb4` copies each accepted row into child-local data at `+0x28`, and `FUN_8006b774` stores that copied row pointer in the four-slot runtime table used by later model-index commands. |
 | `2` | Creates child type `4` / `FUN_8000e0d8`. `+0x00 i16` model index, `+0x02 u16` node traversal lookup key. Payload `+0x04..+0x40` is copied to child-local `+0x0c..+0x48`; local `+0x04` is forced to `-1`. Current evidence identifies this as a model-data point/vertex coordinate deformation effect: helper code scans model chunks `0x20..0x37`, snapshots 3-float coordinate triples, computes per-point distance weights, and writes selected X/Y/Z components back into the model-data coordinate array. |
-| `3` | Creates child type `5` / `FUN_8000e02c`. `+0x00 i16` model index, `+0x02 u16` node/model-data traversal lookup key, `+0x04/+0x06 i16` signed texture-coordinate delta pair. `FUN_80230920` applies the delta pair to coordinate halfwords inside the selected model-data chunk and wraps crossing values by `0x200`, then flushes the affected data and invalidates the vertex cache. |
+| `3` | Creates child type `5` / `FUN_8000e02c`. `+0x00 i16` model index, `+0x02 u16` node/model-data traversal lookup key, `+0x04/+0x06 i16` signed texture-coordinate delta pair. `FUN_80230920` applies the delta pair to coordinate halfwords inside selected texture-bearing strip polychunks and wraps crossing values by `0x200`, then flushes the affected data and invalidates the vertex cache. Current evidence supports a one-shot strip UV fixup, not a frame-driven scroll command. |
 | `4` | `+0x00 i16` model index, `+0x04 u32` raw/flag, `+0x08/+0x0c/+0x10 f32`, `+0x14` raw/reserved. |
 | `6` | Code-supported but corpus-absent. Setup validates `+0x00 i16` model index, creates child type `7`, stores payload `+0x04 f32` as a step/scalar, stores `+0x08 i16` as a gate/mode halfword, and stores the selected runtime object pointer. Child callback `8000dec8` only applies the scalar when the copied halfword is `1`, then adds or subtracts it from the linked runtime object `+0x20` float around a constant threshold. |
 | `7` | Code-supported but corpus-absent. Setup validates `+0x00 i16` model index, creates child type `8`, stores payload `+0x04 f32` as an amplitude/scalar, stores payload `+0x08 f32` as a phase step, initializes a phase accumulator from `FLOAT_80348114`, and stores the selected runtime object pointer. Child callback `FUN_8000ddfc` advances the phase, computes a sine-scaled value, and writes the integer result to the linked runtime object at `+0x20`. |
@@ -1418,6 +1419,36 @@ deformation effect. Do not collapse it into type `4` despite the similar
 and a sine update path over model-data coordinate triples, while SST type `4`
 uses child type `6` and direct per-frame object-offset deltas.
 
+Visual correlation with the current stage annotations strengthens the
+content-level interpretation. All three known type `2` records are liquid
+surface entries:
+
+| Stem | SML record | Entry name | Annotation | Block pattern | Type `2` write axis |
+| --- | ---: | --- | --- | --- | --- |
+| `s008` | `4` | `s0804.nj` | Flowing water/sewage between the two outer platforms. | `[0, 3, 2]` | Y/default from packed-control byte `1 == 0`. |
+| `s017` | `1` | `s1701.nj` | Flowing lava underneath the bridge. | `[0, 3, 2]` | Y/default from packed-control byte `1 == 0`. |
+| `s018` | `1` | `s1801.nj` | Shifting lava field around the battle platform. | `[0, 2]` | X from packed-control byte `1 == 1`. |
+
+`s008` and `s017` both pair type `2` with type `3` on the same liquid surface,
+so their observed flow should be treated as a composite effect: type `3` is the
+better current explanation for texture-coordinate movement, while type `2`
+handles coordinate deformation of the underlying model-data point array.
+`s018` is the cleanest visual sample for type `2` alone because its lava field
+record has `[0, 2]` without type `3`.
+
+The three payloads are stable across US/EU/JP:
+
+| Stem | Phase/frequency `+0x10` | Amplitude `+0x14` | Max range `+0x20` | Packed control `+0x28` |
+| --- | ---: | ---: | ---: | --- |
+| `s008` | `6.0` | `0.8` | `300.0` | `0x02000088` |
+| `s017` | `8.5` | `2.0` | `1400.0` | `0x0100004c` |
+| `s018` | `4.0` | `1.5` | `300.0` | `0x0001001c` |
+
+This supports "liquid surface coordinate deformation" as the best current
+human-facing description, with the parser-facing description remaining the more
+general "model-data coordinate deformation" because the engine code is not
+liquid-specific.
+
 ### Type 11 Boundary Pass
 
 Evidence level: `US+Gekko`, `US/EU/JP stable` for the single corpus instance.
@@ -1557,7 +1588,7 @@ Callback/runtime mapping:
 
 | SST type | Setup path | Runtime child type/callback | Current role |
 | ---: | --- | --- | --- |
-| `3` | Inline branch in `FUN_8000c19c` | child type `5`, `FUN_8000e02c` | Creates a child that applies signed texture-coordinate deltas to a selected model-data chunk. |
+| `3` | Inline branch in `FUN_8000c19c` | child type `5`, `FUN_8000e02c` | Creates a child that applies signed texture-coordinate deltas to selected texture-bearing strip polychunks. |
 | `4` | `FUN_8000c014` | child type `6`, raw range `8000df50..8000e02c` | Creates per-frame signed deltas and applies them to object offsets `+0x28/+0x2c/+0x30`. |
 | `10` | `FUN_8000bf48` | child type `11`, `FUN_8000d734` | Creates vector interpolation/oscillation state and delegates application/clamping to `FUN_8000d488`. |
 
@@ -1573,18 +1604,39 @@ Type `3` direct evidence:
 - `FUN_802307ec` delegates to `FUN_8023080c`, which finds a model-data chunk
   through `FUN_80230d10` when needed and then calls `FUN_80230920`.
 - `FUN_80230920` treats the two-halfword parameter block as signed deltas added
-  to texture-coordinate halfwords inside model-data chunk entries. It wraps the
-  affected coordinates back by `0x200` when they cross `+/-0x200`, then calls
-  `DCStoreRange` and `GXInvalidateVtxCache`.
+  to texture-coordinate halfwords inside texture-bearing strip entries. It
+  wraps the affected coordinates back by `0x200` when they cross `+/-0x200`,
+  then calls `DCStoreRange` and `GXInvalidateVtxCache`.
 - Child-local `+0x00/+0x02` are a zero-initialized runtime delay/counter pair.
   Because current setup does not populate a nonzero delay, observed type `3`
   children advance to the apply state immediately.
 - Corpus values are stable across regions: model index is always `0`;
-  lookup keys range from `2` through `9`.
-- Current interpretation: type `3` is a texture-coordinate offset command for a
-  selected model-data chunk or node. It is distinct from type `8`: type `3`
-  applies a signed two-halfword delta through the model-data helper path, while
-  type `8` maintains a frame/counter-driven UV animation child.
+  lookup keys range from `2` through `9`. The densest current stages are
+  `s053` with `30` type `3` rows across records `6..11` and `s062` with `21`
+  rows across records `6..12`.
+- Current interpretation: type `3` is a one-shot strip texture-coordinate
+  offset/fixup command for a selected node. It is distinct from type `8`:
+  type `3` applies a signed two-halfword delta through the model-data helper
+  path, while type `8` maintains a frame/counter-driven UV animation child.
+
+The refined strip-target pass under
+`planning/Analysis/2026-06-14_sst_type3_strip_uv_fixup/` cross-checks the
+Gekko write path against the local SA3D strip chunk implementation. The helper
+scan in `FUN_8023080c` searches a broad strip-family range, but
+`FUN_80230920` only mutates the six texture-bearing one-UV-set strip variants:
+
+| Chunk id | SA3D strip type | Notes |
+| ---: | --- | --- |
+| `0x41` | `Strip_Tex` | one 0-256 texture-coordinate set |
+| `0x42` | `Strip_HDTex` | one 0-1024 texture-coordinate set |
+| `0x44` | `Strip_TexNormal` | texture coordinates plus normals |
+| `0x45` | `Strip_HDTexNormal` | HD texture coordinates plus normals |
+| `0x47` | `Strip_TexColor` | texture coordinates plus colors |
+| `0x48` | `Strip_HDTexColor` | HD texture coordinates plus colors |
+
+No direct type `3` write path has been found for non-textured strip chunks or
+double-texture strip chunks. This narrows type `3` from a broad model-data
+mutation to a texture-bearing strip polychunk UV rewrite.
 
 Stable type `3` field guidance:
 
@@ -1592,8 +1644,8 @@ Stable type `3` field guidance:
 | --- | --- | --- |
 | `+0x00 i16` | n/a | Signed local model/object slot index; always `0` in current corpus. |
 | `+0x02 u16` | n/a | Node/model-data traversal lookup key passed to `FUN_8006c9ac`; corpus range `2..9`. |
-| `+0x04 i16` | child-local parameter `+0x04` | Signed texture-coordinate U/S delta applied by `FUN_80230920`; corpus range includes `-55..55`. |
-| `+0x06 i16` | child-local parameter `+0x06` | Signed texture-coordinate V/T delta applied by `FUN_80230920`; corpus range includes `-10..17`. |
+| `+0x04 i16` | child-local parameter `+0x04` | Signed first texture-coordinate halfword delta applied by `FUN_80230920`; corpus range includes `-55..55`. Parser-facing name remains `textureCoordinateDeltaU` for now. |
+| `+0x06 i16` | child-local parameter `+0x06` | Signed second texture-coordinate halfword delta applied by `FUN_80230920`; corpus range includes `-10..17`. Parser-facing name remains `textureCoordinateDeltaV` for now. |
 
 Type `4` direct evidence:
 
@@ -1727,7 +1779,9 @@ Type `3` uses the second chunk family. `FUN_8023080c` accepts the selected node
 or a wrapper around it, skips an `NJCM`-like four-character prefix by adding
 `8`, treats an `NMDM`-like four-character prefix as already resolved, then scans
 chunk ids `0x40..0xfe` while deliberately skipping ids `0x40`, `0x43`, and
-`0x46`. When a matching chunk is found, it calls `FUN_80230920`.
+`0x46`. When a matching chunk is found, it calls `FUN_80230920`. The scan range
+is broad, but the mutator itself only has update paths for texture-bearing strip
+polychunk ids `0x41`, `0x42`, `0x44`, `0x45`, `0x47`, and `0x48`.
 
 `FUN_80230920` reads the matched chunk as texture-coordinate-bearing strip data:
 
@@ -1742,11 +1796,15 @@ chunk ids `0x40..0xfe` while deliberately skipping ids `0x40`, `0x43`, and
 - `80230bac`: flushes the touched range with `DCStoreRange` and invalidates the
   vertex cache.
 
-This confirms type `3` as an immediate texture-coordinate offset/fixup command
-for a selected node's texture-coordinate chunk. The axis names remain
-conservative as `textureCoordinateDeltaU` and `textureCoordinateDeltaV`; they
-could later be renamed to `S/T` if the engine naming or SA3D-side structures
-make that convention clearer.
+The local SA3D strip reader confirms the same layout: strip chunk `+0x04` is a
+packed low-14-bit strip count plus high-two-bit triangle-attribute count, strip
+payload begins at chunk `+0x06`, each strip corner starts with an index
+halfword, and texture-bearing strip variants store texture-coordinate halfwords
+immediately after that index. This confirms type `3` as an immediate
+texture-coordinate offset/fixup command for selected texture-bearing strip
+polychunks. The axis names remain conservative as `textureCoordinateDeltaU` and
+`textureCoordinateDeltaV`; they could later be renamed to `S/T` if the engine
+naming or SA3D-side structures make that convention clearer.
 
 Type `8` is a distinct texture-coordinate animation path that also operates on
 the resolved node. Its child callback `FUN_8000db88` does not call
@@ -1760,7 +1818,7 @@ contracts:
 
 | Command | Node lookup | Chunk/target path | Runtime effect |
 | ---: | --- | --- | --- |
-| `3` | `FUN_8006c9ac` from payload `+0x02` | `FUN_8023080c` scans chunk ids `0x40..0xfe`, excluding `0x40/0x43/0x46` | One-shot signed coordinate delta with wrap correction. |
+| `3` | `FUN_8006c9ac` from payload `+0x02` | `FUN_8023080c` scans strip-family ids; `FUN_80230920` mutates texture-bearing strip ids `0x41/0x42/0x44/0x45/0x47/0x48` | One-shot signed strip UV delta with wrap correction. |
 | `8` | `FUN_8006c9ac` from payload `+0x02` | Child callback writes coordinate bound halfwords on the selected node/model-part data | Frame/counter-driven texture tile animation. |
 | `2` | `FUN_8006c9ac` from payload `+0x02` | `FUN_80230634`/`FUN_80230280` scan chunk ids `0x20..0x37` | Coordinate-triple snapshot and distance-weight deformation. |
 
@@ -2047,13 +2105,17 @@ asset to explain.
   needed before naming the whole command as billboard-like behavior. Direct
   evidence now ties `+0x08` to published battle view orientation, so the field
   name can remain `orientationMode` or `viewOrientationMode`.
-- For type `3`, what is the formal engine name for the chunk ids `0x40..0xfe`
-  modified by `FUN_80230920`, excluding ids `0x40`, `0x43`, and `0x46`, and
-  which texture-coordinate axis naming convention should be used (`U/V`, `S/T`,
-  or engine-specific names)?
-- For type `2`, what are the formal engine names for the coordinate-triple
-  chunk ids `0x20..0x37`, the stride lookup tables at `802f9340`/`802dae90`,
-  and packed control byte `0` modes `0..4`?
+- For type `3`, what is the formal engine name for the texture-bearing strip
+  polychunk variants mutated by `FUN_80230920`, and which texture-coordinate
+  axis naming convention should be used (`U/V`, `S/T`, or engine-specific
+  names)? Current evidence narrows the mutator to strip IDs
+  `0x41/0x42/0x44/0x45/0x47/0x48`, but not the engine's preferred label.
+- For type `2`, the affected visible geometry is now identified for all known
+  corpus rows as liquid surfaces (`s008` water/sewer flow, `s017` lava flow,
+  `s018` lava field). Remaining questions are the formal engine names for the
+  coordinate-triple chunk ids `0x20..0x37`, the stride lookup tables at
+  `802f9340`/`802dae90`, packed control byte `0` modes `0..4`, and the exact
+  low-16-bit meaning in packed control word `+0x28`.
 - For type `10`, what exact runtime vector is targeted through
   `FUN_8006b6f4(0)` and related global state, and should mode `2` eventually
   be named oscillation/bounce?
@@ -2091,6 +2153,14 @@ asset to explain.
   overlay entries such as the nub groups `1..4`, and is this controlled through
   the type `0` selector buckets, a later runtime table, or battle script/state
   outside the SST command block?
+- Can duplicated SML embedded MLD payloads be shared by making multiple SML
+  records point at the same `embeddedMldOffset`/`embeddedMldSize` range? In
+  `s008`, records `5`, `6`, and `7` contain byte-identical `s0806` payloads,
+  while their separate SST command blocks apply distinct type `0` placements.
+  The current loader model suggests whole-payload sharing might work because
+  each record copies its referenced byte span into a separate runtime
+  allocation, but this remains untested and should be treated as repacking
+  research, not current format behavior.
 - Does any SST command/type `0` setup path create or alter the active stage
   worksheet at `StageWksht_PTR_80347450`, or is StageWorksheet runtime state a
   field/script/MLD system outside direct battle-stage SST control? The
@@ -2123,12 +2193,18 @@ asset to explain.
    type `1` lighting/render-environment helpers and globals:
    `DAT_80344dec`, `DAT_8034535c`, and their helper groups.
 7. Compare type `3` against annotated stages with visible texture-coordinate
-   offset behavior, especially repeated type `3` payloads in `s062`, to decide
-   whether the command should be described as static UV offset, texture scroll
-   setup, or a one-shot model-data coordinate fixup.
-8. Export and visually annotate the three known type `2` stages (`s008`,
-   `s017`, `s018`) to confirm which geometry is deformed and whether payload
-   `+0x28` byte `1` matches the observed X/Y/Z displacement axis.
+   offset behavior, especially repeated type `3` payloads in `s053` and `s062`,
+   to identify the stage parts using dense strip UV fixups. Current Gekko
+   evidence supports one-shot strip UV rewrite; the remaining question is the
+   visual role of those repeated corrected parts.
+8. For type `2`, inspect the model-data chunks inside `s008` record `4`,
+   `s017` record `1`, and `s018` record `1` to identify which chunk id in the
+   `0x20..0x37` family is selected by node lookup key `2`, then compare that
+   against the `802f9340`/`802dae90` stride/control tables.
 9. Trace the type `11` child type `12` local block: target vector pointer,
    related ramp object pointer, vector delta fields, ramp state, axis selector,
    cycle count, and frame counter.
+10. For later repacking research, create a local-only `s008` experiment where
+    duplicated SML records `6` and `7` reuse record `5`'s embedded MLD byte
+    range, then rebuild offsets/AKLZ and verify whether the game still creates
+    three independently placed runtime instances from the shared payload.
