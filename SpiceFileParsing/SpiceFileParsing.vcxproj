@@ -160,6 +160,9 @@
     <ProjectReference Include="..\SpiceSCT\SpiceSCT.vcxproj">
       <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SpiceStd\SpiceStd.vcxproj">
+      <Project>{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}</Project>
+    </ProjectReference>
     <ProjectReference Include="..\SpiceContentGraph\SpiceContentGraph.vcxproj">
       <Project>{208F502E-EBB9-4AF0-A886-356757A46D41}</Project>
     </ProjectReference>

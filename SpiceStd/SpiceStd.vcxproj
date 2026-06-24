@@ -96,12 +96,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="SpiceStd.h" />
+    <ClInclude Include="StdJsonExporter.h" />
     <ClInclude Include="StdModel.h" />
     <ClInclude Include="StdParser.h" />
     <ClInclude Include="StdUsage.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SpiceStd.cpp" />
+    <ClCompile Include="StdJsonExporter.cpp" />
     <ClCompile Include="StdParser.cpp" />
     <ClCompile Include="StdUsage.cpp" />
   </ItemGroup>

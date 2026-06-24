@@ -2,6 +2,7 @@
 #include "../SpiceMlk/SpiceMlk.h"
 #include "../SpiceSstSml/SpiceSstSml.h"
 #include "../SpiceSCT/SpiceSCT.h"
+#include "../SpiceStd/SpiceStd.h"
 #include "../SpiceContentGraph/SpiceContentGraph.h"
 #include "../SpiceGvm/SpiceGvm.h"
 #include "../Compression/Aklz.h"
@@ -298,6 +299,7 @@ struct CliOptions {
     bool exportSmlCombinedBlenderIr = false;
     bool exportSmlCombinedBlenderIrRawPlacement = false;
     bool exportSstSmlCommandMap = false;
+    bool exportStdJson = false;
     bool exportMlkCorpus = false;
     bool exportMlkBlenderIr = false;
     bool overwriteMlkAnnotations = false;
@@ -328,7 +330,7 @@ struct CliOptions {
 void printUsage() {
     std::cout
         << "Usage:\n"
-        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sml-combined-blender-ir-raw-placement] [--export-sst-sml-command-map] [--export-mlk-corpus] [--export-mlk-blender-ir] [--overwrite-mlk-annotations] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
+        << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sml-combined-blender-ir-raw-placement] [--export-sst-sml-command-map] [--export-std-json] [--export-mlk-corpus] [--export-mlk-blender-ir] [--overwrite-mlk-annotations] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --decompress-aklz input.aklz output.bin\n"
         << "  SpiceFileParsing --compress-aklz input.bin output.aklz\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
@@ -351,6 +353,7 @@ void printUsage() {
         << "  - --export-sml-combined-blender-ir writes output/<stem>/<stem>_combined_blender_ir_scene.json by appending embedded SML MLD Blender IR scenes and applying same-index SST type 0 translation/scale overlays when an SST is present.\n"
         << "  - --export-sml-combined-blender-ir-raw-placement preserves the old raw SML-only combined Blender IR placement without SST type 0 overlays.\n"
         << "  - --export-sst-sml-command-map writes output/<stem>/<stem>.sst_sml_command_map.json when a same-stem .sst exists.\n"
+        << "  - --export-std-json parses .std files, writes output/<stem>.std.json, and skips other input extensions.\n"
         << "  - --export-mlk-corpus scans .mlk files and writes mlk_corpus.json plus CSV summaries.\n"
         << "  - --export-mlk-blender-ir writes one combined Blender IR scene plus metadata sidecars per .mlk file and seeds missing living annotations under SpiceMlk/annotations.\n"
         << "  - --overwrite-mlk-annotations allows --export-mlk-blender-ir to regenerate existing MLK annotation JSON.\n"
@@ -676,6 +679,10 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.exportSstSmlCommandMap = true;
             continue;
         }
+        if (arg == "--export-std-json" || arg == "--std-json") {
+            options.exportStdJson = true;
+            continue;
+        }
         if (arg == "--export-mlk-corpus") {
             options.exportMlkCorpus = true;
             continue;
@@ -925,7 +932,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
-            || options.exportSstSmlCommandMap || options.exportMlkCorpus || options.exportMlkBlenderIr
+            || options.exportSstSmlCommandMap || options.exportStdJson || options.exportMlkCorpus || options.exportMlkBlenderIr
             || options.overwriteMlkAnnotations || options.parseSctOnly || options.decodeSctUnreachedCode
             || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
             || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
@@ -948,13 +955,33 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         std::cerr << "--content-graph cannot be combined with MLD-only, SCT-only, SCT binary export, or MLD A/B modes.\n";
         return std::nullopt;
     }
+    if (options.exportStdJson
+        && (options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
+            || usesSingleTextureUtilityMode(options)
+            || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
+            || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
+            || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
+            || options.exportSstSmlCommandMap || options.exportMlkCorpus || options.exportMlkBlenderIr
+            || options.overwriteMlkAnnotations || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
+            || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
+            || options.gvrAklzSpecified || options.gvrFormatPreserve || options.gvrFormatOverride.has_value()
+            || options.gvrPaletteFormatPreserve || options.gvrPaletteFormatOverride.has_value()
+            || options.gvrMipmapsPreserve || options.gvrMipmapsOverride.has_value()
+            || options.gvrGlobalIndexPolicy != GvrGlobalIndexPolicy::Preserve
+            || options.mldTextureIndex.has_value() || options.mldTextureName.has_value()
+            || options.mldAllowDimensionChange || options.mldAllowPostArchiveShift || options.mldAklzSpecified
+            || options.writeExtractedGvr)) {
+        std::cerr << "--export-std-json cannot be combined with other parse/export modes.\n";
+        return std::nullopt;
+    }
     if (options.exportMlkCorpus
         && (options.createGvrSingle || options.replaceGvrSingle || options.replaceMldTextureSingle
             || usesSingleTextureUtilityMode(options)
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
-            || options.exportSstSmlCommandMap || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.exportSstSmlCommandMap || options.exportStdJson || options.parseSctOnly || options.decodeSctUnreachedCode
             || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
             || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
             || options.exportMlkBlenderIr)) {
@@ -967,7 +994,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
-            || options.exportSstSmlCommandMap || options.parseSctOnly || options.decodeSctUnreachedCode
+            || options.exportSstSmlCommandMap || options.exportStdJson || options.parseSctOnly || options.decodeSctUnreachedCode
             || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
             || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr
             || options.exportMlkCorpus)) {
@@ -1010,7 +1037,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             || options.createGvrBatch || options.replaceGvrBatch || options.runAbSa3dPortVsSa3dBridge
             || options.extractGrndGobjBlocks || options.exportMldEntryListOnly || options.exportSmlEmbeddedMld
             || options.exportSmlEmbeddedMldBlenderIr || options.exportSmlCombinedBlenderIr
-            || options.exportSstSmlCommandMap || options.exportMlkCorpus || options.exportMlkBlenderIr
+            || options.exportSstSmlCommandMap || options.exportStdJson || options.exportMlkCorpus || options.exportMlkBlenderIr
             || options.overwriteMlkAnnotations || options.parseSctOnly || options.decodeSctUnreachedCode
             || options.exportSctBinary || options.exportContentGraph || options.sampleMldGvrFormats
             || options.gvrOnly || options.exportGvrImageIr || options.importGvrImageIr)) {
@@ -1026,7 +1053,7 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         return std::nullopt;
     }
     if (options.replaceMldTextureSingle && (usesAnyGvrMode(options) || options.runAbSa3dPortVsSa3dBridge
-        || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly
+        || options.exportMldEntryListOnly || options.exportStdJson || options.sampleMldGvrFormats || options.parseSctOnly
         || options.exportSctBinary || options.exportContentGraph || options.gvrOnly)) {
         std::cerr << "--replace-mld-texture cannot be combined with other parse/export modes.\n";
         return std::nullopt;
@@ -1058,8 +1085,8 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
         return std::nullopt;
     }
     if (usesAnyGvrMode(options)
-        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary || options.exportContentGraph)) {
-        std::cerr << "GVR modes cannot be combined with MLD, SCT, or content-graph modes.\n";
+        && (options.runAbSa3dPortVsSa3dBridge || options.exportMldEntryListOnly || options.exportStdJson || options.sampleMldGvrFormats || options.parseSctOnly || options.exportSctBinary || options.exportContentGraph)) {
+        std::cerr << "GVR modes cannot be combined with MLD, STD, SCT, or content-graph modes.\n";
         return std::nullopt;
     }
     if (options.gvrOnly && !usesAnyGvrMode(options)) {
@@ -3683,6 +3710,29 @@ int main(int argc, char** argv) {
                 ++filesProcessed;
             } catch (const std::exception& ex) {
                 std::cerr << "[SpiceFileParsing] WARNING: GVR image IR import failed for "
+                          << entry.path().string() << ": " << ex.what() << "\n";
+            }
+            continue;
+        }
+
+        if (cliOptions->exportStdJson) {
+            if (extension != ".std") {
+                continue;
+            }
+            std::cout << "[SpiceFileParsing]   - Exporting STD JSON: " << entry.path().filename().string() << "\n";
+            try {
+                const auto parsed = spice::stdfile::parseFile(entry.path());
+                const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".std.json");
+                std::ofstream jsonOut(jsonOutPath, std::ios::binary);
+                jsonOut << spice::stdfile::StdJsonExporter{}.toJson(parsed);
+                if (!jsonOut.good()) {
+                    std::cerr << "[SpiceFileParsing] WARNING: failed to write STD JSON: "
+                              << jsonOutPath.string() << "\n";
+                } else {
+                    ++filesProcessed;
+                }
+            } catch (const std::exception& ex) {
+                std::cerr << "[SpiceFileParsing] WARNING: STD JSON export failed for "
                           << entry.path().string() << ": " << ex.what() << "\n";
             }
             continue;
