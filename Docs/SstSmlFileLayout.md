@@ -52,6 +52,9 @@ research thread.
 - `planning/Analysis/2026-06-14_sst_shared_model_data_helpers`
 - `planning/Analysis/2026-06-14_sst_type3_strip_uv_fixup`
 - `planning/Analysis/2026-06-14_sst_type2_writeback_path`
+- `planning/Analysis/2026-06-22_sst_runtime_ownership_types0_3`
+- `planning/Analysis/2026-06-22_sml_nmdm_animation_blocks`
+- `planning/Analysis/2026-06-22_sst_types8_11_runtime_targets`
 - `<local-analysis>\Analyses\20260611_1448_battle_ui`
 - `<local-analysis>\Analyses\20260611_0843_script_inst_ops`
 
@@ -343,6 +346,19 @@ For all textured embedded payloads:
 - The bytes between `textureTableOffset` and first `GCIX` have the normal MLD
   archive table shape: `4 + textureCount * 0x2c`.
 
+`NMDM` is now resolved as the embedded Ninja motion/animation block. This
+matches the local SA3Dport port and the upstream SA3D modeling header identity:
+`NMDM` is an animation block header, and the block payload begins with the
+standard 16-byte motion structure read by `Sa3Dport::Animation::Motion`.
+`SpiceMLD` already uses the MLD `motionAddressesPointer` list to extract these
+blocks, probes each motion block against the matching `NJCM` object-tree node
+count, and parses valid blocks through `Sa3Dport::File::AnimationFile`. Current
+SML export evidence confirms this on real embedded payloads: `s006` has
+`NMDM` in all 28 embedded payloads and all 28 produce animation records; 11 of
+those records have varying position/rotation channels in the stage annotation
+summary. `s014` was exported before embedded marker summaries were added, but
+its annotation still contains four successfully decoded animation records.
+
 Representative texture archive examples:
 
 | Payload | `textureTableOffset` | Count at table | First `GCIX` | Gap |
@@ -475,8 +491,13 @@ while materializing a type `0` local model/object slot. The next helper hop
 confirms model-tree/model-data mutation rather than on-disk parser structure:
 `FUN_8022fce4` finds type `8` model chunks and rewrites a flag halfword, while
 `FUN_8022f408` scans model chunk types `0x10..0x1f` and writes a supplied
-pointer into chunk-specific fields depending on mode. Keep this field out of
-stable parser-facing schema except as runtime context.
+pointer into chunk-specific fields depending on mode. The 2026-06-22 runtime
+ownership pass also confirmed that `FUN_8022f00c` wraps a `0x4000`
+model/render flag helper, `FUN_8022f030` delegates to a related helper family,
+`FUN_8022f6b8` recursively applies the same type `8` flag rewrite through
+model-tree `+0x2c/+0x30` branches, and `FUN_80230bd4` is a model-data chunk
+finder. Keep active row `+0x10` out of stable parser-facing schema except as
+runtime context.
 
 `Battle::Stage::JoinSmlSstRecords_8000cb44` allocates `recordCount * 0x2c`,
 but every current exact `DAT_80309e84` reference in the exported US binary
@@ -1195,6 +1216,47 @@ Runtime callback evidence:
   before `Thread::run_threads_8022642c`, and it calls `FUN_80014808` to publish
   the active view record into global position/target/orientation vectors.
 
+The latest target-structure audit narrows type `8` without proving a formal
+engine structure name. `FUN_8000db88` reads child data `+0x00` as the selected
+node pointer that setup stored from `FUN_8006c9ac`, then reaches the write
+target through `selectedNode +0x04 -> +0x04`. The reached target is a compact
+model-data UV/window packet: halfwords at `+0x1a/+0x1c`, `+0x20/+0x22`,
+`+0x26/+0x28`, and `+0x2c/+0x2e` are rewritten as four repeated U/V bound
+pairs, then the packet is flushed with `DCStoreRange` plus
+`GXInvalidateVtxCache`. This is the exact target shape currently proved by
+direct Gekko/decompile evidence. No matching high-level SA3D-port structure name
+has been identified for this exact runtime packet, so the stable wording is
+`selected node model-data UV-bound packet` or `runtime model-data UV/window
+packet`, not a generic SML record, not an embedded MLD index entry, and not the
+strip-polychunk path used by type `3`.
+
+There is nearby MLD naming vocabulary, but it is not enough to rename the SST
+target structure. The refreshed namespace map contains `MLD::named_walluv`, and
+that field-side object controller does operate in a wall/UV family. It drives
+normal MLD worksheet helpers rather than directly proving the SST type `8`
+`selectedNode +0x04 -> +0x04` packet name, so treat `walluv` as conceptual
+support only.
+
+A current headless name probe against the refreshed local Ghidra project
+confirms this boundary. The SST addresses `8000db88`, `8000d8fc`, `8022f408`,
+`8022fce4`, and `80230bd4` still have only global `FUN_...` names, while
+`801089b8` is the named field-side `MLD::named_walluv_801089b8`. The
+`<local-analysis>` walluv living document is useful corroboration that the
+engine has a named object/model-buffer UV mutation concept, but it uses the
+field MLD worksheet path and `FUN_801e89d0`, not the SST child callback path.
+Do not rename the SST type `8` target as walluv unless a direct shared helper
+or type/structure identity is later proved.
+
+The same audit found no direct consumer for type `9` payload fields `+0x02`,
+`+0x04`, or `+0x0a` in the traced setup path or in child type `10`
+`FUN_8000d8fc`. The full US/EU/JP correlation has `97` type `9` rows per
+region and is stable across regions: `+0x04` is always `0`, while `+0x02` is
+authored as `0` or `2`, and `+0x0a` is usually `0` but has sparse nonzero
+values in `s015`, `s016`, and `s032`. Treat these as unread corpus fields, not
+named runtime semantics. `+0x04` is the only one that currently looks like true
+padding/reserved zero; `+0x02` and `+0x0a` should stay preserved as authored raw
+values until another consumer is found.
+
 Current interpretation: types `8` and `9` are battle child/menu setup commands,
 not static geometry records. Type `8` creates a child type `9` UV/texture
 coordinate animation over a node selected by ordinal traversal of the selected
@@ -1246,6 +1308,37 @@ without type `9`. Type `8` still explains the burning texture animation. Any
 camera-facing behavior there is not yet proved to come from type `9`; it may be
 authored into the mesh, supplied by type `0` class behavior, or handled by a
 separate runtime path.
+
+The annotated `s008` lantern-light records `5`, `6`, and `7` are the best
+current non-fire type `9` check. Each is a light-effect plane inside a lantern,
+has command block shape `[0, 9]`, and originally overlapped in Blender until
+the SST type `0` placement overlay was applied. This confirms type `9` is not
+fire-specific: it is useful for view-oriented effect geometry more generally.
+The broader command should still remain named around battle-view orientation
+rather than "fire" or a fully generic "billboard" until more non-fire examples
+are visually classified.
+
+The current living annotation re-scan finds `68` type `9` rows across
+annotation stages `s008`, `s031`, `s038`, `s044`, `s053`, `s062`, and `s086`.
+Only `s008` and `s044` currently have human visual labels for these rows:
+`s008` supplies the non-fire lantern-light evidence, while `s044` supplies the
+fire-plane evidence. In this annotation subset, `+0x04` and `+0x0a` are both
+zero, and `+0x02` is `0` or `2`; use the broader full-corpus correlation above
+for the sparse `+0x0a` nonzero cases.
+
+The current living annotation set has additional type `9` candidates, but most
+are not visually classified yet. Treat these as inspection targets, not semantic
+proof:
+
+| Stage | Records | Command shape | Current visual status |
+| --- | --- | --- | --- |
+| `s008` | `5..7` | `[0, 9]` | Verified non-fire lantern light-effect planes. |
+| `s044` | `6..11`, `17..20` | `[0, 8, 9]` | Verified fire planes. |
+| `s031` | `3..13` | `[0, 8, 9]` | Unannotated single-mesh, single-texture candidates. |
+| `s038` | `5..10`, `16..19` | `[0, 8, 9]` | Unannotated single-mesh, single-texture candidates. |
+| `s053` | `16..21` | `[0, 9]` | Unannotated single-mesh, single-texture candidates. |
+| `s062` | `14..17`, `20..32` | `[0, 8, 9]` | Unannotated single-mesh, single-texture candidates. |
+| `s086` | `3..13` | `[0, 8, 9]` | Unannotated single-mesh, single-texture candidates. |
 
 The follow-up battle-view record trace confirms the runtime context for this
 source:
@@ -1414,10 +1507,13 @@ behavior:
   Current corpus values are `0`, `1`, and `2`.
 
 Current interpretation: type `2` is a rare model-data point/vertex coordinate
-deformation effect. Do not collapse it into type `4` despite the similar
-"movement" flavor; type `2` uses child type `4`, helper-allocated point buffers,
-and a sine update path over model-data coordinate triples, while SST type `4`
-uses child type `6` and direct per-frame object-offset deltas.
+deformation effect. The 2026-06-22 runtime ownership pass reconfirmed that the
+target is model-data chunks in the `0x20..0x37` family, with helper-owned
+distance/weight and source-coordinate buffers. Do not collapse it into type `4`
+despite the similar "movement" flavor; type `2` uses child type `4`,
+helper-allocated point buffers, and a sine update path over model-data
+coordinate triples, while SST type `4` uses child type `6` and direct per-frame
+object-offset deltas.
 
 Visual correlation with the current stage annotations strengthens the
 content-level interpretation. All three known type `2` records are liquid
@@ -1511,7 +1607,7 @@ Observed field values in `s021`:
 | payload `+0x08/+0x0c/+0x10` | `0.0`, `600.0`, `0.0` | vector components |
 | trailing `+0x20` | `512` | required nonzero, child-local `+0x24` |
 | trailing `+0x22` | `5120` | child-local `+0x26` |
-| trailing `+0x24` | signed `-19456` | child-local `+0x28` |
+| trailing `+0x24` | signed `-19456` | child-local `+0x28`, hold/wait duration before cycle restart or transition |
 
 Child type `12` maps through callback table entry `802dafd8` to
 `FUN_8000cffc`. That callback uses the local block to compute vector deltas,
@@ -1530,7 +1626,7 @@ Refined child-local layout:
 | `+0x18/+0x1c/+0x20` | runtime state | Start/current reset vector. `FUN_8000cee8` copies this vector back to target `+0x1c/+0x20/+0x24` between cycles. |
 | `+0x24` | trailing `+0x20` | Motion step/magnitude halfword. Required nonzero before child creation; corpus value is `512`. |
 | `+0x26` | trailing `+0x22` | Ramp denominator/duration halfword used to compute local `+0x44` when fade/ramp mode allows it; corpus value is `5120`. |
-| `+0x28` | trailing `+0x24` | Signed ramp/timing parameter copied for the child; corpus value is `-19456`. Direct downstream use is still not isolated. |
+| `+0x28` | trailing `+0x24` | Cycle hold/wait duration. `FUN_8000cffc` compares local `+0x4e` against this value before restarting state `1` or transitioning through `FUN_8000cee8`; corpus value is signed `-19456`, which makes the known instance transition immediately after the endpoint/ramp branch reaches the check. |
 | `+0x2c/+0x30/+0x34` | computed in state `0` | Per-tick vector deltas added into target `+0x1c/+0x20/+0x24`. |
 | `+0x38/+0x3c/+0x40` | computed in state `0` | Axis bounds/threshold values used to decide when movement has reached the selected axis target. |
 | `+0x44` | computed in state `0` | Related-object float ramp step for object `+0x10`. |
@@ -1544,6 +1640,33 @@ Refined child-local layout:
 copies local start vector `+0x18/+0x1c/+0x20` back to target vector
 `+0x1c/+0x20/+0x24`, and returns the child to state `2`; otherwise it moves the
 child toward state `3` cleanup.
+
+A follow-up source-pointer audit of `FUN_8000cffc` and `FUN_8000cee8` keeps the
+trailing-byte conclusion bounded:
+
+- trailing `+0x20` is consumed downstream through child-local `+0x24` as the
+  per-cycle frame/tick limit and is directly required nonzero before child
+  creation.
+- trailing `+0x22` is consumed downstream through child-local `+0x26` when the
+  fade/ramp setup path computes local `+0x44`.
+- trailing `+0x24` is consumed downstream through child-local `+0x28`.
+  `FUN_8000cffc` reads it at `8000d38c`, `8000d3e0`, and `8000d448` as the
+  wait/hold limit for the local `+0x4e` counter before either restarting state
+  `1` or handing off to `FUN_8000cee8`.
+
+The target vector pointer and related ramp object pointer are real runtime
+objects, but their formal engine names remain unresolved. The most precise
+current descriptions are `target runtime vector object` for local `+0x00` and
+`related ramp/visibility object` for local `+0x04`.
+
+The current name/xref pass keeps the trailing-byte scope bounded. The direct
+on-disk trailing reads are in type `11` setup `FUN_8000be28`, which copies them
+into the child-local block. The downstream consumers found so far are child
+type `12` / `FUN_8000cffc` and transition helper `FUN_8000cee8`; no separate
+named consumer or alternate callback path has been found in the current xref
+set. Therefore the remaining type `11` work is formal naming of the target
+vector and related ramp/visibility structures, not proving that the trailing
+bytes are real.
 
 Current parser guidance:
 
@@ -1618,6 +1741,9 @@ Type `3` direct evidence:
   offset/fixup command for a selected node. It is distinct from type `8`:
   type `3` applies a signed two-halfword delta through the model-data helper
   path, while type `8` maintains a frame/counter-driven UV animation child.
+  The 2026-06-22 runtime ownership pass kept this target ownership unchanged:
+  type `3` mutates selected texture-bearing strip chunk data, not a cross-record
+  SML object.
 
 The refined strip-target pass under
 `planning/Analysis/2026-06-14_sst_type3_strip_uv_fixup/` cross-checks the
@@ -1675,10 +1801,60 @@ Type `10` direct evidence:
   original values, and for mode `2` toggles endpoint state at child-local
   `+0x34` while reversing delta signs.
 
-Current interpretation: type `10` is a vector interpolation command. In the
-observed corpus, mode `2` is likely an oscillating/bouncing endpoint mode, but
-the parser-facing name should remain conservative until the target runtime
-vector is identified.
+`FUN_8000d734` also proves more of the runtime ownership. During child state
+`0`, it calls `FUN_8006b6f4(0)` to fetch type `1` runtime table slot `0`,
+copies that slot row's vector at `+0x3c/+0x40/+0x44` into child-local
+`+0x28/+0x2c/+0x30`, computes deltas from the SST target vector, and later
+calls `FUN_8000d488(childLocal, childData +0x64)` when the slot gate is clear.
+The `childData` pointer comes from the type `1` child thread stored in the
+runtime table slot `+0x04`: `FUN_8006b774` stores that child thread there, and
+`FUN_8006bdb4` allocates a `0x90` data block at `childThread +0x24`.
+
+The target at `childData +0x64` is now structurally identified: the accepted
+type `1` row is copied to `childData +0x28`, so `childData +0x64` corresponds to
+type `1` row `+0x3c/+0x40/+0x44`, the global/ambient RGB triplet applied by
+`FUN_8006b8a8` through `FUN_802871d8` and `FUN_8028b784`. Type `10` is
+therefore best described as a runtime interpolation/oscillation command over
+the type `1` global/ambient RGB vector, seeded from type `1` runtime slot `0`.
+The remaining naming gap is the formal engine name for the two lighting layers
+and their helper family, not the owner of the vector itself.
+The same four-slot runtime table is shared by battle-combatant visual/action
+callbacks such as `FUN_80037918`, `FUN_80037eb4`, `FUN_8004eef0`, and
+`FUN_8005f8d8`; those callers snapshot or restore vectors from slot `0` and use
+the table as battle visual/effect state, not as an SML record table. The current
+namespace/symbol refresh still leaves `FUN_8006b6f4`, `FUN_8006b6c8`, and
+`DAT_80309e88` unnamed, so parser-facing names should stay descriptive rather
+than claiming an engine type.
+
+The refreshed type `10`/`11` xref export narrows that helper family to a
+four-slot `0x10`-byte runtime table at `80309e88`:
+
+| Address | Current role |
+| ---: | --- |
+| `8006b6f4(slot)` | Bounds-checks `slot < 4`, then returns table slot `+0x00`, the primary pointer. |
+| `8006b6c8(slot)` | Bounds-checks `slot < 4`, then returns table slot `+0x08`, the gate/status word. |
+| `8006bd84(slot, ptr0, ptr1)` | Initializes table slot `+0x00 = ptr0`, `+0x04 = ptr1`, `+0x08 = 0`, `+0x0c = 1`. |
+| `80309e88` | Table base; slot stride is `0x10`, with at least primary pointer, child-thread/secondary pointer, gate/status, and active byte/word fields. |
+
+The follow-up source-pointer audit shows `80309e8c` is slot `+0x04` in this
+same table rather than a separate global. `FUN_8006b774` writes slot `+0x00 =
+childData +0x28`, slot `+0x04 = childThread`, slot `+0x08 = 0`, and slot
+`+0x0c = 1`. `FUN_8006b5b8` searches/clears the table by that child-thread
+pointer. This is useful for naming discipline: type `10` is not targeting a
+cross-record SML object or a free-standing global vector. It is targeting a
+vector inside the type `1` child/menu data block.
+
+The current headless Ghidra name probe still reports `8000d734`, `8000d488`,
+`8006b6f4`, `8006b6c8`, `8006bd84`, and `80309e88` as unnamed global
+`FUN_...`/`DAT_...` symbols. An expanded owner-chain name probe also leaves
+`8006b5b8`, `8006b71c`, `8006b774`, `8006bdb4`, the `802df6c8` child callback
+table entries, and `80309e8c` unnamed, with only `zzBattleRootMenu_803475a8`
+providing a useful surrounding symbol. This makes the type `10` target-owner
+gap a real remaining symbol/structure question, not a stale documentation gap.
+
+In the observed corpus, mode `2` is likely an oscillating/bouncing endpoint
+mode, but the parser-facing name should remain conservative until the target
+runtime vector owner is named.
 
 ### Type 2/8/9/10 Model-Index Resolution
 
@@ -2087,8 +2263,9 @@ asset to explain.
   loader meanings of SML record `+0x00/+0x0c` and SST top-level
   `+0x00/+0x04/+0x08`, but no later read of SML `+0x0c` or SST
   `+0x04/+0x08` has been found.
-- Are `NMDM` payloads motion/model data blocks, and how do they relate to the
-  embedded MLD motion address list and the runtime motion lookup helpers?
+- Which battle-stage runtime helpers select, advance, or suppress embedded
+  `NMDM` motion slots after the SML payload has been loaded through normal MLD
+  motion-address structures?
 - What is the exact per-entry `texturesPointer` substructure for embedded SML
   payloads, especially in the common case where per-entry texture names are
   empty but the archive-level texture table contains `GCIX`/`GVRT` chunks?
@@ -2098,30 +2275,43 @@ asset to explain.
 - For type `8`, what is the formal engine name and exact in-memory structure for
   the selected node/model-part whose texture-coordinate bound halfwords are
   updated? The payload fields and node-ordinal lookup are now Gekko-backed, but
-  the target structure name remains provisional.
+  the target structure name remains provisional. Current best wording is
+  `selected node model-data UV-bound packet`.
 - For type `9`, are corpus-only payload fields `+0x02`, `+0x04`, and `+0x0a`
-  read by another path, or are they padding/unused for this command?
-- For type `9`, visual checks outside fire-plane/effect-plane stages are still
-  needed before naming the whole command as billboard-like behavior. Direct
-  evidence now ties `+0x08` to published battle view orientation, so the field
-  name can remain `orientationMode` or `viewOrientationMode`.
+  read by another path? Current traced setup and child callback evidence finds
+  no consumer, so parser metadata should keep them as raw/reserved rather than
+  naming them. `+0x04` is the only field that currently looks like true
+  padding/reserved zero across the full US/EU/JP type `9` corpus; `+0x02` and
+  `+0x0a` are authored raw fields until another consumer is found.
+- For type `9`, more visual checks outside fire-plane/effect-plane stages would
+  help refine the human-facing command name. Current living annotations prove
+  `s008` lantern-light records as non-fire type `9` use and `s044` as fire-plane
+  use; candidate stages `s031`, `s038`, `s053`, `s062`, and `s086` remain
+  unclassified for type `9`. Direct evidence ties `+0x08` to published battle
+  view orientation, so the field name can remain `orientationMode` or
+  `viewOrientationMode`.
 - For type `3`, what is the formal engine name for the texture-bearing strip
   polychunk variants mutated by `FUN_80230920`, and which texture-coordinate
   axis naming convention should be used (`U/V`, `S/T`, or engine-specific
   names)? Current evidence narrows the mutator to strip IDs
-  `0x41/0x42/0x44/0x45/0x47/0x48`, but not the engine's preferred label.
+  `0x41/0x42/0x44/0x45/0x47/0x48`, but not the engine's preferred label or the
+  exact visual ownership of the dense `s053`/`s062` fixup clusters.
 - For type `2`, the affected visible geometry is now identified for all known
   corpus rows as liquid surfaces (`s008` water/sewer flow, `s017` lava flow,
   `s018` lava field). Remaining questions are the formal engine names for the
   coordinate-triple chunk ids `0x20..0x37`, the stride lookup tables at
   `802f9340`/`802dae90`, packed control byte `0` modes `0..4`, and the exact
   low-16-bit meaning in packed control word `+0x28`.
-- For type `10`, what exact runtime vector is targeted through
-  `FUN_8006b6f4(0)` and related global state, and should mode `2` eventually
-  be named oscillation/bounce?
+- For type `10`, should mode `2` eventually be named oscillation/bounce, and
+  what formal engine names should be used for the two lighting/render layers?
+  The exact target vector is now structurally identified as the copied type `1`
+  global/ambient RGB triplet at child data `+0x64`; the remaining gap is formal
+  naming, not ownership.
 - For type `11`, what are the formal engine names for the target vector object
-  and related ramp object, and is trailing `+0x24` consumed outside the currently
-  traced child type `12` path?
+  and related ramp object? Trailing `+0x20`, `+0x22`, and `+0x24` are all
+  consumed by the traced child type `12` path; the remaining uncertainty is
+  formal naming for the target/ramp structures, not whether the trailing bytes
+  are real.
 - For code-supported but corpus-absent types `6` and `7`, are these unused
   battle effects, region/build leftovers, or commands used by non-battle/custom
   data not present in the current local corpora?
@@ -2131,8 +2321,9 @@ asset to explain.
   finds no `0x2c`-stride consumer, so this is now a bounded allocation-width
   anomaly rather than an active-row layout claim.
 - Which renderer/model subsystem formally owns the secondary runtime buffer at
-  active row `+0x10` after `FUN_8022f00c` / `FUN_8022f030` mutate model-tree
-  chunks, and what engine concept should that buffer be named?
+  active row `+0x10` after the `8022fxxx` helper family mutates model-data
+  chunks, and what engine concept should that buffer be named? Current evidence
+  supports "secondary runtime model/render buffer" but not a formal engine name.
 - Can the generic MLD/STD command-list dispatcher path
   (`FUN_80067dfc` / `FUN_800090f8`) ever run during battle-stage setup through
   an indirect script/resource path? Direct evidence currently classifies it as
@@ -2170,10 +2361,11 @@ asset to explain.
 
 ## Next Milestones
 
-1. Trace the model/render helper names below active row `+0x10`, especially
-   `FUN_8022f408`, `FUN_8022fce4`, `FUN_8022f6b8`, and `FUN_80230bd4`, then
-   decide whether the secondary buffer should be annotated as model-effect,
-   render-state, or object-control state.
+1. Trace and name the shared model-data helper family around `FUN_8022e734`,
+   `FUN_8022f050`, `FUN_8022f64c`, `FUN_8022f408`, `FUN_8022f6b8`, and
+   `FUN_80230bd4`. The next target is a formal engine name for active row
+   `+0x10` and the type `2`/`3` target chunk structures, not another active-row
+   stride audit.
 2. Search for an indirect consumer that explains the `DAT_80309e84`
    `recordCount * 0x2c` allocation width. Until then, keep parser/research
    metadata limited to the proved `0x14` active-row stride.
@@ -2197,13 +2389,15 @@ asset to explain.
    to identify the stage parts using dense strip UV fixups. Current Gekko
    evidence supports one-shot strip UV rewrite; the remaining question is the
    visual role of those repeated corrected parts.
-8. For type `2`, inspect the model-data chunks inside `s008` record `4`,
-   `s017` record `1`, and `s018` record `1` to identify which chunk id in the
-   `0x20..0x37` family is selected by node lookup key `2`, then compare that
-   against the `802f9340`/`802dae90` stride/control tables.
-9. Trace the type `11` child type `12` local block: target vector pointer,
-   related ramp object pointer, vector delta fields, ramp state, axis selector,
-   cycle count, and frame counter.
+8. For type `2`, identify the formal engine/chunk names behind the
+   `0x20..0x37` model-data coordinate family and the stride/control tables at
+   `802f9340`/`802dae90`. The known corpus targets are already visually
+   identified as liquid surfaces in `s008`, `s017`, and `s018`.
+9. Trace formal names for the two type `1` lighting/render layers and for type
+   `11` target vector/ramp objects. `FUN_8006b6f4(0)` is now known to return
+   type `1` runtime table slot `0`, slot `+0x04` is the type `1` child thread,
+   and `childData +0x64` is the copied global/ambient RGB triplet; the remaining
+   uncertainty is engine naming for the target structures and helper layers.
 10. For later repacking research, create a local-only `s008` experiment where
     duplicated SML records `6` and `7` reuse record `5`'s embedded MLD byte
     range, then rebuild offsets/AKLZ and verify whether the game still creates

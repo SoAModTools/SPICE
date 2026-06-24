@@ -583,7 +583,7 @@ TEST(SpiceSstSmlParser, Type11ExposesSeparateTrailingConsumerWindow) {
     EXPECT_EQ(window.fieldSummaries[0].scope, CommandFieldScope::ConsumerTrailing);
     EXPECT_FALSE(window.fieldSummaries[0].provisional);
     EXPECT_EQ(window.fieldSummaries[1].name, "rampDuration");
-    EXPECT_EQ(window.fieldSummaries[2].name, "trailingRampParameter");
+    EXPECT_EQ(window.fieldSummaries[2].name, "cycleHoldFrames");
 }
 
 TEST(SpiceSstSmlParser, DecodesType1LightingRowsAndStopsAtSentinel) {
@@ -698,6 +698,8 @@ TEST(SpiceSstSmlParser, ConservativeMetadataKeepsEvidenceAndProvisionalStatus) {
     const auto type2Fields = SstParser::fieldSummariesForType(2);
     const auto type3Fields = SstParser::fieldSummariesForType(3);
     const auto type8Fields = SstParser::fieldSummariesForType(8);
+    const auto type9Fields = SstParser::fieldSummariesForType(9);
+    const auto type10Fields = SstParser::fieldSummariesForType(10);
     const auto type6Fields = SstParser::fieldSummariesForType(6);
 
     ASSERT_FALSE(type2Fields.empty());
@@ -762,6 +764,32 @@ TEST(SpiceSstSmlParser, ConservativeMetadataKeepsEvidenceAndProvisionalStatus) {
     for (const auto& field : type8Fields) {
         EXPECT_EQ(field.evidence, CommandFieldEvidence::GekkoAndCorpus);
     }
+
+    ASSERT_EQ(type9Fields.size(), 5U);
+    EXPECT_EQ(type9Fields[0].name, "modelIndex");
+    EXPECT_EQ(type9Fields[0].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_FALSE(type9Fields[0].provisional);
+    EXPECT_EQ(type9Fields[1].name, "corpusOnlyRaw02");
+    EXPECT_EQ(type9Fields[1].evidence, CommandFieldEvidence::Provisional);
+    EXPECT_EQ(type9Fields[2].name, "corpusOnlyRaw04");
+    EXPECT_EQ(type9Fields[2].kind, CommandFieldKind::ReservedRaw);
+    EXPECT_EQ(type9Fields[3].name, "viewOrientationMode");
+    EXPECT_EQ(type9Fields[3].offset, 0x08U);
+    EXPECT_EQ(type9Fields[3].kind, CommandFieldKind::AxisSelector);
+    EXPECT_EQ(type9Fields[3].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_EQ(type9Fields[4].name, "corpusOnlyRaw0A");
+    EXPECT_EQ(type9Fields[4].evidence, CommandFieldEvidence::Provisional);
+
+    ASSERT_EQ(type10Fields.size(), 6U);
+    EXPECT_EQ(type10Fields[0].name, "modelIndex");
+    EXPECT_EQ(type10Fields[1].name, "vectorEndpointMode");
+    EXPECT_EQ(type10Fields[1].evidence, CommandFieldEvidence::GekkoAndCorpus);
+    EXPECT_EQ(type10Fields[2].name, "targetVectorX");
+    EXPECT_EQ(type10Fields[2].kind, CommandFieldKind::VectorComponent);
+    EXPECT_EQ(type10Fields[3].name, "targetVectorY");
+    EXPECT_EQ(type10Fields[4].name, "targetVectorZ");
+    EXPECT_EQ(type10Fields[5].name, "durationFrames");
+    EXPECT_EQ(type10Fields[5].kind, CommandFieldKind::Duration);
 
     ASSERT_FALSE(type6Fields.empty());
     EXPECT_EQ(type6Fields[0].evidence, CommandFieldEvidence::CodeSupportedCorpusAbsent);
