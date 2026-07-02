@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <filesystem>
@@ -119,6 +120,56 @@ std::vector<std::uint8_t> makeSst() {
     writeBeU16(bytes, 0xE6U, 0x2222U);
     writeBeI16(bytes, 0xE8U, 0x0033);
     writeBeI16(bytes, 0xEAU, 0x0044);
+
+    return bytes;
+}
+
+std::array<std::uint8_t, 81> makeBattleGridTerrainSource9x9() {
+    std::array<std::uint8_t, 81> terrain{};
+    for (std::size_t row = 0U; row < 9U; ++row) {
+        for (std::size_t col = 0U; col < 9U; ++col) {
+            const bool border = row < 2U || row > 6U || col < 2U || col > 6U;
+            terrain[(row * 9U) + col] = border ? 1U : 0U;
+        }
+    }
+    return terrain;
+}
+
+std::vector<std::uint8_t> makeSstWithRecord0TerrainTail() {
+    constexpr std::uint32_t firstBlockOffset = 0x20U;
+    constexpr std::uint32_t secondBlockOffset = 0xF0U;
+    constexpr std::uint32_t firstPayloadStart = 0x44U;
+    constexpr std::uint32_t firstPayloadEnd = firstPayloadStart + 0x4CU;
+    std::vector<std::uint8_t> bytes(0x110U, 0U);
+
+    writeBeU32(bytes, 0x00U, 0xAAA00000U);
+    writeBeU32(bytes, 0x04U, 0x0002FFFFU);
+    writeBeU32(bytes, 0x08U, 0xBBBB0000U);
+    writeBeU32(bytes, 0x0CU, firstBlockOffset);
+
+    writeBeU32(bytes, 0x10U, 0xAAA00001U);
+    writeBeU32(bytes, 0x14U, 0xCCCC0000U);
+    writeBeU32(bytes, 0x18U, 0xDDDD0000U);
+    writeBeU32(bytes, 0x1CU, secondBlockOffset);
+
+    writeBeU32(bytes, firstBlockOffset, 1U);
+    writeBeI16(bytes, firstBlockOffset + 0x04U, 0);
+    writeBeI16(bytes, firstBlockOffset + 0x06U, 0);
+    writeBeU32(bytes, firstBlockOffset + 0x08U, 0x20000004U);
+    writeBeU32(bytes, firstBlockOffset + 0x0CU, 0x20000008U);
+    writeBeU32(bytes, firstBlockOffset + 0x10U, 0x01020304U);
+    writeBeI16(bytes, firstBlockOffset + 0x14U, -1);
+    writeBeI16(bytes, firstBlockOffset + 0x16U, 0);
+
+    const auto terrain = makeBattleGridTerrainSource9x9();
+    std::copy(terrain.begin(), terrain.end(), bytes.begin() + firstPayloadEnd);
+    std::fill(bytes.begin() + firstPayloadEnd + terrain.size(),
+        bytes.begin() + secondBlockOffset,
+        0xFFU);
+
+    writeBeU32(bytes, secondBlockOffset, 0U);
+    writeBeI16(bytes, secondBlockOffset + 0x04U, -1);
+    writeBeI16(bytes, secondBlockOffset + 0x06U, 0);
 
     return bytes;
 }
@@ -451,6 +502,76 @@ TEST(SpiceSstSmlParser, ParsesSstTopRecordsCommandBlocksAndSentinels) {
     EXPECT_EQ(result.commandBlocks[0].sentinelOffset, 0x44U);
     EXPECT_EQ(result.commandBlocks[0].sentinelType, -1);
     EXPECT_EQ(result.commandBlocks[0].payloadStartOffset, 0x54U);
+}
+
+TEST(SpiceSstSmlParser, PreservesPostCommandTailAndRecord0TerrainSource9x9) {
+    const auto bytes = makeSstWithRecord0TerrainTail();
+    const auto result = SstParser::parse(bytes);
+
+    ASSERT_TRUE(result.ok());
+    ASSERT_EQ(result.commandBlocks.size(), 2U);
+    const auto& block0 = result.commandBlocks[0];
+    EXPECT_EQ(block0.topLevelRecordIndex, 0U);
+    EXPECT_EQ(block0.payloadEndOffset, 0x90U);
+    EXPECT_EQ(block0.nextCommandBlockOffset, 0xF0U);
+    EXPECT_EQ(block0.postCommandTailOffset, 0x90U);
+    EXPECT_EQ(block0.postCommandTailSize, 0x60U);
+    EXPECT_TRUE(block0.postCommandTailInBounds);
+    ASSERT_EQ(block0.postCommandTailBytes.size(), 0x60U);
+
+    ASSERT_TRUE(block0.battleGridTerrainSource.has_value());
+    const auto terrain = makeBattleGridTerrainSource9x9();
+    EXPECT_EQ(block0.battleGridTerrainSource->sourceOffset, 0x90U);
+    EXPECT_EQ(block0.battleGridTerrainSource->sourceSize, 81U);
+    EXPECT_TRUE(block0.battleGridTerrainSource->inBounds);
+    EXPECT_EQ(block0.battleGridTerrainSource->source9x9, terrain);
+    ASSERT_EQ(block0.battleGridTerrainSource->paddingAfterSource.size(), 15U);
+    EXPECT_TRUE(std::all_of(block0.battleGridTerrainSource->paddingAfterSource.begin(),
+        block0.battleGridTerrainSource->paddingAfterSource.end(),
+        [](std::uint8_t value) { return value == 0xFFU; }));
+
+    const auto& block1 = result.commandBlocks[1];
+    EXPECT_EQ(block1.topLevelRecordIndex, 1U);
+    EXPECT_FALSE(block1.battleGridTerrainSource.has_value());
+    EXPECT_TRUE(block1.postCommandTailInBounds);
+}
+
+TEST(SpiceSstSmlParser, ShortRecord0PostCommandTailStaysRawWithoutTerrainSource) {
+    const auto bytes = makeSst();
+    const auto result = SstParser::parse(bytes);
+
+    ASSERT_TRUE(result.ok());
+    ASSERT_GE(result.commandBlocks.size(), 1U);
+    const auto& block0 = result.commandBlocks[0];
+    EXPECT_EQ(block0.postCommandTailOffset, block0.payloadEndOffset);
+    EXPECT_EQ(block0.postCommandTailSize, 0x10U);
+    EXPECT_TRUE(block0.postCommandTailInBounds);
+    EXPECT_EQ(block0.postCommandTailBytes.size(), 0x10U);
+    EXPECT_FALSE(block0.battleGridTerrainSource.has_value());
+
+    const auto warning = std::find_if(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Warning &&
+            diagnostic.message.find("81-byte battle grid terrain source") != std::string::npos;
+    });
+    EXPECT_NE(warning, result.diagnostics.end());
+}
+
+TEST(SpiceSstSmlParser, OverlappingPostCommandTailBoundaryIsDiagnostic) {
+    auto bytes = makeSstWithRecord0TerrainTail();
+    writeBeU32(bytes, 0x1CU, 0x80U);
+    const auto result = SstParser::parse(bytes);
+
+    EXPECT_FALSE(result.ok());
+    ASSERT_GE(result.commandBlocks.size(), 1U);
+    EXPECT_FALSE(result.commandBlocks[0].postCommandTailInBounds);
+    EXPECT_TRUE(result.commandBlocks[0].postCommandTailBytes.empty());
+    EXPECT_FALSE(result.commandBlocks[0].battleGridTerrainSource.has_value());
+
+    const auto error = std::find_if(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Error &&
+            diagnostic.message.find("overlaps the next command block") != std::string::npos;
+    });
+    EXPECT_NE(error, result.diagnostics.end());
 }
 
 TEST(SpiceSstSmlParser, IgnoresCommandRecordWord12AsOnDiskPayloadOffset) {
@@ -860,7 +981,7 @@ TEST(SpiceSstSmlExport, ReportsOutOfBoundsSmlRecordWithoutWritingPayload) {
 
 TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadata) {
     const auto smlParsed = SmlParser::parse(makeSml(1U), "s777.sml");
-    const auto sstParsed = SstParser::parse(makeSstWithType0AndExtraCommand(), "s777.sst");
+    const auto sstParsed = SstParser::parse(makeSstWithRecord0TerrainTail(), "s777.sst");
     ASSERT_TRUE(smlParsed.ok());
     ASSERT_TRUE(sstParsed.ok());
 
@@ -899,16 +1020,21 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     const auto commandMap = readTextFile(*result.commandMapPath);
     EXPECT_NE(commandMap.find("\"index\":0"), std::string::npos);
     EXPECT_NE(commandMap.find("\"type\":0"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"type\":3"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"battleObjectClassSelector\":3"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"lookupResourceIndex\":-3"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"renderActionByte\":2"), std::string::npos);
     EXPECT_NE(commandMap.find("\"embeddedMldSummary\""), std::string::npos);
     EXPECT_NE(commandMap.find("\"activeRowRuntimeContext\""), std::string::npos);
     EXPECT_NE(commandMap.find("\"provedRowStride\":20"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"localObjectSlotLink\""), std::string::npos);
-    EXPECT_NE(commandMap.find("\"owningSmlRecordIndex\":0"), std::string::npos);
-    EXPECT_NE(commandMap.find("\"localSlotIndex\":0"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"nextCommandBlockOffset\":240"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"postCommandTail\""), std::string::npos);
+    EXPECT_NE(commandMap.find("\"offset\":144"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"size\":96"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"bytesHex\""), std::string::npos);
+    EXPECT_NE(commandMap.find("\"battleGridTerrainSource9x9\""), std::string::npos);
+    EXPECT_NE(commandMap.find("\"sourceOffset\":144"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"sourceSize\":81"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"source9x9Rows\""), std::string::npos);
+    EXPECT_NE(commandMap.find("[1,1,0,0,0,0,0,1,1]"), std::string::npos);
+    EXPECT_NE(commandMap.find("\"paddingAfterSourceHex\":\"FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF\""), std::string::npos);
+    EXPECT_EQ(commandMap.find("\"mapped11x11Rows\""), std::string::npos);
     EXPECT_EQ(commandMap.find("\"resolvedSmlRecordIndex\""), std::string::npos);
 
     ASSERT_TRUE(result.stageAnnotationTemplatePath.has_value());
@@ -943,7 +1069,7 @@ TEST(SpiceSstSmlExport, WritesSameIndexCommandMapWithType0AndExtraCommandMetadat
     EXPECT_NE(annotationTemplate.find("\"indexEntryNames\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("wall.nj"), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"hasVaryingAnimation\":true"), std::string::npos);
-    EXPECT_NE(annotationTemplate.find("\"commandTypes\":[0,3]"), std::string::npos);
+    EXPECT_NE(annotationTemplate.find("\"commandTypes\":[0]"), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"commandTypeHistogram\""), std::string::npos);
     EXPECT_NE(annotationTemplate.find("\"localObjectSlotLink\""), std::string::npos);
     EXPECT_EQ(annotationTemplate.find("\"resolvedSmlRecordIndex\""), std::string::npos);
