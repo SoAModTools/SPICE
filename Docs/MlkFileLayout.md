@@ -48,17 +48,57 @@ files, rewrite record tables, or extract embedded payload binaries by default.
 
 ## Runtime Loader Evidence
 
-High-confidence handlers:
+The refreshed local Ghidra project names the MLK path in three layers:
 
-- `FUN_80073024`: queues `CR%03d.MLK` and `CREN%2d.MLK` character resources.
-- `FUN_80073164`: retrieves queued `CR%03d.MLK` / `CRENxx.MLK` buffers and
-  processes records through `FUN_8006e6e4`.
-- `FUN_8006befc`: builds dynamic BEFF MLK names, loads `/BEFF/%s%02d.MLK` with
-  fallback to `/BEFF/%s.MLK`, validates duplicate keys, and processes records in
-  chunks.
-- `FUN_8006c710`: queues `JOUCHU.MLK`, `F05000%02X.MLK`, and
-  `D05000%02X.MLK` helper resources.
-- `FUN_8006e244`: consumes one MLK record in the normal mode-0 path.
+- Battle resource queue construction and file loading:
+  - `Battle::Resource::QueueBattleCharacterResourceSet_80073024`: queues
+    `CR%03d.MLD`, companion STD files, `CR%03d.MLK`, and `CREN%2d.MLK`.
+  - `MLK::QueueSharedBattleMlkResources_8006c710`: queues `JOUCHU.MLK`,
+    `F05000%02X.MLK`, and `D05000%02X.MLK` helper resources.
+  - `Battle::Resource::AppendBattleResourceQueueEntry_8006e75c`: appends a
+    0x1c-byte queued filename/resource entry.
+  - `Battle::Resource::StartBattleResourceQueueProcessing_8006dc6c`: starts
+    processing after queue builders append filenames.
+  - `Battle::Resource::ProcessQueuedBattleResourceList_8006c124`,
+    `Battle::Resource::ProcessQueuedBattleResourceFile_8006ddbc`, and
+    `Battle::Resource::ProcessQueuedBattleResourceFileAlt_8006e00c`: resolve
+    queued BCHARA/BEFF names, reuse cached data, schedule loads, and dispatch
+    loaded MLK-like buffers when present.
+  - `Battle::Resource::FindLoadedBattleResourceByName_8006daf8`: retrieves
+    queued/loaded buffers such as `CR%03d.MLK` and `CRENxx.MLK`.
+  - `Battle::Resource::GetSharedBattleResourceBuffer_8022aca8`: returns the
+    shared/cached battle resource buffer used by the direct JOUCHU path.
+- MLK filename and container entrypoints:
+  - `MLK::BuildBattleMlkFilename_8001c6cc`: builds D/F-family BEFF names,
+    PCWIN-style special cases, and related battle MLK filenames from selector
+    values.
+  - `MLK::LoadBeffMlkAndProcessRecords_8006befc`: builds dynamic BEFF MLK
+    names, loads `/BEFF/%s%02d.MLK` with fallback to `/BEFF/%s.MLK`, validates
+    duplicate keys, and processes records in chunks.
+  - `MLK::ProcessQueuedBattleCharacterMlk_80073164`: retrieves queued
+    `CR%03d.MLK` / `CRENxx.MLK` buffers and processes them through the all-record
+    walker.
+- MLK record walking and embedded MLD setup:
+  - `MLK::ValidateMlkUniqueRecordKeys_8006e5bc`: validates duplicate record keys
+    using the signed record count at decoded offset `0x04`.
+  - `MLK::ProcessAllMlkRecords_8006e6e4`: walks every record, patches payload
+    offsets to absolute pointers, and calls the mode-0 record consumer.
+  - `MLK::ProcessMlkRecordsReverseChunk_8006e4cc` and
+    `MLK::ProcessMlkRecordsForwardChunk_8006e640`: process chunk windows of the
+    same record table for BEFF paths.
+  - `MLK::LoadMlkEmbeddedMldRecord_8006e244`: consumes one MLK record in the
+    normal mode-0 path.
+  - `MLK::FormatMlkRecordResourceName_8003dbac`: derives names such as
+    `E%02d%03d%02d.MLD` or `M%c%03d.MLD` from the MLK record key.
+  - `loadTextures_801db124`: existing generic MLD texture/model setup reached by
+    copied embedded MLK payloads.
+  - `MLK::InitializeMlkLoadedMldObjects_8006cf54`: post-load initialization that
+    walks the loaded MLD index table and initializes object blocks.
+
+Known static data:
+
+- `MLK::bcharaJouchuMlkPath_802f9214`: static full-path string/data reference
+  for `/bchara/jouchu.mlk`.
 
 Observed format strings include:
 
@@ -76,7 +116,9 @@ The observed loader paths walk records, patch each payload offset into an
 absolute pointer by adding the MLK base address, and pass embedded payload
 pointers/sizes into the existing model/effect loading path. The discovered
 mode-0 loader path consumes key, payload pointer, and payload size; it does not
-currently explain record `+0x0c`.
+currently explain record `+0x0c`. The current Ghidra name set also clarifies
+that `ProcessQueuedBattleResourceFile_8006ddbc` is a general queued battle
+resource loader, not an STD-only path.
 
 ## Decoded File Layout
 
@@ -103,7 +145,7 @@ Each observed MLK record is 0x10 bytes.
 
 | Offset in record | Size | Field | Current meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 4 | `key` | Numeric resource key. Runtime duplicate-key validation compares this field. `FUN_8006e244` uses it to derive a resource label. |
+| `0x00` | 4 | `key` | Numeric resource key. Runtime duplicate-key validation compares this field. `MLK::LoadMlkEmbeddedMldRecord_8006e244` uses it to derive a resource label. |
 | `0x04` | 4 | `payloadOffset` | Decoded-buffer-relative embedded payload offset. Runtime walkers patch this in place to an absolute pointer. |
 | `0x08` | 4 | `payloadSize` | Embedded payload byte size used by the loader copy/parse path. |
 | `0x0c` | 4 | `rawWord12` | Preserved unresolved metadata. Keep this name until a runtime consumer explains it. |
@@ -203,8 +245,8 @@ Keep the field named `rawWord12` until a runtime consumer explains it.
 Current static audit result:
 
 - The discovered MLK loader path does not read record `+0x0c`.
-- Mode-0 calls into `FUN_8006e244` consume key, payload pointer, and payload
-  size.
+- Mode-0 calls into `MLK::LoadMlkEmbeddedMldRecord_8006e244` consume key,
+  payload pointer, and payload size.
 - The loaded-resource cache stores the loaded resource/name, not a retained
   pointer to the source MLK record.
 
@@ -315,6 +357,16 @@ family `200600`; `pcp08` reports `200700`.
 These are likely battle-state, party/window, or result-adjacent resources by
 name and handler references, but their exact role needs visual or runtime
 confirmation.
+
+Current low-confidence visual hypothesis: `pcp##.mlk` may be a
+party-composition slash/effect package rather than a generic UI/window package.
+The runtime selector builds a bitmask from present non-Fina player characters,
+then maps specific masks to `pcp##` filenames. Blender inspection of `pcp00`,
+`pcp01`, and `pcp05` shows a shared set of sword-slash-like effects plus
+variant effects that appear consistent with Enrique and Drachma-specific
+additions. Fina may be absent from the selector because her weapon usually does
+not require slash effects. Treat this as possible but not confirmed until more
+runtime or visual evidence is collected.
 
 ## Current SPICE Surfaces
 
