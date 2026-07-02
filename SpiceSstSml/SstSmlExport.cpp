@@ -194,6 +194,18 @@ std::string hex32(std::uint32_t value) {
     return out.str();
 }
 
+std::string bytesHex(std::span<const std::uint8_t> bytes) {
+    std::ostringstream out;
+    out << std::hex << std::uppercase << std::setfill('0');
+    for (std::size_t i = 0U; i < bytes.size(); ++i) {
+        if (i != 0U) {
+            out << ' ';
+        }
+        out << std::setw(2) << static_cast<unsigned>(bytes[i]);
+    }
+    return out.str();
+}
+
 void writeDiagnosticsArray(std::ostream& out, const std::vector<ParseDiagnostic>& diagnostics, const std::string& indent) {
     out << "[";
     for (std::size_t i = 0; i < diagnostics.size(); ++i) {
@@ -208,6 +220,43 @@ void writeDiagnosticsArray(std::ostream& out, const std::vector<ParseDiagnostic>
         out << "\n" << indent;
     }
     out << "]";
+}
+
+void writePostCommandTail(std::ostream& out, const SstCommandBlock& block, const std::string& indent) {
+    out << "{\n"
+        << indent << "  \"offset\":" << block.postCommandTailOffset
+        << ",\n" << indent << "  \"size\":" << block.postCommandTailSize
+        << ",\n" << indent << "  \"inBounds\":" << (block.postCommandTailInBounds ? "true" : "false")
+        << ",\n" << indent << "  \"bytesHex\":";
+    writeJsonString(out, bytesHex(block.postCommandTailBytes));
+    out << "\n" << indent << "}";
+}
+
+void writeBattleGridTerrainSource9x9(std::ostream& out,
+    const std::optional<SstBattleGridTerrainSource>& source,
+    const std::string& indent) {
+    if (!source.has_value()) {
+        out << "null";
+        return;
+    }
+
+    out << "{\n"
+        << indent << "  \"sourceOffset\":" << source->sourceOffset
+        << ",\n" << indent << "  \"sourceSize\":" << source->sourceSize
+        << ",\n" << indent << "  \"inBounds\":" << (source->inBounds ? "true" : "false")
+        << ",\n" << indent << "  \"source9x9Rows\":[";
+    for (std::size_t row = 0U; row < 9U; ++row) {
+        out << (row == 0U ? "\n" : ",\n") << indent << "    [";
+        for (std::size_t col = 0U; col < 9U; ++col) {
+            out << (col == 0U ? "" : ",")
+                << static_cast<unsigned>(source->source9x9[(row * 9U) + col]);
+        }
+        out << "]";
+    }
+    out << "\n" << indent << "  ],\n"
+        << indent << "  \"paddingAfterSourceHex\":";
+    writeJsonString(out, bytesHex(source->paddingAfterSource));
+    out << "\n" << indent << "}";
 }
 
 void writeActiveRowRuntimeContext(std::ostream& out, const std::string& indent) {
@@ -441,6 +490,12 @@ void writeCommandBlock(std::ostream& out,
     out << ",\n" << indent << "  \"valid\":" << (block->valid ? "true" : "false")
         << ",\n" << indent << "  \"payloadStartOffset\":" << block->payloadStartOffset
         << ",\n" << indent << "  \"payloadEndOffset\":" << block->payloadEndOffset
+        << ",\n" << indent << "  \"nextCommandBlockOffset\":" << block->nextCommandBlockOffset
+        << ",\n" << indent << "  \"postCommandTail\":";
+    writePostCommandTail(out, *block, indent + "  ");
+    out << ",\n" << indent << "  \"battleGridTerrainSource9x9\":";
+    writeBattleGridTerrainSource9x9(out, block->battleGridTerrainSource, indent + "  ");
+    out
         << ",\n" << indent << "  \"commands\":[";
     for (std::size_t i = 0; i < block->commands.size(); ++i) {
         out << (i == 0 ? "\n" : ",\n") << indent << "    ";

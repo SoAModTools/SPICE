@@ -20,6 +20,7 @@ constexpr std::uint32_t kType1LightingRowStride = 0x68U;
 constexpr std::uint32_t kType1LightingRowCount = 2U;
 constexpr std::uint32_t kType1EnableLightSetupFlag = 0x40000000U;
 constexpr std::uint32_t kType1EnableVectorSetupFlag = 0x20000000U;
+constexpr std::uint32_t kBattleGridTerrainSourceSize = 81U;
 
 void addDiagnostic(std::vector<ParseDiagnostic>& diagnostics,
     DiagnosticSeverity severity,
@@ -201,6 +202,27 @@ std::vector<SstType1LightingRow> parseType1LightingRows(std::span<const std::uin
     }
 
     return rows;
+}
+
+std::optional<SstBattleGridTerrainSource> extractBattleGridTerrainSource(
+    const SstCommandBlock& block) {
+    if (block.topLevelRecordIndex != 0U ||
+        !block.postCommandTailInBounds ||
+        block.postCommandTailBytes.size() < kBattleGridTerrainSourceSize) {
+        return std::nullopt;
+    }
+
+    SstBattleGridTerrainSource source{};
+    source.sourceOffset = block.postCommandTailOffset;
+    source.sourceSize = kBattleGridTerrainSourceSize;
+    source.inBounds = true;
+    std::copy_n(block.postCommandTailBytes.begin(),
+        kBattleGridTerrainSourceSize,
+        source.source9x9.begin());
+    source.paddingAfterSource.assign(
+        block.postCommandTailBytes.begin() + kBattleGridTerrainSourceSize,
+        block.postCommandTailBytes.end());
+    return source;
 }
 
 } // namespace
@@ -786,6 +808,38 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
         }
 
         block.payloadEndOffset = payloadCursor;
+        block.nextCommandBlockOffset = nextCommandBlockOffsetAfter(result.topLevelRecords,
+            block.blockOffset,
+            result.decodedSize);
+        block.postCommandTailOffset = block.payloadEndOffset;
+        if (block.nextCommandBlockOffset < block.postCommandTailOffset) {
+            addDiagnostic(result.diagnostics,
+                DiagnosticSeverity::Error,
+                "SST command payload pool overlaps the next command block",
+                block.postCommandTailOffset);
+        } else {
+            block.postCommandTailSize = block.nextCommandBlockOffset - block.postCommandTailOffset;
+            block.postCommandTailInBounds =
+                canReadRange(decodedBytes.size(), block.postCommandTailOffset, block.postCommandTailSize);
+            if (block.postCommandTailInBounds) {
+                block.postCommandTailBytes =
+                    copyRange(decodedBytes, block.postCommandTailOffset, block.postCommandTailSize);
+            } else {
+                addDiagnostic(result.diagnostics,
+                    DiagnosticSeverity::Error,
+                    "SST post-command tail span is out of bounds",
+                    block.postCommandTailOffset);
+            }
+        }
+        block.battleGridTerrainSource = extractBattleGridTerrainSource(block);
+        if (block.topLevelRecordIndex == 0U &&
+            block.postCommandTailInBounds &&
+            !block.battleGridTerrainSource.has_value()) {
+            addDiagnostic(result.diagnostics,
+                DiagnosticSeverity::Warning,
+                "SST record 0 post-command tail is shorter than the 81-byte battle grid terrain source",
+                block.postCommandTailOffset);
+        }
         block.valid = block.sentinelType < 0;
         result.commandBlocks.push_back(std::move(block));
     }

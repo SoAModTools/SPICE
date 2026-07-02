@@ -710,6 +710,32 @@ Given a command block at `block`:
 pointer into the packed payload pool, then advances by the Gekko-derived payload
 span for that command type.
 
+### SST Post-Command Tail
+
+After the packed command payload pool, bytes up to the next top-level command
+block offset are now preserved as `postCommandTailBytes`. This tail is
+structural for every command block, but only top-level record `0` currently has
+a proved semantic consumer.
+
+`Battle::Stage::JoinSmlSstRecords_8000cb44` calls
+`SST::Command::WalkBlocks_8000c7c0` with `recordIndex * 2 + 1`.
+`WalkBlocks_8000c7c0` writes `DAT_80309e80` only when that argument is `1`, so
+the stored source pointer is derived from record `0` only. The pointer is the
+command block base plus the command count word, command records, sentinel
+record, and packed command payload spans; in parser terms this is record `0`
+`payloadEndOffset`.
+
+`Battle::Setup::setupBattleGrid_800840bc` consumes that pointer as an 81-byte
+`9x9` battle-grid terrain source. Current parser/export metadata therefore
+exposes `battleGridTerrainSource9x9` only for record `0` when at least 81
+post-command tail bytes are available. Any bytes after the first 81 remain
+padding/unknown tail bytes; for `s001`, the 81-byte terrain source is followed
+by seven `0xff` bytes before the next command block.
+
+The optional game-internal `11x11` mapped grid is not modeled in
+`SpiceSstSml`; consumers that need the internal border-expanded grid should map
+the exported raw `9x9` source themselves.
+
 ### SST Command Record
 
 | Offset in record | Size | Field | Current meaning |

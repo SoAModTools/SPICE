@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
@@ -176,6 +177,14 @@ struct SstCommandRecord {
     std::vector<SstType1LightingRow> type1LightingRows{};
 };
 
+struct SstBattleGridTerrainSource {
+    std::uint32_t sourceOffset{ 0U };
+    std::uint32_t sourceSize{ 81U };
+    bool inBounds{ false };
+    std::array<std::uint8_t, 81> source9x9{};
+    std::vector<std::uint8_t> paddingAfterSource{};
+};
+
 struct SstCommandBlock {
     std::size_t topLevelRecordIndex{ 0U };
     std::uint32_t blockOffset{ 0U };
@@ -184,10 +193,16 @@ struct SstCommandBlock {
     std::uint32_t sentinelOffset{ 0U };
     std::uint32_t payloadStartOffset{ 0U };
     std::uint32_t payloadEndOffset{ 0U };
+    std::uint32_t nextCommandBlockOffset{ 0U };
+    std::uint32_t postCommandTailOffset{ 0U };
+    std::uint32_t postCommandTailSize{ 0U };
+    bool postCommandTailInBounds{ false };
     bool valid{ false };
     std::int16_t sentinelType{ 0 };
     std::int16_t sentinelArgument{ 0 };
     std::vector<SstCommandRecord> commands{};
+    std::vector<std::uint8_t> postCommandTailBytes{};
+    std::optional<SstBattleGridTerrainSource> battleGridTerrainSource{};
 };
 
 struct SstParseResult {
