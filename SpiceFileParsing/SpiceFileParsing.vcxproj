@@ -139,7 +139,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="AlxEnemyEventExport.cpp" />
     <ClCompile Include="SpiceFileParsing.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AlxEnemyEventExport.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">

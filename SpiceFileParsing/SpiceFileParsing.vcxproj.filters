@@ -10,9 +10,17 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="AlxEnemyEventExport.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="SpiceFileParsing.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AlxEnemyEventExport.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="decompressed_inputs\.gitkeep">

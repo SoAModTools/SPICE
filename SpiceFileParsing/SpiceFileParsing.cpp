@@ -12,6 +12,7 @@
 #include "../Sa3Dport/Testing/Slice7TestApi.h"
 #include "../Sa3Dport/Testing/Slice8TestApi.h"
 #include "../Sa3Dport/Testing/Slice9TestApi.h"
+#include "AlxEnemyEventExport.h"
 
 #include <algorithm>
 #include <cctype>
@@ -284,6 +285,9 @@ struct CliOptions {
     bool compressAklzSingle = false;
     std::filesystem::path aklzInputPath{};
     std::filesystem::path aklzOutputPath{};
+    bool exportAlxEnemyEventsSingle = false;
+    std::filesystem::path alxEnemyEventsInputCsv{};
+    std::filesystem::path alxEnemyEventsOutputJson{};
     std::optional<std::size_t> mldTextureIndex{};
     std::optional<std::string> mldTextureName{};
     bool mldAllowDimensionChange = false;
@@ -333,6 +337,7 @@ void printUsage() {
         << "  SpiceFileParsing [input_dir] [output_dir] [--ab-sa3d-port-vs-sa3d-bridge] [--extract-grnd-gobj-blocks] [--export-mld-entry-list-only] [--export-sml-embedded-mld] [--export-sml-embedded-mld-blender-ir] [--export-sml-combined-blender-ir] [--export-sml-combined-blender-ir-raw-placement] [--export-sst-sml-command-map] [--export-std-json] [--export-mlk-corpus] [--export-mlk-blender-ir] [--overwrite-mlk-annotations] [--sml-stage-annotation-repository dir] [--sample-mld-gvr-formats] [--sct-only] [--sct-decode-unreached-code] [--export-sct-binary] [--export-sct-binary-compressed] [--content-graph] [--content-graph-projection full|sections|world] [--gvr-only] [--export-gvr-image-ir] [--import-gvr-image-ir] [--gvr-aklz preserve|compressed|raw]\n\n"
         << "  SpiceFileParsing --decompress-aklz input.aklz output.bin\n"
         << "  SpiceFileParsing --compress-aklz input.bin output.aklz\n"
+        << "  SpiceFileParsing --export-alx-enemy-events enemyevent.csv output.json\n"
         << "  SpiceFileParsing --create-gvr input.png output.gvr [--gvr-format i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format ia8|rgb565|rgb5a3] [--gvr-mipmaps on|off] [--gvr-aklz raw|compressed] [--gvr-global-index none|<u32>]\n"
         << "  SpiceFileParsing --replace-gvr existing.gvr input.png output.gvr [--gvr-format preserve|i4|i8|ia4|ia8|rgb565|rgb5a3|rgba8|ci4|ci8|ci14x2|cmpr] [--gvr-palette-format preserve|ia8|rgb565|rgb5a3] [--gvr-mipmaps preserve|on|off] [--gvr-aklz preserve|raw|compressed] [--gvr-global-index preserve|none|<u32>]\n"
         << "  SpiceFileParsing --gvr-to-png source.gvr output.png\n"
@@ -623,6 +628,16 @@ std::optional<CliOptions> parseCliOptions(int argc, char** argv, const std::file
             options.compressAklzSingle = true;
             options.aklzInputPath = std::filesystem::path(argv[++i]);
             options.aklzOutputPath = std::filesystem::path(argv[++i]);
+            continue;
+        }
+        if (arg == "--export-alx-enemy-events") {
+            if (i + 2 >= argc) {
+                std::cerr << "--export-alx-enemy-events requires enemyevent.csv and output.json.\n";
+                return std::nullopt;
+            }
+            options.exportAlxEnemyEventsSingle = true;
+            options.alxEnemyEventsInputCsv = std::filesystem::path(argv[++i]);
+            options.alxEnemyEventsOutputJson = std::filesystem::path(argv[++i]);
             continue;
         }
         if (arg == "--create-gvr-batch") {
@@ -3485,6 +3500,23 @@ int main(int argc, char** argv) {
             std::cout << "[SpiceFileParsing] Step 3/4: Wrote " << cliOptions->aklzOutputPath.string() << "\n";
             std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n";
             std::cout << "SpiceFileParsing finished.\nFilesProcessed=1\n";
+            return 0;
+        } catch (const std::exception& ex) {
+            std::cerr << "[SpiceFileParsing] ERROR: " << ex.what() << "\n";
+            return 1;
+        }
+    }
+
+    if (cliOptions->exportAlxEnemyEventsSingle) {
+        try {
+            std::cout << "[SpiceFileParsing] Step 2/4: Importing ALX enemy events.\n";
+            spice::alx::exportEnemyEventsCsvToJson(
+                cliOptions->alxEnemyEventsInputCsv,
+                cliOptions->alxEnemyEventsOutputJson);
+            std::cout << "[SpiceFileParsing] Step 3/4: Wrote "
+                      << cliOptions->alxEnemyEventsOutputJson.string() << "\n";
+            std::cout << "[SpiceFileParsing] Step 4/4: Finalizing summary.\n"
+                      << "SpiceFileParsing finished.\nFilesProcessed=1\n";
             return 0;
         } catch (const std::exception& ex) {
             std::cerr << "[SpiceFileParsing] ERROR: " << ex.what() << "\n";
