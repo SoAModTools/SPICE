@@ -253,6 +253,12 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
             out << ",\"hasPosition\":" << (v.hasPosition ? "true" : "false");
             out << ",\"normal\":[" << v.normal.x << ',' << v.normal.y << ',' << v.normal.z << ']';
             out << ",\"hasNormal\":" << (v.hasNormal ? "true" : "false");
+            out << ",\"rawUserAttributesU32\":";
+            if (v.rawUserAttributesU32.has_value()) {
+                out << *v.rawUserAttributesU32;
+            } else {
+                out << "null";
+            }
             out << ",\"weights\":[";
             for (std::size_t wi = 0; wi < v.weights.size(); ++wi) {
                 if (wi != 0) {
@@ -328,6 +334,17 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                     << ",\"color\":[" << corner.colorR << ',' << corner.colorG << ',' << corner.colorB << ',' << corner.colorA << ']'
                     << ",\"hasColor\":" << (corner.hasColor ? "true" : "false")
                     << '}';
+            }
+            out << "],\"triangleMetadata\":[";
+            for (std::size_t triangleIdx = 0; triangleIdx < ts.triangleMetadata.size(); ++triangleIdx) {
+                if (triangleIdx != 0) {
+                    out << ',';
+                }
+                const auto& metadata = ts.triangleMetadata[triangleIdx];
+                out << "{\"rawU16\":["
+                    << metadata.rawU16[0] << ','
+                    << metadata.rawU16[1] << ','
+                    << metadata.rawU16[2] << "]}";
             }
             out << "]}";
         }
@@ -414,6 +431,15 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         writeJsonString(out, entry.fxnName);
         out << ",\"transform\":";
         writeTransform(out, entry.transform);
+
+        out << ",\"functionParameters\":[";
+        for (std::size_t pi = 0; pi < entry.functionParameters.size(); ++pi) {
+            if (pi != 0) {
+                out << ',';
+            }
+            out << entry.functionParameters[pi];
+        }
+        out << ']';
 
         out << ",\"objectAddresses\":[";
         for (std::size_t oi = 0; oi < entry.objectAddresses.size(); ++oi) {

@@ -29,7 +29,7 @@ struct TriangleSet {
 
 struct StreamEntry {
     std::uint16_t floatIndex = 0;
-    std::int16_t flags = 0;
+    std::uint16_t flags = 0;
 };
 
 struct TriangleRef {
@@ -130,7 +130,7 @@ struct TriangleRefHash {
     const auto offset = set.triangleStreamOffset + (index * 4U);
     const spice::core::EndianReader reader(bytes, endian);
     const auto floatIndex = reader.try_read_u16(offset);
-    const auto flags = reader.try_read_i16(offset + 2U);
+    const auto flags = reader.try_read_u16(offset + 2U);
     if (!floatIndex.has_value() || !flags.has_value()) {
         return std::nullopt;
     }
@@ -329,7 +329,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
                 continue;
             }
 
-            if (e2->flags < 0) {
+            if ((e2->flags & 0x8000U) != 0U) {
                 result.mesh.indices.push_back(i2);
                 result.mesh.indices.push_back(i1);
                 result.mesh.indices.push_back(i0);
@@ -338,6 +338,9 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
                 result.mesh.indices.push_back(i1);
                 result.mesh.indices.push_back(i2);
             }
+            result.mesh.triangleMetadata.push_back(model::TriangleMetadata{
+                .rawU16 = { e0->flags, e1->flags, e2->flags },
+            });
             ++result.referencedTriangleCount;
         }
     }

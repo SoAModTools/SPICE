@@ -21,6 +21,7 @@ struct BlenderIrVertex {
     Vec3 normal{};
     bool hasPosition = false;
     bool hasNormal = false;
+    std::optional<std::uint32_t> rawUserAttributesU32{};
     std::vector<BlenderIrWeight> weights{};
 };
 
@@ -86,6 +87,7 @@ struct BlenderIrTexture {
 struct BlenderIrTriangleSet {
     std::size_t materialIndex = 0;
     std::vector<BlenderIrCorner> corners{}; // packed triplets
+    std::vector<TriangleMetadata> triangleMetadata{};
     std::uint8_t polyType = 0;
     std::size_t sourceChunkOffset = 0;
     bool fromCacheReplay = false;
@@ -140,6 +142,7 @@ struct BlenderIrInstance {
     std::int32_t tblId = 0;
     std::string fxnName{};
     Transform transform{};
+    std::vector<std::uint32_t> functionParameters{};
     std::vector<std::uint32_t> objectAddresses{};
     std::vector<std::uint32_t> groundAddresses{};
     std::vector<std::size_t> meshIndices{};

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace spice::mld::model {
@@ -47,13 +49,20 @@ struct Transform {
 struct MeshVertex {
     Vec3 position{};
     Vec3 normal{};
+    bool hasNormal = true;
+    std::optional<std::uint32_t> rawUserAttributesU32{};
     float u = 0.0f;
     float v = 0.0f;
+};
+
+struct TriangleMetadata {
+    std::array<std::uint16_t, 3> rawU16{};
 };
 
 struct MeshData {
     std::vector<MeshVertex> vertices{};
     std::vector<std::uint32_t> indices{};
+    std::vector<TriangleMetadata> triangleMetadata{};
 };
 
 } // namespace spice::mld::model

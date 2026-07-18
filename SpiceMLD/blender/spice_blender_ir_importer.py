@@ -6,12 +6,14 @@ BlenderIrJsonExporter. It intentionally focuses on currently exported fields:
 - triangle corner vertex indices
 - material metadata + textureName
 - texture pixelDataBase64 (rgba8)
+- raw GOBJ vertex user attributes and GRND/GOBJ triangle metadata
 - indexEntries with transform + meshIndices, including decoded GRND meshes
 """
 
 from __future__ import annotations
 
 import base64
+import colorsys
 import json
 import math
 from dataclasses import dataclass, field
@@ -20,14 +22,22 @@ from typing import Any, Callable, NamedTuple
 
 import bpy
 import mathutils
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import (
+    BoolProperty,
+    CollectionProperty,
+    EnumProperty,
+    FloatProperty,
+    FloatVectorProperty,
+    IntProperty,
+    StringProperty,
+)
 from bpy.types import Collection, Image, Material, Mesh, Object
 from bpy_extras.io_utils import ImportHelper
 
 bl_info = {
     "name": "Spice Blender IR Importer",
     "author": "Spice",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (3, 6, 0),
     "location": "File > Import > Spice Blender IR (.json)",
     "description": "Imports blender_ir_scene.json exported from SpiceMLD",
@@ -64,7 +74,835 @@ NJCM_TO_BLENDER_AXIS = mathutils.Quaternion((1.0, 0.0, 0.0), 1.5707963267948966)
 NJD_EVAL_UNIT_POS = 1 << 0
 NJD_EVAL_UNIT_ANG = 1 << 1
 NJD_EVAL_UNIT_SCL = 1 << 2
-GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET = 0.05
+GRND_VISUAL_SOURCE_Y_OFFSET = 0.05
+TRIANGLE_METADATA_COLOR_ATTRIBUTE = "SpiceTriangleMetadataColor"
+TRIANGLE_METADATA_RESOLVED_ENCOUNTER_COLOR_ATTRIBUTE = "SpiceResolvedEncounterColor"
+TRIANGLE_METADATA_RAW_ATTRIBUTE_NAMES = (
+    "spice_triangle_metadata_raw_u16_0",
+    "spice_triangle_metadata_raw_u16_1",
+    "spice_triangle_metadata_raw_u16_2",
+)
+TRIANGLE_METADATA_SELECTOR_ATTRIBUTE = "spice_triangle_metadata_selector_low15"
+TRIANGLE_METADATA_WINDING_ATTRIBUTE = "spice_triangle_metadata_stream_winding_high_bit"
+TRIANGLE_METADATA_DECODED_ATTRIBUTE = "spice_triangle_metadata_decoded_u16"
+TRIANGLE_METADATA_DECODED_HIGH_BIT_ATTRIBUTE = "spice_triangle_metadata_decoded_high_bit"
+TRIANGLE_METADATA_BEHAVIOR_CLASS_ATTRIBUTE = "spice_triangle_metadata_behavior_class"
+TRIANGLE_METADATA_ENCOUNTER_SELECTOR_ATTRIBUTE = "spice_triangle_metadata_encounter_selector"
+TRIANGLE_METADATA_PAYLOAD_GROUP_ATTRIBUTE = "spice_triangle_metadata_payload_group"
+TRIANGLE_METADATA_DIGIT_ATTRIBUTE_NAMES = (
+    "spice_triangle_metadata_digit_ones",
+    "spice_triangle_metadata_digit_tens",
+    "spice_triangle_metadata_digit_hundreds",
+    "spice_triangle_metadata_digit_thousands",
+)
+TRIANGLE_METADATA_HUE_CENTERS = (232.0, 52.0, 124.0, 16.0, 268.0, 160.0, 340.0, 88.0, 304.0, 196.0)
+TRIANGLE_METADATA_ONES_TABLE = (0x0000, 0x6800, 0x7800, 0x1800, 0x1400, 0x0100, 0x1200, 0x1300, 0x0000, 0x0000)
+TRIANGLE_METADATA_TENS_TABLE = (0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009)
+TRIANGLE_METADATA_HUNDREDS_TABLE = (0x0000, 0x0010, 0x0020, 0x0030, 0x0040, 0x0050, 0x0060, 0x0000, 0x0000, 0x8000)
+TRIANGLE_METADATA_THOUSANDS_TABLE = (0x0000, 0x8000, 0x8200, 0x8400, 0x8600, 0x8800, 0x8A00, 0x8C00, 0x8E00, 0x9000)
+TRIANGLE_METADATA_DISPLAY_MODES = (
+    ("SKY_RIFT_FORCE", "Sky-Rift Force", "Show triangles dispatched through known sky-rift force classes."),
+    ("ENCOUNTER_SELECTOR", "Encounter Selector", "Show the encounter selector encoded by the authored tens digit."),
+    ("ENCOUNTER_ZONE", "Encounter Zone", "Resolve each authored lane to its position-dependent Area 99 encounter zone."),
+    ("ENCOUNTER_TABLE_ID", "Encounter Table ID", "Resolve each authored lane to its encounter table ID."),
+    ("ZONE_TABLE", "Zone + Table", "Show resolved zone hue with table-ID saturation and brightness."),
+    ("FORCE_RESOLVED_ENCOUNTER", "Sky-Rift Force + Resolved Encounter", "Checker the force and resolved encounter layers without merging their meanings."),
+    ("UNATTRIBUTED", "Unattributed Values", "Show payload and decoded classes that are not currently attributed."),
+    ("RAW0", "Raw Word 0", "Color by raw triangle metadata word 0."),
+    ("RAW1", "Raw Word 1", "Color by raw triangle metadata word 1."),
+    ("RAW2", "Raw Word 2", "Color by raw triangle metadata word 2."),
+    ("WINDING", "Stream Winding", "Color by the stream winding high bit in word 2."),
+)
+
+TRIANGLE_METADATA_FORCE_CLASSES = {
+    0: ("Progression-gated rift force", 52.0, 0.68, 0.96),
+    1: ("Progression-gated rift force", 44.0, 0.92, 0.80),
+    2: ("Hard-boundary rift force", 124.0, 0.68, 0.90),
+    3: ("Hard-boundary rift force", 136.0, 0.92, 0.72),
+    4: ("Y-gated rift force", 18.0, 0.72, 0.95),
+    5: ("Y-gated rift force", 8.0, 0.94, 0.78),
+    6: ("Y-gated rift force", 268.0, 0.70, 0.93),
+    7: ("Y-gated rift force", 282.0, 0.94, 0.75),
+    30: ("Rift-force dispatch class 30", 350.0, 0.90, 0.85),
+}
+TRIANGLE_METADATA_ENCOUNTER_HUES = (0.0, 210.0, 185.0, 160.0, 110.0, 60.0, 32.0, 0.0, 320.0, 275.0)
+POSITION_AWARE_ENCOUNTER_MODES = {
+    "ENCOUNTER_ZONE",
+    "ENCOUNTER_TABLE_ID",
+    "ZONE_TABLE",
+    "FORCE_RESOLVED_ENCOUNTER",
+}
+AREA99_LOOKUP_PARAMETER_COUNT = 504
+AREA99_LOOKUP_PAGE_SIZE = 0x3F0
+AREA99_LOOKUP_WIDTH = 56
+AREA99_LOOKUP_HEIGHT = 18
+AREA99_FXN_NAME = "fldEfcontrol"
+AREA99_TBL_ID = 5300
+RESOLVED_ENCOUNTER_NEUTRAL_COLOR = (0.25, 0.25, 0.25, 1.0)
+RESOLVED_ENCOUNTER_INVALID_COLOR = (1.0, 0.0, 1.0, 1.0)
+RESOLVED_ZONE_HUE_START = 55.0
+RESOLVED_ZONE_HUE_STEP = 360.0 / 7.0
+RESOLVED_ZONE_LIGHTNESS_BRIGHT = 0.82
+RESOLVED_ZONE_LIGHTNESS_DARK = 0.50
+RESOLVED_ZONE_CHROMA = 0.17
+RESOLVED_TABLE_HUE_STEP = 360.0 / 10.0
+RESOLVED_TABLE_HUE_OFFSET_START = -18.0
+RESOLVED_TABLE_HUE_OFFSET_STEP = 4.0
+RESOLVED_TABLE_CHROMA = (0.14, 0.20)
+RESOLVED_TABLE_LIGHTNESS_OFFSETS = (-0.04, 0.0, 0.04)
+
+
+@dataclass(frozen=True)
+class TriangleMetadataDecoded:
+    raw_u16: tuple[int, int, int]
+    selector_low15: int
+    stream_winding_high_bit: int
+    decoded_u16: int
+    decoded_high_bit: int
+    behavior_class: int
+    encounter_selector: int
+    payload_group: int
+    digits: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class TriangleMetadataFamily:
+    family_id: str
+    label: str
+    hue_start: float
+    hue_end: float
+    saturation_range: tuple[float, float] | None = None
+    value_range: tuple[float, float] | None = None
+    match: dict[str, int | bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EncounterLookupContext:
+    kind: str
+    function_parameters: tuple[int, ...] = ()
+    source_entry_id: int = 0
+    table_index: int = 0
+
+
+@dataclass(frozen=True)
+class ResolvedEncounter:
+    valid: bool
+    lane: int
+    page: int
+    x_bucket: int
+    z_bucket: int
+    altitude_band: int
+    lookup_index: int
+    packed_byte: int
+    zone: int
+    table_id: int
+
+
+def _unpack_function_parameter_bytes(function_parameters: list[int] | tuple[int, ...]) -> list[int]:
+    unpacked: list[int] = []
+    for index, raw_value in enumerate(function_parameters):
+        value = int(raw_value)
+        if value < 0 or value > 0xFFFFFFFF:
+            raise ValueError(f"functionParameters[{index}]={value} is outside the u32 range")
+        unpacked.extend((
+            value & 0xFF,
+            (value >> 8) & 0xFF,
+            (value >> 16) & 0xFF,
+            (value >> 24) & 0xFF,
+        ))
+    return unpacked
+
+
+def _trunc_toward_zero_division(numerator: float, denominator: float) -> int:
+    if denominator == 0.0:
+        raise ZeroDivisionError("encounter bucket denominator cannot be zero")
+    return math.trunc(numerator / denominator)
+
+
+def _area99_altitude_band(source_y: float) -> int:
+    if source_y < -150.0:
+        return 0
+    if source_y <= 150.0:
+        return 1
+    return 2
+
+
+def _area99_encounter_lane(raw_word_2: int) -> int:
+    return ((int(raw_word_2) & 0x7FFF) // 10) % 10
+
+
+def _resolve_area99_encounter(
+    packed_pages: list[int] | tuple[int, ...],
+    *,
+    page: int,
+    source_x: float,
+    source_y: float,
+    source_z: float,
+    lane: int,
+    forced_altitude_band: int | None = None,
+) -> ResolvedEncounter:
+    x_bucket = _trunc_toward_zero_division(8400.0 - source_x, 2400.0)
+    z_bucket = _trunc_toward_zero_division(7200.0 - source_z, 2400.0)
+    altitude_band = (
+        _area99_altitude_band(source_y)
+        if forced_altitude_band is None
+        else int(forced_altitude_band)
+    )
+    valid = (
+        page in (0, 1)
+        and 1 <= lane <= 8
+        and 0 <= x_bucket < 7
+        and 0 <= z_bucket < 6
+        and 0 <= altitude_band < 3
+    )
+    lookup_index = -1
+    packed_byte = 0
+    if valid:
+        lookup_index = (
+            page * AREA99_LOOKUP_PAGE_SIZE
+            + altitude_band * 0x150
+            + z_bucket * 0x38
+            + x_bucket * 8
+            + lane
+            - 1
+        )
+        if lookup_index < 0 or lookup_index >= len(packed_pages):
+            valid = False
+        else:
+            packed_byte = int(packed_pages[lookup_index])
+            valid = packed_byte != 0
+    return ResolvedEncounter(
+        valid=valid,
+        lane=lane,
+        page=page,
+        x_bucket=x_bucket,
+        z_bucket=z_bucket,
+        altitude_band=altitude_band,
+        lookup_index=lookup_index,
+        packed_byte=packed_byte,
+        zone=(packed_byte // 10) if valid else 0,
+        table_id=(packed_byte % 10) if valid else 0,
+    )
+
+
+def _dungeon_encounter_table_id(raw_word_2: int) -> int | None:
+    lane = _area99_encounter_lane(raw_word_2)
+    if lane == 0:
+        return 0
+    return lane if lane <= 7 else None
+
+
+def _oklab_to_linear_rgb(
+    lightness: float,
+    a_component: float,
+    b_component: float,
+) -> tuple[float, float, float]:
+    l_root = lightness + 0.3963377774 * a_component + 0.2158037573 * b_component
+    m_root = lightness - 0.1055613458 * a_component - 0.0638541728 * b_component
+    s_root = lightness - 0.0894841775 * a_component - 1.2914855480 * b_component
+    l_value = l_root * l_root * l_root
+    m_value = m_root * m_root * m_root
+    s_value = s_root * s_root * s_root
+    return (
+        4.0767416621 * l_value - 3.3077115913 * m_value + 0.2309699292 * s_value,
+        -1.2684380046 * l_value + 2.6097574011 * m_value - 0.3413193965 * s_value,
+        -0.0041960863 * l_value - 0.7034186147 * m_value + 1.7076147010 * s_value,
+    )
+
+
+def _oklch_candidate_linear_rgb(
+    lightness: float,
+    chroma: float,
+    hue_degrees: float,
+) -> tuple[float, float, float]:
+    hue_radians = math.radians(hue_degrees % 360.0)
+    return _oklab_to_linear_rgb(
+        lightness,
+        chroma * math.cos(hue_radians),
+        chroma * math.sin(hue_radians),
+    )
+
+
+def _linear_rgb_in_gamut(color: tuple[float, float, float]) -> bool:
+    return all(0.0 <= component <= 1.0 for component in color)
+
+
+def _oklch_to_linear_rgb(
+    lightness: float,
+    chroma: float,
+    hue_degrees: float,
+) -> tuple[float, float, float]:
+    bounded_lightness = min(max(float(lightness), 0.0), 1.0)
+    requested_chroma = max(float(chroma), 0.0)
+    color = _oklch_candidate_linear_rgb(
+        bounded_lightness,
+        requested_chroma,
+        hue_degrees,
+    )
+    if not _linear_rgb_in_gamut(color):
+        low = 0.0
+        high = requested_chroma
+        color = _oklch_candidate_linear_rgb(bounded_lightness, low, hue_degrees)
+        for _iteration in range(16):
+            candidate_chroma = (low + high) * 0.5
+            candidate = _oklch_candidate_linear_rgb(
+                bounded_lightness,
+                candidate_chroma,
+                hue_degrees,
+            )
+            if _linear_rgb_in_gamut(candidate):
+                low = candidate_chroma
+                color = candidate
+            else:
+                high = candidate_chroma
+    return tuple(min(max(component, 0.0), 1.0) for component in color)
+
+
+def _resolved_zone_oklch(zone: int) -> tuple[float, float, float]:
+    if zone < 1 or zone > 13:
+        raise ValueError(f"resolved encounter zone {zone} is outside 1..13")
+    pair_index = (zone - 1) // 2
+    lightness = (
+        RESOLVED_ZONE_LIGHTNESS_BRIGHT
+        if zone % 2 == 1
+        else RESOLVED_ZONE_LIGHTNESS_DARK
+    )
+    hue = (RESOLVED_ZONE_HUE_START + pair_index * RESOLVED_ZONE_HUE_STEP) % 360.0
+    return lightness, RESOLVED_ZONE_CHROMA, hue
+
+
+def _resolved_table_oklch(table_id: int) -> tuple[float, float, float]:
+    if table_id < 0 or table_id > 9:
+        raise ValueError(f"resolved encounter table ID {table_id} is outside 0..9")
+    lightness = (
+        RESOLVED_ZONE_LIGHTNESS_BRIGHT
+        if table_id % 2 == 1
+        else RESOLVED_ZONE_LIGHTNESS_DARK
+    )
+    hue = (RESOLVED_ZONE_HUE_START + table_id * RESOLVED_TABLE_HUE_STEP) % 360.0
+    return lightness, RESOLVED_ZONE_CHROMA, hue
+
+
+def _resolved_zone_table_oklch(zone: int, table_id: int) -> tuple[float, float, float]:
+    base_lightness, _base_chroma, base_hue = _resolved_zone_oklch(zone)
+    lightness = base_lightness + RESOLVED_TABLE_LIGHTNESS_OFFSETS[
+        table_id % len(RESOLVED_TABLE_LIGHTNESS_OFFSETS)
+    ]
+    chroma = RESOLVED_TABLE_CHROMA[table_id % len(RESOLVED_TABLE_CHROMA)]
+    hue = (
+        base_hue
+        + RESOLVED_TABLE_HUE_OFFSET_START
+        + table_id * RESOLVED_TABLE_HUE_OFFSET_STEP
+    ) % 360.0
+    return lightness, chroma, hue
+
+
+def _oklch_rgba(lightness: float, chroma: float, hue: float) -> tuple[float, float, float, float]:
+    red, green, blue = _oklch_to_linear_rgb(lightness, chroma, hue)
+    return red, green, blue, 1.0
+
+
+def _resolved_zone_color(zone: int) -> tuple[float, float, float, float]:
+    if zone == 0:
+        return RESOLVED_ENCOUNTER_NEUTRAL_COLOR
+    if zone < 0 or zone > 13:
+        return RESOLVED_ENCOUNTER_INVALID_COLOR
+    return _oklch_rgba(*_resolved_zone_oklch(zone))
+
+
+def _resolved_table_color(table_id: int) -> tuple[float, float, float, float]:
+    if table_id == 0:
+        return RESOLVED_ENCOUNTER_NEUTRAL_COLOR
+    if table_id < 0 or table_id > 9:
+        return RESOLVED_ENCOUNTER_INVALID_COLOR
+    return _oklch_rgba(*_resolved_table_oklch(table_id))
+
+
+def _resolved_zone_table_color(zone: int, table_id: int) -> tuple[float, float, float, float]:
+    if zone == 0 or table_id == 0:
+        return RESOLVED_ENCOUNTER_NEUTRAL_COLOR
+    if zone < 0 or zone > 13 or table_id < 0 or table_id > 9:
+        return RESOLVED_ENCOUNTER_INVALID_COLOR
+    return _oklch_rgba(*_resolved_zone_table_oklch(zone, table_id))
+
+
+def _resolved_encounter_color(
+    mode: str,
+    zone: int,
+    table_id: int,
+) -> tuple[float, float, float, float]:
+    if zone == 0 or table_id == 0:
+        return RESOLVED_ENCOUNTER_NEUTRAL_COLOR
+    if mode == "ENCOUNTER_ZONE":
+        return _resolved_zone_color(zone)
+    if mode == "ENCOUNTER_TABLE_ID":
+        return _resolved_table_color(table_id)
+    return _resolved_zone_table_color(zone, table_id)
+
+
+def _area99_lookup_image_pixels(
+    function_parameters: list[int] | tuple[int, ...],
+    *,
+    page: int,
+    mode: str,
+) -> list[float]:
+    if len(function_parameters) != AREA99_LOOKUP_PARAMETER_COUNT:
+        raise ValueError(
+            f"Area 99 encounter lookup requires {AREA99_LOOKUP_PARAMETER_COUNT} u32 parameters"
+        )
+    packed_pages = _unpack_function_parameter_bytes(function_parameters)
+    pixels: list[float] = []
+    lookup_mode = "ZONE_TABLE" if mode == "FORCE_RESOLVED_ENCOUNTER" else mode
+    for altitude_band in range(3):
+        for z_bucket in range(6):
+            for x_bucket in range(7):
+                for lane in range(1, 9):
+                    lookup_index = (
+                        page * AREA99_LOOKUP_PAGE_SIZE
+                        + altitude_band * 0x150
+                        + z_bucket * 0x38
+                        + x_bucket * 8
+                        + lane
+                        - 1
+                    )
+                    packed_byte = packed_pages[lookup_index]
+                    if packed_byte == 0:
+                        color = RESOLVED_ENCOUNTER_NEUTRAL_COLOR
+                    else:
+                        color = _resolved_encounter_color(
+                            lookup_mode,
+                            packed_byte // 10,
+                            packed_byte % 10,
+                        )
+                    pixels.extend(color)
+    return pixels
+
+
+def _read_u32_function_parameters(entry: dict[str, Any]) -> tuple[int, ...]:
+    raw_parameters = entry.get("functionParameters", [])
+    if not isinstance(raw_parameters, list):
+        raise ValueError("functionParameters must be an array")
+    parameters: list[int] = []
+    for index, raw_value in enumerate(raw_parameters):
+        value = int(raw_value)
+        if value < 0 or value > 0xFFFFFFFF:
+            raise ValueError(f"functionParameters[{index}]={value} is outside the u32 range")
+        parameters.append(value)
+    return tuple(parameters)
+
+
+def _find_area99_lookup_context(
+    index_entries: list[dict[str, Any]],
+    stats: ImportStats | None = None,
+) -> EncounterLookupContext | None:
+    candidates: list[EncounterLookupContext] = []
+    for entry_index, entry in enumerate(index_entries):
+        if str(entry.get("fxnName", "")) != AREA99_FXN_NAME:
+            continue
+        if int(entry.get("tblId", 0)) != AREA99_TBL_ID:
+            continue
+        try:
+            parameters = _read_u32_function_parameters(entry)
+        except (TypeError, ValueError) as exc:
+            if stats is not None:
+                stats.add_warning(f"indexEntries[{entry_index}] Area 99 parameters are invalid: {exc}")
+            continue
+        if len(parameters) != AREA99_LOOKUP_PARAMETER_COUNT:
+            if stats is not None:
+                stats.add_warning(
+                    f"indexEntries[{entry_index}] {AREA99_FXN_NAME} TBLID {AREA99_TBL_ID} has "
+                    f"{len(parameters)} parameters; expected {AREA99_LOOKUP_PARAMETER_COUNT}."
+                )
+            continue
+        candidates.append(EncounterLookupContext(
+            kind="AREA99",
+            function_parameters=parameters,
+            source_entry_id=int(entry.get("sourceEntryId", 0)),
+            table_index=int(entry.get("tableIndex", entry_index)),
+        ))
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1 and stats is not None:
+        stats.add_warning(
+            f"Found {len(candidates)} valid {AREA99_FXN_NAME} TBLID {AREA99_TBL_ID} entries; "
+            "position-aware encounter resolution requires exactly one."
+        )
+    return None
+
+
+def _function_parameter_text_payload(index_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    records: list[dict[str, Any]] = []
+    for entry_index, entry in enumerate(index_entries):
+        records.append({
+            "sourceEntryId": int(entry.get("sourceEntryId", 0)),
+            "tableIndex": int(entry.get("tableIndex", entry_index)),
+            "tblId": int(entry.get("tblId", 0)),
+            "fxnName": str(entry.get("fxnName", "")),
+            "functionParameters": list(_read_u32_function_parameters(entry)),
+        })
+    return {"schemaVersion": 1, "indexEntries": records}
+
+
+def _decode_triangle_metadata(raw_u16: tuple[int, int, int]) -> TriangleMetadataDecoded:
+    selector = raw_u16[2] & 0x7FFF
+    ones = selector % 10
+    tens = (selector // 10) % 10
+    hundreds = (selector // 100) % 10
+    thousands = (selector // 1000) % 10
+
+    decoded = TRIANGLE_METADATA_ONES_TABLE[ones]
+    if selector // 10 != 0:
+        decoded |= TRIANGLE_METADATA_TENS_TABLE[tens]
+    if selector // 100 != 0:
+        decoded |= TRIANGLE_METADATA_HUNDREDS_TABLE[hundreds]
+    if selector // 1000 != 0:
+        decoded = (decoded + TRIANGLE_METADATA_THOUSANDS_TABLE[thousands]) & 0xFFFF
+
+    return TriangleMetadataDecoded(
+        raw_u16=raw_u16,
+        selector_low15=selector,
+        stream_winding_high_bit=(raw_u16[2] >> 15) & 1,
+        decoded_u16=decoded,
+        decoded_high_bit=(decoded >> 15) & 1,
+        behavior_class=(decoded >> 8) & 0x7F,
+        encounter_selector=decoded & 0x0F,
+        payload_group=(decoded >> 4) & 0x0F,
+        digits=(ones, tens, hundreds, thousands),
+    )
+
+
+def _read_profile_number(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be numeric.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be numeric.") from exc
+
+
+def _read_profile_range(value: Any, *, field_name: str) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError(f"{field_name} must contain two numeric values.")
+    low = _read_profile_number(value[0], field_name=f"{field_name}[0]")
+    high = _read_profile_number(value[1], field_name=f"{field_name}[1]")
+    if low < 0.0 or high > 1.0 or low > high:
+        raise ValueError(f"{field_name} must be ordered within 0..1.")
+    return low, high
+
+
+def _parse_triangle_metadata_profile(payload: Any) -> tuple[str, list[TriangleMetadataFamily]]:
+    if not isinstance(payload, dict):
+        raise ValueError("Triangle metadata profile root must be an object.")
+    if payload.get("schemaVersion") != 1:
+        raise ValueError("Triangle metadata profile schemaVersion must be 1.")
+
+    profile_name = str(payload.get("name", "Custom Profile")).strip() or "Custom Profile"
+    raw_families = payload.get("families")
+    if not isinstance(raw_families, list):
+        raise ValueError("Triangle metadata profile families must be an array.")
+
+    allowed_match_fields = {
+        "selectorMin",
+        "selectorMax",
+        "thousandsDigit",
+        "decodedHighBit",
+        "behaviorClassMin",
+        "behaviorClassMax",
+        "encounterSelectorMin",
+        "encounterSelectorMax",
+        "payloadGroupMin",
+        "payloadGroupMax",
+    }
+    seen_ids: set[str] = set()
+    families: list[TriangleMetadataFamily] = []
+    for index, raw_family in enumerate(raw_families):
+        prefix = f"families[{index}]"
+        if not isinstance(raw_family, dict):
+            raise ValueError(f"{prefix} must be an object.")
+        family_id = str(raw_family.get("id", "")).strip()
+        if not family_id:
+            raise ValueError(f"{prefix}.id is required.")
+        if family_id in seen_ids:
+            raise ValueError(f"Duplicate triangle metadata family id: {family_id}")
+        seen_ids.add(family_id)
+
+        label = str(raw_family.get("label", family_id)).strip() or family_id
+        hue_start = _read_profile_number(raw_family.get("hueStart"), field_name=f"{prefix}.hueStart")
+        hue_end = _read_profile_number(raw_family.get("hueEnd"), field_name=f"{prefix}.hueEnd")
+        if hue_start < 0.0 or hue_end > 360.0 or hue_start > hue_end:
+            raise ValueError(f"{prefix} hue range must be ordered within 0..360.")
+
+        raw_match = raw_family.get("match")
+        if not isinstance(raw_match, dict) or not raw_match:
+            raise ValueError(f"{prefix}.match must contain at least one criterion.")
+        unknown_fields = set(raw_match) - allowed_match_fields
+        if unknown_fields:
+            raise ValueError(f"{prefix}.match contains unsupported fields: {sorted(unknown_fields)}")
+
+        match: dict[str, int | bool] = {}
+        for key, raw_value in raw_match.items():
+            if key == "decodedHighBit":
+                if not isinstance(raw_value, bool):
+                    raise ValueError(f"{prefix}.match.{key} must be boolean.")
+                match[key] = raw_value
+            else:
+                try:
+                    match[key] = int(raw_value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{prefix}.match.{key} must be an integer.") from exc
+
+        range_pairs = (
+            ("selectorMin", "selectorMax", 0, 0x7FFF),
+            ("behaviorClassMin", "behaviorClassMax", 0, 0x7F),
+            ("encounterSelectorMin", "encounterSelectorMax", 0, 0x0F),
+            ("payloadGroupMin", "payloadGroupMax", 0, 0x0F),
+        )
+        for low_key, high_key, minimum, maximum in range_pairs:
+            low = int(match.get(low_key, minimum))
+            high = int(match.get(high_key, maximum))
+            if low < minimum or high > maximum or low > high:
+                raise ValueError(f"{prefix}.match {low_key}/{high_key} is invalid.")
+        if "thousandsDigit" in match and not 0 <= int(match["thousandsDigit"]) <= 9:
+            raise ValueError(f"{prefix}.match.thousandsDigit must be within 0..9.")
+
+        families.append(TriangleMetadataFamily(
+            family_id=family_id,
+            label=label,
+            hue_start=hue_start,
+            hue_end=hue_end,
+            saturation_range=_read_profile_range(
+                raw_family.get("saturationRange"),
+                field_name=f"{prefix}.saturationRange",
+            ),
+            value_range=_read_profile_range(
+                raw_family.get("valueRange"),
+                field_name=f"{prefix}.valueRange",
+            ),
+            match=match,
+        ))
+    return profile_name, families
+
+
+def _triangle_metadata_family_matches(
+    family: TriangleMetadataFamily,
+    decoded: TriangleMetadataDecoded,
+) -> bool:
+    values = {
+        "selectorMin": decoded.selector_low15,
+        "selectorMax": decoded.selector_low15,
+        "thousandsDigit": decoded.digits[3],
+        "decodedHighBit": bool(decoded.decoded_high_bit),
+        "behaviorClassMin": decoded.behavior_class,
+        "behaviorClassMax": decoded.behavior_class,
+        "encounterSelectorMin": decoded.encounter_selector,
+        "encounterSelectorMax": decoded.encounter_selector,
+        "payloadGroupMin": decoded.payload_group,
+        "payloadGroupMax": decoded.payload_group,
+    }
+    for key, expected in family.match.items():
+        actual = values[key]
+        if key.endswith("Min") and int(actual) < int(expected):
+            return False
+        if key.endswith("Max") and int(actual) > int(expected):
+            return False
+        if not key.endswith("Min") and not key.endswith("Max") and actual != expected:
+            return False
+    return True
+
+
+def _resolve_triangle_metadata_family(
+    decoded: TriangleMetadataDecoded,
+    families: list[TriangleMetadataFamily],
+) -> TriangleMetadataFamily:
+    for family in families:
+        if _triangle_metadata_family_matches(family, decoded):
+            return family
+    digit = decoded.digits[3]
+    center = TRIANGLE_METADATA_HUE_CENTERS[digit]
+    return TriangleMetadataFamily(
+        family_id=f"authored_{digit}",
+        label=f"Authored family {digit}",
+        hue_start=center - 12.0,
+        hue_end=center + 12.0,
+    )
+
+
+def _triangle_metadata_display_family(
+    family_id: str,
+    label: str,
+    hue: float,
+) -> TriangleMetadataFamily:
+    return TriangleMetadataFamily(
+        family_id=family_id,
+        label=label,
+        hue_start=hue,
+        hue_end=hue,
+    )
+
+
+def _triangle_metadata_force_info(
+    decoded: TriangleMetadataDecoded,
+) -> tuple[str, float, float, float] | None:
+    if decoded.decoded_high_bit == 0:
+        return None
+    return TRIANGLE_METADATA_FORCE_CLASSES.get(decoded.behavior_class)
+
+
+def _triangle_metadata_force_color(
+    decoded: TriangleMetadataDecoded,
+) -> tuple[tuple[float, float, float, float], TriangleMetadataFamily] | None:
+    info = _triangle_metadata_force_info(decoded)
+    if info is None:
+        return None
+    label, hue, saturation, value = info
+    red, green, blue = colorsys.hsv_to_rgb(hue / 360.0, saturation, value)
+    return (
+        (red, green, blue, 1.0),
+        _triangle_metadata_display_family(
+            f"force_class_{decoded.behavior_class}",
+            label,
+            hue,
+        ),
+    )
+
+
+def _triangle_metadata_encounter_color(
+    selector: int,
+) -> tuple[tuple[float, float, float, float], TriangleMetadataFamily]:
+    if selector <= 0:
+        return (
+            (0.35, 0.35, 0.35, 1.0),
+            _triangle_metadata_display_family("encounter_0", "No encounter selector", 0.0),
+        )
+    hue = TRIANGLE_METADATA_ENCOUNTER_HUES[selector % len(TRIANGLE_METADATA_ENCOUNTER_HUES)]
+    red, green, blue = colorsys.hsv_to_rgb(hue / 360.0, 0.86, 0.94)
+    return (
+        (red, green, blue, 1.0),
+        _triangle_metadata_display_family(
+            f"encounter_{selector}",
+            f"Encounter selector {selector}",
+            hue,
+        ),
+    )
+
+
+def _triangle_metadata_unattributed_identity(
+    decoded: TriangleMetadataDecoded,
+) -> tuple[int, int, int]:
+    force_is_attributed = _triangle_metadata_force_info(decoded) is not None
+    unclassified_high_bit = 0
+    unclassified_class = 0
+    if not force_is_attributed and (decoded.decoded_high_bit != 0 or decoded.behavior_class != 0):
+        unclassified_high_bit = decoded.decoded_high_bit
+        unclassified_class = decoded.behavior_class + 1
+    return decoded.payload_group, unclassified_high_bit, unclassified_class
+
+
+def _triangle_metadata_unattributed_color(
+    decoded: TriangleMetadataDecoded,
+) -> tuple[tuple[float, float, float, float], TriangleMetadataFamily]:
+    payload, high_bit, encoded_class = _triangle_metadata_unattributed_identity(decoded)
+    if payload == 0 and encoded_class == 0:
+        return (
+            (0.35, 0.35, 0.35, 1.0),
+            _triangle_metadata_display_family("unattributed_none", "No unattributed word-2 value", 0.0),
+        )
+    key = payload | (high_bit << 4) | (encoded_class << 5)
+    color = _metadata_categorical_color(key, zero_is_gray=False)
+    description_parts: list[str] = []
+    if payload != 0:
+        description_parts.append(f"payload group {payload}")
+    if encoded_class != 0:
+        bit_label = "set" if high_bit else "clear"
+        description_parts.append(
+            f"unclassified decoded class {encoded_class - 1}, high bit {bit_label}"
+        )
+    return (
+        color,
+        _triangle_metadata_display_family(
+            f"unattributed_{key}",
+            "; ".join(description_parts),
+            colorsys.rgb_to_hsv(color[0], color[1], color[2])[0] * 360.0,
+        ),
+    )
+
+
+def _metadata_categorical_color(value: int, *, zero_is_gray: bool = True) -> tuple[float, float, float, float]:
+    if value < 0:
+        return 1.0, 0.0, 1.0, 1.0
+    if zero_is_gray and value == 0:
+        return 0.35, 0.35, 0.35, 1.0
+    mixed = (value * 0x9E3779B1) & 0xFFFFFFFF
+    hue = float(mixed % 360) / 360.0
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.78, 0.92)
+    return red, green, blue, 1.0
+
+
+def _triangle_metadata_color(
+    decoded: TriangleMetadataDecoded,
+    mode: str,
+    families: list[TriangleMetadataFamily],
+) -> tuple[tuple[float, float, float, float], TriangleMetadataFamily]:
+    authored_family = _resolve_triangle_metadata_family(decoded, families)
+    force_color = _triangle_metadata_force_color(decoded)
+    if mode == "SKY_RIFT_FORCE":
+        if force_color is not None:
+            return force_color
+        return (
+            (0.35, 0.35, 0.35, 1.0),
+            _triangle_metadata_display_family("force_none", "No attributed sky-rift force", 0.0),
+        )
+    if mode in {"ENCOUNTER_SELECTOR", "ENCOUNTER"}:
+        return _triangle_metadata_encounter_color(decoded.encounter_selector)
+    if mode == "ENCOUNTER_ZONE":
+        return (
+            (0.35, 0.35, 0.35, 1.0),
+            _triangle_metadata_display_family(
+                "dungeon_zone_unavailable",
+                "Encounter zone unavailable",
+                0.0,
+            ),
+        )
+    if mode in {"ENCOUNTER_TABLE_ID", "ZONE_TABLE"}:
+        table_id = _dungeon_encounter_table_id(decoded.raw_u16[2])
+        if table_id is None:
+            return (
+                (1.0, 0.0, 1.0, 1.0),
+                _triangle_metadata_display_family(
+                    "dungeon_table_unsupported",
+                    "Unsupported dungeon encounter selector",
+                    300.0,
+                ),
+            )
+        color = _resolved_table_color(table_id)
+        return (
+            color,
+            _triangle_metadata_display_family(
+                f"dungeon_table_{table_id}",
+                "No encounter" if table_id == 0 else f"Encounter table ID {table_id}",
+                colorsys.rgb_to_hsv(color[0], color[1], color[2])[0] * 360.0,
+            ),
+        )
+    if mode == "FORCE_RESOLVED_ENCOUNTER":
+        if force_color is not None:
+            return force_color
+        return (
+            (0.35, 0.35, 0.35, 1.0),
+            _triangle_metadata_display_family("force_none", "No attributed sky-rift force", 0.0),
+        )
+    if mode in {"UNATTRIBUTED", "PAYLOAD"}:
+        return _triangle_metadata_unattributed_color(decoded)
+    if mode == "RAW0":
+        return _metadata_categorical_color(decoded.raw_u16[0]), authored_family
+    if mode == "RAW1":
+        return _metadata_categorical_color(decoded.raw_u16[1]), authored_family
+    if mode == "RAW2":
+        return _metadata_categorical_color(decoded.raw_u16[2]), authored_family
+    if mode == "WINDING":
+        return ((0.12, 0.48, 0.9, 1.0) if decoded.stream_winding_high_bit == 0 else (1.0, 0.28, 0.05, 1.0)), authored_family
+    return _triangle_metadata_unattributed_color(decoded)
 
 
 def _read_int(value: Any, *, field_name: str) -> int:
@@ -95,6 +933,501 @@ def _set_custom_int_property(
             f"and was stored as string property '{key}'."
         )
     )
+
+
+def _write_mesh_int_attribute(
+    mesh: Mesh,
+    name: str,
+    domain: str,
+    values: list[int],
+    stats: ImportStats,
+) -> None:
+    expected_count = len(mesh.polygons) if domain == "FACE" else len(mesh.vertices)
+    if len(values) != expected_count:
+        stats.add_warning(
+            f"Mesh attribute '{name}' has {len(values)} values for {expected_count} {domain.lower()} elements."
+        )
+    existing = mesh.attributes.get(name)
+    if existing is not None:
+        mesh.attributes.remove(existing)
+    attribute = mesh.attributes.new(name=name, type="INT", domain=domain)
+    for index in range(expected_count):
+        attribute.data[index].value = values[index] if index < len(values) else -1
+
+
+def _read_triangle_metadata_raw_u16(
+    metadata_data: Any,
+    stats: ImportStats,
+    *,
+    field_name: str,
+) -> tuple[int, int, int] | None:
+    if not isinstance(metadata_data, dict):
+        stats.add_warning(f"{field_name} is not an object.")
+        return None
+    raw_values = metadata_data.get("rawU16")
+    if not isinstance(raw_values, list) or len(raw_values) != 3:
+        stats.add_warning(f"{field_name}.rawU16 must contain exactly three values.")
+        return None
+
+    parsed: list[int] = []
+    for value_index, raw_value in enumerate(raw_values):
+        try:
+            value = _read_int(raw_value, field_name=f"{field_name}.rawU16[{value_index}]")
+        except ValueError as exc:
+            stats.add_warning(str(exc))
+            return None
+        if value < 0 or value > 0xFFFF:
+            stats.add_warning(f"{field_name}.rawU16[{value_index}]={value} is outside the u16 range.")
+            return None
+        parsed.append(value)
+    return parsed[0], parsed[1], parsed[2]
+
+
+def _triangle_metadata_profile_from_scene(scene: Any) -> tuple[str, list[TriangleMetadataFamily]]:
+    raw_profile = str(getattr(scene, "spice_triangle_metadata_profile_json", "")).strip()
+    if not raw_profile:
+        return "Built-In", []
+    return _parse_triangle_metadata_profile(json.loads(raw_profile))
+
+
+def _read_mesh_face_int_attribute(mesh: Mesh, name: str) -> list[int] | None:
+    attribute = mesh.attributes.get(name)
+    if attribute is None or attribute.domain != "FACE" or len(attribute.data) != len(mesh.polygons):
+        return None
+    return [int(item.value) for item in attribute.data]
+
+
+def _read_mesh_triangle_metadata(mesh: Mesh) -> list[tuple[int, int, int] | None] | None:
+    raw_columns = [_read_mesh_face_int_attribute(mesh, name) for name in TRIANGLE_METADATA_RAW_ATTRIBUTE_NAMES]
+    if any(column is None for column in raw_columns):
+        return None
+    columns = [column for column in raw_columns if column is not None]
+    result: list[tuple[int, int, int] | None] = []
+    for index in range(len(mesh.polygons)):
+        values = (columns[0][index], columns[1][index], columns[2][index])
+        if any(value < 0 or value > 0xFFFF for value in values):
+            result.append(None)
+        else:
+            result.append(values)
+    return result
+
+
+def _write_triangle_metadata_attributes(
+    mesh: Mesh,
+    raw_values: list[tuple[int, int, int] | None],
+    stats: ImportStats,
+    *,
+    mode: str,
+    families: list[TriangleMetadataFamily],
+) -> None:
+    raw_columns = [
+        [value[column] if value is not None else -1 for value in raw_values]
+        for column in range(3)
+    ]
+    for name, values in zip(TRIANGLE_METADATA_RAW_ATTRIBUTE_NAMES, raw_columns):
+        _write_mesh_int_attribute(mesh, name, "FACE", values, stats)
+
+    decoded_values: list[TriangleMetadataDecoded | None] = [
+        _decode_triangle_metadata(value) if value is not None else None
+        for value in raw_values
+    ]
+    derived_attributes = (
+        (TRIANGLE_METADATA_SELECTOR_ATTRIBUTE, [value.selector_low15 if value is not None else -1 for value in decoded_values]),
+        (TRIANGLE_METADATA_WINDING_ATTRIBUTE, [value.stream_winding_high_bit if value is not None else -1 for value in decoded_values]),
+        (TRIANGLE_METADATA_DECODED_ATTRIBUTE, [value.decoded_u16 if value is not None else -1 for value in decoded_values]),
+        (TRIANGLE_METADATA_DECODED_HIGH_BIT_ATTRIBUTE, [value.decoded_high_bit if value is not None else -1 for value in decoded_values]),
+        (TRIANGLE_METADATA_BEHAVIOR_CLASS_ATTRIBUTE, [value.behavior_class if value is not None else -1 for value in decoded_values]),
+        (TRIANGLE_METADATA_ENCOUNTER_SELECTOR_ATTRIBUTE, [value.encounter_selector if value is not None else -1 for value in decoded_values]),
+        (TRIANGLE_METADATA_PAYLOAD_GROUP_ATTRIBUTE, [value.payload_group if value is not None else -1 for value in decoded_values]),
+    )
+    for name, values in derived_attributes:
+        _write_mesh_int_attribute(mesh, name, "FACE", values, stats)
+    for digit_index, name in enumerate(TRIANGLE_METADATA_DIGIT_ATTRIBUTE_NAMES):
+        _write_mesh_int_attribute(
+            mesh,
+            name,
+            "FACE",
+            [value.digits[digit_index] if value is not None else -1 for value in decoded_values],
+            stats,
+        )
+
+    existing_color = mesh.color_attributes.get(TRIANGLE_METADATA_COLOR_ATTRIBUTE)
+    if existing_color is not None:
+        mesh.color_attributes.remove(existing_color)
+    color_layer = mesh.color_attributes.new(
+        name=TRIANGLE_METADATA_COLOR_ATTRIBUTE,
+        type="BYTE_COLOR",
+        domain="CORNER",
+    )
+    for polygon_index, polygon in enumerate(mesh.polygons):
+        decoded = decoded_values[polygon_index] if polygon_index < len(decoded_values) else None
+        color = (1.0, 0.0, 1.0, 1.0)
+        if decoded is not None:
+            color, _family = _triangle_metadata_color(decoded, mode, families)
+        for loop_index in polygon.loop_indices:
+            color_layer.data[loop_index].color = color
+    try:
+        mesh.color_attributes.active_color = color_layer
+    except (AttributeError, TypeError):
+        pass
+    try:
+        mesh.color_attributes.active = color_layer
+    except (AttributeError, TypeError):
+        pass
+    existing_resolved_color = mesh.color_attributes.get(
+        TRIANGLE_METADATA_RESOLVED_ENCOUNTER_COLOR_ATTRIBUTE
+    )
+    if existing_resolved_color is not None:
+        mesh.color_attributes.remove(existing_resolved_color)
+    resolved_layer = mesh.color_attributes.new(
+        name=TRIANGLE_METADATA_RESOLVED_ENCOUNTER_COLOR_ATTRIBUTE,
+        type="BYTE_COLOR",
+        domain="CORNER",
+    )
+    for polygon_index, polygon in enumerate(mesh.polygons):
+        decoded = decoded_values[polygon_index] if polygon_index < len(decoded_values) else None
+        resolved_color = (1.0, 0.0, 1.0, 1.0)
+        if decoded is not None:
+            table_id = _dungeon_encounter_table_id(decoded.raw_u16[2])
+            resolved_color = (
+                (1.0, 0.0, 1.0, 1.0)
+                if table_id is None
+                else _resolved_table_color(table_id)
+            )
+        for loop_index in polygon.loop_indices:
+            resolved_layer.data[loop_index].color = resolved_color
+    mesh["spice_triangle_metadata_face_count"] = len(raw_values)
+
+
+def _triangle_metadata_meshes_for_scope(scene: Any) -> list[Mesh]:
+    scope = str(getattr(scene, "spice_triangle_metadata_legend_scope", "ENTRY"))
+    if scope == "ENTRY":
+        active = getattr(getattr(bpy.context, "view_layer", None), "objects", None)
+        active_object = getattr(active, "active", None)
+        selected_entry = str(
+            getattr(scene, "spice_triangle_metadata_entry_selector", "ACTIVE")
+        )
+        table_index: int | None = None
+        if selected_entry != "ACTIVE":
+            try:
+                table_index = int(selected_entry)
+            except ValueError:
+                table_index = None
+        else:
+            cursor = active_object
+            while cursor is not None:
+                if "spice_ground_table_index" in cursor:
+                    table_index = int(cursor["spice_ground_table_index"])
+                    break
+                cursor = getattr(cursor, "parent", None)
+        if table_index is None:
+            if active_object is None or not isinstance(getattr(active_object, "data", None), Mesh):
+                return []
+            mesh = active_object.data
+            return [mesh] if _read_mesh_triangle_metadata(mesh) is not None else []
+
+        meshes: list[Mesh] = []
+        seen: set[int] = set()
+        for obj in scene.objects:
+            if int(obj.get("spice_ground_table_index", -1)) != table_index:
+                continue
+            mesh = getattr(obj, "data", None)
+            if not isinstance(mesh, Mesh) or _read_mesh_triangle_metadata(mesh) is None:
+                continue
+            identity = mesh.as_pointer()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            meshes.append(mesh)
+        return meshes
+
+    meshes: list[Mesh] = []
+    seen: set[int] = set()
+    for obj in scene.objects:
+        mesh = getattr(obj, "data", None)
+        if not isinstance(mesh, Mesh) or _read_mesh_triangle_metadata(mesh) is None:
+            continue
+        identity = mesh.as_pointer()
+        if identity in seen:
+            continue
+        seen.add(identity)
+        meshes.append(mesh)
+    return meshes
+
+
+def _refresh_triangle_metadata_legend(
+    scene: Any,
+    families: list[TriangleMetadataFamily],
+    mode: str,
+) -> None:
+    legend = scene.spice_triangle_metadata_legend
+    legend.clear()
+    advanced_legend = getattr(scene, "spice_triangle_metadata_advanced_legend", None)
+    if advanced_legend is not None:
+        advanced_legend.clear()
+    counts: dict[tuple[int, int, int], int] = {}
+    malformed_count = 0
+    scoped_meshes = _triangle_metadata_meshes_for_scope(scene)
+    for mesh in scoped_meshes:
+        metadata = _read_mesh_triangle_metadata(mesh)
+        if metadata is None:
+            continue
+        for raw_u16 in metadata:
+            if raw_u16 is None:
+                malformed_count += 1
+                continue
+            counts[raw_u16] = counts.get(raw_u16, 0) + 1
+
+    if malformed_count > 0:
+        item = legend.add()
+        item.name = "Malformed"
+        item.show_face_count = False
+        item.color = (1.0, 0.0, 1.0, 1.0)
+        item.details = "one or more raw words are missing or outside the u16 range"
+        if advanced_legend is not None:
+            advanced_item = advanced_legend.add()
+            advanced_item.name = "Malformed"
+            advanced_item.face_count = malformed_count
+            advanced_item.show_face_count = True
+            advanced_item.color = (1.0, 0.0, 1.0, 1.0)
+            advanced_item.details = "invalid raw triangle metadata"
+
+    decoded_rows = [(_decode_triangle_metadata(raw_u16), raw_u16) for raw_u16 in counts]
+
+    area99_context: EncounterLookupContext | None = None
+    for mesh in scoped_meshes:
+        for material in mesh.materials:
+            if str(material.get("spice_encounter_context_kind", "")) != "AREA99":
+                continue
+            area99_context = _area99_context_from_text(
+                str(material.get("spice_function_parameters_text", ""))
+            )
+            if area99_context is not None:
+                break
+        if area99_context is not None:
+            break
+
+    if mode == "SKY_RIFT_FORCE":
+        force_classes = {
+            decoded.behavior_class
+            for decoded, _raw_u16 in decoded_rows
+            if _triangle_metadata_force_info(decoded) is not None
+        }
+        if any(_triangle_metadata_force_info(decoded) is None for decoded, _raw_u16 in decoded_rows):
+            item = legend.add()
+            item.name = "No attributed sky-rift force"
+            item.details = "neutral"
+            item.show_face_count = False
+            item.color = (0.35, 0.35, 0.35, 1.0)
+        for behavior_class in sorted(force_classes):
+            label, hue, saturation, value = TRIANGLE_METADATA_FORCE_CLASSES[behavior_class]
+            red, green, blue = colorsys.hsv_to_rgb(hue / 360.0, saturation, value)
+            item = legend.add()
+            item.name = label
+            item.details = f"decoded force class {behavior_class}"
+            item.show_face_count = False
+            item.color = (red, green, blue, 1.0)
+    elif mode in {"ENCOUNTER_SELECTOR", "ENCOUNTER"}:
+        for value in sorted({decoded.encounter_selector for decoded, _raw_u16 in decoded_rows}):
+            color, family = _triangle_metadata_encounter_color(value)
+            item = legend.add()
+            item.name = family.label
+            item.details = "authored tens digit; context-dependent lookup selector"
+            item.show_face_count = False
+            item.color = color
+    elif mode in POSITION_AWARE_ENCOUNTER_MODES:
+        if mode == "FORCE_RESOLVED_ENCOUNTER":
+            force_classes = {
+                decoded.behavior_class
+                for decoded, _raw_u16 in decoded_rows
+                if _triangle_metadata_force_info(decoded) is not None
+            }
+            for behavior_class in sorted(force_classes):
+                label, hue, saturation, value = TRIANGLE_METADATA_FORCE_CLASSES[behavior_class]
+                red, green, blue = colorsys.hsv_to_rgb(hue / 360.0, saturation, value)
+                item = legend.add()
+                item.name = label
+                item.details = f"checker force layer; decoded class {behavior_class}"
+                item.show_face_count = False
+                item.color = (red, green, blue, 1.0)
+        if area99_context is not None:
+            page = 1 if str(getattr(scene, "spice_triangle_metadata_scenario", "PAGE0")) == "PAGE1" else 0
+            packed_pages = _unpack_function_parameter_bytes(area99_context.function_parameters)
+            page_slice = packed_pages[
+                page * AREA99_LOOKUP_PAGE_SIZE:(page + 1) * AREA99_LOOKUP_PAGE_SIZE
+            ]
+            page_values = sorted({
+                value
+                for value in page_slice
+                if value != 0 and value // 10 != 0 and value % 10 != 0
+            })
+            if any(value == 0 or value // 10 == 0 or value % 10 == 0 for value in page_slice):
+                item = legend.add()
+                item.name = "No resolved encounter"
+                item.details = "lookup byte, zone, or table ID is 0"
+                item.show_face_count = False
+                item.color = RESOLVED_ENCOUNTER_NEUTRAL_COLOR
+            legend_mode = "ZONE_TABLE" if mode == "FORCE_RESOLVED_ENCOUNTER" else mode
+            identities: set[tuple[int, int]] = set()
+            for packed_byte in page_values:
+                zone = packed_byte // 10
+                table_id = packed_byte % 10
+                identity = (
+                    zone if legend_mode != "ENCOUNTER_TABLE_ID" else 0,
+                    table_id if legend_mode != "ENCOUNTER_ZONE" else 0,
+                )
+                if identity in identities:
+                    continue
+                identities.add(identity)
+                item = legend.add()
+                if legend_mode == "ENCOUNTER_ZONE":
+                    item.name = f"Encounter zone {zone}"
+                elif legend_mode == "ENCOUNTER_TABLE_ID":
+                    item.name = f"Encounter table ID {table_id}"
+                else:
+                    item.name = f"Zone {zone}, table {table_id}"
+                item.details = "position-resolved Area 99 lookup"
+                item.show_face_count = False
+                item.color = _resolved_encounter_color(legend_mode, zone, table_id)
+        else:
+            table_ids = sorted(
+                {_dungeon_encounter_table_id(raw_u16[2]) for raw_u16 in counts},
+                key=lambda value: 99 if value is None else value,
+            )
+            for table_id in table_ids:
+                item = legend.add()
+                if table_id is None:
+                    item.name = "Unsupported dungeon selector"
+                    item.details = "authored tens digit above 7"
+                    item.color = (1.0, 0.0, 1.0, 1.0)
+                elif mode == "ENCOUNTER_ZONE":
+                    item.name = "Encounter zone unavailable"
+                    item.details = "dungeon metadata resolves only a table ID"
+                    item.color = (0.35, 0.35, 0.35, 1.0)
+                else:
+                    item.name = "No encounter" if table_id == 0 else f"Encounter table ID {table_id}"
+                    item.details = "direct dungeon authored tens digit"
+                    item.color = _resolved_table_color(table_id)
+                item.show_face_count = False
+    elif mode in {"UNATTRIBUTED", "PAYLOAD"}:
+        unattributed_rows: dict[tuple[int, int, int], TriangleMetadataDecoded] = {}
+        for decoded, _raw_u16 in decoded_rows:
+            unattributed_rows.setdefault(_triangle_metadata_unattributed_identity(decoded), decoded)
+        for identity, decoded in sorted(unattributed_rows.items()):
+            color, family = _triangle_metadata_unattributed_color(decoded)
+            item = legend.add()
+            item.name = family.label
+            item.details = (
+                "neutral" if identity == (0, 0, 0)
+                else f"unattributed key payload/high-bit/class={identity}"
+            )
+            item.show_face_count = False
+            item.color = color
+    elif mode == "WINDING":
+        for value, label in ((0, "Original stream order"), (1, "Reversed stream winding")):
+            item = legend.add()
+            item.name = label
+            item.details = f"word 2 high bit {value}"
+            item.show_face_count = False
+            item.color = (0.12, 0.48, 0.9, 1.0) if value == 0 else (1.0, 0.28, 0.05, 1.0)
+    elif mode in {"RAW0", "RAW1", "RAW2"}:
+        word_index = int(mode[-1])
+        for value in sorted({raw_u16[word_index] for _decoded, raw_u16 in decoded_rows}):
+            item = legend.add()
+            item.name = f"Raw word {word_index}"
+            item.details = f"{value} (0x{value:04X})"
+            item.show_face_count = False
+            item.color = _metadata_categorical_color(value)
+    if advanced_legend is not None:
+        for raw_u16, face_count in sorted(counts.items()):
+            decoded = _decode_triangle_metadata(raw_u16)
+            color, _family = _triangle_metadata_color(decoded, "RAW2", families)
+            item = advanced_legend.add()
+            item.name = f"Raw triplet {raw_u16}"
+            item.face_count = face_count
+            item.show_face_count = True
+            item.color = color
+            item.details = (
+                f"raw2={decoded.selector_low15} (0x{decoded.selector_low15:04X}) "
+                f"decoded=0x{decoded.decoded_u16:04X} class={decoded.behavior_class} "
+                f"encounter={decoded.encounter_selector} payload={decoded.payload_group} "
+                f"triplet=({raw_u16[0]},{raw_u16[1]},{raw_u16[2]})"
+            )
+
+
+def _refresh_triangle_metadata_visualization(scene: Any, stats: ImportStats | None = None) -> None:
+    local_stats = stats if stats is not None else ImportStats()
+    try:
+        profile_name, families = _triangle_metadata_profile_from_scene(scene)
+    except (ValueError, json.JSONDecodeError) as exc:
+        local_stats.add_warning(f"Triangle metadata profile is invalid: {exc}")
+        profile_name, families = "Built-In", []
+    mode = str(getattr(scene, "spice_triangle_metadata_display_mode", "SKY_RIFT_FORCE"))
+    resolved_mode = mode in POSITION_AWARE_ENCOUNTER_MODES
+    opacity = float(getattr(
+        scene,
+        "spice_triangle_metadata_resolved_opacity" if resolved_mode else "spice_triangle_metadata_opacity",
+        0.45 if resolved_mode else 0.25,
+    ))
+    scenario_page = 1 if str(getattr(scene, "spice_triangle_metadata_scenario", "PAGE0")) == "PAGE1" else 0
+    altitude_source = str(
+        getattr(scene, "spice_triangle_metadata_altitude_source", "SURFACE")
+    )
+
+    for mesh in bpy.data.meshes:
+        raw_values = _read_mesh_triangle_metadata(mesh)
+        if raw_values is None:
+            continue
+        _write_triangle_metadata_attributes(
+            mesh,
+            list(raw_values),
+            local_stats,
+            mode=mode,
+            families=families,
+        )
+
+    for material in bpy.data.materials:
+        if not bool(material.get("spice_triangle_metadata_material", False)):
+            continue
+        material.use_nodes = True
+        bsdf, _output = _reset_material_nodes(material)
+        context_kind = str(material.get("spice_encounter_context_kind", "DUNGEON"))
+        if mode in POSITION_AWARE_ENCOUNTER_MODES and context_kind == "AREA99":
+            text_name = str(material.get("spice_function_parameters_text", ""))
+            context = _area99_context_from_text(text_name)
+            if context is None:
+                local_stats.add_warning(
+                    f"Material {material.name} has no valid persisted Area 99 lookup; "
+                    "using face-attribute colors."
+                )
+                _configure_triangle_metadata_material(material, bsdf, opacity, unlit=True)
+            else:
+                image = _update_area99_lookup_image(
+                    str(material.get("spice_encounter_context_id", "Area99")),
+                    context,
+                    page=scenario_page,
+                    mode=mode,
+                )
+                _configure_area99_encounter_material(
+                    material,
+                    bsdf,
+                    opacity,
+                    image,
+                    altitude_source=altitude_source,
+                    combined_force=mode == "FORCE_RESOLVED_ENCOUNTER",
+                )
+        elif mode == "FORCE_RESOLVED_ENCOUNTER" and context_kind == "DUNGEON":
+            _configure_dungeon_force_encounter_material(material, bsdf, opacity)
+        else:
+            _configure_triangle_metadata_material(
+                material,
+                bsdf,
+                opacity,
+                unlit=resolved_mode,
+            )
+
+    scene.spice_triangle_metadata_profile_name = profile_name
+    _refresh_triangle_metadata_legend(scene, families, mode)
 
 
 def _ensure_collection(name: str, parent: Collection | None = None) -> Collection:
@@ -251,7 +1584,7 @@ def _resolve_material_texture(
     return None
 
 
-def _material_cache_name(material_data: dict[str, Any]) -> str:
+def _material_cache_name(material_data: dict[str, Any], *, triangle_metadata: bool = False) -> str:
     material_hash = int(material_data.get("materialHash", 0))
     texture_id = _read_optional_texture_id(material_data.get("textureId"))
     texture_name = str(material_data.get("textureName", "")).strip()
@@ -260,10 +1593,13 @@ def _material_cache_name(material_data: dict[str, Any]) -> str:
             ch if ch.isalnum() or ch in ("_", "-") else "_"
             for ch in texture_name
         )
-        return f"SoaMat_{material_hash:016x}_{safe_texture_name}"
+        name = f"SoaMat_{material_hash:016x}_{safe_texture_name}"
+        return f"{name}_TriangleMetadata" if triangle_metadata else name
     if texture_id is not None:
-        return f"SoaMat_{material_hash:016x}_tex_{texture_id}"
-    return f"SoaMat_{material_hash:016x}"
+        name = f"SoaMat_{material_hash:016x}_tex_{texture_id}"
+        return f"{name}_TriangleMetadata" if triangle_metadata else name
+    name = f"SoaMat_{material_hash:016x}"
+    return f"{name}_TriangleMetadata" if triangle_metadata else name
 
 
 def _safe_name_part(value: str, fallback: str) -> str:
@@ -550,6 +1886,368 @@ def _reset_material_nodes(material: Material) -> tuple[Any, Any]:
     return bsdf, output
 
 
+def _configure_unlit_color_output(
+    material: Material,
+    bsdf: Any,
+    color_socket: Any,
+    opacity: float,
+) -> None:
+    node_tree = material.node_tree
+    assert node_tree is not None
+    nodes = node_tree.nodes
+    links = node_tree.links
+    output = nodes.get("Material Output")
+    if output is None:
+        output = nodes.new(type="ShaderNodeOutputMaterial")
+        output.name = "Material Output"
+    _clear_input_links(links, output.inputs["Surface"])
+    nodes.remove(bsdf)
+
+    transparent = nodes.new(type="ShaderNodeBsdfTransparent")
+    transparent.name = "SpiceResolvedTransparent"
+    emission = nodes.new(type="ShaderNodeEmission")
+    emission.name = "SpiceResolvedEmission"
+    emission.inputs["Strength"].default_value = 1.0
+    links.new(color_socket, emission.inputs["Color"])
+    mix = nodes.new(type="ShaderNodeMixShader")
+    mix.name = "SpiceResolvedOpacity"
+    mix.inputs[0].default_value = opacity
+    links.new(transparent.outputs[0], mix.inputs[1])
+    links.new(emission.outputs[0], mix.inputs[2])
+    links.new(mix.outputs[0], output.inputs["Surface"])
+
+    diffuse = list(material.diffuse_color)
+    if len(diffuse) >= 4:
+        diffuse[3] = opacity
+        material.diffuse_color = diffuse
+    _configure_material_alpha(material, True, prefer_blended=True)
+
+
+def _configure_triangle_metadata_material(
+    material: Material,
+    bsdf: Any,
+    opacity: float,
+    *,
+    unlit: bool = False,
+) -> None:
+    node_tree = material.node_tree
+    assert node_tree is not None
+    try:
+        color_node = node_tree.nodes.new(type="ShaderNodeVertexColor")
+        color_node.layer_name = TRIANGLE_METADATA_COLOR_ATTRIBUTE
+    except RuntimeError:
+        color_node = node_tree.nodes.new(type="ShaderNodeAttribute")
+        color_node.attribute_name = TRIANGLE_METADATA_COLOR_ATTRIBUTE
+    color_node.name = "SpiceTriangleMetadataColor"
+    color_node.label = "Triangle Metadata Color"
+    if unlit:
+        _configure_unlit_color_output(material, bsdf, color_node.outputs["Color"], opacity)
+    else:
+        _clear_input_links(node_tree.links, bsdf.inputs["Base Color"])
+        _ensure_link(node_tree.links, color_node.outputs["Color"], bsdf.inputs["Base Color"])
+        _clear_input_links(node_tree.links, bsdf.inputs["Alpha"])
+        _set_material_alpha_value(material, bsdf, opacity)
+        _configure_material_alpha(material, True, prefer_blended=True)
+    material["spice_triangle_metadata_material"] = True
+
+
+def _persist_function_parameters_text(
+    target_collection_name: str,
+    index_entries: list[dict[str, Any]],
+) -> str:
+    text_name = f"{target_collection_name}_MldFunctionParameters"
+    text_block = bpy.data.texts.get(text_name)
+    if text_block is None:
+        text_block = bpy.data.texts.new(text_name)
+    else:
+        text_block.clear()
+    text_block.write(json.dumps(_function_parameter_text_payload(index_entries), separators=(",", ":")))
+    return text_name
+
+
+def _area99_context_from_text(text_name: str) -> EncounterLookupContext | None:
+    text_block = bpy.data.texts.get(text_name)
+    if text_block is None:
+        return None
+    try:
+        payload = json.loads(text_block.as_string())
+    except (AttributeError, json.JSONDecodeError):
+        return None
+    entries = payload.get("indexEntries", []) if isinstance(payload, dict) else []
+    if not isinstance(entries, list):
+        return None
+    return _find_area99_lookup_context(entries)
+
+
+def _update_area99_lookup_image(
+    context_id: str,
+    context: EncounterLookupContext,
+    *,
+    page: int,
+    mode: str,
+) -> Image:
+    image_name = f"SpiceEncounterLookup_{context_id}"
+
+    def create_image() -> Image:
+        return bpy.data.images.new(
+            image_name,
+            width=AREA99_LOOKUP_WIDTH,
+            height=AREA99_LOOKUP_HEIGHT,
+            alpha=True,
+            float_buffer=False,
+        )
+
+    image = bpy.data.images.get(image_name)
+    if image is None:
+        image = create_image()
+    elif tuple(image.size) != (AREA99_LOOKUP_WIDTH, AREA99_LOOKUP_HEIGHT):
+        try:
+            image.scale(AREA99_LOOKUP_WIDTH, AREA99_LOOKUP_HEIGHT)
+        except RuntimeError:
+            bpy.data.images.remove(image)
+            image = create_image()
+    pixels = _area99_lookup_image_pixels(
+        context.function_parameters,
+        page=page,
+        mode=mode,
+    )
+
+    def upload_pixels(target: Image) -> None:
+        try:
+            target.colorspace_settings.name = "Non-Color"
+        except (AttributeError, TypeError):
+            pass
+        target.pixels.foreach_set(pixels)
+        target.update()
+
+    try:
+        upload_pixels(image)
+    except RuntimeError:
+        bpy.data.images.remove(image)
+        image = create_image()
+        upload_pixels(image)
+    try:
+        image.pack()
+    except RuntimeError:
+        pass
+    image["spice_encounter_page"] = page
+    image["spice_encounter_mode"] = mode
+    return image
+
+
+def _new_math_node(nodes: Any, name: str, operation: str) -> Any:
+    node = nodes.new(type="ShaderNodeMath")
+    node.name = name
+    node.operation = operation
+    return node
+
+
+def _configure_area99_encounter_material(
+    material: Material,
+    bsdf: Any,
+    opacity: float,
+    image: Image,
+    *,
+    altitude_source: str,
+    combined_force: bool,
+) -> None:
+    node_tree = material.node_tree
+    assert node_tree is not None
+    nodes = node_tree.nodes
+    links = node_tree.links
+
+    geometry = nodes.new(type="ShaderNodeNewGeometry")
+    geometry.name = "SpiceEncounterWorldPosition"
+    separate = nodes.new(type="ShaderNodeSeparateXYZ")
+    separate.name = "SpiceEncounterPositionAxes"
+    links.new(geometry.outputs["Position"], separate.inputs["Vector"])
+
+    x_numerator = _new_math_node(nodes, "SpiceEncounterXNumerator", "SUBTRACT")
+    x_numerator.inputs[0].default_value = 8400.0
+    links.new(separate.outputs["X"], x_numerator.inputs[1])
+    x_divide = _new_math_node(nodes, "SpiceEncounterXDivide", "DIVIDE")
+    x_divide.inputs[1].default_value = 2400.0
+    links.new(x_numerator.outputs[0], x_divide.inputs[0])
+    x_bucket = _new_math_node(nodes, "SpiceEncounterXBucket", "TRUNC")
+    links.new(x_divide.outputs[0], x_bucket.inputs[0])
+
+    z_numerator = _new_math_node(nodes, "SpiceEncounterZNumerator", "ADD")
+    z_numerator.inputs[0].default_value = 7200.0
+    links.new(separate.outputs["Y"], z_numerator.inputs[1])
+    z_divide = _new_math_node(nodes, "SpiceEncounterZDivide", "DIVIDE")
+    z_divide.inputs[1].default_value = 2400.0
+    links.new(z_numerator.outputs[0], z_divide.inputs[0])
+    z_bucket = _new_math_node(nodes, "SpiceEncounterZBucket", "TRUNC")
+    links.new(z_divide.outputs[0], z_bucket.inputs[0])
+
+    lane_attribute = nodes.new(type="ShaderNodeAttribute")
+    lane_attribute.name = "SpiceEncounterLane"
+    lane_attribute.attribute_name = TRIANGLE_METADATA_DIGIT_ATTRIBUTE_NAMES[1]
+    lane_minus_one = _new_math_node(nodes, "SpiceEncounterLaneMinusOne", "SUBTRACT")
+    lane_minus_one.inputs[1].default_value = 1.0
+    links.new(lane_attribute.outputs["Fac"], lane_minus_one.inputs[0])
+    x_times_lanes = _new_math_node(nodes, "SpiceEncounterXTimesLanes", "MULTIPLY")
+    x_times_lanes.inputs[1].default_value = 8.0
+    links.new(x_bucket.outputs[0], x_times_lanes.inputs[0])
+    column = _new_math_node(nodes, "SpiceEncounterColumn", "ADD")
+    links.new(x_times_lanes.outputs[0], column.inputs[0])
+    links.new(lane_minus_one.outputs[0], column.inputs[1])
+
+    if altitude_source == "SURFACE":
+        low = _new_math_node(nodes, "SpiceEncounterLowAltitude", "LESS_THAN")
+        low.inputs[1].default_value = -150.0
+        links.new(separate.outputs["Z"], low.inputs[0])
+        high = _new_math_node(nodes, "SpiceEncounterHighAltitude", "GREATER_THAN")
+        high.inputs[1].default_value = 150.0
+        links.new(separate.outputs["Z"], high.inputs[0])
+        middle_or_high = _new_math_node(nodes, "SpiceEncounterMiddleOrHigh", "SUBTRACT")
+        middle_or_high.inputs[0].default_value = 1.0
+        links.new(low.outputs[0], middle_or_high.inputs[1])
+        altitude_band = _new_math_node(nodes, "SpiceEncounterAltitudeBand", "ADD")
+        links.new(middle_or_high.outputs[0], altitude_band.inputs[0])
+        links.new(high.outputs[0], altitude_band.inputs[1])
+        altitude_socket = altitude_band.outputs[0]
+    else:
+        forced_band = {"LOW": 0.0, "MIDDLE": 1.0, "HIGH": 2.0}.get(altitude_source, 1.0)
+        altitude_value = nodes.new(type="ShaderNodeValue")
+        altitude_value.name = "SpiceEncounterForcedAltitudeBand"
+        altitude_value.outputs[0].default_value = forced_band
+        altitude_socket = altitude_value.outputs[0]
+
+    band_times_rows = _new_math_node(nodes, "SpiceEncounterBandTimesRows", "MULTIPLY")
+    band_times_rows.inputs[1].default_value = 6.0
+    links.new(altitude_socket, band_times_rows.inputs[0])
+    row = _new_math_node(nodes, "SpiceEncounterRow", "ADD")
+    links.new(band_times_rows.outputs[0], row.inputs[0])
+    links.new(z_bucket.outputs[0], row.inputs[1])
+
+    column_center = _new_math_node(nodes, "SpiceEncounterColumnCenter", "ADD")
+    column_center.inputs[1].default_value = 0.5
+    links.new(column.outputs[0], column_center.inputs[0])
+    u = _new_math_node(nodes, "SpiceEncounterU", "DIVIDE")
+    u.inputs[1].default_value = float(AREA99_LOOKUP_WIDTH)
+    links.new(column_center.outputs[0], u.inputs[0])
+    row_center = _new_math_node(nodes, "SpiceEncounterRowCenter", "ADD")
+    row_center.inputs[1].default_value = 0.5
+    links.new(row.outputs[0], row_center.inputs[0])
+    v = _new_math_node(nodes, "SpiceEncounterV", "DIVIDE")
+    v.inputs[1].default_value = float(AREA99_LOOKUP_HEIGHT)
+    links.new(row_center.outputs[0], v.inputs[0])
+    uv = nodes.new(type="ShaderNodeCombineXYZ")
+    uv.name = "SpiceEncounterLookupUV"
+    links.new(u.outputs[0], uv.inputs["X"])
+    links.new(v.outputs[0], uv.inputs["Y"])
+
+    image_node = nodes.new(type="ShaderNodeTexImage")
+    image_node.name = "SpiceEncounterLookupImage"
+    image_node.image = image
+    image_node.interpolation = "Closest"
+    image_node.extension = "CLIP"
+    links.new(uv.outputs["Vector"], image_node.inputs["Vector"])
+
+    validity_sockets: list[Any] = []
+    for name, socket, minimum, maximum in (
+        ("Lane", lane_attribute.outputs["Fac"], 0.5, 8.5),
+        ("X", x_bucket.outputs[0], -0.5, 6.5),
+        ("Z", z_bucket.outputs[0], -0.5, 5.5),
+    ):
+        above = _new_math_node(nodes, f"SpiceEncounter{name}AboveMin", "GREATER_THAN")
+        above.inputs[1].default_value = minimum
+        links.new(socket, above.inputs[0])
+        below = _new_math_node(nodes, f"SpiceEncounter{name}BelowMax", "LESS_THAN")
+        below.inputs[1].default_value = maximum
+        links.new(socket, below.inputs[0])
+        within = _new_math_node(nodes, f"SpiceEncounter{name}Valid", "MULTIPLY")
+        links.new(above.outputs[0], within.inputs[0])
+        links.new(below.outputs[0], within.inputs[1])
+        validity_sockets.append(within.outputs[0])
+    valid_xy = _new_math_node(nodes, "SpiceEncounterValidLaneX", "MULTIPLY")
+    links.new(validity_sockets[0], valid_xy.inputs[0])
+    links.new(validity_sockets[1], valid_xy.inputs[1])
+    valid = _new_math_node(nodes, "SpiceEncounterValid", "MULTIPLY")
+    links.new(valid_xy.outputs[0], valid.inputs[0])
+    links.new(validity_sockets[2], valid.inputs[1])
+
+    valid_mix = nodes.new(type="ShaderNodeMixRGB")
+    valid_mix.name = "SpiceEncounterValidColor"
+    valid_mix.blend_type = "MIX"
+    valid_mix.inputs[1].default_value = (0.25, 0.25, 0.25, 1.0)
+    links.new(valid.outputs[0], valid_mix.inputs[0])
+    links.new(image_node.outputs["Color"], valid_mix.inputs[2])
+    color_socket = valid_mix.outputs["Color"]
+
+    if combined_force:
+        force_attribute = nodes.new(type="ShaderNodeAttribute")
+        force_attribute.name = "SpiceTriangleMetadataForceColor"
+        force_attribute.attribute_name = TRIANGLE_METADATA_COLOR_ATTRIBUTE
+        source_x_scale = _new_math_node(nodes, "SpiceEncounterCheckerX", "DIVIDE")
+        source_x_scale.inputs[1].default_value = 300.0
+        links.new(separate.outputs["X"], source_x_scale.inputs[0])
+        source_z_scale = _new_math_node(nodes, "SpiceEncounterCheckerZ", "DIVIDE")
+        source_z_scale.inputs[1].default_value = 300.0
+        links.new(z_numerator.outputs[0], source_z_scale.inputs[0])
+        x_floor = _new_math_node(nodes, "SpiceEncounterCheckerXFloor", "FLOOR")
+        z_floor = _new_math_node(nodes, "SpiceEncounterCheckerZFloor", "FLOOR")
+        links.new(source_x_scale.outputs[0], x_floor.inputs[0])
+        links.new(source_z_scale.outputs[0], z_floor.inputs[0])
+        checker_sum = _new_math_node(nodes, "SpiceEncounterCheckerSum", "ADD")
+        links.new(x_floor.outputs[0], checker_sum.inputs[0])
+        links.new(z_floor.outputs[0], checker_sum.inputs[1])
+        checker = _new_math_node(nodes, "SpiceEncounterChecker", "MODULO")
+        checker.inputs[1].default_value = 2.0
+        links.new(checker_sum.outputs[0], checker.inputs[0])
+        checker_mix = nodes.new(type="ShaderNodeMixRGB")
+        checker_mix.name = "SpiceForceEncounterChecker"
+        links.new(checker.outputs[0], checker_mix.inputs[0])
+        links.new(color_socket, checker_mix.inputs[1])
+        links.new(force_attribute.outputs["Color"], checker_mix.inputs[2])
+        color_socket = checker_mix.outputs["Color"]
+
+    _configure_unlit_color_output(material, bsdf, color_socket, opacity)
+    material["spice_triangle_metadata_material"] = True
+
+
+def _configure_dungeon_force_encounter_material(
+    material: Material,
+    bsdf: Any,
+    opacity: float,
+) -> None:
+    node_tree = material.node_tree
+    assert node_tree is not None
+    nodes = node_tree.nodes
+    links = node_tree.links
+    geometry = nodes.new(type="ShaderNodeNewGeometry")
+    separate = nodes.new(type="ShaderNodeSeparateXYZ")
+    links.new(geometry.outputs["Position"], separate.inputs["Vector"])
+    x_scale = _new_math_node(nodes, "SpiceDungeonCheckerX", "DIVIDE")
+    x_scale.inputs[1].default_value = 300.0
+    links.new(separate.outputs["X"], x_scale.inputs[0])
+    y_scale = _new_math_node(nodes, "SpiceDungeonCheckerY", "DIVIDE")
+    y_scale.inputs[1].default_value = 300.0
+    links.new(separate.outputs["Y"], y_scale.inputs[0])
+    x_floor = _new_math_node(nodes, "SpiceDungeonCheckerXFloor", "FLOOR")
+    y_floor = _new_math_node(nodes, "SpiceDungeonCheckerYFloor", "FLOOR")
+    links.new(x_scale.outputs[0], x_floor.inputs[0])
+    links.new(y_scale.outputs[0], y_floor.inputs[0])
+    checker_sum = _new_math_node(nodes, "SpiceDungeonCheckerSum", "ADD")
+    links.new(x_floor.outputs[0], checker_sum.inputs[0])
+    links.new(y_floor.outputs[0], checker_sum.inputs[1])
+    checker = _new_math_node(nodes, "SpiceDungeonChecker", "MODULO")
+    checker.inputs[1].default_value = 2.0
+    links.new(checker_sum.outputs[0], checker.inputs[0])
+    force_attribute = nodes.new(type="ShaderNodeAttribute")
+    force_attribute.attribute_name = TRIANGLE_METADATA_COLOR_ATTRIBUTE
+    encounter_attribute = nodes.new(type="ShaderNodeAttribute")
+    encounter_attribute.attribute_name = TRIANGLE_METADATA_RESOLVED_ENCOUNTER_COLOR_ATTRIBUTE
+    mix = nodes.new(type="ShaderNodeMixRGB")
+    mix.name = "SpiceDungeonForceEncounterChecker"
+    links.new(checker.outputs[0], mix.inputs[0])
+    links.new(encounter_attribute.outputs["Color"], mix.inputs[1])
+    links.new(force_attribute.outputs["Color"], mix.inputs[2])
+    _configure_unlit_color_output(material, bsdf, mix.outputs["Color"], opacity)
+    material["spice_triangle_metadata_material"] = True
+
+
 def _build_material(
     material_data: dict[str, Any],
     texture_lookup: TextureLookup,
@@ -557,8 +2255,15 @@ def _build_material(
     *,
     mesh_field_name: str,
     material_index: int,
+    has_triangle_metadata: bool = False,
+    triangle_metadata_opacity: float = 0.25,
+    encounter_context_id: str = "",
+    encounter_context_kind: str = "DUNGEON",
+    function_parameters_text: str = "",
 ) -> Material:
-    name = _material_cache_name(material_data)
+    name = _material_cache_name(material_data, triangle_metadata=has_triangle_metadata)
+    if has_triangle_metadata and encounter_context_id:
+        name = f"{name}_{encounter_context_id}"
     material = bpy.data.materials.get(name)
     if material is None:
         material = bpy.data.materials.new(name=name)
@@ -672,6 +2377,12 @@ def _build_material(
             )
         material["spice_texture_bound"] = False
 
+    if has_triangle_metadata:
+        _configure_triangle_metadata_material(material, bsdf, triangle_metadata_opacity)
+        material["spice_encounter_context_id"] = encounter_context_id
+        material["spice_encounter_context_kind"] = encounter_context_kind
+        material["spice_function_parameters_text"] = function_parameters_text
+
     return material
 
 
@@ -751,7 +2462,15 @@ def _append_triangle_corner_attributes(
             color_values.append(None)
 
 
-def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats: ImportStats) -> Object:
+def _build_mesh(
+    mesh_data: dict[str, Any],
+    texture_lookup: TextureLookup,
+    stats: ImportStats,
+    *,
+    encounter_context_id: str = "",
+    encounter_context_kind: str = "DUNGEON",
+    function_parameters_text: str = "",
+) -> Object:
     mesh_name = _mesh_object_name(mesh_data)
     mesh_field_name = f"meshes[{mesh_name}]"
     label = str(mesh_data.get("label", ""))
@@ -759,31 +2478,61 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
 
     vertices_data = mesh_data.get("vertices", [])
     vertices = []
+    vertex_user_attributes: list[int | None] = []
     for vertex in vertices_data:
         pos = vertex.get("position", [0.0, 0.0, 0.0])
         source_y = float(pos[1])
         if is_grnd_mesh:
-            source_y += GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET
+            source_y += GRND_VISUAL_SOURCE_Y_OFFSET
         source_position = mathutils.Vector((float(pos[0]), source_y, float(pos[2])))
         blender_position = NJCM_TO_BLENDER_AXIS @ source_position
         vertices.append((blender_position.x, blender_position.y, blender_position.z))
+        raw_user_attributes = vertex.get("rawUserAttributesU32")
+        if raw_user_attributes is None:
+            vertex_user_attributes.append(None)
+        else:
+            try:
+                value = _read_int(raw_user_attributes, field_name="vertices[].rawUserAttributesU32")
+            except ValueError as exc:
+                stats.add_warning(str(exc))
+                vertex_user_attributes.append(None)
+                continue
+            if value < 0 or value > 0xFFFFFFFF:
+                stats.add_warning(
+                    f"vertices[].rawUserAttributesU32={value} is outside the u32 range."
+                )
+                vertex_user_attributes.append(None)
+            else:
+                vertex_user_attributes.append(value)
 
     triangles: list[tuple[int, int, int]] = []
     poly_material_indices: list[int] = []
     poly_flat_flags: list[bool] = []
     uv_values: list[tuple[float, float] | None] = []
     color_values: list[tuple[float, float, float, float] | None] = []
+    triangle_metadata_values: list[tuple[int, int, int] | None] = []
+    has_triangle_metadata = False
     seen_triangle_geometry: set[
         tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
     ] = set()
-    for tri_set in mesh_data.get("triangleSets", []):
+    for tri_set_index, tri_set in enumerate(mesh_data.get("triangleSets", [])):
         corners = tri_set.get("corners", [])
+        triangle_metadata = tri_set.get("triangleMetadata", [])
+        tri_set_has_triangle_metadata = isinstance(triangle_metadata, list) and len(triangle_metadata) > 0
+        has_triangle_metadata = has_triangle_metadata or tri_set_has_triangle_metadata
+        expected_metadata_count = len(corners) // 3
+        if tri_set_has_triangle_metadata and len(triangle_metadata) != expected_metadata_count:
+            stats.add_warning(
+                f"{mesh_field_name}.triangleSets[{tri_set_index}].triangleMetadata has "
+                f"{len(triangle_metadata)} entries for {expected_metadata_count} triangles."
+            )
         material_index = int(tri_set.get("materialIndex", 0))
         material_data = {}
         if 0 <= material_index < len(mesh_data.get("materials", [])):
             material_data = mesh_data["materials"][material_index]
         flat_shading = bool(material_data.get("flatShading", False))
         for corner_index in range(0, len(corners) - 2, 3):
+            triangle_index = corner_index // 3
             triangle_corners = (
                 corners[corner_index],
                 corners[corner_index + 1],
@@ -797,19 +2546,37 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
             if not _triangle_has_area(vertices, tri):
                 continue
             geometry_key = _triangle_geometry_key(vertices, tri)
-            if geometry_key in seen_triangle_geometry:
+            if not tri_set_has_triangle_metadata and geometry_key in seen_triangle_geometry:
                 continue
-            seen_triangle_geometry.add(geometry_key)
+            if not tri_set_has_triangle_metadata:
+                seen_triangle_geometry.add(geometry_key)
+
+            raw_metadata = None
+            if tri_set_has_triangle_metadata and triangle_index < len(triangle_metadata):
+                raw_metadata = _read_triangle_metadata_raw_u16(
+                    triangle_metadata[triangle_index],
+                    stats,
+                    field_name=(
+                        f"{mesh_field_name}.triangleSets[{tri_set_index}]"
+                        f".triangleMetadata[{triangle_index}]"
+                    ),
+                )
 
             triangles.append(tri)
             poly_material_indices.append(material_index)
             poly_flat_flags.append(flat_shading)
+            triangle_metadata_values.append(raw_metadata)
             _append_triangle_corner_attributes(triangle_corners, uv_values, color_values)
 
     mesh = bpy.data.meshes.new(mesh_name)
     mesh.from_pydata(vertices, [], triangles)
-    mesh.validate(verbose=False)
+    if not has_triangle_metadata:
+        mesh.validate(verbose=False)
     mesh.update()
+    if has_triangle_metadata:
+        mesh["spice_encounter_context_id"] = encounter_context_id
+        mesh["spice_encounter_context_kind"] = encounter_context_kind
+        mesh["spice_function_parameters_text"] = function_parameters_text
 
     material_slots: list[Material] = []
     for material_index, material_data in enumerate(mesh_data.get("materials", [])):
@@ -820,6 +2587,13 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
                 stats,
                 mesh_field_name=mesh_field_name,
                 material_index=material_index,
+                has_triangle_metadata=has_triangle_metadata,
+                triangle_metadata_opacity=float(
+                    getattr(bpy.context.scene, "spice_triangle_metadata_opacity", 0.25)
+                ),
+                encounter_context_id=encounter_context_id,
+                encounter_context_kind=encounter_context_kind,
+                function_parameters_text=function_parameters_text,
             )
         )
 
@@ -854,6 +2628,36 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
             if color is not None:
                 color_layer.data[loop_index].color = color
 
+    if has_triangle_metadata and triangle_metadata_values:
+        try:
+            _profile_name, families = _triangle_metadata_profile_from_scene(bpy.context.scene)
+        except (ValueError, json.JSONDecodeError) as exc:
+            stats.add_warning(f"Triangle metadata profile is invalid: {exc}")
+            families = []
+        _write_triangle_metadata_attributes(
+            mesh,
+            triangle_metadata_values,
+            stats,
+            mode=str(getattr(bpy.context.scene, "spice_triangle_metadata_display_mode", "SKY_RIFT_FORCE")),
+            families=families,
+        )
+
+    if any(value is not None for value in vertex_user_attributes):
+        _write_mesh_int_attribute(
+            mesh,
+            "spice_gobj_user_attr_low_u16",
+            "POINT",
+            [(value & 0xFFFF) if value is not None else -1 for value in vertex_user_attributes],
+            stats,
+        )
+        _write_mesh_int_attribute(
+            mesh,
+            "spice_gobj_user_attr_high_u16",
+            "POINT",
+            [((value >> 16) & 0xFFFF) if value is not None else -1 for value in vertex_user_attributes],
+            stats,
+        )
+
     diagnostics = mesh_data.get("diagnostics", {})
     _set_custom_int_property(
         mesh,
@@ -864,7 +2668,7 @@ def _build_mesh(mesh_data: dict[str, Any], texture_lookup: TextureLookup, stats:
     )
     mesh["spice_label"] = label
     if is_grnd_mesh:
-        mesh["spice_visual_source_y_offset"] = GRND_COLLISION_VISUAL_SOURCE_Y_OFFSET
+        mesh["spice_visual_source_y_offset"] = GRND_VISUAL_SOURCE_Y_OFFSET
     _set_custom_int_property(
         mesh,
         "spice_source_chunk_offset",
@@ -1689,6 +3493,12 @@ def _write_debug_log(debug_lines: list[str], target_collection_name: str, stats:
     print(f"[Spice Parity Debug] wrote {len(debug_lines)} lines to Blender text '{text_name}'")
 
 
+def _tag_entry_object(obj: Object, entry_id: int, table_index: int, fxn_name: str) -> None:
+    obj["spice_ground_entry_id"] = entry_id
+    obj["spice_ground_table_index"] = table_index
+    obj["spice_ground_entry_function"] = fxn_name
+
+
 def _resolve_node_transform(node: dict[str, Any]) -> dict[str, Any]:
     transform = dict(node.get("localTransform", {}))
     eval_flags = int(node.get("sourceEvalFlags", 0))
@@ -1730,10 +3540,34 @@ def import_blender_ir_json(
 
     texture_lookup = _build_texture_lookup(payload.get("textures", []), stats)
 
+    index_entries: list[dict[str, Any]] = payload.get("indexEntries", [])
+    area99_context = _find_area99_lookup_context(index_entries, stats)
+    encounter_context_kind = "AREA99" if area99_context is not None else "DUNGEON"
+    context_token = "".join(
+        character if character.isalnum() else "_" for character in target_collection_name
+    )
+    encounter_context_id = f"{context_token}_{encounter_context_kind}"
+    function_parameters_text = ""
+    try:
+        function_parameters_text = _persist_function_parameters_text(
+            target_collection_name,
+            index_entries,
+        )
+        root_collection["spice_mld_function_parameters_text"] = function_parameters_text
+    except (TypeError, ValueError) as exc:
+        stats.add_warning(f"Could not persist MLD function parameters: {exc}")
+
     mesh_payloads: list[dict[str, Any]] = payload.get("meshes", [])
     mesh_objects: list[Object] = []
     for mesh_data in mesh_payloads:
-        mesh_obj = _build_mesh(mesh_data, texture_lookup, stats)
+        mesh_obj = _build_mesh(
+            mesh_data,
+            texture_lookup,
+            stats,
+            encounter_context_id=encounter_context_id,
+            encounter_context_kind=encounter_context_kind,
+            function_parameters_text=function_parameters_text,
+        )
         _link_object_to_collection(source_collection, mesh_obj)
         mesh_obj.hide_viewport = True
         mesh_obj.hide_render = True
@@ -1745,7 +3579,7 @@ def import_blender_ir_json(
     tree_armature_bindings: dict[tuple[int, int], Object] = {}
     tree_nodes_by_binding: dict[tuple[int, int], list[dict[str, Any]]] = {}
 
-    for entry_index, entry in enumerate(payload.get("indexEntries", [])):
+    for entry_index, entry in enumerate(index_entries):
         transform = entry.get("transform", {})
         entry_id = int(entry.get("sourceEntryId", 0))
         table_index = int(entry.get("tableIndex", entry_index))
@@ -1784,6 +3618,7 @@ def import_blender_ir_json(
             field_name=f"indexEntries[{entry_id}].tableIndex",
         )
         entry_root["spice_fxn_name"] = fxn_name
+        _tag_entry_object(entry_root, entry_id, table_index, fxn_name)
         entry_root["spice_object_addresses"] = ",".join(
             str(int(v)) for v in entry.get("objectAddresses", [])
         )
@@ -1807,6 +3642,7 @@ def import_blender_ir_json(
                 _set_parent_with_identity_inverse(instance_obj, entry_root)
                 _apply_identity_local_transform(instance_obj)
                 instance_obj["spice_mesh_index"] = mi
+                _tag_entry_object(instance_obj, entry_id, table_index, fxn_name)
                 _link_object_to_collection(entry_collection, instance_obj)
                 stats.object_count += 1
             continue
@@ -1919,6 +3755,7 @@ def import_blender_ir_json(
                     stats,
                 )
                 if armature_obj is not None:
+                    _tag_entry_object(armature_obj, entry_id, table_index, fxn_name)
                     tree_armature_bindings[binding_key] = armature_obj
                     tree_nodes_by_binding[binding_key] = nodes
                     for node_obj in node_objects:
@@ -1967,6 +3804,7 @@ def import_blender_ir_json(
                     _set_parent_with_identity_inverse(attach_obj, parent_obj)
                     _apply_identity_local_transform(attach_obj)
                 attach_obj["spice_mesh_index"] = mi
+                _tag_entry_object(attach_obj, entry_id, table_index, fxn_name)
                 _set_custom_int_property(
                     attach_obj,
                     "spice_node_index",
@@ -1999,6 +3837,7 @@ def import_blender_ir_json(
             _set_parent_with_identity_inverse(instance_obj, entry_root)
             _apply_identity_local_transform(instance_obj)
             instance_obj["spice_mesh_index"] = mi
+            _tag_entry_object(instance_obj, entry_id, table_index, fxn_name)
             _link_object_to_collection(entry_collection, instance_obj)
             stats.object_count += 1
 
@@ -2020,10 +3859,228 @@ def import_blender_ir_json(
             create_nla_tracks,
         )
 
+    _refresh_triangle_metadata_visualization(bpy.context.scene, stats)
+
     if emit_parity_debug:
         _write_debug_log(debug_lines, target_collection_name, stats)
 
     return stats
+
+
+_TRIANGLE_METADATA_REFRESH_GUARD = False
+_TRIANGLE_METADATA_MSGBUS_OWNER = object()
+
+
+def _refresh_triangle_metadata_from_ui(scene: Any) -> None:
+    global _TRIANGLE_METADATA_REFRESH_GUARD
+    if _TRIANGLE_METADATA_REFRESH_GUARD:
+        return
+    _TRIANGLE_METADATA_REFRESH_GUARD = True
+    try:
+        _refresh_triangle_metadata_visualization(scene)
+    finally:
+        _TRIANGLE_METADATA_REFRESH_GUARD = False
+
+
+def _on_triangle_metadata_display_update(scene: Any, _context: Any) -> None:
+    _refresh_triangle_metadata_from_ui(scene)
+
+
+def _on_triangle_metadata_scope_update(scene: Any, _context: Any) -> None:
+    try:
+        _profile_name, families = _triangle_metadata_profile_from_scene(scene)
+    except (ValueError, json.JSONDecodeError):
+        families = []
+    _refresh_triangle_metadata_legend(
+        scene,
+        families,
+        str(getattr(scene, "spice_triangle_metadata_display_mode", "SKY_RIFT_FORCE")),
+    )
+
+
+def _on_triangle_metadata_active_object_changed() -> None:
+    scene = getattr(bpy.context, "scene", None)
+    if scene is None or not hasattr(scene, "spice_triangle_metadata_legend"):
+        return
+    if (
+        str(getattr(scene, "spice_triangle_metadata_legend_scope", "ENTRY")) == "ENTRY"
+        and str(getattr(scene, "spice_triangle_metadata_entry_selector", "ACTIVE")) == "ACTIVE"
+    ):
+        _on_triangle_metadata_scope_update(scene, bpy.context)
+
+
+def _triangle_metadata_entry_items(_self: Any, context: Any) -> list[tuple[str, str, str]]:
+    items: list[tuple[str, str, str]] = [
+        ("ACTIVE", "Active Ground Entry", "Use the entry that owns the active object."),
+    ]
+    scene = getattr(context, "scene", None)
+    if scene is None:
+        return items
+    entries: dict[int, tuple[int, str]] = {}
+    for obj in scene.objects:
+        if "spice_ground_table_index" not in obj:
+            continue
+        table_index = int(obj["spice_ground_table_index"])
+        entry_id = int(obj.get("spice_ground_entry_id", 0))
+        function_name = str(obj.get("spice_ground_entry_function", ""))
+        entries.setdefault(table_index, (entry_id, function_name))
+    for table_index, (entry_id, function_name) in sorted(entries.items()):
+        label = f"Entry {entry_id} / table {table_index}"
+        if function_name:
+            label += f" / {function_name}"
+        items.append((str(table_index), label, "Show metadata for this MLD index entry."))
+    return items
+
+
+class SPICE_PG_triangle_metadata_legend_item(bpy.types.PropertyGroup):
+    name: StringProperty(name="Family")
+    details: StringProperty(name="Details")
+    face_count: IntProperty(name="Faces", default=0, min=0)
+    show_face_count: BoolProperty(name="Show Face Count", default=False)
+    color: FloatVectorProperty(
+        name="Color",
+        subtype="COLOR",
+        size=4,
+        min=0.0,
+        max=1.0,
+        default=(0.35, 0.35, 0.35, 1.0),
+    )
+
+
+class SPICE_UL_triangle_metadata_legend(bpy.types.UIList):
+    def draw_item(
+        self,
+        _context: Any,
+        layout: Any,
+        _data: Any,
+        item: Any,
+        _icon: int,
+        _active_data: Any,
+        _active_property: str,
+        _index: int,
+    ) -> None:
+        if self.layout_type in {"DEFAULT", "COMPACT"}:
+            split = layout.split(factor=0.18)
+            split.prop(item, "color", text="")
+            text = split.row()
+            text.label(text=f"{item.name}: {item.details}")
+            if item.show_face_count:
+                text.label(text=f"{item.face_count} faces")
+        else:
+            layout.prop(item, "color", text="")
+
+
+class SPICE_OT_refresh_triangle_metadata(bpy.types.Operator):
+    bl_idname = "spice.refresh_triangle_metadata"
+    bl_label = "Refresh Triangle Metadata"
+    bl_description = "Regenerate derived triangle metadata colors and the visible key"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        _refresh_triangle_metadata_from_ui(context.scene)
+        self.report({"INFO"}, "Triangle metadata visualization refreshed.")
+        return {"FINISHED"}
+
+
+class SPICE_OT_load_triangle_metadata_profile(bpy.types.Operator, ImportHelper):
+    bl_idname = "spice.load_triangle_metadata_profile"
+    bl_label = "Load Triangle Metadata Profile"
+    bl_description = "Load a versioned JSON profile for metadata family labels and hue regions"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filename_ext = ".json"
+    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        try:
+            with open(self.filepath, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            profile_name, _families = _parse_triangle_metadata_profile(payload)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            self.report({"ERROR"}, f"Triangle metadata profile could not be loaded: {exc}")
+            return {"CANCELLED"}
+
+        context.scene.spice_triangle_metadata_profile_path = str(Path(self.filepath))
+        context.scene.spice_triangle_metadata_profile_json = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        context.scene.spice_triangle_metadata_profile_name = profile_name
+        _refresh_triangle_metadata_from_ui(context.scene)
+        self.report({"INFO"}, f"Loaded triangle metadata profile: {profile_name}")
+        return {"FINISHED"}
+
+
+class SPICE_OT_reset_triangle_metadata_profile(bpy.types.Operator):
+    bl_idname = "spice.reset_triangle_metadata_profile"
+    bl_label = "Use Built-In Profile"
+    bl_description = "Clear the custom metadata profile and restore the built-in family labels and colors"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context: bpy.types.Context) -> set[str]:
+        context.scene.spice_triangle_metadata_profile_path = ""
+        context.scene.spice_triangle_metadata_profile_json = ""
+        context.scene.spice_triangle_metadata_profile_name = "Built-In"
+        _refresh_triangle_metadata_from_ui(context.scene)
+        return {"FINISHED"}
+
+
+class SPICE_PT_triangle_metadata(bpy.types.Panel):
+    bl_label = "Triangle Metadata"
+    bl_idname = "SPICE_PT_triangle_metadata"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "SPICE"
+
+    def draw(self, context: bpy.types.Context) -> None:
+        layout = self.layout
+        scene = context.scene
+
+        layout.prop(scene, "spice_triangle_metadata_display_mode")
+        if scene.spice_triangle_metadata_display_mode in POSITION_AWARE_ENCOUNTER_MODES:
+            layout.prop(scene, "spice_triangle_metadata_resolved_opacity", text="Opacity")
+        else:
+            layout.prop(scene, "spice_triangle_metadata_opacity")
+        layout.prop(scene, "spice_triangle_metadata_legend_scope")
+        if scene.spice_triangle_metadata_legend_scope == "ENTRY":
+            layout.prop(scene, "spice_triangle_metadata_entry_selector")
+        if scene.spice_triangle_metadata_display_mode in POSITION_AWARE_ENCOUNTER_MODES:
+            layout.prop(scene, "spice_triangle_metadata_scenario")
+            layout.prop(scene, "spice_triangle_metadata_altitude_source")
+            layout.label(text="Use Material Preview or Rendered view.")
+
+        layout.operator(
+            SPICE_OT_refresh_triangle_metadata.bl_idname,
+            text="Refresh Colors",
+            icon="FILE_REFRESH",
+        )
+        layout.separator()
+        layout.label(text="Layer Color Key")
+        if len(scene.spice_triangle_metadata_legend) == 0:
+            layout.label(text="No triangle metadata in the current scope.")
+            return
+        layout.template_list(
+            SPICE_UL_triangle_metadata_legend.__name__,
+            "",
+            scene,
+            "spice_triangle_metadata_legend",
+            scene,
+            "spice_triangle_metadata_legend_index",
+            rows=8,
+        )
+        layout.prop(scene, "spice_triangle_metadata_show_advanced_key")
+        if scene.spice_triangle_metadata_show_advanced_key:
+            layout.label(text="Advanced Raw Geometry Key")
+            layout.template_list(
+                SPICE_UL_triangle_metadata_legend.__name__,
+                "advanced",
+                scene,
+                "spice_triangle_metadata_advanced_legend",
+                scene,
+                "spice_triangle_metadata_advanced_legend_index",
+                rows=8,
+            )
 
 
 class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
@@ -2139,6 +4196,12 @@ def menu_func_import(self: bpy.types.TOPBAR_MT_file_import, _context: bpy.types.
 
 
 CLASSES = (
+    SPICE_PG_triangle_metadata_legend_item,
+    SPICE_UL_triangle_metadata_legend,
+    SPICE_OT_refresh_triangle_metadata,
+    SPICE_OT_load_triangle_metadata_profile,
+    SPICE_OT_reset_triangle_metadata_profile,
+    SPICE_PT_triangle_metadata,
     IMPORT_SCENE_OT_spice_blender_ir,
 )
 
@@ -2173,13 +4236,129 @@ def _unregister_keymaps() -> None:
 def register() -> None:
     for klass in CLASSES:
         bpy.utils.register_class(klass)
+    bpy.types.Scene.spice_triangle_metadata_display_mode = EnumProperty(
+        name="Display",
+        description="Select which triangle metadata layer drives face colors",
+        items=TRIANGLE_METADATA_DISPLAY_MODES,
+        default="SKY_RIFT_FORCE",
+        update=_on_triangle_metadata_display_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_opacity = FloatProperty(
+        name="Opacity",
+        description="Opacity used by triangle metadata materials",
+        default=0.25,
+        min=0.0,
+        max=1.0,
+        update=_on_triangle_metadata_display_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_resolved_opacity = FloatProperty(
+        name="Resolved Opacity",
+        description="Opacity used by resolved encounter map materials",
+        default=0.45,
+        min=0.0,
+        max=1.0,
+        update=_on_triangle_metadata_display_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_legend_scope = EnumProperty(
+        name="Entry Scope",
+        description="Choose which ground entry contributes to the visible color key",
+        items=(
+            ("ENTRY", "Selected Entry", "Show metadata present in the selected or active ground entry."),
+            ("SCENE", "Whole Scene", "Show metadata present across unique mesh data in the scene."),
+        ),
+        default="ENTRY",
+        update=_on_triangle_metadata_scope_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_entry_selector = EnumProperty(
+        name="Ground Entry",
+        description="Select an imported MLD entry, or follow the active object",
+        items=_triangle_metadata_entry_items,
+        update=_on_triangle_metadata_scope_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_scenario = EnumProperty(
+        name="Area 99 Scenario",
+        description="Select which inferred 1008-byte fldEfcontrol lookup page is visualized",
+        items=(
+            ("PAGE0", "Page 0 (inferred pre-Soltis)", "Use the first lookup page."),
+            ("PAGE1", "Page 1 (inferred post-Soltis)", "Use the second lookup page."),
+        ),
+        default="PAGE0",
+        update=_on_triangle_metadata_display_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_altitude_source = EnumProperty(
+        name="Altitude",
+        description="Choose surface-derived or forced encounter altitude band",
+        items=(
+            ("SURFACE", "Surface Height", "Resolve each visible layer from its own source Y position."),
+            ("LOW", "Forced Low", "Force the lookup's low altitude band."),
+            ("MIDDLE", "Forced Middle", "Force the lookup's middle altitude band."),
+            ("HIGH", "Forced High", "Force the lookup's high altitude band."),
+        ),
+        default="SURFACE",
+        update=_on_triangle_metadata_display_update,
+    )
+    bpy.types.Scene.spice_triangle_metadata_profile_path = StringProperty(
+        name="Profile Path",
+        subtype="FILE_PATH",
+        default="",
+    )
+    bpy.types.Scene.spice_triangle_metadata_profile_json = StringProperty(
+        name="Profile JSON",
+        default="",
+        options={"HIDDEN"},
+    )
+    bpy.types.Scene.spice_triangle_metadata_profile_name = StringProperty(
+        name="Profile",
+        default="Built-In",
+    )
+    bpy.types.Scene.spice_triangle_metadata_legend = CollectionProperty(
+        type=SPICE_PG_triangle_metadata_legend_item,
+    )
+    bpy.types.Scene.spice_triangle_metadata_legend_index = IntProperty(default=0, min=0)
+    bpy.types.Scene.spice_triangle_metadata_show_advanced_key = BoolProperty(
+        name="Show Advanced Geometry Key",
+        description="Show the exact raw-triplet census and face counts",
+        default=False,
+    )
+    bpy.types.Scene.spice_triangle_metadata_advanced_legend = CollectionProperty(
+        type=SPICE_PG_triangle_metadata_legend_item,
+    )
+    bpy.types.Scene.spice_triangle_metadata_advanced_legend_index = IntProperty(default=0, min=0)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     _register_keymaps()
+    layer_objects_type = getattr(bpy.types, "LayerObjects", None)
+    if layer_objects_type is not None:
+        bpy.msgbus.subscribe_rna(
+            key=(layer_objects_type, "active"),
+            owner=_TRIANGLE_METADATA_MSGBUS_OWNER,
+            args=(),
+            notify=_on_triangle_metadata_active_object_changed,
+        )
 
 
 def unregister() -> None:
+    bpy.msgbus.clear_by_owner(_TRIANGLE_METADATA_MSGBUS_OWNER)
     _unregister_keymaps()
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    for property_name in (
+        "spice_triangle_metadata_advanced_legend_index",
+        "spice_triangle_metadata_advanced_legend",
+        "spice_triangle_metadata_show_advanced_key",
+        "spice_triangle_metadata_legend_index",
+        "spice_triangle_metadata_legend",
+        "spice_triangle_metadata_profile_name",
+        "spice_triangle_metadata_profile_json",
+        "spice_triangle_metadata_profile_path",
+        "spice_triangle_metadata_altitude_source",
+        "spice_triangle_metadata_scenario",
+        "spice_triangle_metadata_entry_selector",
+        "spice_triangle_metadata_legend_scope",
+        "spice_triangle_metadata_resolved_opacity",
+        "spice_triangle_metadata_opacity",
+        "spice_triangle_metadata_display_mode",
+    ):
+        if hasattr(bpy.types.Scene, property_name):
+            delattr(bpy.types.Scene, property_name)
     for klass in reversed(CLASSES):
         bpy.utils.unregister_class(klass)
 

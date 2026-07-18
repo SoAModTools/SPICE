@@ -30,6 +30,13 @@ struct GobjAttachLayout {
     std::uint32_t polyOffset = 0;
 };
 
+struct GobjVertexLayout {
+    std::uint8_t chunkType = 0;
+    std::uint8_t recordWords = 0;
+    bool hasNormal = false;
+    bool hasUserAttributes = false;
+};
+
 [[nodiscard]] std::string hexOffset(const std::uint32_t value) {
     constexpr char digits[] = "0123456789abcdef";
     std::string result = "0x00000000";
@@ -170,11 +177,42 @@ struct GobjAttachLayout {
     return result;
 }
 
-[[nodiscard]] bool isAlignedGobjFloatIndex(const std::uint16_t floatIndex, const std::uint16_t vertexCount) {
-    if (floatIndex < 2U || ((floatIndex - 2U) % 6U) != 0U) {
+[[nodiscard]] std::optional<GobjVertexLayout> getGobjVertexLayout(const std::uint8_t chunkType) {
+    switch (chunkType) {
+    case 0x22U:
+        return GobjVertexLayout{
+            .chunkType = chunkType,
+            .recordWords = 3U,
+            .hasNormal = false,
+            .hasUserAttributes = false,
+        };
+    case 0x29U:
+        return GobjVertexLayout{
+            .chunkType = chunkType,
+            .recordWords = 6U,
+            .hasNormal = true,
+            .hasUserAttributes = false,
+        };
+    case 0x2BU:
+        return GobjVertexLayout{
+            .chunkType = chunkType,
+            .recordWords = 7U,
+            .hasNormal = true,
+            .hasUserAttributes = true,
+        };
+    default:
+        return std::nullopt;
+    }
+}
+
+[[nodiscard]] bool isAlignedGobjFloatIndex(
+    const std::uint16_t floatIndex,
+    const std::uint16_t vertexCount,
+    const std::uint8_t recordWords) {
+    if (recordWords == 0U || floatIndex < 2U || ((floatIndex - 2U) % recordWords) != 0U) {
         return false;
     }
-    return ((floatIndex - 2U) / 6U) < vertexCount;
+    return ((floatIndex - 2U) / recordWords) < vertexCount;
 }
 
 [[nodiscard]] std::optional<model::MeshVertex> readGobjStreamVertex(
@@ -182,15 +220,15 @@ struct GobjAttachLayout {
     spice::core::Endian endian,
     const std::uint32_t vertexOffset,
     const std::uint16_t floatIndex,
-    const std::uint16_t vertexCount) {
-    if (!isAlignedGobjFloatIndex(floatIndex, vertexCount)) {
+    const std::uint16_t vertexCount,
+    const GobjVertexLayout& layout) {
+    if (!isAlignedGobjFloatIndex(floatIndex, vertexCount, layout.recordWords)) {
         return std::nullopt;
     }
 
     const std::size_t positionOffset = static_cast<std::size_t>(vertexOffset) + static_cast<std::size_t>(floatIndex) * 4U;
-    const auto bucket = static_cast<std::size_t>((floatIndex - 2U) / 6U);
-    const std::size_t normalOffset = static_cast<std::size_t>(vertexOffset) + ((bucket * 6U) + 5U) * 4U;
-    if (positionOffset + 12U > bytes.size() || normalOffset + 12U > bytes.size()) {
+    const auto bucket = static_cast<std::size_t>((floatIndex - 2U) / layout.recordWords);
+    if (positionOffset + 12U > bytes.size()) {
         return std::nullopt;
     }
 
@@ -201,11 +239,28 @@ struct GobjAttachLayout {
         reader.try_read_f32(positionOffset + 4U).value_or(0.0F),
         reader.try_read_f32(positionOffset + 8U).value_or(0.0F),
     };
-    vertex.normal = model::Vec3{
-        reader.try_read_f32(normalOffset + 0U).value_or(0.0F),
-        reader.try_read_f32(normalOffset + 4U).value_or(1.0F),
-        reader.try_read_f32(normalOffset + 8U).value_or(0.0F),
-    };
+    vertex.hasNormal = layout.hasNormal;
+    if (layout.hasNormal) {
+        const std::size_t normalOffset = static_cast<std::size_t>(vertexOffset) +
+            ((bucket * layout.recordWords) + 5U) * 4U;
+        if (normalOffset + 12U > bytes.size()) {
+            return std::nullopt;
+        }
+        vertex.normal = model::Vec3{
+            reader.try_read_f32(normalOffset + 0U).value_or(0.0F),
+            reader.try_read_f32(normalOffset + 4U).value_or(1.0F),
+            reader.try_read_f32(normalOffset + 8U).value_or(0.0F),
+        };
+    }
+    if (layout.hasUserAttributes) {
+        const std::size_t attributeOffset = static_cast<std::size_t>(vertexOffset) +
+            ((bucket * layout.recordWords) + 8U) * 4U;
+        const auto rawAttributes = reader.try_read_u32(attributeOffset);
+        if (!rawAttributes.has_value()) {
+            return std::nullopt;
+        }
+        vertex.rawUserAttributesU32 = *rawAttributes;
+    }
     return vertex;
 }
 
@@ -222,7 +277,13 @@ struct GobjAttachLayout {
     const spice::core::EndianReader reader(bytes, endian);
     const auto header1 = reader.try_read_u32(layout.vertexOffset);
     const auto header2 = reader.try_read_u32(static_cast<std::size_t>(layout.vertexOffset) + 4U);
-    if (!header1.has_value() || !header2.has_value() || (*header1 & 0xFFU) != 0x29U) {
+    if (!header1.has_value() || !header2.has_value()) {
+        return mesh;
+    }
+
+    const auto vertexChunkType = static_cast<std::uint8_t>(*header1 & 0xFFU);
+    const auto vertexLayout = getGobjVertexLayout(vertexChunkType);
+    if (!vertexLayout.has_value()) {
         diagnostics.push_back("GOBJ stream parser skipped unsupported vertex chunk at " + hexOffset(layout.vertexOffset) + ".");
         return mesh;
     }
@@ -230,7 +291,7 @@ struct GobjAttachLayout {
     const auto vertexCount = static_cast<std::uint16_t>(*header2 >> 16U);
     struct Entry {
         std::uint16_t floatIndex = 0;
-        std::int16_t flags = 0;
+        std::uint16_t flags = 0;
         model::MeshVertex vertex{};
     };
 
@@ -246,7 +307,7 @@ struct GobjAttachLayout {
         ++runCount;
         for (std::size_t i = 0; i + 2U < run.size(); ++i) {
             const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
-            if (run[i + 2U].flags < 0) {
+            if ((run[i + 2U].flags & 0x8000U) != 0U) {
                 mesh.vertices.push_back(run[i + 2U].vertex);
                 mesh.vertices.push_back(run[i + 1U].vertex);
                 mesh.vertices.push_back(run[i + 0U].vertex);
@@ -258,6 +319,9 @@ struct GobjAttachLayout {
             mesh.indices.push_back(base + 0U);
             mesh.indices.push_back(base + 1U);
             mesh.indices.push_back(base + 2U);
+            mesh.triangleMetadata.push_back(model::TriangleMetadata{
+                .rawU16 = { run[i + 0U].flags, run[i + 1U].flags, run[i + 2U].flags },
+            });
         }
         run.clear();
     };
@@ -274,7 +338,13 @@ struct GobjAttachLayout {
             continue;
         }
 
-        const auto vertex = readGobjStreamVertex(bytes, endian, layout.vertexOffset, *floatIndex, vertexCount);
+        const auto vertex = readGobjStreamVertex(
+            bytes,
+            endian,
+            layout.vertexOffset,
+            *floatIndex,
+            vertexCount,
+            *vertexLayout);
         if (!vertex.has_value()) {
             ++controlCount;
             appendRunTriangles();
@@ -283,7 +353,7 @@ struct GobjAttachLayout {
 
         run.push_back(Entry{
             .floatIndex = *floatIndex,
-            .flags = static_cast<std::int16_t>(*flags),
+            .flags = *flags,
             .vertex = *vertex,
         });
     }
@@ -292,7 +362,8 @@ struct GobjAttachLayout {
     if (!mesh.indices.empty()) {
         diagnostics.push_back("GOBJ stream parser produced " + std::to_string(mesh.indices.size() / 3U) +
             " triangle(s) across " + std::to_string(runCount) +
-            " run(s) at " + hexOffset(layout.attachOffset) +
+            " run(s) using vertex chunk " + hexOffset(vertexChunkType) +
+            " at " + hexOffset(layout.attachOffset) +
             " after " + std::to_string(separatorCount) + " separator(s) and " +
             std::to_string(controlCount) + " control record(s).");
     }

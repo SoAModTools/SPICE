@@ -1521,6 +1521,9 @@ ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const Parse
             .fxnName = entry.fxnName,
             .tblId = entry.tblId,
             .transform = entry.transform,
+            .functionParameters = entry.functionParameters
+                ? entry.functionParameters->values
+                : std::vector<std::uint32_t>{},
             .objectAddresses = objectAddresses,
             .groundAddresses = groundAddresses,
             .motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{},

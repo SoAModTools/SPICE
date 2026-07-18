@@ -80,6 +80,7 @@ struct ParsedRawEntry {
     std::string fxnName{};
     std::int32_t tblId = 0;
     model::Transform transform{};
+    std::vector<std::uint32_t> functionParameters{};
     std::vector<std::uint32_t> objectAddresses{};
     std::vector<std::uint32_t> groundAddresses{};
     std::vector<std::uint32_t> motionAddresses{};

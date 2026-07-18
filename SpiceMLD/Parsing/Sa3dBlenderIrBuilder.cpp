@@ -819,7 +819,8 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
             vertex.position = sourceVertex.position;
             vertex.normal = sourceVertex.normal;
             vertex.hasPosition = true;
-            vertex.hasNormal = true;
+            vertex.hasNormal = sourceVertex.hasNormal;
+            vertex.rawUserAttributesU32 = sourceVertex.rawUserAttributesU32;
             mesh.vertices.push_back(std::move(vertex));
         }
 
@@ -843,6 +844,7 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
             corner.vertexIndex = index;
             triangleSet.corners.push_back(corner);
         }
+        triangleSet.triangleMetadata = node.streamMesh.triangleMetadata;
         mesh.triangleSets.push_back(std::move(triangleSet));
     }
 
@@ -1175,7 +1177,8 @@ void appendGrndMeshes(
             vertex.position = sourceVertex.position;
             vertex.normal = sourceVertex.normal;
             vertex.hasPosition = true;
-            vertex.hasNormal = true;
+            vertex.hasNormal = sourceVertex.hasNormal;
+            vertex.rawUserAttributesU32 = sourceVertex.rawUserAttributesU32;
             mesh.vertices.push_back(std::move(vertex));
         }
 
@@ -1199,6 +1202,7 @@ void appendGrndMeshes(
             corner.vertexIndex = index;
             triangleSet.corners.push_back(corner);
         }
+        triangleSet.triangleMetadata = grnd.mesh.triangleMetadata;
         mesh.triangleSets.push_back(std::move(triangleSet));
 
         BlenderIrDiagnostics::finalizeMesh(mesh);
@@ -1354,6 +1358,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         instance.tblId = entry.tblId;
         instance.fxnName = entry.fxnName;
         instance.transform = entry.transform;
+        instance.functionParameters = entry.functionParameters;
         instance.objectAddresses = entry.objectAddresses;
         instance.groundAddresses = entry.groundAddresses;
 
