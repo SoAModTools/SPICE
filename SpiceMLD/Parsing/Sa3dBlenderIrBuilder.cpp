@@ -1256,6 +1256,13 @@ void appendGobjTrees(
 
 } // namespace
 
+model::BlenderIrScene Sa3dBlenderIrBuilder::build(const model::MldFile& file) const {
+    ParseOptions projectionOptions{};
+    projectionOptions.buildBlenderIntermediateIr = false;
+    projectionOptions.emitFxnHistogram = false;
+    return build(MldParser{}.project(file, projectionOptions));
+}
+
 model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult) const {
     model::BlenderIrScene out{};
     std::unordered_map<std::uint32_t, std::vector<std::size_t>> meshIndicesByObjectAddress{};

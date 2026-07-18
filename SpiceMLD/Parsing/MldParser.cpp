@@ -1,11 +1,11 @@
 #include "MldParser.h"
 
-#include "../Export/BlenderIrJsonExporter.h"
 #include "Sa3dBlenderIrBuilder.h"
 #include "../../Compression/Aklz.h"
 #include "../Model/IndexEntry.h"
 #include "../common/ByteUtils.h"
 #include "EntryHandlers.h"
+#include "GobjParser.h"
 #include "GrndParser.h"
 #include "MldTextureArchiveParser.h"
 
@@ -14,12 +14,10 @@
 
 #include <algorithm>
 #include <array>
-#include <filesystem>
-#include <fstream>
 #include <cctype>
-#include <iostream>
 #include <iomanip>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -1131,15 +1129,13 @@ public:
     }
 };
 
-void appendListIfPresent(model::MldFile& file, const std::unique_ptr<model::U32List>& list) {
+void appendListIfPresent(model::MldFile& file, std::shared_ptr<model::U32List>& list) {
     if (!list) {
         return;
     }
-    const auto existing = std::find_if(file.u32Lists.begin(), file.u32Lists.end(), [&](const model::U32List& item) {
-        return item.pointer == list->pointer;
-    });
-    if (existing == file.u32Lists.end()) {
-        file.u32Lists.push_back(*list);
+    const auto [existing, inserted] = file.u32Lists.emplace(list->pointer, list);
+    if (!inserted) {
+        list = existing->second;
     }
 }
 
@@ -1203,28 +1199,43 @@ void appendRawDataBlock(
     file.originalBytes.assign(payload.begin(), payload.end());
 
     if (payload.empty()) {
-        file.diagnostics.push_back("Input buffer is empty.");
+        file.parseDiagnostics.push_back({
+            .severity = model::MldDiagnostic::Severity::Error,
+            .message = "Input buffer is empty.",
+        });
         return file;
     }
     if (payload.size() < 0x14U) {
-        file.diagnostics.push_back("MLD header too small.");
+        file.parseDiagnostics.push_back({
+            .severity = model::MldDiagnostic::Severity::Error,
+            .message = "MLD header too small.",
+        });
         return file;
     }
 
     const auto endian = detectMldEndian(payload);
     if (!endian.has_value()) {
-        file.diagnostics.push_back("Could not detect MLD endian from entry count and entry table bounds.");
+        file.parseDiagnostics.push_back({
+            .severity = model::MldDiagnostic::Severity::Error,
+            .message = "Could not detect MLD endian from entry count and entry table bounds.",
+        });
         return file;
     }
     file.endian = *endian;
     file.sourcePlatform = *endian == Endian::Little
         ? model::TargetPlatform::Dreamcast
         : model::TargetPlatform::GameCube;
-    file.diagnostics.push_back("Detected " + endianName(*endian) + "-endian MLD.");
+    file.parseDiagnostics.push_back({
+        .severity = model::MldDiagnostic::Severity::Info,
+        .message = "Detected " + endianName(*endian) + "-endian MLD.",
+    });
 
     const auto header = tryReadMldHeader(payload, *endian);
     if (!header.has_value() || !isPlausibleMldHeader(payload, *header)) {
-        file.diagnostics.push_back("MLD header failed validation after endian detection.");
+        file.parseDiagnostics.push_back({
+            .severity = model::MldDiagnostic::Severity::Error,
+            .message = "MLD header failed validation after endian detection.",
+        });
         return file;
     }
     file.header = *header;
@@ -1244,10 +1255,18 @@ void appendRawDataBlock(
             });
 
         for (const auto& warning : warnings) {
-            file.diagnostics.push_back(warning);
+            file.parseDiagnostics.push_back({
+                .severity = model::MldDiagnostic::Severity::Warning,
+                .message = warning,
+                .sourceOffset = static_cast<std::uint32_t>(entryOffset),
+            });
         }
         if (!entryOpt.has_value()) {
-            file.diagnostics.push_back("Entry " + std::to_string(i) + " malformed or truncated.");
+            file.parseDiagnostics.push_back({
+                .severity = model::MldDiagnostic::Severity::Error,
+                .message = "Entry " + std::to_string(i) + " malformed or truncated.",
+                .sourceOffset = static_cast<std::uint32_t>(entryOffset),
+            });
             continue;
         }
 
@@ -1298,502 +1317,708 @@ void appendRawDataBlock(
     return file;
 }
 
-} // namespace
+[[nodiscard]] std::uint64_t hashBytes(const std::span<const std::uint8_t> bytes) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    for (const auto value : bytes) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
 
-model::MldFile MldParser::parseFile(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
-    std::vector<std::uint8_t> decoded;
-    std::span<const std::uint8_t> payload = mldBytes;
-    bool sourceWasCompressed = false;
-    if (spice::compression::aklz::isAklz(mldBytes)) {
-        auto decodedResult = spice::compression::aklz::decompress(mldBytes);
-        if (!decodedResult.ok()) {
-            model::MldFile failed{};
-            failed.sourceWasCompressedAklz = true;
-            failed.diagnostics.push_back("AKLZ decompression failed: " + std::string(spice::compression::aklz::errorToString(decodedResult.error)));
-            return failed;
+void addCanonicalDiagnostic(model::MldFile& file,
+    const model::MldDiagnostic::Severity severity,
+    std::string message,
+    const std::optional<std::uint32_t> sourceOffset = std::nullopt) {
+    file.parseDiagnostics.push_back(model::MldDiagnostic{
+        .severity = severity,
+        .message = message,
+        .sourceOffset = sourceOffset,
+    });
+}
+
+[[nodiscard]] std::shared_ptr<const Sa3Dport::File::ModelFile> readCanonicalModel(
+    const ExtractedNjBlock& block) {
+    std::vector<std::size_t> offsets{};
+    if (block.modelReadOffset.has_value()) {
+        offsets.push_back(*block.modelReadOffset);
+    }
+    offsets.push_back(0U);
+    offsets.push_back(0x10U);
+    std::sort(offsets.begin(), offsets.end());
+    offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
+    for (const auto offset : offsets) {
+        if (offset >= block.bytes.size()) {
+            continue;
         }
-        decoded = std::move(decodedResult.bytes);
-        payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
-        sourceWasCompressed = true;
+        try {
+            const auto bytes = asByteSpan(block.bytes).subspan(offset);
+            return std::make_shared<const Sa3Dport::File::ModelFile>(
+                Sa3Dport::File::ModelFile::read_from_bytes(bytes));
+        } catch (const std::exception&) {
+        }
+    }
+    return {};
+}
+
+void buildCanonicalRanges(model::MldFile& file) {
+    struct Range {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+    };
+    std::vector<Range> known{};
+    const auto addRange = [&](const std::size_t offset, const std::size_t size) {
+        if (size == 0U || offset >= file.decodedBytes.size()) {
+            return;
+        }
+        known.push_back(Range{offset, std::min(file.decodedBytes.size(), offset + size)});
+    };
+    addRange(0U, 0x14U);
+    addRange(file.header.indexTableOffset, static_cast<std::size_t>(file.header.entryCount) * 0x68U);
+    for (const auto& [_, list] : file.u32Lists) {
+        if (list) {
+            addRange(list->pointer, 4U + list->values.size() * 4U);
+        }
+    }
+    for (const auto& [_, resource] : file.objectResources) {
+        addRange(resource.blockOffset, resource.blockSize);
+    }
+    for (const auto& [_, resource] : file.motionResources) {
+        addRange(resource.blockOffset, resource.blockSize);
+    }
+    for (const auto& [_, resource] : file.groundResources) {
+        addRange(resource.sourceAddress, resource.blockSize);
+    }
+    if (file.textureArchive.has_value()) {
+        addRange(file.textureArchive->archiveStartOffset,
+            file.textureArchive->archiveEndOffset - file.textureArchive->archiveStartOffset);
+    }
+    std::sort(known.begin(), known.end(), [](const auto& a, const auto& b) {
+        return a.begin < b.begin || (a.begin == b.begin && a.end < b.end);
+    });
+    std::vector<Range> merged{};
+    for (const auto& range : known) {
+        if (merged.empty() || range.begin > merged.back().end) {
+            merged.push_back(range);
+        } else {
+            merged.back().end = std::max(merged.back().end, range.end);
+        }
     }
 
-    auto file = parseMldFilePayload(payload, options);
-    file.sourceWasCompressedAklz = sourceWasCompressed;
+    file.sourceRanges.clear();
+    file.paddingAndUnknownRanges.clear();
+    std::size_t cursor = 0U;
+    for (const auto& range : merged) {
+        if (cursor < range.begin) {
+            model::MldUnknownRange unknown{
+                .offset = cursor,
+                .size = range.begin - cursor,
+                .label = "unclassified",
+                .pinned = true,
+            };
+            unknown.bytes.assign(
+                file.decodedBytes.begin() + static_cast<std::ptrdiff_t>(unknown.offset),
+                file.decodedBytes.begin() + static_cast<std::ptrdiff_t>(unknown.offset + unknown.size));
+            file.paddingAndUnknownRanges.push_back(std::move(unknown));
+            file.sourceRanges.push_back(model::MldSourceRange{
+                .offset = cursor,
+                .size = range.begin - cursor,
+                .label = "unclassified",
+                .known = false,
+                .pinned = true,
+            });
+        }
+        file.sourceRanges.push_back(model::MldSourceRange{
+            .offset = range.begin,
+            .size = range.end - range.begin,
+            .label = "known",
+            .known = true,
+        });
+        cursor = std::max(cursor, range.end);
+    }
+    if (cursor < file.decodedBytes.size()) {
+        model::MldUnknownRange unknown{
+            .offset = cursor,
+            .size = file.decodedBytes.size() - cursor,
+            .label = "unclassified",
+            .pinned = true,
+        };
+        unknown.bytes.assign(file.decodedBytes.begin() + static_cast<std::ptrdiff_t>(cursor), file.decodedBytes.end());
+        file.paddingAndUnknownRanges.push_back(std::move(unknown));
+        file.sourceRanges.push_back(model::MldSourceRange{
+            .offset = cursor,
+            .size = file.decodedBytes.size() - cursor,
+            .label = "unclassified",
+            .known = false,
+            .pinned = true,
+        });
+    }
+}
+
+} // namespace
+
+model::MldFile MldParser::parseBytes(
+    const std::span<const std::uint8_t> mldBytes,
+    const MldParseOptions& options) const {
+    model::MldFile file{};
+    if (options.preserveSourceBytes) {
+        file.sourceBytes.assign(mldBytes.begin(), mldBytes.end());
+    }
+
+    std::vector<std::uint8_t> decoded{};
+    std::span<const std::uint8_t> payload = mldBytes;
+    if (spice::compression::aklz::isAklz(mldBytes)) {
+        const auto decompressed = spice::compression::aklz::decompress(mldBytes);
+        if (!decompressed.ok()) {
+            file.sourceWasCompressedAklz = true;
+            file.parseStatus = model::MldParseStatus::Failed;
+            addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Error,
+                "AKLZ decompression failed: " + std::string(spice::compression::aklz::errorToString(decompressed.error)));
+            return file;
+        }
+        decoded = decompressed.bytes;
+        payload = decoded;
+        file.sourceWasCompressedAklz = true;
+    }
+
+    ParseOptions sourceOptions{};
+    sourceOptions.buildBlenderIntermediateIr = false;
+    sourceOptions.emitFxnHistogram = false;
+    file = parseMldFilePayload(payload, sourceOptions);
+    file.sourceWasCompressedAklz = spice::compression::aklz::isAklz(mldBytes);
+    if (options.preserveSourceBytes) {
+        file.sourceBytes.assign(mldBytes.begin(), mldBytes.end());
+    }
+    file.decodedBytes.assign(payload.begin(), payload.end());
+    file.originalBytes = file.decodedBytes;
+    if (file.header.entryCount == 0U || file.entries.empty()) {
+        file.parseStatus = model::MldParseStatus::Failed;
+        addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Error, "Failed to parse MLD index entries.");
+        return file;
+    }
+
+    std::unordered_set<std::uint32_t> objectAddresses{};
+    std::unordered_set<std::uint32_t> groundAddresses{};
+    std::unordered_set<std::uint32_t> motionAddresses{};
+    std::unordered_set<std::uint32_t> textureAddresses{};
+    SpatialOwnerMap groundOwners{};
+    SpatialOwnerMap objectOwners{};
+    for (const auto& record : file.entries) {
+        const auto& entry = record.entry;
+        if (entry.objectAddresses) {
+            for (const auto address : entry.objectAddresses->values) {
+                if (address != 0U) {
+                    objectAddresses.insert(address);
+                    objectOwners[address].push_back(BlockOwnerRef{
+                        .sourceEntryId = entry.entryId,
+                        .tableIndex = entry.tableIndex,
+                        .fxnName = entry.fxnName,
+                        .role = "object",
+                    });
+                }
+            }
+        }
+        if (entry.groundAddresses) {
+            for (const auto address : entry.groundAddresses->values) {
+                if (address != 0U) {
+                    groundAddresses.insert(address);
+                    groundOwners[address].push_back(BlockOwnerRef{
+                        .sourceEntryId = entry.entryId,
+                        .tableIndex = entry.tableIndex,
+                        .fxnName = entry.fxnName,
+                        .role = "ground",
+                    });
+                }
+            }
+        }
+        if (entry.motionAddresses) {
+            for (const auto address : entry.motionAddresses->values) {
+                if (address != 0U) {
+                    motionAddresses.insert(address);
+                }
+            }
+        }
+        if (entry.texturesPointer != 0U) {
+            textureAddresses.insert(entry.texturesPointer);
+        }
+    }
+
+    const auto njBlocks = buildExtractedNjBlocks(payload, objectAddresses, motionAddresses, textureAddresses);
+    for (const auto& block : njBlocks) {
+        if (block.kind == ExtractedNjBlock::Kind::Object) {
+            const auto sourceAddress = block.sourceObjectAddress.value_or(block.offset);
+            model::MldObjectResource resource{};
+            resource.sourceAddress = sourceAddress;
+            resource.blockOffset = block.offset;
+            resource.blockSize = block.size;
+            resource.includesNjtlPrefix = block.includesNjtlPrefix;
+            resource.modelBlockOffset = block.modelBlockOffset;
+            resource.modelReadOffset = block.modelReadOffset;
+            resource.textureListOffset = block.textureListOffset;
+            resource.wrapperLayout = block.wrapperLayout;
+            resource.rawBytes = block.bytes;
+            resource.originalSemanticHash = hashBytes(resource.rawBytes);
+            resource.model = readCanonicalModel(block);
+            resource.originalModel = resource.model;
+            if (!resource.model) {
+                resource.diagnostics.push_back(model::MldDiagnostic{
+                    .severity = model::MldDiagnostic::Severity::Warning,
+                    .message = "Existing Sa3Dport reader could not decode the object resource.",
+                    .sourceOffset = sourceAddress,
+                });
+            }
+            file.objectResources.emplace(sourceAddress, std::move(resource));
+        } else {
+            model::MldMotionResource resource{};
+            resource.sourceAddress = block.offset;
+            resource.blockOffset = block.offset;
+            resource.blockSize = block.size;
+            resource.rawBytes = block.bytes;
+            file.motionResources.emplace(block.offset, std::move(resource));
+        }
+    }
+
+    const auto spatialBlocks = buildExtractedSpatialBlocks(
+        payload, file.endian, groundAddresses, objectAddresses, motionAddresses, textureAddresses,
+        groundOwners, objectOwners);
+    GrndParser grndParser{};
+    GobjParser gobjParser{};
+    for (const auto& block : spatialBlocks) {
+        if (block.kind != ExtractedMldSpatialBlock::Kind::Grnd &&
+            block.kind != ExtractedMldSpatialBlock::Kind::Gobj) {
+            continue;
+        }
+        model::MldGroundResource resource{};
+        resource.sourceAddress = block.offset;
+        resource.blockSize = block.size;
+        resource.tag = block.tag;
+        resource.rawBytes = block.bytes;
+        if (block.kind == ExtractedMldSpatialBlock::Kind::Grnd) {
+            resource.kind = model::MldGroundResource::Kind::Grnd;
+            auto parsed = grndParser.decode(block.bytes, block.offset, block.endian);
+            resource.grnd = std::move(parsed.data);
+            resource.originalSemanticHash = model::semanticHash(*resource.grnd);
+            for (const auto& message : parsed.diagnostics) {
+                resource.diagnostics.push_back(model::MldDiagnostic{
+                    .severity = parsed.decoded ? model::MldDiagnostic::Severity::Info : model::MldDiagnostic::Severity::Warning,
+                    .message = message,
+                    .sourceOffset = block.offset,
+                });
+            }
+        } else {
+            resource.kind = model::MldGroundResource::Kind::Gobj;
+            auto parsed = gobjParser.decode(block.bytes, block.offset, block.endian);
+            resource.gobj = std::move(parsed.data);
+            resource.originalSemanticHash = model::semanticHash(*resource.gobj);
+            for (const auto& message : parsed.diagnostics) {
+                resource.diagnostics.push_back(model::MldDiagnostic{
+                    .severity = parsed.decoded ? model::MldDiagnostic::Severity::Info : model::MldDiagnostic::Severity::Warning,
+                    .message = message,
+                    .sourceOffset = block.offset,
+                });
+            }
+        }
+        file.groundResources.emplace(block.offset, std::move(resource));
+    }
+
+    for (const auto& record : file.entries) {
+        const auto& entry = record.entry;
+        if (!entry.motionAddresses || !entry.objectAddresses) {
+            continue;
+        }
+        std::vector<AnimationTargetCandidate> targets{};
+        for (const auto objectAddress : entry.objectAddresses->values) {
+            const auto found = file.objectResources.find(objectAddress);
+            if (found == file.objectResources.end() || !found->second.model || !found->second.model->model) {
+                continue;
+            }
+            targets.push_back(AnimationTargetCandidate{
+                .objectAddress = objectAddress,
+                .nodeCount = static_cast<std::uint32_t>(found->second.model->model->tree_nodes().size()),
+            });
+        }
+        for (std::size_t slot = 0; slot < entry.motionAddresses->values.size(); ++slot) {
+            const auto motionAddress = entry.motionAddresses->values[slot];
+            if (motionAddress == 0U) {
+                continue;
+            }
+            const auto block = findMotionBlock(njBlocks, motionAddress);
+            auto resource = file.motionResources.find(motionAddress);
+            if (block == nullptr || resource == file.motionResources.end()) {
+                addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
+                    "Motion slot points to a missing resource.", motionAddress);
+                continue;
+            }
+            std::vector<std::string> rejected{};
+            const auto binding = chooseAnimationBinding(targets, *block, rejected);
+            if (!binding.has_value()) {
+                addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
+                    "Could not bind motion slot " + std::to_string(slot) + " for entry " +
+                        std::to_string(entry.tableIndex) + ".",
+                    motionAddress);
+                continue;
+            }
+            try {
+                std::vector<AnimationBindingProbe> validInterpretations{};
+                for (const auto& target : targets) {
+                    for (const bool shortRot : {false, true}) {
+                        auto probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
+                            asByteSpan(block->bytes), target.nodeCount, shortRot);
+                        if (probe.valid) {
+                            validInterpretations.push_back(AnimationBindingProbe{
+                                .target = target,
+                                .probe = std::move(probe),
+                            });
+                        }
+                    }
+                }
+                for (const auto& interpretation : validInterpretations) {
+                    const auto existing = std::find_if(resource->second.variants.begin(), resource->second.variants.end(), [&](const auto& item) {
+                        return item.nodeCount == interpretation.target.nodeCount
+                            && item.shortRot == interpretation.probe.short_rot;
+                    });
+                    if (existing != resource->second.variants.end()) {
+                        continue;
+                    }
+                    const auto parsed = Sa3Dport::File::AnimationFile::read_from_bytes(
+                        asByteSpan(block->bytes), interpretation.target.nodeCount, interpretation.probe.short_rot);
+                    resource->second.variants.push_back(model::MldMotionVariant{
+                        .nodeCount = interpretation.target.nodeCount,
+                        .shortRot = interpretation.probe.short_rot,
+                        .motion = std::make_shared<const Sa3Dport::Animation::Motion>(parsed.animation),
+                        .originalSemanticHash = hashBytes(resource->second.rawBytes),
+                    });
+                    resource->second.variants.back().originalMotion = resource->second.variants.back().motion;
+                }
+                const auto variant = std::find_if(resource->second.variants.begin(), resource->second.variants.end(), [&](const auto& item) {
+                    return item.nodeCount == binding->target.nodeCount && item.shortRot == binding->probe.short_rot;
+                });
+                if (variant == resource->second.variants.end()) {
+                    throw std::runtime_error("selected motion interpretation was not retained");
+                }
+                std::set<std::pair<std::uint32_t, bool>> uniqueInterpretations{};
+                for (const auto& interpretation : validInterpretations) {
+                    uniqueInterpretations.emplace(interpretation.target.nodeCount, interpretation.probe.short_rot);
+                }
+                if (uniqueInterpretations.size() > 1U) {
+                    addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
+                        "Motion has multiple valid object/node-count interpretations; all variants were retained and one compatibility binding was selected.",
+                        motionAddress);
+                }
+                file.animationBindings.push_back(model::MldAnimationBinding{
+                    .tableIndex = entry.tableIndex,
+                    .sourceEntryId = entry.entryId,
+                    .motionSlot = slot,
+                    .motionAddress = motionAddress,
+                    .objectAddress = binding->target.objectAddress,
+                    .nodeCount = binding->target.nodeCount,
+                    .shortRot = binding->probe.short_rot,
+                    .motionVariantIndex = static_cast<std::size_t>(std::distance(resource->second.variants.begin(), variant)),
+                });
+            } catch (const std::exception& ex) {
+                addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
+                    "Failed to decode bound motion: " + std::string(ex.what()), motionAddress);
+            }
+        }
+    }
+
+    buildCanonicalRanges(file);
+    for (const auto& [_, resource] : file.objectResources) {
+        file.parseDiagnostics.insert(file.parseDiagnostics.end(), resource.diagnostics.begin(), resource.diagnostics.end());
+    }
+    for (const auto& [_, resource] : file.motionResources) {
+        file.parseDiagnostics.insert(file.parseDiagnostics.end(), resource.diagnostics.begin(), resource.diagnostics.end());
+    }
+    for (const auto& [_, resource] : file.groundResources) {
+        file.parseDiagnostics.insert(file.parseDiagnostics.end(), resource.diagnostics.begin(), resource.diagnostics.end());
+    }
+    file.parseStatus = std::any_of(file.parseDiagnostics.begin(), file.parseDiagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity != model::MldDiagnostic::Severity::Info;
+    }) ? model::MldParseStatus::Partial : model::MldParseStatus::Complete;
     return file;
 }
 
-ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
-    std::cout << "[SpiceMLD] Step 1/5: Starting parse (" << mldBytes.size() << " bytes).\n";
-    ParseResult result{};
+model::MldFile MldParser::parseFile(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
+    (void)options;
+    return parseBytes(mldBytes);
+}
 
-    std::vector<std::uint8_t> decoded;
-    std::span<const std::uint8_t> payload = mldBytes;
-    if (spice::compression::aklz::isAklz(mldBytes)) {
-        std::cout << "[SpiceMLD] Step 2/5: Input is AKLZ-compressed, decompressing...\n";
-        auto decodedResult = spice::compression::aklz::decompress(mldBytes);
-        if (!decodedResult.ok()) {
+ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& options) const {
+    ParseResult result{};
+    const auto payload = std::span<const std::uint8_t>(file.decodedBytes.data(), file.decodedBytes.size());
+
+    for (const auto& diagnostic : file.parseDiagnostics) {
+        ParseDiagnostic::Severity severity = ParseDiagnostic::Severity::Info;
+        if (diagnostic.severity == model::MldDiagnostic::Severity::Warning) {
+            severity = ParseDiagnostic::Severity::Warning;
+        } else if (diagnostic.severity == model::MldDiagnostic::Severity::Error) {
+            severity = ParseDiagnostic::Severity::Error;
+        }
+        result.diagnostics.push_back(ParseDiagnostic{ .severity = severity, .message = diagnostic.message });
+    }
+    if (file.parseStatus == model::MldParseStatus::Failed || file.entries.empty()) {
+        if (result.diagnostics.empty()) {
             result.diagnostics.push_back(ParseDiagnostic{
                 .severity = ParseDiagnostic::Severity::Error,
-                .message = "AKLZ decompression failed: " + std::string(spice::compression::aklz::errorToString(decodedResult.error)),
+                .message = "Cannot project an unparsed MLD file.",
             });
-            return result;
         }
-
-        decoded = std::move(decodedResult.bytes);
-        payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
-    }
-    else {
-        std::cout << "[SpiceMLD] Step 2/5: Input is not AKLZ-compressed.\n";
-    }
-
-    if (payload.empty()) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Error,
-            .message = "Input buffer is empty.",
-        });
         return result;
+    }
+
+    result.textureArchive = file.textureArchive;
+    result.entryList.reserve(file.entries.size());
+    for (const auto& record : file.entries) {
+        result.entryList.push_back(makeEntryListItem(payload, record.entry, file.endian));
     }
 
     std::unordered_map<std::string, std::size_t> histogram{};
-    std::unordered_map<std::uint32_t, std::size_t> chunkTypeCounts{};
-    if (payload.size() < 0x14) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Error,
-            .message = "MLD header too small.",
-        });
-        return result;
-    }
-
-    auto mldFile = parseMldFilePayload(payload, options);
-    for (const auto& diagnostic : mldFile.diagnostics) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = diagnostic,
-        });
-    }
-    if (mldFile.header.entryCount == 0U || mldFile.entries.empty()) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Error,
-            .message = "Failed to parse MLD file IR.",
-        });
-        return result;
-    }
-
-    const auto selectedEndian = mldFile.endian;
-    constexpr std::size_t entrySize = 0x68;
-    const std::size_t entryCount = static_cast<std::size_t>(mldFile.header.entryCount);
-    const std::size_t entryTableOffset = static_cast<std::size_t>(mldFile.header.indexTableOffset);
-    const std::size_t entryTableEnd = entryTableOffset + (entryCount * entrySize);
-    if (entryTableOffset >= payload.size() || entryTableEnd > payload.size()) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Error,
-            .message = "MLD entry table is out of bounds (count=" + std::to_string(entryCount) +
-                ", ptr=" + std::to_string(entryTableOffset) + ").",
-        });
-        return result;
-    }
-
-    result.diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Info,
-        .message = "Index-based parse: entries=" + std::to_string(entryCount) +
-            ", entryTable=0x" + std::to_string(entryTableOffset) +
-            ", fxnParams=0x" + std::to_string(static_cast<std::size_t>(mldFile.header.functionParametersOffset)) +
-            ", realData=0x" + std::to_string(static_cast<std::size_t>(mldFile.header.realDataOffset)) +
-            ", textureTable=0x" + std::to_string(static_cast<std::size_t>(mldFile.header.textureTableOffset)),
-    });
-    result.textureArchive = std::move(mldFile.textureArchive);
-    if (result.textureArchive.has_value()) {
-        for (const auto& textureDiag : result.textureArchive->diagnostics) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = ParseDiagnostic::Severity::Info,
-                .message = textureDiag,
-            });
-        }
-    }
-    if (!options.filterEntryIdList.empty()) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "Entry filter enabled by ID list (" + std::to_string(options.filterEntryIdList.size()) + " IDs).",
-        });
-    } else if (!options.filterFxnName.empty()) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "Entry filter enabled by fxnName=\"" + options.filterFxnName + "\".",
-        });
-    }
-
-    std::vector<model::IndexEntry> entries{};
-    entries.reserve(mldFile.entries.size());
-    std::cout << "[SpiceMLD] Step 3/5: Reading index entries (" << entryCount << " total)...\n";
-    for (const auto& record : mldFile.entries) {
-        entries.push_back(record.entry);
-    }
-
-    result.entryList.reserve(entries.size());
-    for (const auto& entry : entries) {
-        result.entryList.push_back(makeEntryListItem(payload, entry, selectedEndian));
-    }
+    const bool useEntryIdFilter = !options.filterEntryIdList.empty();
+    const std::unordered_set<std::uint32_t> selectedEntryIds(
+        options.filterEntryIdList.begin(), options.filterEntryIdList.end());
+    const auto normalizedFilterFxn = useEntryIdFilter ? std::string{} : normalizeFxnName(options.filterFxnName);
+    const bool useFxnFilter = !useEntryIdFilter && !normalizedFilterFxn.empty();
+    const auto selected = [&](const model::IndexEntry& entry) {
+        return useEntryIdFilter
+            ? selectedEntryIds.contains(entry.entryId)
+            : (!useFxnFilter || normalizeFxnName(entry.fxnName) == normalizedFilterFxn);
+    };
 
     if (options.entryListOnly) {
-        for (const auto& entry : result.entryList) {
-            addHistogram(histogram, options, entry.fxnName);
-        }
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "Entry list-only mode parsed " + std::to_string(result.entryList.size()) + " MLD index entries.",
-        });
         if (options.emitFxnHistogram) {
-            result.fxnHistogram.reserve(histogram.size());
-            for (const auto& [fxn, count] : histogram) {
-                result.fxnHistogram.emplace_back(fxn, count);
+            for (const auto& record : file.entries) {
+                addHistogram(histogram, options, record.entry.fxnName);
             }
-            std::sort(result.fxnHistogram.begin(), result.fxnHistogram.end(),
-                [](const auto& a, const auto& b) {
-                    return a.first < b.first;
-                });
         }
-        std::cout << "[SpiceMLD] Step 4/5: Entry list-only mode skipping payload/chunk decode.\n";
-        std::cout << "[SpiceMLD] Step 5/5: Parse complete. Entries=" << entries.size()
-                  << ", GRND=0.\n";
-        return result;
-    }
-
-    std::cout << "[SpiceMLD] Step 4/5: Decoding entry payloads/chunks...\n";
-
-    std::unordered_set<std::uint32_t> uniqueGroundAddresses{};
-    std::unordered_set<std::uint32_t> uniqueObjectAddresses{};
-    std::unordered_set<std::uint32_t> uniqueMotionAddresses{};
-    std::unordered_set<std::uint32_t> uniqueTextureAddresses{};
-    std::unordered_map<std::uint32_t, const model::IndexEntry*> groundAddressOwners{};
-    SpatialOwnerMap groundBlockOwners{};
-    SpatialOwnerMap objectBlockOwners{};
-    const std::array<std::unique_ptr<EntryHandler>, 2> handlers{
-        std::make_unique<CollisionEntryHandler>(),
-        std::make_unique<TriggerEntryHandler>(),
-    };
-    const bool useEntryIdFilter = !options.filterEntryIdList.empty();
-    std::unordered_set<std::uint32_t> selectedEntryIds{};
-    if (useEntryIdFilter) {
-        selectedEntryIds.insert(options.filterEntryIdList.begin(), options.filterEntryIdList.end());
-    }
-    const std::string normalizedFilterFxn = useEntryIdFilter ? std::string{} : normalizeFxnName(options.filterFxnName);
-    const bool useFxnFilter = !useEntryIdFilter && !normalizedFilterFxn.empty();
-
-    for (const auto& entry : entries) {
-        const auto normalizedFxnName = normalizeFxnName(entry.fxnName);
-        const bool selected = useEntryIdFilter
-            ? (selectedEntryIds.find(entry.entryId) != selectedEntryIds.end())
-            : (!useFxnFilter || normalizedFxnName == normalizedFilterFxn);
-        if (!selected) {
-            continue;
-        }
-
-        addHistogram(histogram, options, entry.fxnName);
-
-        const std::size_t entryOffset = entryTableOffset + (entry.tableIndex * entrySize);
-        std::vector<std::uint32_t> objectAddresses{};
-        objectAddresses.reserve(entry.objectAddresses->values.size());
-        for (const auto objectAddress : entry.objectAddresses->values) {
-            if (objectAddress == 0U) {
-                continue;
-            }
-            objectAddresses.push_back(objectAddress);
-        }
-        std::vector<std::uint32_t> groundAddresses{};
-        groundAddresses.reserve(entry.groundAddresses->values.size());
-        for (const auto groundAddress : entry.groundAddresses->values) {
-            if (groundAddress == 0U) {
-                continue;
-            }
-            groundAddresses.push_back(groundAddress);
-        }
-        RawEntry rawEntry{
-            .sourceEntryId = entry.entryId,
-            .fxnName = entry.fxnName,
-            .tblId = entry.tblId,
-            .transform = entry.transform,
-            .objectAddresses = objectAddresses,
-            .payload = std::span<const std::uint8_t>(payload.data() + static_cast<std::ptrdiff_t>(entryOffset), entrySize),
+    } else {
+        const std::array<std::unique_ptr<EntryHandler>, 2> handlers{
+            std::make_unique<CollisionEntryHandler>(),
+            std::make_unique<TriggerEntryHandler>(),
         };
-        result.rawEntries.push_back(ParsedRawEntry{
-            .tableIndex = entry.tableIndex,
-            .sourceEntryId = entry.entryId,
-            .fxnName = entry.fxnName,
-            .tblId = entry.tblId,
-            .transform = entry.transform,
-            .functionParameters = entry.functionParameters
-                ? entry.functionParameters->values
-                : std::vector<std::uint32_t>{},
-            .objectAddresses = objectAddresses,
-            .groundAddresses = groundAddresses,
-            .motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{},
-            .payload = std::vector<std::uint8_t>(
-                payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
-                payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize)),
-        });
-
-        bool classified = false;
-        bool classifiedAsTrigger = false;
-        for (const auto& handler : handlers) {
-            if (!handler->canHandle(rawEntry.fxnName)) {
+        for (const auto& record : file.entries) {
+            const auto& entry = record.entry;
+            if (!selected(entry)) {
                 continue;
             }
-            handler->parse(rawEntry, result.world);
-            classified = true;
-            classifiedAsTrigger = normalizedFxnName == "treasure" ||
-                normalizedFxnName == "goscript" ||
-                normalizedFxnName == "wallmot";
-            break;
-        }
+            addHistogram(histogram, options, entry.fxnName);
 
-        if (!classified && options.preserveUnknownEntries) {
-            UnknownEntry unknown{};
-            unknown.sourceEntryId = entry.entryId;
-            unknown.fxnName = entry.fxnName;
-            unknown.tblId = entry.tblId;
-            unknown.transform = entry.transform;
-            unknown.rawPayload.assign(payload.begin() + static_cast<std::ptrdiff_t>(entryOffset),
-                payload.begin() + static_cast<std::ptrdiff_t>(entryOffset + entrySize));
-            result.world.unknownEntries.push_back(std::move(unknown));
-        }
+            auto nonzeroValues = [](const std::shared_ptr<model::U32List>& list) {
+                std::vector<std::uint32_t> values{};
+                if (list) {
+                    std::copy_if(list->values.begin(), list->values.end(), std::back_inserter(values),
+                        [](const std::uint32_t value) { return value != 0U; });
+                }
+                return values;
+            };
+            const auto objectAddresses = nonzeroValues(entry.objectAddresses);
+            const auto groundAddresses = nonzeroValues(entry.groundAddresses);
+            const auto entryOffset = static_cast<std::size_t>(file.header.indexTableOffset) + entry.tableIndex * 0x68U;
+            std::span<const std::uint8_t> rawPayload{};
+            if (entryOffset <= payload.size() && 0x68U <= payload.size() - entryOffset) {
+                rawPayload = payload.subspan(entryOffset, 0x68U);
+            }
 
-        if (classifiedAsTrigger) {
-            result.searchWorld.regions.push_back(EncounterOrTriggerRegion{
+            RawEntry rawEntry{
                 .sourceEntryId = entry.entryId,
                 .fxnName = entry.fxnName,
                 .tblId = entry.tblId,
                 .transform = entry.transform,
-            });
-        }
-
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "Entry " + std::to_string(entry.tableIndex) + ": id=" + std::to_string(entry.entryId) +
-                ", tblId=" + std::to_string(entry.tblId) +
-                ", fxn=\"" + entry.fxnName + "\"" +
-                ", groundLinks=" + std::to_string(entry.groundLinks->values.size()) +
-                ", params2=" + std::to_string(entry.paramList2->values.size()) +
-                ", functionParams=" + std::to_string(entry.functionParameters->values.size()) +
-                ", objects=" + std::to_string(entry.objectCount) +
-                ", grounds=" + std::to_string(entry.groundCount) +
-                ", motions=" + std::to_string(entry.motionCount),
-        });
-        for (const auto objectAddress : entry.objectAddresses->values) {
-            if (objectAddress == 0U) {
-                continue;
-            }
-            uniqueObjectAddresses.insert(objectAddress);
-            objectBlockOwners[objectAddress].push_back(BlockOwnerRef{
-                .sourceEntryId = entry.entryId,
+                .objectAddresses = objectAddresses,
+                .payload = rawPayload,
+            };
+            result.rawEntries.push_back(ParsedRawEntry{
                 .tableIndex = entry.tableIndex,
-                .fxnName = entry.fxnName,
-                .role = "object",
-            });
-        }
-        
-        for (const auto groundAddress : entry.groundAddresses->values) {
-            if (groundAddress == 0U) {
-                continue;
-            }
-            if (uniqueGroundAddresses.insert(groundAddress).second) {
-                groundAddressOwners.emplace(groundAddress, &entry);
-            }
-            groundBlockOwners[groundAddress].push_back(BlockOwnerRef{
                 .sourceEntryId = entry.entryId,
-                .tableIndex = entry.tableIndex,
                 .fxnName = entry.fxnName,
-                .role = "ground",
+                .tblId = entry.tblId,
+                .transform = entry.transform,
+                .functionParameters = entry.functionParameters ? entry.functionParameters->values : std::vector<std::uint32_t>{},
+                .objectAddresses = objectAddresses,
+                .groundAddresses = groundAddresses,
+                .motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{},
+                .payload = std::vector<std::uint8_t>(rawPayload.begin(), rawPayload.end()),
             });
-        }
 
-        for (const auto motionAddress : entry.motionAddresses->values) {
-            if (motionAddress == 0U) {
-                continue;
-            }
-            uniqueMotionAddresses.insert(motionAddress);
-        }
-
-        if (static_cast<std::size_t>(entry.texturesPointer) < payload.size()) {
-            ++chunkTypeCounts[makeTag('N', 'J', 'T', 'L')];
-            uniqueTextureAddresses.insert(entry.texturesPointer);
-        }
-    }
-
-    std::vector<uint32_t> objectAddressesAll{};
-    for (const auto addr : uniqueObjectAddresses) {
-        objectAddressesAll.push_back(addr);
-    }
-    std::sort(objectAddressesAll.begin(), objectAddressesAll.end());
-    result.extractedNjBlocks = buildExtractedNjBlocks(payload, uniqueObjectAddresses, uniqueMotionAddresses, uniqueTextureAddresses);
-    result.diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Info,
-        .message = "Extracted NJ blocks from MLD payload: " + std::to_string(result.extractedNjBlocks.size()),
-    });
-    parseMldAnimations(result);
-    if (options.extractGrndGobjBlocks || options.buildBlenderIntermediateIr) {
-        result.extractedSpatialBlocks = buildExtractedSpatialBlocks(
-            payload,
-            selectedEndian,
-            uniqueGroundAddresses,
-            uniqueObjectAddresses,
-            uniqueMotionAddresses,
-            uniqueTextureAddresses,
-            groundBlockOwners,
-            objectBlockOwners);
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Info,
-            .message = "Scanned GRND/GOBJ spatial blocks from MLD payload: " + std::to_string(result.extractedSpatialBlocks.size()),
-        });
-    }
-    result.diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Info,
-        .message = "Legacy Ninja parsing modules (NJCM/NJTL) have been removed from MLD parsing. Object addresses are retained for SA3D IR migration.",
-    });
-
-    GrndParser grndParser{};
-    for (const auto groundAddress : uniqueGroundAddresses) {
-        const std::size_t grndOffset = static_cast<std::size_t>(groundAddress);
-        if (grndOffset + 0x10U > payload.size()) {
-            continue;
-        }
-        if (readTagAt(payload, grndOffset) != 0x47524E44U) {
-            continue;
-        }
-
-        const EndianReader grndHeaderReader(payload, selectedEndian);
-        const auto declaredSize = grndHeaderReader.try_read_u32(grndOffset + 4U);
-        if (!declaredSize.has_value() || *declaredSize < 0x10U ||
-            static_cast<std::size_t>(*declaredSize) > payload.size() - grndOffset) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = ParseDiagnostic::Severity::Warning,
-                .message = "GRND block at " + std::to_string(groundAddress) + " has an invalid declared size.",
-            });
-            continue;
-        }
-
-        auto decoded = grndParser.decode(payload.subspan(grndOffset, static_cast<std::size_t>(*declaredSize)), groundAddress, selectedEndian);
-        for (const auto& diagnostic : decoded.diagnostics) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = decoded.decoded ? ParseDiagnostic::Severity::Info : ParseDiagnostic::Severity::Warning,
-                .message = diagnostic,
-            });
-        }
-        if (!decoded.decoded) {
-            continue;
-        }
-
-        GrndSurface surface{};
-        surface.id = groundAddress;
-        surface.sourceOffset = groundAddress;
-        surface.mesh = std::move(decoded.mesh);
-        for (auto& vertex : surface.mesh.vertices) {
-            vertex.position = applyCoordinates(vertex.position, options.coordinates);
-        }
-        if (options.coordinates.reverseTriangleWinding && surface.mesh.indices.size() >= 3) {
-            for (std::size_t ii = 0; ii + 2 < surface.mesh.indices.size(); ii += 3) {
-                std::swap(surface.mesh.indices[ii + 1], surface.mesh.indices[ii + 2]);
-            }
-        }
-        if (const auto ownerIt = groundAddressOwners.find(groundAddress); ownerIt != groundAddressOwners.end()) {
-            const auto* owner = ownerIt->second;
-            surface.transform = owner->transform;
-            surface.linkedGrndIds.reserve(owner->groundLinks->values.size());
-            for (const auto link : owner->groundLinks->values) {
-                surface.linkedGrndIds.push_back(link);
-            }
-        }
-        result.world.grndSurfaces.push_back(std::move(surface));
-    }
-
-    result.diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Info,
-        .message = "Unique chunk address counts: grounds=" + std::to_string(uniqueGroundAddresses.size()) +
-            ", objects=" + std::to_string(uniqueObjectAddresses.size()) +
-            ", motions=" + std::to_string(uniqueMotionAddresses.size()),
-    });
-
-    if (options.buildBlenderIntermediateIr) {
-        Sa3dBlenderIrBuilder blenderIrBuilder{};
-        result.blenderIrScene = blenderIrBuilder.build(result);
-        if (result.blenderIrScene.has_value()) {
-            result.blenderIrDiagnostics = result.blenderIrScene->diagnostics;
-
-            if (options.exportBlenderIrJson && !options.blenderIrOutputDir.empty()) {
-                std::error_code ec{};
-                std::filesystem::create_directories(options.blenderIrOutputDir, ec);
-                if (ec) {
-                    result.diagnostics.push_back(ParseDiagnostic{
-                        .severity = ParseDiagnostic::Severity::Warning,
-                        .message = "Failed to create Blender IR output directory: " + options.blenderIrOutputDir,
-                    });
-                } else {
-                    exporting::BlenderIrJsonExporter exporter{};
-                    const auto path = options.blenderIrOutputDir + "/blender_ir_scene.json";
-                    std::ofstream os(path, std::ios::binary);
-                    if (!os) {
-                        result.diagnostics.push_back(ParseDiagnostic{
-                            .severity = ParseDiagnostic::Severity::Warning,
-                            .message = "Failed to open Blender IR JSON output file: " + path,
-                        });
-                    } else {
-                        os << exporter.toJson(*result.blenderIrScene);
-                        result.blenderIrArtifactPaths.push_back(path);
-                    }
+            bool classified = false;
+            for (const auto& handler : handlers) {
+                if (handler->canHandle(entry.fxnName)) {
+                    handler->parse(rawEntry, result.world);
+                    classified = true;
+                    break;
                 }
             }
+            const auto normalized = normalizeFxnName(entry.fxnName);
+            if (normalized == "treasure" || normalized == "goscript" || normalized == "wallmot") {
+                result.searchWorld.regions.push_back(EncounterOrTriggerRegion{
+                    .sourceEntryId = entry.entryId,
+                    .fxnName = entry.fxnName,
+                    .tblId = entry.tblId,
+                    .transform = entry.transform,
+                });
+            }
+            if (!classified && options.preserveUnknownEntries) {
+                result.world.unknownEntries.push_back(UnknownEntry{
+                    .sourceEntryId = entry.entryId,
+                    .fxnName = entry.fxnName,
+                    .tblId = entry.tblId,
+                    .transform = entry.transform,
+                    .rawPayload = record.rawBytes,
+                });
+            }
         }
-    }
 
-    result.searchWorld.surfaces.reserve(result.world.grndSurfaces.size());
-    for (const auto& grnd : result.world.grndSurfaces) {
-        result.searchWorld.surfaces.push_back(WalkSurfaceNode{
-            .grndId = grnd.id,
-            .neighborGrndIds = grnd.linkedGrndIds,
-            .mesh = grnd.mesh,
+        for (const auto& [address, resource] : file.objectResources) {
+            result.extractedNjBlocks.push_back(ExtractedNjBlock{
+                .kind = ExtractedNjBlock::Kind::Object,
+                .offset = resource.blockOffset,
+                .size = resource.blockSize,
+                .includesNjtlPrefix = resource.includesNjtlPrefix,
+                .sourceObjectAddress = resource.sourceAddress,
+                .modelBlockOffset = resource.modelBlockOffset,
+                .modelReadOffset = resource.modelReadOffset,
+                .textureListOffset = resource.textureListOffset,
+                .wrapperLayout = resource.wrapperLayout,
+                .bytes = resource.rawBytes,
+            });
+        }
+        for (const auto& [address, resource] : file.motionResources) {
+            result.extractedNjBlocks.push_back(ExtractedNjBlock{
+                .kind = ExtractedNjBlock::Kind::Motion,
+                .offset = resource.blockOffset,
+                .size = resource.blockSize,
+                .bytes = resource.rawBytes,
+            });
+        }
+        std::sort(result.extractedNjBlocks.begin(), result.extractedNjBlocks.end(), [](const auto& lhs, const auto& rhs) {
+            return lhs.offset < rhs.offset || (lhs.offset == rhs.offset && lhs.kind < rhs.kind);
         });
+
+        for (const auto& binding : file.animationBindings) {
+            const auto resource = file.motionResources.find(binding.motionAddress);
+            if (resource == file.motionResources.end() || binding.motionVariantIndex >= resource->second.variants.size()) {
+                continue;
+            }
+            const auto& variant = resource->second.variants[binding.motionVariantIndex];
+            result.animations.push_back(ParsedMldAnimation{
+                .sourceEntryId = binding.sourceEntryId,
+                .tableIndex = binding.tableIndex,
+                .sourceObjectAddress = binding.objectAddress,
+                .sourceMotionAddress = binding.motionAddress,
+                .motionSlot = binding.motionSlot,
+                .nodeCount = binding.nodeCount,
+                .shortRot = binding.shortRot,
+                .motion = variant.motion,
+            });
+        }
+
+        for (const auto& [address, resource] : file.groundResources) {
+            ExtractedMldSpatialBlock::Kind kind = ExtractedMldSpatialBlock::Kind::UnknownGround;
+            if (resource.kind == model::MldGroundResource::Kind::Grnd) {
+                kind = ExtractedMldSpatialBlock::Kind::Grnd;
+            } else if (resource.kind == model::MldGroundResource::Kind::Gobj) {
+                kind = ExtractedMldSpatialBlock::Kind::Gobj;
+            }
+            ExtractedMldSpatialBlock block{
+                .kind = kind,
+                .offset = address,
+                .size = resource.blockSize,
+                .endian = file.endian,
+                .tag = resource.tag,
+                .sizeSource = "canonical resource",
+                .bytes = resource.rawBytes,
+            };
+            for (const auto& record : file.entries) {
+                const auto& entry = record.entry;
+                const auto addOwners = [&](const std::shared_ptr<model::U32List>& list, const char* role) {
+                    if (list && std::find(list->values.begin(), list->values.end(), address) != list->values.end()) {
+                        block.owners.push_back(BlockOwnerRef{
+                            .sourceEntryId = entry.entryId,
+                            .tableIndex = entry.tableIndex,
+                            .fxnName = entry.fxnName,
+                            .role = role,
+                        });
+                    }
+                };
+                addOwners(entry.groundAddresses, "ground");
+                addOwners(entry.objectAddresses, "object");
+            }
+            result.extractedSpatialBlocks.push_back(std::move(block));
+
+            if (resource.grnd.has_value()) {
+                const model::IndexEntry* owner = nullptr;
+                for (const auto& record : file.entries) {
+                    if (record.entry.groundAddresses &&
+                        std::find(record.entry.groundAddresses->values.begin(), record.entry.groundAddresses->values.end(), address)
+                            != record.entry.groundAddresses->values.end()) {
+                        owner = &record.entry;
+                        break;
+                    }
+                }
+                GrndSurface surface{};
+                surface.id = address;
+                surface.sourceOffset = address;
+                surface.mesh = resource.grnd->mesh;
+                for (auto& vertex : surface.mesh.vertices) {
+                    vertex.position = applyCoordinates(vertex.position, options.coordinates);
+                }
+                if (options.coordinates.reverseTriangleWinding) {
+                    for (std::size_t i = 0; i + 2U < surface.mesh.indices.size(); i += 3U) {
+                        std::swap(surface.mesh.indices[i + 1U], surface.mesh.indices[i + 2U]);
+                    }
+                }
+                if (owner != nullptr) {
+                    surface.transform = owner->transform;
+                    if (owner->groundLinks) {
+                        surface.linkedGrndIds = owner->groundLinks->values;
+                    }
+                }
+                result.world.grndSurfaces.push_back(std::move(surface));
+            }
+        }
+
+        result.searchWorld.surfaces.reserve(result.world.grndSurfaces.size());
+        for (const auto& grnd : result.world.grndSurfaces) {
+            result.searchWorld.surfaces.push_back(WalkSurfaceNode{
+                .grndId = grnd.id,
+                .neighborGrndIds = grnd.linkedGrndIds,
+                .mesh = grnd.mesh,
+            });
+        }
+
+        if (options.buildBlenderIntermediateIr) {
+            Sa3dBlenderIrBuilder builder{};
+            result.blenderIrScene = builder.build(result);
+            result.blenderIrDiagnostics = result.blenderIrScene->diagnostics;
+        }
+        if (options.exportBlenderIrJson) {
+            result.diagnostics.push_back(ParseDiagnostic{
+                .severity = ParseDiagnostic::Severity::Warning,
+                .message = "Parser-owned Blender IR file output is deprecated; SpiceFileParsing must write projection artifacts.",
+            });
+        }
     }
 
     if (options.emitFxnHistogram) {
-        result.fxnHistogram.reserve(histogram.size());
-        for (const auto& [fxn, count] : histogram) {
-            result.fxnHistogram.emplace_back(fxn, count);
+        for (const auto& [name, count] : histogram) {
+            result.fxnHistogram.emplace_back(name, count);
         }
-        std::sort(result.fxnHistogram.begin(), result.fxnHistogram.end(),
-            [](const auto& a, const auto& b) {
-                return a.first < b.first;
-            });
+        std::sort(result.fxnHistogram.begin(), result.fxnHistogram.end());
     }
-
-    result.chunkTypeHistogram.reserve(chunkTypeCounts.size());
-    for (const auto& [tag, count] : chunkTypeCounts) {
-        result.chunkTypeHistogram.emplace_back(tagToString(tag), count);
+    if (!file.groundResources.empty()) {
+        std::unordered_map<std::string, std::size_t> chunks{};
+        for (const auto& [_, resource] : file.groundResources) {
+            ++chunks[resource.tag.empty() ? "????" : resource.tag];
+        }
+        for (const auto& [tag, count] : chunks) {
+            result.chunkTypeHistogram.emplace_back(tag, count);
+        }
+        std::sort(result.chunkTypeHistogram.begin(), result.chunkTypeHistogram.end());
     }
-    std::sort(result.chunkTypeHistogram.begin(), result.chunkTypeHistogram.end(),
-        [](const auto& a, const auto& b) {
-            return a.first < b.first;
-        });
-
-    result.diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Info,
-        .message = "Parsed MLD bytes: GRND=" + std::to_string(result.world.grndSurfaces.size()) +
-            ", collisions=" + std::to_string(result.world.collisions.size()) +
-            ", triggers=" + std::to_string(result.world.triggers.size()) +
-            ", unknownEntries=" + std::to_string(result.world.unknownEntries.size()) +
-            ", chunkTypes=" + std::to_string(result.chunkTypeHistogram.size()),
-    });
-
-    if (result.world.grndSurfaces.empty()) {
-        result.diagnostics.push_back(ParseDiagnostic{
-            .severity = ParseDiagnostic::Severity::Warning,
-            .message = "No GRND records decoded. This likely means container layout assumptions still need refinement.",
-        });
-    }
-
-    std::cout << "[SpiceMLD] Step 5/5: Parse complete. Entries=" << entries.size()
-              << ", GRND=" << result.world.grndSurfaces.size()
-              << ".\n";
-
     return result;
+}
+
+ParseResult MldParser::parse(std::span<const std::uint8_t> mldBytes, const ParseOptions& options) const {
+    return project(parseBytes(mldBytes), options);
 }
 
 std::vector<ExtractedNjBlock> MldParser::extractNjBlocks(

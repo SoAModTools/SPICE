@@ -1445,6 +1445,27 @@ ExtractedMldTexture extractMldTexture(
     };
 }
 
+const char* mldDiagnosticSeverityName(const spice::mld::model::MldDiagnostic::Severity severity) {
+    switch (severity) {
+    case spice::mld::model::MldDiagnostic::Severity::Info:
+        return "info";
+    case spice::mld::model::MldDiagnostic::Severity::Warning:
+        return "warning";
+    case spice::mld::model::MldDiagnostic::Severity::Error:
+        return "error";
+    }
+    return "unknown";
+}
+
+void writeMldDiagnostic(std::ostream& out, const char* key,
+    const spice::mld::model::MldDiagnostic& diagnostic) {
+    out << key << "=[" << mldDiagnosticSeverityName(diagnostic.severity) << "] " << diagnostic.message;
+    if (diagnostic.sourceOffset.has_value()) {
+        out << " @0x" << std::hex << *diagnostic.sourceOffset << std::dec;
+    }
+    out << "\n";
+}
+
 void writeMldTextureExtractReport(
     const std::filesystem::path& reportPath,
     const std::filesystem::path& sourceMldPath,
@@ -1478,8 +1499,8 @@ void writeMldTextureExtractReport(
     reportOut << "gvrDataSize=" << texture.gvrDataSize << "\n";
     reportOut << "sourceFileSize=" << extracted.parsed.originalBytes.size() << "\n";
     reportOut << "sourceWasAklz=" << (extracted.parsed.sourceWasCompressedAklz ? "true" : "false") << "\n";
-    for (const auto& diagnostic : extracted.parsed.diagnostics) {
-        reportOut << "mldDiagnostic=" << diagnostic << "\n";
+    for (const auto& diagnostic : extracted.parsed.parseDiagnostics) {
+        writeMldDiagnostic(reportOut, "mldDiagnostic", diagnostic);
     }
     for (const auto& diagnostic : texture.diagnostics) {
         reportOut << "textureDiagnostic=" << diagnostic << "\n";
@@ -1604,8 +1625,8 @@ void writeMldTextureReplacementReport(
         reportOut << "reparseTextureArchive=true\n";
         reportOut << "reparseTextureCount=" << reparsed.textureArchive->entries.size() << "\n";
     }
-    for (const auto& diagnostic : reparsed.diagnostics) {
-        reportOut << "reparseDiagnostic=" << diagnostic << "\n";
+    for (const auto& diagnostic : reparsed.parseDiagnostics) {
+        writeMldDiagnostic(reportOut, "reparseDiagnostic", diagnostic);
     }
 }
 
@@ -4006,15 +4027,12 @@ int main(int argc, char** argv) {
 
         if (extension == ".mld") {
             std::cout << "[SpiceFileParsing]   - Parsing MLD: " << entry.path().filename().string() << "\n";
+            auto mldFile = mldParser.parseBytes(std::span<const std::uint8_t>(bytes.data(), bytes.size()));
             if (cliOptions->sampleMldGvrFormats) {
                 mldGvrFormatInventoryBuilder.noteFileScanned();
                 try {
-                    spice::mld::parsing::ParseOptions sampleOptions{};
-                    sampleOptions.entryListOnly = true;
-                    sampleOptions.buildBlenderIntermediateIr = false;
-                    auto sampled = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), sampleOptions);
-                    if (sampled.textureArchive.has_value()) {
-                        mldGvrFormatInventoryBuilder.addParsedMld(entry.path().string(), *sampled.textureArchive);
+                    if (mldFile.textureArchive.has_value()) {
+                        mldGvrFormatInventoryBuilder.addParsedMld(entry.path().string(), *mldFile.textureArchive);
                     } else {
                         mldGvrFormatInventoryBuilder.addParseFailure(entry.path().string(), "No texture archive was parsed.");
                     }
@@ -4027,11 +4045,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (cliOptions->exportContentGraph) {
-                spice::mld::parsing::ParseOptions graphOptions{};
-                graphOptions.entryListOnly = true;
-                graphOptions.buildBlenderIntermediateIr = false;
-                auto graphParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), graphOptions);
-                contentGraphInput.mldFiles.push_back({entry.path().string(), std::move(graphParsed)});
+                contentGraphInput.mldFiles.push_back({entry.path().string(), std::move(mldFile)});
                 ++filesProcessed;
                 continue;
             }
@@ -4039,7 +4053,7 @@ int main(int argc, char** argv) {
                 spice::mld::parsing::ParseOptions entryListOptions{};
                 entryListOptions.entryListOnly = true;
                 entryListOptions.buildBlenderIntermediateIr = false;
-                auto entryListParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), entryListOptions);
+                auto entryListParsed = mldParser.project(mldFile, entryListOptions);
 
                 const auto entryListOutPath = outputDir / (entry.path().stem().string() + ".mld.entries.json");
                 writeMldEntryListJson(entryListOutPath, entry.path(), entryListParsed);
@@ -4050,7 +4064,7 @@ int main(int argc, char** argv) {
             if (cliOptions->runAbSa3dPortVsSa3dBridge) {
                 spice::mld::parsing::ParseOptions sa3dPortOptions{};
                 sa3dPortOptions.extractGrndGobjBlocks = cliOptions->extractGrndGobjBlocks;
-                auto sa3dPortParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), sa3dPortOptions);
+                auto sa3dPortParsed = mldParser.project(mldFile, sa3dPortOptions);
 
                 const auto sa3dPortOutPath = outputDir / (entry.path().stem().string() + ".mld.sa3d_port.txt");
                 std::ofstream sa3dPortOut(sa3dPortOutPath, std::ios::binary);
@@ -4108,7 +4122,7 @@ int main(int argc, char** argv) {
             } else {
                 spice::mld::parsing::ParseOptions parityOptions{};
                 parityOptions.extractGrndGobjBlocks = cliOptions->extractGrndGobjBlocks;
-                auto parityParsed = mldParser.parse(std::span<const std::uint8_t>(bytes.data(), bytes.size()), parityOptions);
+                auto parityParsed = mldParser.project(mldFile, parityOptions);
 
                 const auto parityOutPath = outputDir / (entry.path().stem().string() + ".mld.parity.txt");
                 std::ofstream parityOut(parityOutPath, std::ios::binary);

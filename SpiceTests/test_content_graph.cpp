@@ -78,21 +78,24 @@ spice::sct::SctParseResult makeScriptParseResult()
     return result;
 }
 
-spice::mld::parsing::ParseResult makeMldParseResult()
+spice::mld::model::MldFile makeMldFile()
 {
-    spice::mld::parsing::ParsedEntryListItem entry{};
+    spice::mld::model::MldIndexEntryRecord record{};
+    auto& entry = record.entry;
     entry.tableIndex = 7;
     entry.entryId = 42;
     entry.tblId = 4999;
     entry.fxnName = "esahaiti";
-    entry.objectCount = 1;
-    entry.textureCount = 1;
-    entry.functionParameters = { 1, 2, 3, 4 };
-    entry.paramList2 = { 5, 6 };
-    entry.textureNames = { "example" };
+    entry.objectCount = 1U;
+    entry.functionParameters = std::make_shared<spice::mld::model::U32List>();
+    entry.functionParameters->values = { 1, 2, 3, 4 };
+    entry.paramList2 = std::make_shared<spice::mld::model::U32List>();
+    entry.paramList2->values = { 5, 6 };
 
-    spice::mld::parsing::ParseResult result{};
-    result.entryList.push_back(std::move(entry));
+    spice::mld::model::MldFile result{};
+    result.entries.push_back(std::move(record));
+    result.textureArchive.emplace();
+    result.textureArchive->entries.push_back(spice::mld::model::MldTextureEntry{ .textureName = "example" });
     return result;
 }
 
@@ -100,7 +103,7 @@ ContentGraph buildFixtureGraph()
 {
     ContentGraphCorpusInput input{};
     input.sctFiles.push_back({ kScriptPath, makeScriptParseResult() });
-    input.mldFiles.push_back({ kMldPath, makeMldParseResult() });
+    input.mldFiles.push_back({ kMldPath, makeMldFile() });
 
     ContentGraphCorpusBuildOptions options{};
     options.sctOptions.detailLevel = ContentGraphDetailLevel::Instructions;

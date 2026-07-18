@@ -101,10 +101,13 @@
     <ClInclude Include="common\ByteUtils.h" />
     <ClInclude Include="Export\BlenderIrJsonExporter.h" />
     <ClInclude Include="Export\MldFileExporter.h" />
+    <ClInclude Include="Export\MldFileWriter.h" />
     <ClInclude Include="Model\IndexEntry.h" />
     <ClInclude Include="Model\GeometryModel.h" />
     <ClInclude Include="Model\BlenderIrModel.h" />
     <ClInclude Include="Model\MldFile.h" />
+    <ClInclude Include="Model\MldGroundModel.h" />
+    <ClInclude Include="Model\MldGroundEditing.h" />
     <ClInclude Include="Model\MldTextureArchiveModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
@@ -113,10 +116,8 @@
     <ClInclude Include="Parsing\EntryHandlers.h" />
     <ClInclude Include="Parsing\BlenderIrDiagnostics.h" />
     <ClInclude Include="Parsing\GvrTextureDecoder.h" />
-    <ClInclude Include="Parsing\GeometryBuilder.h" />
     <ClInclude Include="Parsing\GobjParser.h" />
     <ClInclude Include="Parsing\GrndParser.h" />
-    <ClInclude Include="Parsing\MldBinaryReader.h" />
     <ClInclude Include="Parsing\MldTextureArchiveParser.h" />
     <ClInclude Include="Parsing\MldParser.h" />
     <ClInclude Include="Parsing\Sa3dBlenderIrBuilder.h" />
@@ -125,17 +126,17 @@
   <ItemGroup>
     <ClCompile Include="Analysis\MldGvrFormatInventory.cpp" />
     <ClCompile Include="Model\BlenderIrModel.cpp" />
-    <ClCompile Include="Parsing\MldBinaryReader.cpp" />
     <ClCompile Include="Parsing\MldTextureArchiveParser.cpp" />
     <ClCompile Include="Parsing\BlenderIrDiagnostics.cpp" />
     <ClCompile Include="Parsing\GvrTextureDecoder.cpp" />
-    <ClCompile Include="Parsing\GeometryBuilder.cpp" />
     <ClCompile Include="Parsing\GobjParser.cpp" />
     <ClCompile Include="Parsing\GrndParser.cpp" />
     <ClCompile Include="Parsing\MldParser.cpp" />
     <ClCompile Include="Parsing\Sa3dBlenderIrBuilder.cpp" />
     <ClCompile Include="Export\BlenderIrJsonExporter.cpp" />
     <ClCompile Include="Export\MldFileExporter.cpp" />
+    <ClCompile Include="Export\MldFileWriter.cpp" />
+    <ClCompile Include="Model\MldGroundEditing.cpp" />
     <ClCompile Include="SpiceMLD.cpp" />
   </ItemGroup>
   <ItemGroup>

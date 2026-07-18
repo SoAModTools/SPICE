@@ -16,7 +16,7 @@ struct ParsedSctGraphInput {
 
 struct ParsedMldGraphInput {
     std::string sourcePath{};
-    spice::mld::parsing::ParseResult parseResult{};
+    spice::mld::model::MldFile file{};
 };
 
 struct ContentGraphCorpusBuildOptions {

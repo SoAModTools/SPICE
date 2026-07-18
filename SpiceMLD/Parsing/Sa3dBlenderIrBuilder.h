@@ -7,6 +7,7 @@ namespace spice::mld::parsing {
 
 class Sa3dBlenderIrBuilder {
 public:
+    [[nodiscard]] model::BlenderIrScene build(const model::MldFile& file) const;
     [[nodiscard]] model::BlenderIrScene build(const ParseResult& parseResult) const;
 };
 

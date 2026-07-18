@@ -87,6 +87,10 @@ struct ParsedRawEntry {
     std::vector<std::uint8_t> payload{};
 };
 
+struct MldParseOptions {
+    bool preserveSourceBytes = true;
+};
+
 struct ParsedMldAnimation {
     std::uint32_t sourceEntryId = 0;
     std::size_t tableIndex = 0;
@@ -95,7 +99,7 @@ struct ParsedMldAnimation {
     std::size_t motionSlot = 0;
     std::uint32_t nodeCount = 0;
     bool shortRot = false;
-    std::shared_ptr<Sa3Dport::Animation::Motion> motion{};
+    std::shared_ptr<const Sa3Dport::Animation::Motion> motion{};
 };
 
 struct ExtractedNjBlock {
@@ -163,9 +167,16 @@ class MldParser {
 public:
     MldParser() = default;
 
+    [[nodiscard]] model::MldFile parseBytes(std::span<const std::uint8_t> mldBytes,
+        const MldParseOptions& options = {}) const;
+
     [[nodiscard]] ParseResult parse(std::span<const std::uint8_t> mldBytes,
         const ParseOptions& options = {}) const;
 
+    [[nodiscard]] ParseResult project(const model::MldFile& file,
+        const ParseOptions& options = {}) const;
+
+    // Compatibility alias. New static-library callers should use parseBytes().
     [[nodiscard]] model::MldFile parseFile(std::span<const std::uint8_t> mldBytes,
         const ParseOptions& options = {}) const;
 

@@ -59,12 +59,12 @@ using U32ListWarningSink = std::function<void(const std::string&)>;
     return out;
 }
 
-[[nodiscard]] inline std::unique_ptr<U32List> makeU32List(std::span<const std::uint8_t> bytes,
+[[nodiscard]] inline std::shared_ptr<U32List> makeU32List(std::span<const std::uint8_t> bytes,
     const std::uint32_t pointer,
     const spice::core::Endian endian,
     const std::string& label,
     const U32ListWarningSink& warningSink) {
-    auto list = std::make_unique<U32List>();
+    auto list = std::make_shared<U32List>();
     list->pointer = pointer;
     list->values = parseU32List(bytes, pointer, endian, label, warningSink);
 

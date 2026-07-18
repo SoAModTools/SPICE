@@ -41,7 +41,7 @@ ContentGraph ContentGraphCorpusBuilder::build(const ContentGraphCorpusInput& inp
     }
 
     for (const auto& mld : input.mldFiles) {
-        mldBuilder.addToGraph(graph, mld.sourcePath, mld.parseResult);
+        mldBuilder.addToGraph(graph, mld.sourcePath, mld.file);
         mldByKey.try_emplace(mldPairingKey(mld.sourcePath), &mld);
     }
 
@@ -61,7 +61,8 @@ ContentGraph ContentGraphCorpusBuilder::build(const ContentGraphCorpusInput& inp
         paired.evidence.push_back(pairingEvidence(sct->sourcePath, mld->sourcePath, key));
         graph.addEdge(std::move(paired));
 
-        for (const auto& entry : mld->parseResult.entryList) {
+        for (const auto& record : mld->file.entries) {
+            const auto& entry = record.entry;
             const auto sectionName = mSectionNameForTableId(entry.tblId);
             const auto sectionId = scriptSectionNodeId(sct->sourcePath, sectionName);
             if (!graph.hasNode(sectionId)) {

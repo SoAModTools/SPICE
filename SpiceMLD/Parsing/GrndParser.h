@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Model/Types.h"
+#include "../Model/MldGroundModel.h"
 #include "../../SpiceCore/Binary/Endian.h"
 
 #include <cstddef>
@@ -13,6 +13,7 @@ namespace spice::mld::parsing {
 
 struct GrndDecodeResult {
     bool decoded = false;
+    model::GrndData data{};
     model::MeshData mesh{};
     std::size_t gridX = 0;
     std::size_t gridZ = 0;

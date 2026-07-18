@@ -407,8 +407,10 @@ std::vector<std::uint8_t> MldFileExporter::exportFile(
     for (const auto& record : file.entries) {
         writeIndexEntry(out, file.header, record, targetEndian);
     }
-    for (const auto& list : file.u32Lists) {
-        writeList(out, list, targetEndian);
+    for (const auto& [_, list] : file.u32Lists) {
+        if (list) {
+            writeList(out, *list, targetEndian);
+        }
     }
     convertRawDataBlocks(out, file, targetEndian);
 

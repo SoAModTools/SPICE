@@ -268,6 +268,7 @@ struct GobjVertexLayout {
     std::span<const std::uint8_t> bytes,
     spice::core::Endian endian,
     const GobjAttachLayout& layout,
+    model::GobjAttach* sourceAttach,
     std::vector<std::string>& diagnostics) {
     model::MeshData mesh{};
     if (static_cast<std::size_t>(layout.vertexOffset) + 8U > bytes.size()) {
@@ -289,6 +290,16 @@ struct GobjVertexLayout {
     }
 
     const auto vertexCount = static_cast<std::uint16_t>(*header2 >> 16U);
+    if (sourceAttach != nullptr) {
+        sourceAttach->sourceAttachOffset = layout.attachOffset;
+        sourceAttach->prefixBytes.assign(
+            bytes.begin() + static_cast<std::ptrdiff_t>(layout.attachOffset),
+            bytes.begin() + static_cast<std::ptrdiff_t>(layout.polyOffset));
+        sourceAttach->vertexChunk.chunkType = vertexChunkType;
+        sourceAttach->vertexChunk.recordWords = vertexLayout->recordWords;
+        sourceAttach->vertexChunk.headerWord0 = *header1;
+        sourceAttach->vertexChunk.headerWord1 = *header2;
+    }
     struct Entry {
         std::uint16_t floatIndex = 0;
         std::uint16_t flags = 0;
@@ -333,6 +344,13 @@ struct GobjVertexLayout {
             break;
         }
         if (*floatIndex == 0xFFFFU || *flags == 0xFFFFU) {
+            if (sourceAttach != nullptr) {
+                sourceAttach->streamEntries.push_back(model::GobjStreamEntry{
+                    .floatIndex = *floatIndex,
+                    .flags = *flags,
+                    .separator = true,
+                });
+            }
             ++separatorCount;
             appendRunTriangles();
             continue;
@@ -346,9 +364,23 @@ struct GobjVertexLayout {
             vertexCount,
             *vertexLayout);
         if (!vertex.has_value()) {
+            if (sourceAttach != nullptr) {
+                sourceAttach->streamEntries.push_back(model::GobjStreamEntry{
+                    .floatIndex = *floatIndex,
+                    .flags = *flags,
+                });
+            }
             ++controlCount;
             appendRunTriangles();
             continue;
+        }
+
+        if (sourceAttach != nullptr) {
+            sourceAttach->streamEntries.push_back(model::GobjStreamEntry{
+                .floatIndex = *floatIndex,
+                .flags = *flags,
+            });
+            sourceAttach->vertexChunk.verticesByFloatIndex.emplace(*floatIndex, *vertex);
         }
 
         run.push_back(Entry{
@@ -397,6 +429,9 @@ struct WalkContext {
 
     GobjNode node{};
     node.sourceNodeOffset = nodeOffset;
+    node.sourceBytes.assign(
+        context.bytes.begin() + static_cast<std::ptrdiff_t>(nodeOffset),
+        context.bytes.begin() + static_cast<std::ptrdiff_t>(nodeOffset + kNodeSize));
     node.parentNodeIndex = parentIndex;
     node.transform = readNodeTransform(context.bytes, context.endian, nodeOffset);
 
@@ -406,7 +441,9 @@ struct WalkContext {
         if (const auto attachOffset = addRelativeTarget(nodeOffset, *attachRel, context.bytes.size())) {
             if (const auto layout = readGobjAttachLayout(context.bytes, context.endian, *attachOffset, context.result->diagnostics)) {
                 node.sourceAttachOffset = layout->attachOffset;
-                node.streamMesh = readGobjTriangleStreamMesh(context.bytes, context.endian, *layout, context.result->diagnostics);
+                node.attach.emplace();
+                node.streamMesh = readGobjTriangleStreamMesh(
+                    context.bytes, context.endian, *layout, &*node.attach, context.result->diagnostics);
             }
         }
     }
@@ -462,6 +499,7 @@ GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, co
     }
 
     const auto bytes = blockBytes.first(static_cast<std::size_t>(*declaredSize));
+    result.data.outerHeaderBytes.assign(bytes.begin(), bytes.begin() + kRootNodeOffset);
     WalkContext context{
         .bytes = bytes,
         .endian = endian,
@@ -475,6 +513,9 @@ GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, co
             ++streamMeshCount;
         }
     }
+
+    result.data.nodes = result.nodes;
+    result.data.rootNodeIndices = result.rootNodeIndices;
 
     result.decoded = streamMeshCount > 0;
     result.diagnostics.push_back("GOBJ decoded at " + hexOffset(sourceOffset) +

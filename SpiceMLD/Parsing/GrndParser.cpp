@@ -239,6 +239,12 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
     result.cellSizeZ = *cellSizeZ;
     result.triangleSetCount = *triangleSetCount;
     result.quadCellCount = *quadCellCount;
+    result.data.outerHeaderBytes.assign(bytes.begin(), bytes.begin() + 0x10U);
+    result.data.innerHeaderUnknownBytes.assign(bytes.begin() + 0x18U, bytes.begin() + 0x20U);
+    result.data.gridX = *gridX;
+    result.data.gridZ = *gridZ;
+    result.data.cellSizeX = *cellSizeX;
+    result.data.cellSizeZ = *cellSizeZ;
 
     const auto triangleSetsOffset = addRelativeOffset(innerHeader, *relTriangleSets, bytes.size());
     const auto quadRegistryOffset = addRelativeOffset(innerHeader, *relQuadRegistry, bytes.size());
@@ -254,6 +260,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
     }
 
     std::vector<std::optional<TriangleSet>> triangleSets(static_cast<std::size_t>(*triangleSetCount));
+    result.data.triangleSets.resize(static_cast<std::size_t>(*triangleSetCount));
     for (std::size_t setIndex = 0; setIndex < *triangleSetCount; ++setIndex) {
         const std::size_t setOffset = *triangleSetsOffset + (setIndex * 0x18U);
         const std::size_t nextSetOrBlockEnd = (setIndex + 1U < *triangleSetCount)
@@ -264,13 +271,38 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
             continue;
         }
         triangleSets[setIndex] = *set;
+        auto& sourceSet = result.data.triangleSets[setIndex];
+        sourceSet.sourceHeaderOffset = static_cast<std::uint32_t>(setOffset);
+        sourceSet.headerPrefixBytes.assign(bytes.begin() + static_cast<std::ptrdiff_t>(setOffset),
+            bytes.begin() + static_cast<std::ptrdiff_t>(setOffset + 0x0CU));
+        sourceSet.declaredTriangleCount = set->declaredTriangleCount;
+        sourceSet.streamEntries.reserve(set->streamEntryCount);
+        for (std::size_t streamIndex = 0; streamIndex < set->streamEntryCount; ++streamIndex) {
+            const auto streamEntry = readStreamEntry(bytes, endian, *set, streamIndex);
+            if (!streamEntry.has_value()) {
+                break;
+            }
+            sourceSet.streamEntries.push_back(model::GrndStreamEntry{
+                .floatIndex = streamEntry->floatIndex,
+                .flags = streamEntry->flags,
+            });
+            if (!sourceSet.verticesByFloatIndex.contains(streamEntry->floatIndex)) {
+                if (const auto vertex = readVertexForFloatIndex(bytes, endian, *set, streamEntry->floatIndex)) {
+                    sourceSet.verticesByFloatIndex.emplace(streamEntry->floatIndex, *vertex);
+                }
+            }
+        }
     }
 
     std::unordered_set<TriangleRef, TriangleRefHash> uniqueReferences{};
+    std::unordered_map<TriangleRef, std::size_t, TriangleRefHash> meshTriangleByReference{};
     std::unordered_map<std::uint64_t, std::uint32_t> vertexIndexByKey{};
+    result.data.cells.resize(static_cast<std::size_t>(*quadCellCount));
 
     for (std::size_t quadIndex = 0; quadIndex < *quadCellCount; ++quadIndex) {
         const std::size_t quadOffset = quadTableOffset + (quadIndex * 8U);
+        auto& sourceCell = result.data.cells[quadIndex];
+        sourceCell.sourceOffset = static_cast<std::uint32_t>(quadOffset);
         const auto refCount = reader.try_read_u32(quadOffset);
         const auto relRefList = reader.try_read_i32(quadOffset + 4U);
         if (!refCount.has_value() || !relRefList.has_value()) {
@@ -301,7 +333,14 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
                 .triangleSet = *setIndex,
                 .triangleIndex = *triangleIndex,
             };
+            sourceCell.references.push_back(model::GrndTriangleReference{
+                .triangleSet = *setIndex,
+                .streamIndex = *triangleIndex,
+            });
             if (!uniqueReferences.insert(ref).second) {
+                if (const auto found = meshTriangleByReference.find(ref); found != meshTriangleByReference.end()) {
+                    sourceCell.references.back().meshTriangleIndex = found->second;
+                }
                 ++result.duplicateReferenceCount;
                 continue;
             }
@@ -341,10 +380,14 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
             result.mesh.triangleMetadata.push_back(model::TriangleMetadata{
                 .rawU16 = { e0->flags, e1->flags, e2->flags },
             });
+            const auto meshTriangleIndex = result.mesh.indices.size() / 3U - 1U;
+            sourceCell.references.back().meshTriangleIndex = meshTriangleIndex;
+            meshTriangleByReference.emplace(ref, meshTriangleIndex);
             ++result.referencedTriangleCount;
         }
     }
 
+    result.data.mesh = result.mesh;
     result.decoded = !result.mesh.vertices.empty() && !result.mesh.indices.empty();
     result.diagnostics.push_back("GRND decoded at " + hexOffset(sourceOffset) +
         ": vertices=" + std::to_string(result.mesh.vertices.size()) +

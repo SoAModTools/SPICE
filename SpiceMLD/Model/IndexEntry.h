@@ -51,45 +51,8 @@ namespace spice::mld::model {
 struct IndexEntry {
     IndexEntry() = default;
 
-    IndexEntry(const IndexEntry& other)
-        : tableIndex(other.tableIndex),
-          entryId(other.entryId),
-          tblId(other.tblId),
-          fxnName(other.fxnName),
-          transform(other.transform),
-          groundLinks(other.groundLinks ? std::make_unique<U32List>(*other.groundLinks) : nullptr),
-          paramList2(other.paramList2 ? std::make_unique<U32List>(*other.paramList2) : nullptr),
-          functionParameters(other.functionParameters ? std::make_unique<U32List>(*other.functionParameters) : nullptr),
-          objectAddresses(other.objectAddresses ? std::make_unique<U32List>(*other.objectAddresses) : nullptr),
-          groundAddresses(other.groundAddresses ? std::make_unique<U32List>(*other.groundAddresses) : nullptr),
-          motionAddresses(other.motionAddresses ? std::make_unique<U32List>(*other.motionAddresses) : nullptr),
-          objectCount(other.objectCount),
-          groundCount(other.groundCount),
-          motionCount(other.motionCount),
-          texturesPointer(other.texturesPointer) {}
-
-    IndexEntry& operator=(const IndexEntry& other) {
-        if (this == &other) {
-            return *this;
-        }
-        tableIndex = other.tableIndex;
-        entryId = other.entryId;
-        tblId = other.tblId;
-        fxnName = other.fxnName;
-        transform = other.transform;
-        groundLinks = other.groundLinks ? std::make_unique<U32List>(*other.groundLinks) : nullptr;
-        paramList2 = other.paramList2 ? std::make_unique<U32List>(*other.paramList2) : nullptr;
-        functionParameters = other.functionParameters ? std::make_unique<U32List>(*other.functionParameters) : nullptr;
-        objectAddresses = other.objectAddresses ? std::make_unique<U32List>(*other.objectAddresses) : nullptr;
-        groundAddresses = other.groundAddresses ? std::make_unique<U32List>(*other.groundAddresses) : nullptr;
-        motionAddresses = other.motionAddresses ? std::make_unique<U32List>(*other.motionAddresses) : nullptr;
-        objectCount = other.objectCount;
-        groundCount = other.groundCount;
-        motionCount = other.motionCount;
-        texturesPointer = other.texturesPointer;
-        return *this;
-    }
-
+    IndexEntry(const IndexEntry&) = default;
+    IndexEntry& operator=(const IndexEntry&) = default;
     IndexEntry(IndexEntry&&) noexcept = default;
     IndexEntry& operator=(IndexEntry&&) noexcept = default;
 
@@ -99,12 +62,12 @@ struct IndexEntry {
     std::string fxnName{};
     Transform transform{};
 
-    std::unique_ptr<U32List> groundLinks{};
-    std::unique_ptr<U32List> paramList2{};
-    std::unique_ptr<U32List> functionParameters{};
-    std::unique_ptr<U32List> objectAddresses{};
-    std::unique_ptr<U32List> groundAddresses{};
-    std::unique_ptr<U32List> motionAddresses{};
+    std::shared_ptr<U32List> groundLinks{};
+    std::shared_ptr<U32List> paramList2{};
+    std::shared_ptr<U32List> functionParameters{};
+    std::shared_ptr<U32List> objectAddresses{};
+    std::shared_ptr<U32List> groundAddresses{};
+    std::shared_ptr<U32List> motionAddresses{};
     std::size_t objectCount = 0;
     std::size_t groundCount = 0;
     std::size_t motionCount = 0;

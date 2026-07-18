@@ -34,6 +34,9 @@
     <ClInclude Include="Export\MldFileExporter.h">
       <Filter>Export</Filter>
     </ClInclude>
+    <ClInclude Include="Export\MldFileWriter.h">
+      <Filter>Export</Filter>
+    </ClInclude>
     <ClInclude Include="Model\IndexEntry.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -44,6 +47,12 @@
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\MldFile.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\MldGroundModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="Model\MldGroundEditing.h">
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="Model\MldTextureArchiveModel.h">
@@ -70,16 +79,10 @@
     <ClInclude Include="Parsing\GvrTextureDecoder.h">
       <Filter>Parsing</Filter>
     </ClInclude>
-    <ClInclude Include="Parsing\GeometryBuilder.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
     <ClInclude Include="Parsing\GobjParser.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\GrndParser.h">
-      <Filter>Parsing</Filter>
-    </ClInclude>
-    <ClInclude Include="Parsing\MldBinaryReader.h">
       <Filter>Parsing</Filter>
     </ClInclude>
     <ClInclude Include="Parsing\MldTextureArchiveParser.h">
@@ -105,14 +108,17 @@
     <ClCompile Include="Export\MldFileExporter.cpp">
       <Filter>Export</Filter>
     </ClCompile>
+    <ClCompile Include="Export\MldFileWriter.cpp">
+      <Filter>Export</Filter>
+    </ClCompile>
+    <ClCompile Include="Model\MldGroundEditing.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
     <ClCompile Include="SpiceMLD.cpp">
       <Filter>EntryPoint</Filter>
     </ClCompile>
     <ClCompile Include="Model\BlenderIrModel.cpp">
       <Filter>Model</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\MldBinaryReader.cpp">
-      <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\MldTextureArchiveParser.cpp">
       <Filter>Parsing</Filter>
@@ -121,9 +127,6 @@
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\GvrTextureDecoder.cpp">
-      <Filter>Parsing</Filter>
-    </ClCompile>
-    <ClCompile Include="Parsing\GeometryBuilder.cpp">
       <Filter>Parsing</Filter>
     </ClCompile>
     <ClCompile Include="Parsing\GobjParser.cpp">

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../Model/Types.h"
+#include "../Model/MldGroundModel.h"
 #include "../../SpiceCore/Binary/Endian.h"
 
 #include <cstddef>
@@ -12,18 +12,12 @@
 
 namespace spice::mld::parsing {
 
-struct GobjNode {
-    std::uint32_t sourceNodeOffset = 0;
-    std::uint32_t sourceAttachOffset = 0;
-    model::Transform transform{};
-    std::optional<std::size_t> parentNodeIndex{};
-    std::vector<std::size_t> childNodeIndices{};
-    model::MeshData streamMesh{};
-};
+using GobjNode = model::GobjNode;
 
 struct GobjDecodeResult {
     bool decoded = false;
     std::uint32_t sourceOffset = 0;
+    model::GobjData data{};
     std::vector<GobjNode> nodes{};
     std::vector<std::size_t> rootNodeIndices{};
     std::vector<std::string> diagnostics{};

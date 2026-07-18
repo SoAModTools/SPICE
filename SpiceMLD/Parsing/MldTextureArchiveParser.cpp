@@ -104,6 +104,17 @@ model::MldTextureArchive parseMldTextureArchive(std::span<const std::uint8_t> by
                     std::min(bytes.size(), texture.sourceOffset + texture.sourceSize));
             }
         }
+    } else {
+        const spice::core::EndianReader reader(bytes, endian);
+        const auto count = reader.try_read_u32(textureTableOffset).value_or(0U);
+        constexpr std::size_t recordSize = 44U;
+        const auto prefixSize = 4U + static_cast<std::size_t>(count) * recordSize;
+        if (textureTableOffset <= bytes.size() && prefixSize <= bytes.size() - textureTableOffset) {
+            out.archivePrefixBytes.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(textureTableOffset),
+                bytes.begin() + static_cast<std::ptrdiff_t>(textureTableOffset + prefixSize));
+            out.archiveEndOffset = textureTableOffset + prefixSize;
+        }
     }
 
     out.entries.reserve(archive.textures.size());

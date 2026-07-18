@@ -21,6 +21,7 @@ struct MldExportOptions {
     std::optional<MldTextureReplacement> textureReplacement{};
 };
 
+// Compatibility wrapper. New callers should use MldFileWriter.
 class MldFileExporter {
 public:
     [[nodiscard]] std::vector<std::uint8_t> exportFile(
