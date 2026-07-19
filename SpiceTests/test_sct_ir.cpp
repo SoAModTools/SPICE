@@ -108,6 +108,23 @@ std::vector<std::uint8_t> makeScptAstFixture()
     return makeSingleSectionSct(section);
 }
 
+std::vector<std::uint8_t> makeCallSubscriptFixture()
+{
+    std::vector<std::uint8_t> section{};
+
+    // The signed relative target is calculated from the word immediately before
+    // the next instruction: payloadOffset + sizeBytes - 4 + operand.
+    appendU32(section, 11u);
+    appendU32(section, 12u);          // 0 + 8 - 4 + 12 = 16
+    appendU32(section, 2u);
+    appendU32(section, 2u);
+    appendU32(section, 11u);
+    appendU32(section, 0xffffffecu);  // 16 + 8 - 4 - 20 = 0
+    appendU32(section, 12u);
+
+    return makeSingleSectionSct(section);
+}
+
 spice::sct::SctParseResult makeLegacyStyleParseResult()
 {
     spice::sct::SctSection section{};
@@ -323,6 +340,15 @@ TEST(SctIr, ParserBuildsSalsaScptAstFamilies)
     ASSERT_EQ(2u, arithmetic->ast->children.size());
     EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatLiteral, arithmetic->ast->children[0].kind);
     EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatLiteral, arithmetic->ast->children[1].kind);
+    const auto lhsLiteral = arithmetic->ast->children[0].numericLiteral();
+    const auto rhsLiteral = arithmetic->ast->children[1].numericLiteral();
+    ASSERT_TRUE(lhsLiteral.has_value());
+    ASSERT_TRUE(rhsLiteral.has_value());
+    EXPECT_EQ(spice::sct::SctNumericLiteralEncoding::Float32, lhsLiteral->encoding);
+    EXPECT_EQ(spice::sct::SctNumericLiteralEncoding::Float32, rhsLiteral->encoding);
+    EXPECT_DOUBLE_EQ(1.0, lhsLiteral->value);
+    EXPECT_DOUBLE_EQ(2.0, rhsLiteral->value);
+    EXPECT_FALSE(arithmetic->ast->numericLiteral().has_value());
 
     const auto& secondary = instructions[1].parameters.front().expression;
     ASSERT_TRUE(secondary.has_value());
@@ -355,11 +381,46 @@ TEST(SctIr, ParserBuildsSalsaScptAstFamilies)
     ASSERT_TRUE(decimal->ast.has_value());
     EXPECT_EQ(spice::sct::SctScptAstNodeKind::DecimalLiteral, decimal->ast->kind);
     EXPECT_EQ("decimal: 1+128/256", decimal->ast->display);
+    const auto decimalLiteral = decimal->ast->numericLiteral();
+    ASSERT_TRUE(decimalLiteral.has_value());
+    EXPECT_EQ(spice::sct::SctNumericLiteralEncoding::Decimal16_8, decimalLiteral->encoding);
+    EXPECT_DOUBLE_EQ(1.5, decimalLiteral->value);
 
     const auto& noLoop = instructions[7].parameters.front().expression;
     ASSERT_TRUE(noLoop.has_value());
     ASSERT_TRUE(noLoop->ast.has_value());
     EXPECT_EQ(spice::sct::SctScptAstNodeKind::NoLoopValue, noLoop->ast->kind);
+}
+
+TEST(SctIr, ParserResolvesCallSubscriptOperandsAsSignedRelativePayloadTargets)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(makeCallSubscriptFixture(), "call_subscript.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(1u, parsed.file.sections.size());
+
+    std::vector<const spice::sct::SctEdge*> callEdges{};
+    for (const auto& edge : parsed.file.sections.front().edges) {
+        if (edge.type == spice::sct::SctEdgeType::CallSubscript) {
+            callEdges.push_back(&edge);
+        }
+    }
+    ASSERT_EQ(2u, callEdges.size());
+
+    ASSERT_TRUE(callEdges[0]->fromPayloadOffset.has_value());
+    ASSERT_TRUE(callEdges[0]->toPayloadOffset.has_value());
+    ASSERT_TRUE(callEdges[0]->toOffset.has_value());
+    EXPECT_EQ(0u, *callEdges[0]->fromPayloadOffset);
+    EXPECT_EQ(16u, *callEdges[0]->toPayloadOffset);
+    EXPECT_EQ(16u, *callEdges[0]->toOffset);
+    EXPECT_EQ("12", callEdges[0]->attributes.at("signed_offset_operand"));
+
+    ASSERT_TRUE(callEdges[1]->fromPayloadOffset.has_value());
+    ASSERT_TRUE(callEdges[1]->toPayloadOffset.has_value());
+    ASSERT_TRUE(callEdges[1]->toOffset.has_value());
+    EXPECT_EQ(16u, *callEdges[1]->fromPayloadOffset);
+    EXPECT_EQ(0u, *callEdges[1]->toPayloadOffset);
+    EXPECT_EQ(0u, *callEdges[1]->toOffset);
+    EXPECT_EQ("-20", callEdges[1]->attributes.at("signed_offset_operand"));
 }
 
 TEST(SctIr, JsonExporterEmitsScptAst)

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <bit>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -91,12 +93,41 @@ enum class SctScptAstNodeKind {
     Stop,
 };
 
+enum class SctNumericLiteralEncoding {
+    Float32,
+    Decimal16_8,
+};
+
+struct SctNumericLiteral {
+    SctNumericLiteralEncoding encoding = SctNumericLiteralEncoding::Float32;
+    double value = 0.0;
+};
+
 struct SctScptAstNode {
     SctScptAstNodeKind kind = SctScptAstNodeKind::Unknown;
     std::string display;
     std::string op;
     std::vector<std::uint32_t> rawWords;
     std::vector<SctScptAstNode> children;
+
+    [[nodiscard]] std::optional<SctNumericLiteral> numericLiteral() const noexcept {
+        if (kind == SctScptAstNodeKind::FloatLiteral && rawWords.size() >= 2u) {
+            return SctNumericLiteral{
+                .encoding = SctNumericLiteralEncoding::Float32,
+                .value = static_cast<double>(std::bit_cast<float>(rawWords[1])),
+            };
+        }
+        if (kind == SctScptAstNodeKind::DecimalLiteral && !rawWords.empty()) {
+            const auto payload = rawWords.front() & 0x00ffffffu;
+            const auto whole = (payload & 0x00ffff00u) >> 8u;
+            const auto fraction = payload & 0x000000ffu;
+            return SctNumericLiteral{
+                .encoding = SctNumericLiteralEncoding::Decimal16_8,
+                .value = static_cast<double>(whole) + (static_cast<double>(fraction) / 256.0),
+            };
+        }
+        return std::nullopt;
+    }
 };
 
 struct SctExpression {
@@ -156,6 +187,24 @@ struct SctInstruction {
     std::uint32_t sizeBytes = 0;
     bool decodeOk = false;
 };
+
+[[nodiscard]] inline std::optional<std::uint32_t> resolveRelativeTargetPayloadOffset(
+    std::uint32_t instructionPayloadOffset,
+    std::uint32_t instructionSizeBytes,
+    std::uint32_t encodedRelativeOffset) noexcept {
+    if (instructionSizeBytes < sizeof(std::uint32_t)) {
+        return std::nullopt;
+    }
+
+    const auto target = static_cast<std::int64_t>(instructionPayloadOffset)
+        + static_cast<std::int64_t>(instructionSizeBytes)
+        - static_cast<std::int64_t>(sizeof(std::uint32_t))
+        + static_cast<std::int64_t>(static_cast<std::int32_t>(encodedRelativeOffset));
+    if (target < 0 || target > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(target);
+}
 
 struct SctBasicBlock {
     std::uint32_t startOffset = 0;

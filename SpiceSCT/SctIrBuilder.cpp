@@ -79,10 +79,27 @@ void addInstructionSemanticEdges(SctSection& section, const SctInstruction& inst
     edge.type = type;
     edge.confidence = metadata.confidence;
     edge.fromOffset = instruction.offset;
+    edge.fromPayloadOffset = section.startOffset + instruction.offset;
     edge.opcode = instruction.opcode;
     edge.detail = instruction.mnemonic.empty() ? fallbackMnemonic(instruction.opcode) : instruction.mnemonic;
     if (const auto operand = firstOperand(instruction); operand.has_value()) {
         edge.attributes.emplace("operand0", std::to_string(*operand));
+        if (type == SctEdgeType::CallSubscript) {
+            edge.attributes.emplace("signed_offset_operand", std::to_string(static_cast<std::int32_t>(*operand)));
+            if (const auto targetPayloadOffset = resolveRelativeTargetPayloadOffset(
+                    *edge.fromPayloadOffset,
+                    instruction.sizeBytes,
+                    *operand);
+                targetPayloadOffset.has_value()) {
+                edge.toPayloadOffset = *targetPayloadOffset;
+                edge.toOffset = *targetPayloadOffset >= section.startOffset && *targetPayloadOffset < section.endOffset
+                    ? *targetPayloadOffset - section.startOffset
+                    : *targetPayloadOffset;
+                edge.attributes.emplace("target_payload_offset", std::to_string(*targetPayloadOffset));
+            } else {
+                edge.attributes.emplace("target_resolution", "out_of_range");
+            }
+        }
     }
     section.edges.push_back(std::move(edge));
 }

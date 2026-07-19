@@ -685,7 +685,8 @@ void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectio
 void addInstructionSemanticEdges(
     std::vector<SctEdge>& edges,
     const SctInstruction& instruction,
-    std::uint32_t sourceSectionStart) {
+    std::uint32_t sourceSectionStart,
+    const std::vector<SectionRow>& rows) {
     const auto metadata = sctOpcodeMetadata(instruction.opcode);
     if (metadata.controlRole == SctOpcodeControlRole::CallSubscript) {
         SctEdge edge{};
@@ -694,11 +695,30 @@ void addInstructionSemanticEdges(
         edge.fromOffset = instruction.payloadOffset - sourceSectionStart;
         edge.fromPayloadOffset = instruction.payloadOffset;
         edge.opcode = instruction.opcode;
-        edge.detail = "Opcode calls a subscript target.";
+        edge.detail = "Opcode calls a subscript target using a signed relative offset.";
         if (!instruction.operands.empty()) {
-            edge.toOffset = instruction.operands.front();
-            edge.toPayloadOffset = instruction.operands.front();
-            edge.attributes.emplace("offset_operand", decimalString(instruction.operands.front()));
+            const auto encodedOffset = instruction.operands.front();
+            edge.attributes.emplace("offset_operand", decimalString(encodedOffset));
+            edge.attributes.emplace("signed_offset_operand", std::to_string(static_cast<std::int32_t>(encodedOffset)));
+            if (const auto targetPayloadOffset = resolveRelativeTargetPayloadOffset(
+                    instruction.payloadOffset,
+                    instruction.sizeBytes,
+                    encodedOffset);
+                targetPayloadOffset.has_value()) {
+                edge.toPayloadOffset = *targetPayloadOffset;
+                edge.attributes.emplace("target_payload_offset", decimalString(*targetPayloadOffset));
+                if (const auto targetSection = sectionIndexForPayloadOffset(rows, *targetPayloadOffset); targetSection.has_value()) {
+                    edge.toOffset = *targetPayloadOffset - rows[*targetSection].start;
+                    edge.attributes.emplace("target_section", rows[*targetSection].name);
+                    edge.attributes.emplace("target_section_index", decimalString(*targetSection));
+                    edge.attributes.emplace("target_offset", decimalString(*edge.toOffset));
+                } else {
+                    edge.toOffset = *targetPayloadOffset;
+                    edge.attributes.emplace("target_offset", decimalString(*targetPayloadOffset));
+                }
+            } else {
+                edge.attributes.emplace("target_resolution", "out_of_range");
+            }
         }
         edges.push_back(std::move(edge));
     }
@@ -968,45 +988,6 @@ void populateFooterEntriesAndGroups(
         return SctEdgeType::Jump;
     default:
         return successorOffset == instruction.offset + instruction.sizeBytes ? SctEdgeType::Fallthrough : SctEdgeType::Jump;
-    }
-}
-
-void addInstructionSemanticEdges(SctSection& section, const SctInstruction& instruction) {
-    const auto metadata = sctOpcodeMetadata(instruction.opcode);
-    const auto operand = instruction.operands.empty() ? 0u : instruction.operands.front();
-
-    if (metadata.controlRole == SctOpcodeControlRole::CallSubscript) {
-        SctEdge edge{};
-        edge.type = SctEdgeType::CallSubscript;
-        edge.confidence = metadata.confidence;
-        edge.fromOffset = instruction.offset;
-        edge.toOffset = operand;
-        edge.opcode = instruction.opcode;
-        edge.detail = "Opcode calls a subscript target.";
-        edge.attributes.emplace("offset_operand", decimalString(operand));
-        section.edges.push_back(std::move(edge));
-    }
-
-    if (metadata.controlRole == SctOpcodeControlRole::Return) {
-        SctEdge edge{};
-        edge.type = SctEdgeType::Return;
-        edge.confidence = metadata.confidence;
-        edge.fromOffset = instruction.offset;
-        edge.opcode = instruction.opcode;
-        edge.detail = "Opcode returns from the current subscript stack.";
-        section.edges.push_back(std::move(edge));
-    }
-
-    if (metadata.resourceRole == SctOpcodeResourceRole::LoadsMld
-        || metadata.resourceRole == SctOpcodeResourceRole::LoadsScript) {
-        SctEdge edge{};
-        edge.type = metadata.resourceRole == SctOpcodeResourceRole::LoadsMld ? SctEdgeType::LoadsMld : SctEdgeType::LoadsScript;
-        edge.confidence = metadata.confidence;
-        edge.fromOffset = instruction.offset;
-        edge.opcode = instruction.opcode;
-        edge.detail = "Opcode references an external resource.";
-        edge.attributes.emplace("operand0", decimalString(operand));
-        section.edges.push_back(std::move(edge));
     }
 }
 
@@ -1933,7 +1914,7 @@ SctParseResult SctParser::parse(
             auto edge = makeControlFlowEdge(localInstruction, successorIndex++, successor, rows);
             section.edges.push_back(std::move(edge));
         }
-        addInstructionSemanticEdges(section.edges, localInstruction, rows[*sectionIndex].start);
+        addInstructionSemanticEdges(section.edges, localInstruction, rows[*sectionIndex].start, rows);
     }
 
     for (std::uint32_t sectionIndex = 0; sectionIndex < result.file.sections.size(); ++sectionIndex) {
