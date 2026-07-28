@@ -362,34 +362,38 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
         meta.controlRole = SctOpcodeControlRole::Return;
         break;
     case 23:
-        meta.mnemonic = "LoadMld";
+        meta.mnemonic = "LoadMldFile";
         meta.confidence = SctSemanticConfidence::Partial;
         meta.resourceRole = SctOpcodeResourceRole::LoadsMld;
-        meta.parameterRoles = {"mldRef"};
+        meta.parameterRoles = {"mldPathOffset"};
         break;
     case 43:
-        meta.mnemonic = "LoadScript";
+        meta.mnemonic = "LoadScriptByName";
         meta.confidence = SctSemanticConfidence::Partial;
         meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
-        meta.parameterRoles = {"scriptRef"};
+        meta.parameterRoles = {"scriptNameOffset"};
         break;
     case 210:
-        meta.mnemonic = "LoadScriptGameState12";
+        meta.mnemonic = "WarpCurrentAreaByString";
         meta.confidence = SctSemanticConfidence::Partial;
         meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
-        meta.parameterRoles = {"scriptRef"};
+        meta.parameterRoles = {"footerStringOffset"};
         break;
     case 238:
-        meta.mnemonic = "ReturnToOverworld";
+        meta.mnemonic = "ReturnToOverworldAtPosition";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.parameterRoles = {"overworldXExpr", "overworldYExpr", "overworldZExpr"};
+        break;
+    case 257:
+        meta.mnemonic = "ExitShipBattleToScript";
         meta.confidence = SctSemanticConfidence::Partial;
         meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
         meta.parameterRoles = {"scriptRef"};
         break;
-    case 257:
-        meta.mnemonic = "LoadScriptGameState7";
+    case 265:
+        meta.mnemonic = "GeneratedReputationListDialog";
         meta.confidence = SctSemanticConfidence::Partial;
-        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
-        meta.parameterRoles = {"scriptRef"};
+        meta.parameterRoles = {"displayedValueExpr", "labelStringOffset"};
         break;
     default:
         meta.mnemonic = {};
@@ -437,6 +441,9 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
         break;
     case 215:
         if (parameterIndex == 1u) return {SctFooterParamKind::String, false};
+        break;
+    case 265:
+        if (parameterIndex == 1u) return {SctFooterParamKind::SctString, true};
         break;
     default:
         break;
