@@ -16,6 +16,9 @@
     <Filter Include="Json">
       <UniqueIdentifier>{A0271C51-13E5-44E7-B742-F7B64C71864F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Writer">
+      <UniqueIdentifier>{55BC74DF-0C43-442F-9414-068447AE70B4}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SpiceStd.h">
@@ -33,6 +36,9 @@
     <ClInclude Include="StdJsonExporter.h">
       <Filter>Json</Filter>
     </ClInclude>
+    <ClInclude Include="StdFileWriter.h">
+      <Filter>Writer</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SpiceStd.cpp">
@@ -46,6 +52,9 @@
     </ClCompile>
     <ClCompile Include="StdJsonExporter.cpp">
       <Filter>Json</Filter>
+    </ClCompile>
+    <ClCompile Include="StdFileWriter.cpp">
+      <Filter>Writer</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

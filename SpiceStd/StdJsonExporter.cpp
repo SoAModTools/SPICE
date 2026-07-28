@@ -68,6 +68,42 @@ void writeDiagnostics(std::ostringstream& out, const std::vector<StdDiagnostic>&
     out << "]";
 }
 
+void writeSourceRanges(std::ostringstream& out, const std::vector<StdSourceRange>& ranges)
+{
+    out << "[";
+    for (std::size_t i = 0U; i < ranges.size(); ++i) {
+        if (i != 0U) {
+            out << ',';
+        }
+        const auto& range = ranges[i];
+        out << "{\"offset\":" << range.offset
+            << ",\"size\":" << range.size
+            << ",\"label\":\"" << jsonEscape(range.label)
+            << "\",\"known\":" << (range.known ? "true" : "false")
+            << ",\"pinned\":" << (range.pinned ? "true" : "false")
+            << "}";
+    }
+    out << "]";
+}
+
+void writeUnknownRanges(std::ostringstream& out, const std::vector<StdUnknownRange>& ranges)
+{
+    out << "[";
+    for (std::size_t i = 0U; i < ranges.size(); ++i) {
+        if (i != 0U) {
+            out << ',';
+        }
+        const auto& range = ranges[i];
+        out << "{\"offset\":" << range.offset
+            << ",\"size\":" << range.size
+            << ",\"label\":\"" << jsonEscape(range.label)
+            << "\",\"pinned\":" << (range.pinned ? "true" : "false")
+            << ",\"bytesHex\":\"" << bytesHex(std::span<const std::uint8_t>(range.bytes.data(), range.bytes.size()))
+            << "\"}";
+    }
+    out << "]";
+}
+
 void writeActionRows(std::ostringstream& out, const StdActionRowsLayout& layout)
 {
     const auto& header = layout.header;
@@ -111,16 +147,39 @@ void writeActionRows(std::ostringstream& out, const StdActionRowsLayout& layout)
     out << "  }";
 }
 
-void writeEntryPayloadBytes(std::ostringstream& out, const StdFile& file, const StdEntryRecord& record)
+void writeEntryPayloadBytes(std::ostringstream& out, const StdEntryRecord& record)
 {
-    if (record.isSentinel || !record.payloadInBounds || !file.decodedAvailable) {
+    if (record.isSentinel || !record.payloadInBounds) {
         out << "null";
         return;
     }
 
-    const auto offset = static_cast<std::size_t>(record.payloadOffsetAbs);
-    const auto size = static_cast<std::size_t>(record.payloadSize);
-    out << '"' << bytesHex(std::span<const std::uint8_t>(file.decodedBytes.data() + offset, size)) << '"';
+    out << '"' << bytesHex(std::span<const std::uint8_t>(record.payloadBytes.data(), record.payloadBytes.size())) << '"';
+}
+
+void writeActionViewPayload(std::ostringstream& out, const StdActionViewPayload& payload)
+{
+    out << "{";
+    out << "\"primaryActionKey\":" << payload.primaryActionKey;
+    out << ",\"routeSecondaryKey\":" << payload.routeSecondaryKey;
+    out << ",\"directSecondaryKey\":" << payload.directSecondaryKey;
+    out << ",\"lowFlags\":" << payload.lowFlags;
+    out << ",\"lowFlagsHex\":\"0x" << std::hex << std::setfill('0') << std::setw(4) << payload.lowFlags << std::dec << "\"";
+    out << ",\"reserved08\":" << payload.reserved08;
+    out << ",\"reserved08Hex\":\"" << u32Hex(payload.reserved08) << "\"";
+    out << ",\"reserved0c\":" << payload.reserved0c;
+    out << ",\"reserved0cHex\":\"" << u32Hex(payload.reserved0c) << "\"";
+    out << ",\"actionViewFlags\":" << payload.actionViewFlags;
+    out << ",\"actionViewFlagsHex\":\"" << u32Hex(payload.actionViewFlags) << "\"";
+    out << ",\"modeLocalAngleOrOffsetBits\":" << payload.modeLocalAngleOrOffsetBits;
+    out << ",\"modeLocalAngleOrOffsetHex\":\"" << u32Hex(payload.modeLocalAngleOrOffsetBits) << "\"";
+    out << ",\"startFrame\":" << payload.startFrame;
+    out << ",\"reserved1a\":" << payload.reserved1a;
+    out << ",\"endFrame\":" << payload.endFrame;
+    out << ",\"holdFrameCount\":" << payload.holdFrameCount;
+    out << ",\"stepFrameCount\":" << payload.stepFrameCount;
+    out << ",\"requestedMode\":" << payload.requestedMode;
+    out << "}";
 }
 
 void writeEntryTable(std::ostringstream& out, const StdFile& file)
@@ -154,6 +213,7 @@ void writeEntryTable(std::ostringstream& out, const StdFile& file)
         out << "      {\n";
         out << "        \"index\": " << record.index << ",\n";
         out << "        \"tableOffset\": " << record.tableOffset << ",\n";
+        out << "        \"sourceTableOffset\": " << record.sourceTableOffset << ",\n";
         out << "        \"isSentinel\": " << (record.isSentinel ? "true" : "false") << ",\n";
         out << "        \"locationCode\": " << record.locationCode << ",\n";
         out << "        \"opcode\": " << record.opcode << ",\n";
@@ -162,13 +222,22 @@ void writeEntryTable(std::ostringstream& out, const StdFile& file)
         out << "        \"field2\": " << record.field2 << ",\n";
         out << "        \"field2Hex\": \"" << u32Hex(record.field2) << "\",\n";
         out << "        \"payloadSize\": " << record.payloadSize << ",\n";
+        out << "        \"sourcePayloadSize\": " << record.sourcePayloadSize << ",\n";
         out << "        \"payloadOffsetOrPtr\": " << record.payloadOffsetRel << ",\n";
+        out << "        \"sourcePayloadOffsetOrPtr\": " << record.sourcePayloadOffsetRel << ",\n";
         out << "        \"payloadOffsetOrPtrHex\": \"" << u32Hex(record.payloadOffsetRel) << "\",\n";
         out << "        \"payloadOffsetAbs\": " << record.payloadOffsetAbs << ",\n";
         out << "        \"payloadEndRel\": " << record.payloadEndRel << ",\n";
         out << "        \"payloadInBounds\": " << (record.payloadInBounds ? "true" : "false") << ",\n";
         out << "        \"payloadBytesHex\": ";
-        writeEntryPayloadBytes(out, file, record);
+        writeEntryPayloadBytes(out, record);
+        out << ",\n";
+        out << "        \"actionViewPayload\": ";
+        if (const auto payload = readActionViewPayload(record)) {
+            writeActionViewPayload(out, *payload);
+        } else {
+            out << "null";
+        }
         out << "\n";
         out << "      }";
     }
@@ -186,6 +255,7 @@ std::string StdJsonExporter::toJson(const StdFile& file) const
     out << "  \"schema\": \"spice_std_ir_v1\",\n";
     out << "  \"source\": \"" << jsonEscape(file.sourcePath) << "\",\n";
     out << "  \"sourceEncoding\": \"" << toString(file.sourceEncoding) << "\",\n";
+    out << "  \"parseStatus\": \"" << toString(file.parseStatus) << "\",\n";
     out << "  \"layoutKind\": \"" << toString(file.layoutKind) << "\",\n";
     out << "  \"parseOk\": " << (file.ok() ? "true" : "false") << ",\n";
     out << "  \"rawSize\": " << file.rawSize << ",\n";
@@ -202,6 +272,12 @@ std::string StdJsonExporter::toJson(const StdFile& file) const
     out << ",\n";
     out << "  \"diagnostics\": ";
     writeDiagnostics(out, file.diagnostics);
+    out << ",\n";
+    out << "  \"sourceRanges\": ";
+    writeSourceRanges(out, file.sourceRanges);
+    out << ",\n";
+    out << "  \"unknownRanges\": ";
+    writeUnknownRanges(out, file.unknownRanges);
     out << ",\n";
 
     out << "  \"actionRows\": ";

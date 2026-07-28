@@ -1,6 +1,7 @@
 #include "StdParser.h"
 
 #include "../Compression/Aklz.h"
+#include "StdFileWriter.h"
 
 #include <algorithm>
 #include <fstream>
@@ -17,9 +18,30 @@ constexpr std::uint32_t kActionRowSize = 0x18U;
 constexpr std::uint32_t kEntryRecordSize = 0x10U;
 constexpr std::uint32_t kMaxConservativeRowCount = 100000U;
 
+struct KnownRangeCandidate {
+    std::size_t offset{ 0U };
+    std::size_t size{ 0U };
+    std::string label{};
+    bool pinned{ false };
+};
+
 void addDiagnostic(StdFile& file, StdDiagnosticSeverity severity, std::string message, std::uint32_t offset = 0U)
 {
     file.diagnostics.push_back(StdDiagnostic{ severity, std::move(message), offset });
+}
+
+bool hasErrorDiagnostics(const StdFile& file)
+{
+    return std::any_of(file.diagnostics.begin(), file.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == StdDiagnosticSeverity::Error;
+    });
+}
+
+void finalizeKnownLayoutStatus(StdFile& file)
+{
+    file.parseStatus = hasErrorDiagnostics(file)
+        ? StdParseStatus::Partial
+        : StdParseStatus::Complete;
 }
 
 std::uint32_t sizeToU32Saturated(const std::size_t size)
@@ -53,6 +75,105 @@ std::uint32_t readU32BeUnchecked(std::span<const std::uint8_t> bytes, const std:
         (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
         (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
         static_cast<std::uint32_t>(bytes[offset + 3U]);
+}
+
+void writeU16BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::uint16_t value)
+{
+    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+    bytes[offset + 1U] = static_cast<std::uint8_t>(value & 0xffU);
+}
+
+void writeS16BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::int16_t value)
+{
+    writeU16BeUnchecked(bytes, offset, static_cast<std::uint16_t>(value));
+}
+
+void writeU32BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::uint32_t value)
+{
+    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
+    bytes[offset + 1U] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
+    bytes[offset + 2U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
+    bytes[offset + 3U] = static_cast<std::uint8_t>(value & 0xffU);
+}
+
+void addUnknownRange(StdFile& file, const std::size_t offset, const std::size_t size, std::string label)
+{
+    if (size == 0U) {
+        return;
+    }
+
+    StdUnknownRange unknown{};
+    unknown.offset = offset;
+    unknown.size = size;
+    unknown.label = std::move(label);
+    unknown.bytes.assign(
+        file.decodedBytes.begin() + static_cast<std::ptrdiff_t>(offset),
+        file.decodedBytes.begin() + static_cast<std::ptrdiff_t>(offset + size));
+    file.unknownRanges.push_back(std::move(unknown));
+}
+
+void addSourceRange(StdFile& file, const std::size_t offset, const std::size_t size, std::string label, const bool known, const bool pinned)
+{
+    if (size == 0U) {
+        return;
+    }
+
+    file.sourceRanges.push_back(StdSourceRange{
+        .offset = offset,
+        .size = size,
+        .label = std::move(label),
+        .known = known,
+        .pinned = pinned,
+    });
+}
+
+void buildDecodedSourceRanges(StdFile& file, std::vector<KnownRangeCandidate> knownRanges)
+{
+    file.sourceRanges.clear();
+    file.unknownRanges.clear();
+
+    std::sort(knownRanges.begin(), knownRanges.end(), [](const auto& left, const auto& right) {
+        if (left.offset != right.offset) {
+            return left.offset < right.offset;
+        }
+        return left.size < right.size;
+    });
+
+    std::size_t cursor = 0U;
+    for (const auto& range : knownRanges) {
+        if (range.size == 0U) {
+            continue;
+        }
+        if (range.offset > file.decodedBytes.size() || range.size > file.decodedBytes.size() - range.offset) {
+            addDiagnostic(
+                file,
+                StdDiagnosticSeverity::Error,
+                "Known STD source range extends beyond decoded file size",
+                sizeToU32Saturated(range.offset));
+            continue;
+        }
+        if (range.offset < cursor) {
+            addDiagnostic(
+                file,
+                StdDiagnosticSeverity::Error,
+                "Known STD source ranges overlap",
+                sizeToU32Saturated(range.offset));
+            continue;
+        }
+        if (range.offset > cursor) {
+            const auto gapSize = range.offset - cursor;
+            addUnknownRange(file, cursor, gapSize, "padding-or-unknown");
+            addSourceRange(file, cursor, gapSize, "padding-or-unknown", false, true);
+        }
+        addSourceRange(file, range.offset, range.size, range.label, true, range.pinned);
+        cursor = range.offset + range.size;
+    }
+
+    if (cursor < file.decodedBytes.size()) {
+        const auto gapSize = file.decodedBytes.size() - cursor;
+        addUnknownRange(file, cursor, gapSize, "trailing-padding-or-unknown");
+        addSourceRange(file, cursor, gapSize, "trailing-padding-or-unknown", false, true);
+    }
 }
 
 bool actionRowEnvelopeMatches(std::span<const std::uint8_t> bytes)
@@ -121,6 +242,11 @@ void parseActionRows(StdFile& file)
         }
         layout.rows.push_back(row);
     }
+
+    buildDecodedSourceRanges(file, {
+        KnownRangeCandidate{ .offset = 0U, .size = kStdHeaderSize, .label = "action-rows-header", .pinned = true },
+        KnownRangeCandidate{ .offset = kStdHeaderSize, .size = layout.rows.size() * kActionRowSize, .label = "action-row-table", .pinned = true },
+    });
 }
 
 void parseEntryTable(StdFile& file)
@@ -134,6 +260,7 @@ void parseEntryTable(StdFile& file)
     header.reserved0 = readU32BeUnchecked(bytes, 0x04U);
     header.reserved1 = readU32BeUnchecked(bytes, 0x08U);
     header.decodedSpanMinusHeader = readU32BeUnchecked(bytes, 0x0cU);
+    layout.sourceRecordCountIncludingSentinel = header.recordCountIncludingSentinel;
 
     const auto decodedSpan = bytes.size() >= kStdHeaderSize ? bytes.size() - kStdHeaderSize : 0U;
     layout.headerSpanDelta = static_cast<std::int64_t>(decodedSpan) -
@@ -167,6 +294,7 @@ void parseEntryTable(StdFile& file)
         StdEntryRecord record{};
         record.index = index;
         record.tableOffset = offset;
+        record.sourceTableOffset = offset;
         record.locationCode = readS16BeUnchecked(bytes, offset);
         record.opcode = readS16BeUnchecked(bytes, offset + 0x02U);
         record.combinedType =
@@ -174,7 +302,9 @@ void parseEntryTable(StdFile& file)
             static_cast<std::uint32_t>(static_cast<std::uint16_t>(record.locationCode));
         record.field2 = readU32BeUnchecked(bytes, offset + 0x04U);
         record.payloadSize = readU32BeUnchecked(bytes, offset + 0x08U);
+        record.sourcePayloadSize = record.payloadSize;
         record.payloadOffsetRel = readU32BeUnchecked(bytes, offset + 0x0cU);
+        record.sourcePayloadOffsetRel = record.payloadOffsetRel;
         record.isSentinel = record.locationCode < 0;
 
         if (record.isSentinel) {
@@ -202,6 +332,10 @@ void parseEntryTable(StdFile& file)
         record.payloadInBounds = payloadAbs64 <= bytes.size() && payloadEndAbs64 <= bytes.size();
         if (!record.payloadInBounds) {
             addDiagnostic(file, StdDiagnosticSeverity::Error, "Entry payload span is outside decoded file", offset);
+        } else {
+            record.payloadBytes.assign(
+                bytes.begin() + static_cast<std::ptrdiff_t>(record.payloadOffsetAbs),
+                bytes.begin() + static_cast<std::ptrdiff_t>(record.payloadOffsetAbs + record.payloadSize));
         }
 
         if (!hasPayloads || record.payloadOffsetRel < firstPayloadOffsetRel) {
@@ -224,6 +358,15 @@ void parseEntryTable(StdFile& file)
             kStdHeaderSize);
     }
 
+    if (layout.hasSentinel &&
+        layout.sentinelIndex + 1U != static_cast<std::uint32_t>(header.recordCountIncludingSentinel)) {
+        addDiagnostic(
+            file,
+            StdDiagnosticSeverity::Error,
+            "Entry table sentinel position does not match declared record count",
+            kStdHeaderSize + layout.sentinelIndex * kEntryRecordSize);
+    }
+
     layout.hasPayloads = hasPayloads;
     layout.firstPayloadOffsetRel = firstPayloadOffsetRel;
     layout.maxPayloadEndRel = maxPayloadEndRel;
@@ -231,6 +374,29 @@ void parseEntryTable(StdFile& file)
     layout.trailingBytesAfterMaxPayload = maxPayloadEndRel <= decodedSpanU32
         ? decodedSpanU32 - maxPayloadEndRel
         : 0U;
+
+    std::vector<KnownRangeCandidate> knownRanges{};
+    knownRanges.push_back(KnownRangeCandidate{ .offset = 0U, .size = kStdHeaderSize, .label = "entry-table-header", .pinned = true });
+    knownRanges.push_back(KnownRangeCandidate{
+        .offset = kStdHeaderSize,
+        .size = layout.records.size() * kEntryRecordSize,
+        .label = "entry-record-table",
+        .pinned = true,
+    });
+    for (const auto& record : layout.records) {
+        if (record.isSentinel || !record.payloadInBounds || record.payloadSize == 0U) {
+            continue;
+        }
+        std::ostringstream label;
+        label << "entry-payload[" << record.index << "]";
+        knownRanges.push_back(KnownRangeCandidate{
+            .offset = record.payloadOffsetAbs,
+            .size = record.payloadSize,
+            .label = label.str(),
+            .pinned = true,
+        });
+    }
+    buildDecodedSourceRanges(file, std::move(knownRanges));
 }
 
 void parseDecodedLayout(StdFile& file)
@@ -238,28 +404,33 @@ void parseDecodedLayout(StdFile& file)
     const std::span<const std::uint8_t> bytes(file.decodedBytes);
     if (bytes.size() > std::numeric_limits<std::uint32_t>::max()) {
         addDiagnostic(file, StdDiagnosticSeverity::Error, "STD decoded payload is too large to represent with a 32-bit size");
+        file.parseStatus = StdParseStatus::Failed;
         return;
     }
 
     file.decodedSize = static_cast<std::uint32_t>(bytes.size());
     if (!canReadRange(bytes.size(), 0U, kStdHeaderSize)) {
         addDiagnostic(file, StdDiagnosticSeverity::Error, "STD decoded payload is too small for a 0x10-byte header");
+        file.parseStatus = StdParseStatus::Failed;
         return;
     }
 
     if (actionRowEnvelopeMatches(bytes)) {
         file.layoutKind = StdLayoutKind::ActionRows;
         parseActionRows(file);
+        finalizeKnownLayoutStatus(file);
         return;
     }
 
     if (entryTableEnvelopeMatches(bytes)) {
         file.layoutKind = StdLayoutKind::EntryTable;
         parseEntryTable(file);
+        finalizeKnownLayoutStatus(file);
         return;
     }
 
     addDiagnostic(file, StdDiagnosticSeverity::Error, "STD decoded payload does not match a known conservative layout");
+    file.parseStatus = StdParseStatus::Failed;
 }
 
 std::vector<std::uint8_t> readAllBytes(const std::filesystem::path& path, bool& ok)
@@ -281,12 +452,7 @@ std::vector<std::uint8_t> readAllBytes(const std::filesystem::path& path, bool& 
 
 bool StdFile::ok() const
 {
-    for (const auto& diagnostic : diagnostics) {
-        if (diagnostic.severity == StdDiagnosticSeverity::Error) {
-            return false;
-        }
-    }
-    return true;
+    return parseStatus == StdParseStatus::Complete && !hasErrorDiagnostics(*this);
 }
 
 const char* toString(StdDiagnosticSeverity severity)
@@ -309,6 +475,21 @@ const char* toString(StdSourceEncoding encoding)
         return "plain";
     case StdSourceEncoding::Aklz:
         return "aklz";
+    }
+    return "unknown";
+}
+
+const char* toString(StdParseStatus status)
+{
+    switch (status) {
+    case StdParseStatus::Empty:
+        return "empty";
+    case StdParseStatus::Partial:
+        return "partial";
+    case StdParseStatus::Complete:
+        return "complete";
+    case StdParseStatus::Failed:
+        return "failed";
     }
     return "unknown";
 }
@@ -341,6 +522,91 @@ const char* toString(StdExportMode mode)
     return "unknown";
 }
 
+const std::vector<std::uint8_t>* findEntryPayload(const StdFile& file, const std::uint32_t recordIndex)
+{
+    if (file.layoutKind != StdLayoutKind::EntryTable) {
+        return nullptr;
+    }
+
+    const auto found = std::find_if(file.entryTable.records.begin(), file.entryTable.records.end(), [recordIndex](const auto& record) {
+        return record.index == recordIndex;
+    });
+    if (found == file.entryTable.records.end() || found->isSentinel || !found->payloadInBounds) {
+        return nullptr;
+    }
+    return &found->payloadBytes;
+}
+
+std::vector<std::uint8_t>* findMutableEntryPayload(StdFile& file, const std::uint32_t recordIndex)
+{
+    if (file.layoutKind != StdLayoutKind::EntryTable) {
+        return nullptr;
+    }
+
+    const auto found = std::find_if(file.entryTable.records.begin(), file.entryTable.records.end(), [recordIndex](const auto& record) {
+        return record.index == recordIndex;
+    });
+    if (found == file.entryTable.records.end() || found->isSentinel || !found->payloadInBounds) {
+        return nullptr;
+    }
+    return &found->payloadBytes;
+}
+
+std::optional<StdActionViewPayload> readActionViewPayload(const StdEntryRecord& record)
+{
+    if (record.isSentinel ||
+        !record.payloadInBounds ||
+        record.combinedType != kStdActionViewCombinedType ||
+        record.payloadBytes.size() != kStdActionViewPayloadSize) {
+        return std::nullopt;
+    }
+
+    const std::span<const std::uint8_t> bytes(record.payloadBytes);
+    StdActionViewPayload payload{};
+    payload.primaryActionKey = readS16BeUnchecked(bytes, 0x00U);
+    payload.routeSecondaryKey = readS16BeUnchecked(bytes, 0x02U);
+    payload.directSecondaryKey = readS16BeUnchecked(bytes, 0x04U);
+    payload.lowFlags = readU16BeUnchecked(bytes, 0x06U);
+    payload.reserved08 = readU32BeUnchecked(bytes, 0x08U);
+    payload.reserved0c = readU32BeUnchecked(bytes, 0x0cU);
+    payload.actionViewFlags = readU32BeUnchecked(bytes, 0x10U);
+    payload.modeLocalAngleOrOffsetBits = readU32BeUnchecked(bytes, 0x14U);
+    payload.startFrame = readS16BeUnchecked(bytes, 0x18U);
+    payload.reserved1a = readU16BeUnchecked(bytes, 0x1aU);
+    payload.endFrame = readS16BeUnchecked(bytes, 0x1cU);
+    payload.holdFrameCount = readS16BeUnchecked(bytes, 0x1eU);
+    payload.stepFrameCount = readS16BeUnchecked(bytes, 0x20U);
+    payload.requestedMode = readS16BeUnchecked(bytes, 0x22U);
+    return payload;
+}
+
+bool writeActionViewPayload(StdEntryRecord& record, const StdActionViewPayload& payload)
+{
+    if (record.isSentinel ||
+        !record.payloadInBounds ||
+        record.combinedType != kStdActionViewCombinedType ||
+        record.payloadBytes.size() != kStdActionViewPayloadSize) {
+        return false;
+    }
+
+    const std::span<std::uint8_t> bytes(record.payloadBytes);
+    writeS16BeUnchecked(bytes, 0x00U, payload.primaryActionKey);
+    writeS16BeUnchecked(bytes, 0x02U, payload.routeSecondaryKey);
+    writeS16BeUnchecked(bytes, 0x04U, payload.directSecondaryKey);
+    writeU16BeUnchecked(bytes, 0x06U, payload.lowFlags);
+    writeU32BeUnchecked(bytes, 0x08U, payload.reserved08);
+    writeU32BeUnchecked(bytes, 0x0cU, payload.reserved0c);
+    writeU32BeUnchecked(bytes, 0x10U, payload.actionViewFlags);
+    writeU32BeUnchecked(bytes, 0x14U, payload.modeLocalAngleOrOffsetBits);
+    writeS16BeUnchecked(bytes, 0x18U, payload.startFrame);
+    writeU16BeUnchecked(bytes, 0x1aU, payload.reserved1a);
+    writeS16BeUnchecked(bytes, 0x1cU, payload.endFrame);
+    writeS16BeUnchecked(bytes, 0x1eU, payload.holdFrameCount);
+    writeS16BeUnchecked(bytes, 0x20U, payload.stepFrameCount);
+    writeS16BeUnchecked(bytes, 0x22U, payload.requestedMode);
+    return true;
+}
+
 StdFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
 {
     StdFile file{};
@@ -350,6 +616,7 @@ StdFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
 
     if (file.rawBytes.size() > std::numeric_limits<std::uint32_t>::max()) {
         addDiagnostic(file, StdDiagnosticSeverity::Error, "STD source payload is too large to represent with a 32-bit size");
+        file.parseStatus = StdParseStatus::Failed;
         return file;
     }
 
@@ -361,6 +628,7 @@ StdFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
             message << "Unable to decompress STD AKLZ source: "
                     << spice::compression::aklz::errorToString(decoded.error);
             addDiagnostic(file, StdDiagnosticSeverity::Error, message.str());
+            file.parseStatus = StdParseStatus::Failed;
             return file;
         }
         file.decodedBytes = decoded.bytes;
@@ -386,6 +654,7 @@ StdFile parseFile(const std::filesystem::path& path)
     StdFile file{};
     file.sourcePath = path.string();
     addDiagnostic(file, StdDiagnosticSeverity::Error, "Unable to open or read STD file");
+    file.parseStatus = StdParseStatus::Failed;
     return file;
 }
 
@@ -402,27 +671,68 @@ StdExportResult exportBytes(const StdFile& file, StdExportMode mode)
             result.error = "STD decoded bytes are not available";
             return result;
         }
-        result.bytes = file.decodedBytes;
-        return result;
-
-    case StdExportMode::ReencodeSourceKind:
-        if (file.sourceEncoding == StdSourceEncoding::Aklz) {
-            break;
-        }
-        if (!file.decodedAvailable) {
-            result.error = "STD decoded bytes are not available";
+        if (file.layoutKind != StdLayoutKind::Unknown && file.parseStatus != StdParseStatus::Failed) {
+            const auto written = StdFileWriter{}.write(file, StdWriteOptions{
+                .sourceEncoding = StdSourceEncoding::Plain,
+                .preserveExactSourceWhenUnchanged = false,
+            });
+            if (!written.ok()) {
+                result.error = written.diagnostics.empty()
+                    ? "Unable to write STD decoded bytes"
+                    : written.diagnostics.front().message;
+                return result;
+            }
+            result.bytes = written.bytes;
             return result;
         }
         result.bytes = file.decodedBytes;
         return result;
 
-    case StdExportMode::ReencodeAklz:
+    case StdExportMode::ReencodeSourceKind:
+        if (!file.decodedAvailable) {
+            result.error = "STD decoded bytes are not available";
+            return result;
+        }
+        if (file.layoutKind != StdLayoutKind::Unknown && file.parseStatus != StdParseStatus::Failed) {
+            const auto written = StdFileWriter{}.write(file, StdWriteOptions{
+                .sourceEncoding = file.sourceEncoding,
+                .preserveExactSourceWhenUnchanged = false,
+            });
+            if (!written.ok()) {
+                result.error = written.diagnostics.empty()
+                    ? "Unable to re-encode STD source bytes"
+                    : written.diagnostics.front().message;
+                return result;
+            }
+            result.bytes = written.bytes;
+            return result;
+        }
+        if (file.sourceEncoding == StdSourceEncoding::Plain) {
+            result.bytes = file.decodedBytes;
+            return result;
+        }
         break;
-    }
 
-    if (!file.decodedAvailable) {
-        result.error = "STD decoded bytes are not available";
-        return result;
+    case StdExportMode::ReencodeAklz:
+        if (!file.decodedAvailable) {
+            result.error = "STD decoded bytes are not available";
+            return result;
+        }
+        if (file.layoutKind != StdLayoutKind::Unknown && file.parseStatus != StdParseStatus::Failed) {
+            const auto written = StdFileWriter{}.write(file, StdWriteOptions{
+                .sourceEncoding = StdSourceEncoding::Aklz,
+                .preserveExactSourceWhenUnchanged = false,
+            });
+            if (!written.ok()) {
+                result.error = written.diagnostics.empty()
+                    ? "Unable to AKLZ-compress STD decoded bytes"
+                    : written.diagnostics.front().message;
+                return result;
+            }
+            result.bytes = written.bytes;
+            return result;
+        }
+        break;
     }
 
     const auto encoded = spice::compression::aklz::compress(file.decodedBytes);
