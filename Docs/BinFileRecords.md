@@ -1,6 +1,6 @@
 # Bin File Records
 
-Living document for one-to-one record annotations for assessed `.bin` files. `BinFileLayout.md` describes the file family and field layout; this document tracks per-file record identity for editor/exporter naming.
+Living document for one-to-one record annotations for assessed `.bin` files. `BinFileLayout.md` describes the promoted file family and field layout, `BinFileProgress.md` tracks current research/progress status, and this document tracks per-file record identity for editor/exporter naming.
 
 Detailed evidence, generated crops, contact sheets, Ghidra exports, and scratch notes stay under ignored `SpiceBin/research/`. Promote rows here when a record has a stable one-to-one identity or a useful provisional editor label.
 
@@ -10,7 +10,7 @@ Detailed evidence, generated crops, contact sheets, Ghidra exports, and scratch 
 - Use `Human Annotation` for observed in-game meaning or user-verified visual interpretation.
 - Keep provisional keys and descriptions when the consumer evidence is useful but not final.
 - Leave unknowns explicit instead of inventing names.
-- Record companion texture banks in `BinFileLayout.md`; use this document for record identity.
+- Record companion texture-bank progress in `BinFileProgress.md`; use this document for record identity.
 
 ## Assessed File Coverage
 
@@ -44,20 +44,9 @@ Source research: `SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/READ
 
 The three matches are `FUN_800c2f4c` (`/field/HrsBin_Hakken.mll`), `FUN_8012ab84` (`/field/HrsBin_sbp.mll`), and `menu_listener@801920ac` (`/field/HrsBin_Status.mll`). No current DOL decompile match names the loose `/field/HRSBin.bin` or `/field/HRSBin.mld` path. Record-level annotations for the loose 34-record file remain blocked on finding a consumer or proving an archive/script-side constructed load path.
 
-A later structural Ghidra scan reached the same boundary from the loader side.
-The embedded/member initializer `FUN_801d6998` has 19 current xrefs covering the
-known MLL-style callers, while the standalone loose-file wrapper `FUN_801d6b58`
-has only one current xref: `FUN_800e3594` loading `/field/HRS_BEND.BIN`. A US
-extracted-corpus search found `HRSBin.bin` and `HRSBin.mld` in directory/TOC
-metadata but did not find a script-side load reference. Keep the loose
-`field/HRSBin.bin` records unmapped until runtime instrumentation or a
-non-string resource-construction trace identifies a consumer.
+A later structural Ghidra scan reached the same boundary from the loader side. The embedded/member initializer `FUN_801d6998` has 19 current xrefs covering the known MLL-style callers, while the standalone loose-file wrapper `FUN_801d6b58` has only one current xref: `FUN_800e3594` loading `/field/HRS_BEND.BIN`. A US extracted-corpus search found `HRSBin.bin` and `HRSBin.mld` in directory/TOC metadata but did not find a script-side load reference. Keep the loose `field/HRSBin.bin` records unmapped until runtime instrumentation or a non-string resource-construction trace identifies a consumer.
 
-A lower-level direct caller audit of `loadFileFromPath@801cc3c4` found 17
-callsites in 13 unique caller functions. The audited field literal loads were
-`/field/ts000110.gvr`, `/field/wmaparea.bin`, and `/field/wmaparea.BIN`; the
-visible constructed field path was `sr_%03d%c.tec`. It did not find a direct
-loose `field/HRSBin.bin` or `field/HRSBin.mld` load.
+A lower-level direct caller audit of `loadFileFromPath@801cc3c4` found 17 callsites in 13 unique caller functions. The audited field literal loads were `/field/ts000110.gvr`, `/field/wmaparea.bin`, and `/field/wmaparea.BIN`; the visible constructed field path was `sr_%03d%c.tec`. It did not find a direct loose `field/HRSBin.bin` or `field/HRSBin.mld` load.
 
 ## field/HrsBin_Status.mll Embedded Members
 
@@ -80,18 +69,7 @@ Rendered contact sheets and per-element metadata are in `SpiceBin/research/2026-
 
 ### Preview Material Context Status
 
-Current preview evidence now resolves the high-confidence `StaSprite00.bin`
-selector groups against `/field/Sprite00.mld`: fixed-data word0 maps to the
-same-numbered decoded Sprite00 texture entry for the checked rows. This gives
-usable previews for compact digits, stat labels, moon labels, selector strips,
-option bars, and MAX/Rank/Next labels. The same rule resolves `StaDeco.bin`
-wide digit records `0x04..0x0d`: selector `4` renders as digits `0..9` on
-`ts000116`. The queued Sprite00-context path also resolves `StaDeco.bin`
-records `0x00`, `0x01`, `0x02`, `0x03`, and `0x0e..0x11` as common
-frame/rule/portrait-deco/selector-accent art. The generated selector sheet is
-`SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_preview_material_diagnostics/stasprite00_selector_context_groups.png`;
-the row audit is
-`SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_preview_material_diagnostics/status_preview_context_mapping_audit.tsv`.
+Current preview evidence now resolves the high-confidence `StaSprite00.bin` selector groups against `/field/Sprite00.mld`: fixed-data word0 maps to the same-numbered decoded Sprite00 texture entry for the checked rows. This gives usable previews for compact digits, stat labels, moon labels, selector strips, option bars, and MAX/Rank/Next labels. The same rule resolves `StaDeco.bin` wide digit records `0x04..0x0d`: selector `4` renders as digits `0..9` on `ts000116`. The queued Sprite00-context path also resolves `StaDeco.bin` records `0x00`, `0x01`, `0x02`, `0x03`, and `0x0e..0x11` as common frame/rule/portrait-deco/selector-accent art. The generated selector sheet is `SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_preview_material_diagnostics/stasprite00_selector_context_groups.png`; the row audit is `SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_preview_material_diagnostics/status_preview_context_mapping_audit.tsv`.
 
 | Selector | Sprite00 texture | Rows covered |
 | ---: | --- | --- |
@@ -101,19 +79,7 @@ the row audit is
 | `5` | `ts000124` | `MAXHP`, `MAXMP`, `Rank`, `Next`, `MAXSpirit`. |
 | `6` | `ts000201` | Options active selector icon. |
 
-The remaining non-Sprite00 groups are not solved by this selector rule. The
-current row audit marks 17 non-Sprite rows as `proven_direct_ts000110_context`,
-9 as `proven_render_queue_direct_ts000110_context`, 10 as
-`proven_selected_direct_ts000110_context`, 53 as
-`proven_object_direct_ts000110_context`, and 24 as
-`proven_object_primary_ts000110_context`. These paths all use `DAT_80347568`
-and the default `/field/ts000110.gvr` material context. The final selected
-direct row is `StaPaper.bin 0x69`: the disassembly for `FUN_8019ae84` shows it
-is stack entry 2 for selector slot `0` and stack entry 3 for selector slot `1`,
-and both entries are the direct `FUN_801d4f0c` pass. The paired
-`StaSprite00.bin 0x4f` icon remains on the Sprite00 selector context. A broader
-visual candidate sheet exists at
-`SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_preview_material_diagnostics/non_sprite00_ts000110_direct_context_candidates.png`.
+The remaining non-Sprite00 groups are not solved by this selector rule. The current row audit marks 17 non-Sprite rows as `proven_direct_ts000110_context`, 9 as `proven_render_queue_direct_ts000110_context`, 10 as `proven_selected_direct_ts000110_context`, 53 as `proven_object_direct_ts000110_context`, and 24 as `proven_object_primary_ts000110_context`. These paths all use `DAT_80347568` and the default `/field/ts000110.gvr` material context. The final selected direct row is `StaPaper.bin 0x69`: the disassembly for `FUN_8019ae84` shows it is stack entry 2 for selector slot `0` and stack entry 3 for selector slot `1`, and both entries are the direct `FUN_801d4f0c` pass. The paired `StaSprite00.bin 0x4f` icon remains on the Sprite00 selector context. A broader visual candidate sheet exists at `SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_preview_material_diagnostics/non_sprite00_ts000110_direct_context_candidates.png`.
 
 ### Direct Access Coverage
 
@@ -147,34 +113,20 @@ All records reached by constant `FUN_801d68c4(status_global, record)` calls in t
 
 ### Field X-Menu Mapping Status
 
-The field X-menu controller and record banks are now identified well enough for
-a descriptive parser/exporter to expose the confirmed record families without
-assigning the wrong source file. The menu opened by pressing X on the field is
-`/field/HrsBin_Status.mll`, not the loose `field/HRSBin.bin` file. Current
-Ghidra evidence proves the X-triggered load path, the party-selector root page,
-the More/next-page route, and the five left/right root stat-carousel windows.
+The field X-menu controller and record banks are now identified well enough for a descriptive parser/exporter to expose the confirmed record families without assigning the wrong source file. The menu opened by pressing X on the field is `/field/HrsBin_Status.mll`, not the loose `field/HRSBin.bin` file. Current Ghidra evidence proves the X-triggered load path, the party-selector root page, the More/next-page route, and the five left/right root stat-carousel windows.
 
-For the embedded status banks, all constant `FUN_801d68c4(status_global,
-record)` consumers found by the focused and whole-program Ghidra scans now have
-one-to-one rows in this document. The remaining mapping work is split into two
-different classes:
+For the embedded status banks, all constant `FUN_801d68c4(status_global, record)` consumers found by the focused and whole-program Ghidra scans now have one-to-one rows in this document. The remaining mapping work is split into two different classes:
 
 | Class | Records | Exporter treatment |
 | --- | --- | --- |
 | Consumed but visually provisional | none currently marked medium | The common backing/overlay records, selector-helper variants, and detail-row `0xff` sentinel marker are now high-confidence structural records after Ghidra caller and rendered-composite review. Some final visible UI labels can still be improved with screenshot/runtime correlation, but the machine-facing structural keys are stable enough for exporter exposure. |
 | Serialized with no discovered consumer | `StaCard 0x09`; `StaPaper 0x02`, `0x03`, `0x29`, `0x47`, `0x56`, `0x57`, `0x58`, `0x59`, `0x5a`, `0x61`, `0x6c`, `0x6d`; `StaSprite00 0x03`, `0x34`, `0x39`, `0x3d`, `0x3e`, `0x40`, `0x41`, `0x42`, `0x43`, `0x44`, `0x45`, `0x48`, `0x4b`, `0x53`, `0x54`, `0x57` | Preserve as serialized records with raw element data and rendered previews, but do not expose semantic editor keys unless runtime evidence, screenshot correlation, or new consumer evidence proves a role. |
 
-The loose `field/HRSBin.bin` remains a valid 34-record HRSBin-style layout with
-identified companion textures, but its consumer is still unresolved. Static DOL
-term searches, indexed-object initializer/wrapper scans, direct
-`loadFileFromPath` caller auditing, and US extracted-corpus searches currently
-do not find a consumer for that loose file.
+The loose `field/HRSBin.bin` remains a valid 34-record HRSBin-style layout with identified companion textures, but its consumer is still unresolved. Static DOL term searches, indexed-object initializer/wrapper scans, direct `loadFileFromPath` caller auditing, and US extracted-corpus searches currently do not find a consumer for that loose file.
 
 ### Original Field X-Menu Request Audit
 
-This table records the current answer to the original field-menu investigation
-request. The starting assumption was that the X-triggered field menu used loose
-`field/HRSBin.bin`; current evidence shows that assumption is false.
+This table records the current answer to the original field-menu investigation request. The starting assumption was that the X-triggered field menu used loose `field/HRSBin.bin`; current evidence shows that assumption is false.
 
 | Requirement from investigation | Current evidence | Result |
 | --- | --- | --- |
@@ -188,13 +140,7 @@ request. The starting assumption was that the X-triggered field menu used loose
 
 ### Explicitly Unmapped Serialized Records
 
-These records exist in the serialized `HrsBin_Status.mll` embedded `.bin`
-members, but current Ghidra evidence does not find a consumer for them. The
-whole-program `FUN_801d68c4` xref scan found no status-bank accessor calls for
-these member/record pairs, and the remaining non-accessor status-global xrefs
-are limited to the MLL member init/free lifecycle. Keep them out of
-machine-facing editor keys until runtime evidence, screenshot correlation, or
-new consumer evidence proves a role.
+These records exist in the serialized `HrsBin_Status.mll` embedded `.bin` members, but current Ghidra evidence does not find a consumer for them. The whole-program `FUN_801d68c4` xref scan found no status-bank accessor calls for these member/record pairs, and the remaining non-accessor status-global xrefs are limited to the MLL member init/free lifecycle. Keep them out of machine-facing editor keys until runtime evidence, screenshot correlation, or new consumer evidence proves a role.
 
 | Member | Record | Elements | Texture slots | Dimensions | Visual summary | Current status |
 | --- | --- | ---: | --- | --- | --- | --- |
@@ -404,16 +350,7 @@ Generated route table: `SpiceBin/research/2026-06-20_field_hrsbin_menu_controlle
 
 The root carousel slot payloads are installed by `FUN_8018c00c`, which is called from `FUN_80199024` once for each party member and window slot. Generated payload table: `SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_mll_record_contact_sheets/root_carousel_payload_record_map.tsv`
 
-Controller evidence: `FUN_80183d90` is the initial root selector callback. The
-disassembly at `80183e2c..80183e90` handles controller code `7` by saving the
-old carousel slot from object field `+0x44` to `+0x48`, incrementing `+0x44`,
-and wrapping `5 -> 0`; it also advances the bottom page-toggle field `+0x14`
-and wraps `2 -> 0`. The block at `80183e94..80183ef8` handles controller code
-`6` by saving `+0x44` to `+0x48`, decrementing `+0x44`, and wrapping `-1 -> 4`;
-it also decrements `+0x14` and wraps `-1 -> 1`. The animation block then indexes
-`DAT_80306f98[0x06 + member * 5 + oldSlot]` and
-`DAT_80306f98[0x06 + member * 5 + newSlot]`, so the five-slot loop below is
-directly tied to the visible left/right stat-window carousel.
+Controller evidence: `FUN_80183d90` is the initial root selector callback. The disassembly at `80183e2c..80183e90` handles controller code `7` by saving the old carousel slot from object field `+0x44` to `+0x48`, incrementing `+0x44`, and wrapping `5 -> 0`; it also advances the bottom page-toggle field `+0x14` and wraps `2 -> 0`. The block at `80183e94..80183ef8` handles controller code `6` by saving `+0x44` to `+0x48`, decrementing `+0x44`, and wrapping `-1 -> 4`; it also decrements `+0x14` and wraps `-1 -> 1`. The animation block then indexes `DAT_80306f98[0x06 + member * 5 + oldSlot]` and `DAT_80306f98[0x06 + member * 5 + newSlot]`, so the five-slot loop below is directly tied to the visible left/right stat-window carousel.
 
 | Carousel window slot | Machine-facing suffix | Common records | Slot-specific records | Current interpretation | Confidence |
 | ---: | --- | --- | --- | --- | --- |
@@ -653,15 +590,7 @@ The options action table has four setting rows. `FUN_8017a040` dispatches select
 
 ### Selector Helper Record Cluster
 
-`FUN_80191a04` is a compact selector/control builder reached by adjacent helper
-thunks near the wider callback-table slice after the normal X-menu state range,
-and by normal callers `FUN_80199508` and `FUN_801986bc`. A later
-`DAT_80347110` write audit supports normal dispatched X-menu states `0..19`
-with entry `20` null, so do not treat the wider-slice helper thunks as ordinary
-states `21..32` without new runtime evidence. The rows below are
-high-confidence as helper-cluster membership, but their exact on-screen roles
-remain pending page/control correlation. Generated case map:
-`SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_mll_record_contact_sheets/selector_helper_case_context_map.tsv`
+`FUN_80191a04` is a compact selector/control builder reached by adjacent helper thunks near the wider callback-table slice after the normal X-menu state range, and by normal callers `FUN_80199508` and `FUN_801986bc`. A later `DAT_80347110` write audit supports normal dispatched X-menu states `0..19` with entry `20` null, so do not treat the wider-slice helper thunks as ordinary states `21..32` without new runtime evidence. The rows below are high-confidence as helper-cluster membership, but their exact on-screen roles remain pending page/control correlation. Generated case map: `SpiceBin/research/2026-06-20_field_hrsbin_menu_controller/status_mll_record_contact_sheets/selector_helper_case_context_map.tsv`
 
 | Member | Record | Machine-facing key | Description | Confidence | Direct consumer functions |
 | --- | --- | --- | --- | --- | --- |
@@ -693,9 +622,7 @@ Normal-function selector-helper cases:
 | `FUN_80199508` | `5` | Creates eight repeated `FUN_8018e82c` controls with `StaSprite00 0x3b`, `StaPaper 0x04`, common `StaCard 0x02`, and `StaPaper 0x0a`. |
 | `FUN_801986bc` | `0x0f`, `0x10` | Creates two paired `FUN_8018e82c` controls with `StaSprite00 0x04`, `StaPaper 0x04`, common `StaCard 0x02`, and `StaPaper 0x0a`; the same function then creates two sibling `FUN_8016e220` controls. |
 
-Implemented but not observed in the current caller audit: helper cases `1`,
-`2`, and `6`. They are present in the `FUN_80191a04` switch body but no current
-Ghidra caller passes those case ids.
+Implemented but not observed in the current caller audit: helper cases `1`, `2`, and `6`. They are present in the `FUN_80191a04` switch body but no current Ghidra caller passes those case ids.
 
 Next promotion target: correlate the primary page/detail rows with screenshots so their high-confidence machine-facing route keys can be upgraded into visible editor labels. Current Ghidra evidence already identifies the root selector, root carousel roles and stat fields, More menu routes, primary page dispatch groups, secondary selector groups and payloads, options/settings rows, option choice-panel records, and the wanted-list entry.
 
@@ -894,9 +821,7 @@ Companion texture evidence: `battle/command.mld`, with possible nearby cursor ma
 
 ### Record Groups
 
-`battle/HrsBinCW.bin` contains 104 indexed records, `0x00..0x67`. The command
-wheel records are only one subset. Current consumer traces support exposing the
-file as a broader battle command/menu UI layout bank.
+`battle/HrsBinCW.bin` contains 104 indexed records, `0x00..0x67`. The command wheel records are only one subset. Current consumer traces support exposing the file as a broader battle command/menu UI layout bank.
 
 | Record range | Current role | Confidence |
 | --- | --- | --- |

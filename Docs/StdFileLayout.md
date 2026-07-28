@@ -1,22 +1,15 @@
 # STD File Layout
 
-Core binary layout and semantic-editing contract for Skies of Arcadia Legends
-`.std` files in `SpiceStd`.
-
-Disc `.std` files are AKLZ-wrapped. Parse all layout fields from the
-decompressed byte stream. Numeric fields are big-endian.
+This document describes the promoted STD decoded layout forms, action rows, entry tables, dispatch keys, and currently modeled payload records implemented by SPICE. Semantic-editing notes and re-export rules live in `Docs/StdFileProgress.md`.
 
 ## Layout Forms
 
 - `%s_STD`: 0x10-byte header followed by fixed 0x18-byte action rows.
-- `%s0_STD`: 0x10-byte header followed by 0x10-byte entry records and payload
-  bodies.
+- `%s0_STD`: 0x10-byte header followed by 0x10-byte entry records and payload bodies.
 
 ## `%s_STD` Action Rows
 
-Use `%s_STD` rows as combatant action-row tables. Runtime lookup compares
-`actionId` with the current action/source key or combatant worksheet
-`field6_0x6`, then uses `callbackIndex` to install the action callback.
+Use `%s_STD` rows as combatant action-row tables. Runtime lookup compares `actionId` with the current action/source key or combatant worksheet `field6_0x6`, then uses `callbackIndex` to install the action callback.
 
 Header:
 
@@ -50,25 +43,17 @@ Rows start at decoded offset `0x10`.
 
 Semantic ownership:
 
-- Resolve `callbackIndex` before editing `+0x06`, `+0x0e`, `+0x10`, or
-  `+0x14`.
-- Treat `actionId` as the primary action/source key. First-battle resources
-  confirm action ids `4` and `8` route through callback index `8`
-  (`FUN_800662bc`) for `MA000`, `MA001`, and `MB000`.
-- For action ids `0x18`, `0x1d`, and `0x1e`, row lookup also checks
-  `secondaryKey`. Queued instruction state can choose `0x18` versus `0x1d`
-  behavior and pass its queued parameter as this secondary selector.
-- Normal-motion callbacks `8`, `9`, `10`, `13`, and `15` may own `+0x06`,
-  `+0x10`, and `+0x14` after resource validation.
+- Resolve `callbackIndex` before editing `+0x06`, `+0x0e`, `+0x10`, or `+0x14`.
+- Treat `actionId` as the primary action/source key. First-battle resources confirm action ids `4` and `8` route through callback index `8` (`FUN_800662bc`) for `MA000`, `MA001`, and `MB000`.
+- For action ids `0x18`, `0x1d`, and `0x1e`, row lookup also checks `secondaryKey`. Queued instruction state can choose `0x18` versus `0x1d` behavior and pass its queued parameter as this secondary selector.
+- Normal-motion callbacks `8`, `9`, `10`, `13`, and `15` may own `+0x06`, `+0x10`, and `+0x14` after resource validation.
 - Menu-child callbacks `11` and `12` may own `+0x14` only.
 - Setup callback `7` may own `+0x0e` only.
-- Callback indices `16`, `17`, `18`, `19`, and unknown callback indices are
-  preserve/expert until promoted by type-specific research.
+- Callback indices `16`, `17`, `18`, `19`, and unknown callback indices are preserve/expert until promoted by type-specific research.
 
 ## `%s0_STD` Entry Table
 
-Entry-table records start at decoded offset `0x10`. The table ends at the
-first entry whose `locationCode` is negative.
+Entry-table records start at decoded offset `0x10`. The table ends at the first entry whose `locationCode` is negative.
 
 Header:
 
@@ -94,8 +79,7 @@ Payload storage rules:
 
 - Payload bytes are stored at `decoded + 0x10 + payloadOffset`.
 - Unknown entry payload bodies are raw byte spans.
-- Preserve payload sizes, offsets, and opaque bytes unless a promoted
-  type-specific editor explicitly owns the field.
+- Preserve payload sizes, offsets, and opaque bytes unless a promoted type-specific editor explicitly owns the field.
 
 ## Entry Payload Dispatch
 
@@ -130,9 +114,7 @@ Promoted payload records:
 
 ### `0x0003002a` Action-View Payload
 
-`SYSTEM CAMER` action-view payloads are 0x24-byte records selected through the
-common gate fields. The selected payload pointer is copied into the action-view
-child worksheet, then dispatched by requested mode.
+`SYSTEM CAMER` action-view payloads are 0x24-byte records selected through the common gate fields. The selected payload pointer is copied into the action-view child worksheet, then dispatched by requested mode.
 
 | Offset | Size | Field | Editor rule |
 | --- | ---: | --- | --- |
@@ -168,57 +150,14 @@ Known `actionViewFlags` bits:
 
 Mode ownership:
 
-- Modes `0` and `1` own `holdFrameCount` and `stepFrameCount` as interpolation
-  controls; runtime mode `2` follows the same handler shape but has no profiled
-  serialized US rows.
-- Modes `7`, `8`, `9`, and `0x12` own `modeLocalAngleOrOffset` as a camera or
-  target Y/component offset, with flag `0x08000000` selecting the direct
-  combatant-position path.
-- Modes `0xa` and `0xb` own `modeLocalAngleOrOffset` only when flags
-  `0x20000000` and `0x04000000` do not select fixed or generated yaw.
-- Modes `0xf` and `0x10` own `modeLocalAngleOrOffset` only when flags
-  `0x20000000` and `0x02000000` select payload-driven yaw advance.
-- Mode `0x11` is runtime-only in current evidence and can mutate
-  `stepFrameCount`; do not treat that write as a source-file edit.
+- Modes `0` and `1` own `holdFrameCount` and `stepFrameCount` as interpolation controls; runtime mode `2` follows the same handler shape but has no profiled serialized US rows.
+- Modes `7`, `8`, `9`, and `0x12` own `modeLocalAngleOrOffset` as a camera or target Y/component offset, with flag `0x08000000` selecting the direct combatant-position path.
+- Modes `0xa` and `0xb` own `modeLocalAngleOrOffset` only when flags `0x20000000` and `0x04000000` do not select fixed or generated yaw.
+- Modes `0xf` and `0x10` own `modeLocalAngleOrOffset` only when flags `0x20000000` and `0x02000000` select payload-driven yaw advance.
+- Mode `0x11` is runtime-only in current evidence and can mutate `stepFrameCount`; do not treat that write as a source-file edit.
 
 Camera RNG eligibility:
 
-- Serialized mode `0` records are RNG-eligible during dispatcher activation:
-  one random draw can temporarily rewrite effective mode to `0xe` when the
-  global camera override is inactive. Cleanup restores `requestedMode`.
-- Synthetic action-view records are zero-filled 0x24-byte payload-like records
-  created by runtime code. They always write `requestedMode`, may write
-  `holdFrameCount`/`stepFrameCount` on the unobserved synthetic mode-`6` path,
-  and are freed on child cleanup.
+- Serialized mode `0` records are RNG-eligible during dispatcher activation: one random draw can temporarily rewrite effective mode to `0xe` when the global camera override is inactive. Cleanup restores `requestedMode`.
+- Synthetic action-view records are zero-filled 0x24-byte payload-like records created by runtime code. They always write `requestedMode`, may write `holdFrameCount`/`stepFrameCount` on the unobserved synthetic mode-`6` path, and are freed on child cleanup.
 
-Semantic editing notes:
-
-- Keep `%s_STD` action rows separate from `%s0_STD` entry payloads. Combatant
-  action rows can install callbacks that later use action-view payload lists,
-  but the two tables are different editing surfaces.
-- `0x0003002a` records can suppress or replace the synthetic action-view camera
-  path for an action key. The runtime count gate is equivalent to
-  `CountMatchingStd0Entries(root, key, -1, 0x2a, 3)`: a nonzero count uses
-  serialized action-view payloads, while a zero count may allow a synthetic
-  action-view record. Do not infer camera behavior from a `%s_STD`
-  `callbackIndex` alone.
-- Treat action-view timing, mode, and camera-RNG eligibility as
-  `0x0003002a` payload semantics. The `%s_STD` action row selects or schedules
-  the visual/action callback path; it does not itself encode the final
-  action-view record mode.
-- Do not treat queued instruction parameter writes as persistent combatant
-  worksheet `field6_0x6` writes. They are separate runtime state and only become
-  STD selectors through specific lookup paths.
-- Current static evidence keeps regular battle MLD resources adjacent to STD
-  visual-resource setup rather than part of the STD entry-handler table. Do not
-  model MLD named-function dispatch as an STD payload owner unless a later trace
-  proves that bridge.
-
-## Re-Export Rules
-
-- Do not synthesize runtime-only rows.
-- Preserve source bytes for every field outside the active owning surface.
-- Entry payload bodies remain opaque byte spans unless a known semantic field
-  is explicitly edited.
-- Runtime-mutated fields must re-export from original source bytes unless the
-  editor explicitly owns the file field.

@@ -1,18 +1,6 @@
 # SCT File Layout
 
-This document captures the currently known SCT container and script layout as implemented in SPICE. It is conservative by design: fields below are either parsed/exported by current code or covered by current unit tests. Heuristics are called out as heuristics rather than final file-format truth.
-
-Primary implementation references:
-
-- `SpiceSCT/SctParser.cpp`
-- `SpiceSCT/SctModel.h`
-- `SpiceSCT/SctOpcodeMetadata.h`
-- `SpiceSCT/SctScptDecodeHelpers.cpp`
-- `SpiceSCT/SctBinaryExporter.cpp`
-- `SpiceTests/test_sct_roundtrip.cpp`
-- `SpiceTests/test_sct_real_fixtures.cpp`
-- `SpiceSCT/SALSA_default_instructions_reference.md`
-- `SpiceSCT/SALSA_bi_defaults_opcode_table.md`
+This document describes the promoted SCT container, section, instruction, expression, control-flow, footer, and raw-preservation layouts implemented by SPICE. Export behavior, fixture notes, and open gaps live in `Docs/SctFileProgress.md`.
 
 ## Compression and Endian
 
@@ -136,7 +124,7 @@ Current opcode parameter sizes come from `kSalsaOpcodeParamPatterns`, an array w
 
 The parser expands looped parameter groups when an iteration count requires additional parameter slots, except for known external-loop-break cases such as opcodes `118` and `119` with iteration count `0x00010000`.
 
-Known high-confidence control/resource opcodes in current metadata:
+Known high-confidence semantic opcodes in current metadata:
 
 | Opcode | Mnemonic | Role |
 | ---: | --- | --- |
@@ -146,13 +134,16 @@ Known high-confidence control/resource opcodes in current metadata:
 | `10` | `Jump` | Unconditional jump. |
 | `11` | `CallSubscript` | Subscript call. |
 | `12` | `Return` | Return/terminator. |
-| `23` | `LoadMld` | Resource reference to MLD. |
-| `43` | `LoadScript` | Resource reference to SCT/script. |
-| `210` | `LoadScriptGameState12` | Resource reference to SCT/script. |
-| `238` | `ReturnToOverworld` | Resource reference to SCT/script. |
-| `257` | `LoadScriptGameState7` | Resource reference to SCT/script. |
+| `23` | `LoadMldFile` | Raw MLD path/footer reference. |
+| `43` | `LoadScriptByName` | Raw SCT/script target name reference. |
+| `210` | `WarpCurrentAreaByString` | Raw string target; queues the current-area warp path through field substate 12. |
+| `238` | `ReturnToOverworldAtPosition` | Three SCPT expression position tuple; not a direct SCT/script resource reference. |
+| `257` | `ExitShipBattleToScript` | Ship-battle exit script transition through field substate 15; raw SCT/script footer reference. |
+| `265` | `GeneratedReputationListDialog` | Generated wanted/reputation list dialog; parameter 1 is a label/string reference. |
 
 Unknown opcodes are still decoded as raw words when possible and receive fallback mnemonic `op_<number>`.
+
+Opcode `257` keeps the same one-word raw string footer-reference shape. The mnemonic was corrected from the legacy `LoadScriptGameState7` label because native evidence shows a field-substate-15 script transition plus previous-area sentinel `40000`, not a direct top-level game-state-7 request.
 
 ## SCPT Parameter Expressions
 
@@ -225,6 +216,7 @@ Known footer-reference metadata:
 | `248` | `0` | raw string | no |
 | `250` | `0` | raw string | no |
 | `257` | `0` | raw string | no |
+| `265` | `1` | SCT string | yes |
 
 Footer entries are null-terminated byte strings. Current decoded display skips zero bytes and substitutes `?` for non-printable bytes. Footer SCT strings are grouped under a synthetic `_Footer_` string group.
 
@@ -237,50 +229,3 @@ Current parser preserves bytes that are not part of reached instructions through
 - `unreachedCode` is decoded only when `SctParseOptions::decodeUnreachedCode` is enabled. This keeps speculative unreachable instruction decoding separate from the main reached instruction list.
 
 The default parse path walks global script instructions from script-row entry points and follows control flow. Unreachable garbage in a script section is not exported as canonical instructions.
-
-## Canonical Export
-
-`SctBinaryExporter` has two modes:
-
-- `PreserveBytesForTest`: returns `originalBytes` unchanged when available.
-- `Canonical`: rebuilds a canonical SCT payload from the parsed IR.
-
-Canonical export:
-
-1. Builds normalized IR through `SctIrBuilder`.
-2. Recomputes `sectionCount`, index size, and `dataStart`.
-3. Exports script sections from sorted instructions.
-4. Exports non-script sections from raw spans.
-5. Recomputes section payload offsets.
-6. Patches branch, jump, switch, and footer-reference words through an old-to-new payload offset map.
-7. Preserves the first eight header bytes when available.
-8. Writes `sectionCount` at `0x08`.
-9. Rewrites each 0x14-byte index row.
-10. Appends section bytes and footer raw bytes.
-
-Canonical export may intentionally differ from original bytes. Current tests assert that unreachable garbage can be dropped while semantic equivalence is preserved.
-
-## Minimal Fixture Shape
-
-`SpiceTests/test_sct_roundtrip.cpp` builds fixtures with:
-
-- 12-byte header.
-- Section count at `0x08`.
-- 0x14-byte index rows containing payload-relative starts and 16-byte names.
-- Concatenated section payloads.
-- Word-based script instructions such as `Jump` (`10`), `Return` (`12`), `If` (`0`), `Switch` (`3`), label prefix (`9`), skip-refresh prefix (`13`), and scheduled prefix (`129`).
-- Final footer strings after script or final string sections.
-- AKLZ-compressed input coverage.
-
-These tests prove current behavior around canonical export, preserve mode, unreached-code opt-in decoding, string group labels, prefix canonicalization, switch targets with multiword SCPT selectors, opcode-119 loop expansion, footer detection, cross-row control flow, overlap rejection, missing-label diagnostics, and compressed input.
-
-## Known Gaps
-
-- Header bytes `0x00..0x07` are preserved but not yet named.
-- Endian detection is heuristic and based only on plausible section count.
-- Section kind detection is partly heuristic and should be refined as more real SCT files are classified.
-- Opcode semantics are still incomplete beyond the metadata table and SALSA-derived parameter patterns.
-- Some instruction boundaries can be mixed-endian or swapped; current support is defensive rather than a fully explained format feature.
-- Footer detection is reference/terminator-based and may need more ground truth for edge cases.
-- String encoding is currently treated as printable ASCII plus control whitespace; any game-specific encoding remains to be documented.
-- Canonical export is semantic and preserving for known fields, but it is not a byte-for-byte full reassembler unless preserve mode is used.
