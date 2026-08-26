@@ -113,6 +113,7 @@
     <ClInclude Include="Model\Types.h" />
     <ClInclude Include="Model\U32List.h" />
     <ClInclude Include="Model\WorldModel.h" />
+    <ClInclude Include="Patching\DreamcastTrianglePatcher.h" />
     <ClInclude Include="Parsing\EntryHandlers.h" />
     <ClInclude Include="Parsing\BlenderIrDiagnostics.h" />
     <ClInclude Include="Parsing\GvrTextureDecoder.h" />
@@ -137,6 +138,7 @@
     <ClCompile Include="Export\MldFileExporter.cpp" />
     <ClCompile Include="Export\MldFileWriter.cpp" />
     <ClCompile Include="Model\MldGroundEditing.cpp" />
+    <ClCompile Include="Patching\DreamcastTrianglePatcher.cpp" />
     <ClCompile Include="SpiceMLD.cpp" />
   </ItemGroup>
   <ItemGroup>

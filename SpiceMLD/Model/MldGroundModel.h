@@ -2,6 +2,7 @@
 
 #include "Types.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -30,6 +31,12 @@ struct GrndTriangleReference {
     std::optional<std::size_t> meshTriangleIndex{};
 };
 
+struct GrndTriangleSource {
+    std::uint16_t triangleSet = 0;
+    std::uint16_t streamIndex = 0;
+    std::array<std::size_t, 3> flagSourceOffsets{};
+};
+
 struct GrndCell {
     std::uint32_t sourceOffset = 0;
     std::vector<GrndTriangleReference> references{};
@@ -45,6 +52,7 @@ struct GrndData {
     std::vector<GrndTriangleSet> triangleSets{};
     std::vector<GrndCell> cells{};
     MeshData mesh{};
+    std::vector<GrndTriangleSource> triangleSources{};
 };
 
 struct GobjStreamEntry {
@@ -68,6 +76,11 @@ struct GobjAttach {
     GobjVertexChunk vertexChunk{};
 };
 
+struct GobjTriangleSource {
+    std::size_t streamIndex = 0;
+    std::array<std::size_t, 3> flagSourceOffsets{};
+};
+
 struct GobjNode {
     std::uint32_t sourceNodeOffset = 0;
     std::uint32_t sourceAttachOffset = 0;
@@ -77,6 +90,7 @@ struct GobjNode {
     std::vector<std::size_t> childNodeIndices{};
     std::optional<GobjAttach> attach{};
     MeshData streamMesh{};
+    std::vector<GobjTriangleSource> streamTriangleSources{};
 };
 
 struct GobjData {

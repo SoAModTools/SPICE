@@ -11,6 +11,7 @@
 #include "Model/MldGroundEditing.h"
 #include "Model/Types.h"
 #include "Model/WorldModel.h"
+#include "Patching/DreamcastTrianglePatcher.h"
 #include "Parsing/EntryHandlers.h"
 #include "Parsing/Sa3dBlenderIrBuilder.h"
 #include "Parsing/MldParser.h"

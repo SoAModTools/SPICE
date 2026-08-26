@@ -77,6 +77,15 @@ struct TriangleRefHash {
     return result;
 }
 
+[[nodiscard]] std::optional<std::size_t> absoluteSourceOffset(
+    const std::uint32_t sourceOffset,
+    const std::size_t blockOffset) {
+    if (blockOffset > std::numeric_limits<std::size_t>::max() - sourceOffset) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(sourceOffset) + blockOffset;
+}
+
 [[nodiscard]] std::optional<TriangleSet> readTriangleSet(
     std::span<const std::uint8_t> bytes,
     spice::core::Endian endian,
@@ -380,6 +389,27 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
             result.mesh.triangleMetadata.push_back(model::TriangleMetadata{
                 .rawU16 = { e0->flags, e1->flags, e2->flags },
             });
+            model::GrndTriangleSource triangleSource{
+                .triangleSet = *setIndex,
+                .streamIndex = *triangleIndex,
+            };
+            bool hasSourceOffsets = true;
+            for (std::size_t corner = 0; corner < triangleSource.flagSourceOffsets.size(); ++corner) {
+                const auto flagOffset = absoluteSourceOffset(
+                    sourceOffset,
+                    set.triangleStreamOffset + ((streamIndex + corner) * 4U) + 2U);
+                if (!flagOffset.has_value()) {
+                    hasSourceOffsets = false;
+                    break;
+                }
+                triangleSource.flagSourceOffsets[corner] = *flagOffset;
+            }
+            if (hasSourceOffsets) {
+                result.data.triangleSources.push_back(triangleSource);
+            } else {
+                result.diagnostics.push_back("GRND triangle metadata source offset overflowed at " +
+                    hexOffset(sourceOffset) + ".");
+            }
             const auto meshTriangleIndex = result.mesh.indices.size() / 3U - 1U;
             sourceCell.references.back().meshTriangleIndex = meshTriangleIndex;
             meshTriangleByReference.emplace(ref, meshTriangleIndex);

@@ -20,6 +20,9 @@
     <Filter Include="Analysis">
       <UniqueIdentifier>{E4B83F63-1EC1-488A-9404-0935A212816F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Patching">
+      <UniqueIdentifier>{B951CF7B-6C7A-4729-92D5-BF377B556A7D}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Analysis\MldGvrFormatInventory.h">
@@ -70,6 +73,9 @@
     <ClInclude Include="Model\WorldModel.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="Patching\DreamcastTrianglePatcher.h">
+      <Filter>Patching</Filter>
+    </ClInclude>
     <ClInclude Include="Parsing\EntryHandlers.h">
       <Filter>Parsing</Filter>
     </ClInclude>
@@ -113,6 +119,9 @@
     </ClCompile>
     <ClCompile Include="Model\MldGroundEditing.cpp">
       <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="Patching\DreamcastTrianglePatcher.cpp">
+      <Filter>Patching</Filter>
     </ClCompile>
     <ClCompile Include="SpiceMLD.cpp">
       <Filter>EntryPoint</Filter>

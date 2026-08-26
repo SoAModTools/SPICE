@@ -14,6 +14,7 @@ Primary implementation references:
 - `SpiceMLD/Parsing/GrndParser.cpp`
 - `SpiceMLD/Parsing/GobjParser.cpp`
 - `SpiceMLD/Parsing/MldTextureArchiveParser.cpp`
+- `SpiceMLD/Patching/DreamcastTrianglePatcher.cpp`
 - `SpiceMLD/Export/MldFileExporter.cpp`
 - `SpiceTests/test_mld_endian.cpp`
 
@@ -29,6 +30,8 @@ Primary implementation references:
 Unknown bytes remain preserved from the original file. This means the exporter is currently best described as a preserving endian/AKLZ conversion writer, not a full MLD reassembler from semantic models.
 
 `MldFileWriter` is the canonical semantic writer. Its texture archive path is platform-neutral: GameCube entries retain GVR data and Dreamcast entries retain PVR data. Dreamcast record sizes and 32-byte alignment are regenerated when textures are added, removed, or replaced, and the archive is relocated when it no longer fits its source range. The compatibility exporter routes Dreamcast PVR replacements through this canonical writer.
+
+Dreamcast GRND/GOBJ selector editing uses a separate patching path. The parsers retain absolute source offsets for every canonical triangle's three metadata words. `planDreamcastTriangleSelectorPatches` changes only the decimal tens digit of the third word, and `applyMldPatchPlan` validates the complete patch set before modifying an uncompressed Dreamcast MLD buffer. This mechanism does not impose area, encounter, TBLID, collision-class, or resource-role policy.
 
 ## Minimal Fixture Shape
 
@@ -54,3 +57,4 @@ That fixture is used to prove that big-endian and little-endian inputs parse to 
 - The broader meaning of Dreamcast alignment control `0x80000000`, beyond its observed 32-byte `GBIX` alignment effect, remains unpromoted.
 - NJ/Ninja model and motion payloads are preserved/extracted but not fully decoded by SPICE MLD proper.
 - GRND and GOBJ support is intentionally partial and should be cross-checked against fresh Ghidra/reference evidence before treating all fields as final.
+- Triangle selector patching is currently limited to uncompressed little-endian Dreamcast MLD files. GameCube/AKLZ patching remains separate work.

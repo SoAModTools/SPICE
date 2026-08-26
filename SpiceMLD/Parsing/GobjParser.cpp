@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -54,6 +55,15 @@ struct GobjVertexLayout {
         return std::nullopt;
     }
     return static_cast<std::int32_t>(*value);
+}
+
+[[nodiscard]] std::optional<std::size_t> absoluteSourceOffset(
+    const std::uint32_t sourceOffset,
+    const std::size_t blockOffset) {
+    if (blockOffset > std::numeric_limits<std::size_t>::max() - sourceOffset) {
+        return std::nullopt;
+    }
+    return static_cast<std::size_t>(sourceOffset) + blockOffset;
 }
 
 [[nodiscard]] std::uint32_t readTag(std::span<const std::uint8_t> bytes, const std::size_t offset) {
@@ -267,8 +277,10 @@ struct GobjVertexLayout {
 [[nodiscard]] model::MeshData readGobjTriangleStreamMesh(
     std::span<const std::uint8_t> bytes,
     spice::core::Endian endian,
+    const std::uint32_t sourceOffset,
     const GobjAttachLayout& layout,
     model::GobjAttach* sourceAttach,
+    std::vector<model::GobjTriangleSource>* triangleSources,
     std::vector<std::string>& diagnostics) {
     model::MeshData mesh{};
     if (static_cast<std::size_t>(layout.vertexOffset) + 8U > bytes.size()) {
@@ -303,6 +315,8 @@ struct GobjVertexLayout {
     struct Entry {
         std::uint16_t floatIndex = 0;
         std::uint16_t flags = 0;
+        std::size_t streamIndex = 0;
+        std::size_t flagSourceOffset = 0;
         model::MeshVertex vertex{};
     };
 
@@ -333,6 +347,16 @@ struct GobjVertexLayout {
             mesh.triangleMetadata.push_back(model::TriangleMetadata{
                 .rawU16 = { run[i + 0U].flags, run[i + 1U].flags, run[i + 2U].flags },
             });
+            if (triangleSources != nullptr) {
+                triangleSources->push_back(model::GobjTriangleSource{
+                    .streamIndex = run[i].streamIndex,
+                    .flagSourceOffsets = {
+                        run[i + 0U].flagSourceOffset,
+                        run[i + 1U].flagSourceOffset,
+                        run[i + 2U].flagSourceOffset,
+                    },
+                });
+            }
         }
         run.clear();
     };
@@ -375,6 +399,13 @@ struct GobjVertexLayout {
             continue;
         }
 
+        const auto flagSourceOffset = absoluteSourceOffset(sourceOffset, offset + 2U);
+        if (!flagSourceOffset.has_value()) {
+            diagnostics.push_back("GOBJ triangle metadata source offset overflowed at " + hexOffset(layout.attachOffset) + ".");
+            appendRunTriangles();
+            break;
+        }
+
         if (sourceAttach != nullptr) {
             sourceAttach->streamEntries.push_back(model::GobjStreamEntry{
                 .floatIndex = *floatIndex,
@@ -386,6 +417,8 @@ struct GobjVertexLayout {
         run.push_back(Entry{
             .floatIndex = *floatIndex,
             .flags = *flags,
+            .streamIndex = (offset - layout.polyOffset) / 4U,
+            .flagSourceOffset = *flagSourceOffset,
             .vertex = *vertex,
         });
     }
@@ -443,7 +476,13 @@ struct WalkContext {
                 node.sourceAttachOffset = layout->attachOffset;
                 node.attach.emplace();
                 node.streamMesh = readGobjTriangleStreamMesh(
-                    context.bytes, context.endian, *layout, &*node.attach, context.result->diagnostics);
+                    context.bytes,
+                    context.endian,
+                    context.result->sourceOffset,
+                    *layout,
+                    &*node.attach,
+                    &node.streamTriangleSources,
+                    context.result->diagnostics);
             }
         }
     }

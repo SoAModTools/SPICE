@@ -209,10 +209,20 @@ Known GOBJ attach/mesh layout:
 | --- | ---: | --- | --- |
 | `attach + 0x10` | 4 | `vertexRel` | Signed relative pointer from `attach + 0x10` to the vertex chunk. |
 | `attach + 0x10 + 76` | variable | poly stream | 4-byte records read until the vertex chunk. |
-| `vertexOffset + 0x00` | 4 | vertex header 1 | Current parser requires low byte `0x29`. |
+| `vertexOffset + 0x00` | 4 | vertex header 1 | Current parser supports low-byte chunk types `0x22`, `0x29`, and `0x2B`. |
 | `vertexOffset + 0x04` | 4 | vertex header 2 | High 16 bits are interpreted as vertex count. |
 
-Poly stream entries are U16 `floatIndex` plus U16 `flags`. `0xFFFF` in either half is a separator. Unsupported/control records break the current run. For valid stream entries, a float index is accepted when it is at least 2 and aligned as `(floatIndex - 2) % 6 == 0`. Position is read at `vertexOffset + floatIndex * 4`; normal is read from the same vertex bucket at `vertexOffset + ((bucket * 6) + 5) * 4`.
+Poly stream entries are U16 `floatIndex` plus U16 `flags`. `0xFFFF` in either half is a separator. Unsupported/control records break the current run. For valid stream entries, a float index is accepted when it is at least 2 and aligned as `(floatIndex - 2) % recordWords == 0`. Position is read at `vertexOffset + floatIndex * 4`; when present, normal data begins at `vertexOffset + ((bucket * recordWords) + 5) * 4`.
+
+## Dreamcast Triangle Selector Patching
+
+GRND and GOBJ canonical triangles retain the absolute source offsets of their three stream-entry flag words. These offsets refer directly to the physical file for uncompressed little-endian Dreamcast MLD files.
+
+The patching API treats the third flag word as the face word. Its high bit remains the stream-winding bit, while the low 15 bits contain a packed decimal value. A selector edit replaces only decimal digit `(low15 / 10) % 10`; all other digits and bits are preserved. Every replacement digit from 0 through 9 is structurally accepted on every decoded GRND or GOBJ triangle. Runtime meaning and area-specific validity are deliberately outside the MLD patcher.
+
+Each planned patch contains a two-byte file range, its expected original bytes, and its replacement bytes. Plans reject stale source data, conflicting writes, missing provenance, compressed or non-Dreamcast inputs, and offsets outside the retained source. Application validates all records before writing any bytes.
+
+GOBJ triangles are produced from sliding three-entry windows within a run. Consecutive faces therefore share stream entries. Editing one face's third word can also change a raw first or second word displayed on a later face, but it does not change that later face's selector unless the shared entry is also its third word.
 
 ## NJ/Ninja Blocks
 
