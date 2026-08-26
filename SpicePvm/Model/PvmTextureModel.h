@@ -129,5 +129,7 @@ struct DecodeResult {
 
 [[nodiscard]] PixelFormat pixelFormatFromRaw(std::uint8_t raw) noexcept;
 [[nodiscard]] DataLayout dataLayoutFromRaw(std::uint8_t raw) noexcept;
+[[nodiscard]] const char* toString(PixelFormat format) noexcept;
+[[nodiscard]] const char* toString(DataLayout layout) noexcept;
 
 } // namespace spice::pvm::model

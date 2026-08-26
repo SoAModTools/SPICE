@@ -1434,7 +1434,7 @@ ExtractedMldTexture extractMldTexture(
 
     const auto textureIndex = selectMldTextureIndex(cliOptions, *parsed.textureArchive);
     const auto texture = parsed.textureArchive->entries[textureIndex];
-    if (texture.gvrData.empty()) {
+    if (texture.encodedData.empty()) {
         throw std::runtime_error("selected source texture has no preserved GVR payload");
     }
 
@@ -1495,8 +1495,8 @@ void writeMldTextureExtractReport(
     reportOut << "sourceGlobalIndex=" << texture.globalIndex << "\n";
     reportOut << "archiveTextureIndex=" << texture.archiveTextureIndex << "\n";
     reportOut << "archiveOffset=" << texture.archiveOffset << "\n";
-    reportOut << "gvrDataOffset=" << texture.gvrDataOffset << "\n";
-    reportOut << "gvrDataSize=" << texture.gvrDataSize << "\n";
+    reportOut << "encodedDataOffset=" << texture.encodedDataOffset << "\n";
+    reportOut << "encodedDataSize=" << texture.encodedDataSize << "\n";
     reportOut << "sourceFileSize=" << extracted.parsed.originalBytes.size() << "\n";
     reportOut << "sourceWasAklz=" << (extracted.parsed.sourceWasCompressedAklz ? "true" : "false") << "\n";
     for (const auto& diagnostic : extracted.parsed.parseDiagnostics) {
@@ -1568,7 +1568,7 @@ std::size_t rebuiltArchiveSize(
     const std::size_t replacementSize) {
     std::size_t size = archive.archivePrefixBytes.size();
     for (std::size_t i = 0; i < archive.entries.size(); ++i) {
-        size += i == replacementIndex ? replacementSize : archive.entries[i].gvrDataSize;
+        size += i == replacementIndex ? replacementSize : archive.entries[i].encodedDataSize;
     }
     return size;
 }
@@ -1606,7 +1606,7 @@ void writeMldTextureReplacementReport(
     reportOut << "outputHasMipmaps=" << (encodeOptions.generateMipmaps ? "true" : "false") << "\n";
     reportOut << "outputHasGlobalIndex=" << (encodeOptions.hasGlobalIndex ? "true" : "false") << "\n";
     reportOut << "outputGlobalIndex=" << encodeOptions.globalIndex << "\n";
-    reportOut << "originalGvrSize=" << sourceTexture.gvrDataSize << "\n";
+    reportOut << "originalEncodedTextureSize=" << sourceTexture.encodedDataSize << "\n";
     reportOut << "replacementGvrSize=" << replacementSize << "\n";
     reportOut << "originalArchiveSize=" << originalArchiveSize << "\n";
     reportOut << "replacementArchiveSize=" << newArchiveSize << "\n";
@@ -1647,12 +1647,12 @@ void replaceMldTextureFromPngFile(
     }
     const auto textureIndex = selectMldTextureIndex(cliOptions, *parsed.textureArchive);
     const auto& sourceTexture = parsed.textureArchive->entries[textureIndex];
-    if (sourceTexture.gvrData.empty()) {
+    if (sourceTexture.encodedData.empty()) {
         throw std::runtime_error("selected source texture has no preserved GVR payload");
     }
 
     const auto sourceMetadata = spice::gvm::ir::readGvrSourceMetadata(
-        std::span<const std::uint8_t>(sourceTexture.gvrData.data(), sourceTexture.gvrData.size()));
+        std::span<const std::uint8_t>(sourceTexture.encodedData.data(), sourceTexture.encodedData.size()));
     auto encodeOptions = buildReplaceGvrEncodeOptions(cliOptions, sourceMetadata);
     const auto image = spice::gvm::image::readPngRgba8(pngPath);
     if (!cliOptions.mldAllowDimensionChange
@@ -1668,7 +1668,7 @@ void replaceMldTextureFromPngFile(
     exportOptions.compressAklz = shouldCompressMldOutput(cliOptions.mldAklzPolicy, parsed.sourceWasCompressedAklz);
     exportOptions.textureReplacement = spice::mld::exporting::MldTextureReplacement{
         .textureIndex = textureIndex,
-        .gvrData = replacementGvr,
+        .encodedData = replacementGvr,
         .allowPostArchiveShift = cliOptions.mldAllowPostArchiveShift,
     };
 
@@ -1702,7 +1702,7 @@ void extractMldTextureToGvrFile(
     const std::filesystem::path& outputPath) {
     const auto extracted = extractMldTexture(cliOptions, sourceMldPath);
     if (!writeAllBytesCreatingParents(outputPath,
-        std::span<const std::uint8_t>(extracted.texture.gvrData.data(), extracted.texture.gvrData.size()))) {
+        std::span<const std::uint8_t>(extracted.texture.encodedData.data(), extracted.texture.encodedData.size()))) {
         throw std::runtime_error("failed to write extracted GVR output: " + outputPath.string());
     }
 
@@ -1739,13 +1739,13 @@ void extractMldTextureToPngFile(
     const auto extracted = extractMldTexture(cliOptions, sourceMldPath);
     if (cliOptions.writeExtractedGvr) {
         if (!writeAllBytesCreatingParents(cliOptions.writeExtractedGvrPath,
-            std::span<const std::uint8_t>(extracted.texture.gvrData.data(), extracted.texture.gvrData.size()))) {
+            std::span<const std::uint8_t>(extracted.texture.encodedData.data(), extracted.texture.encodedData.size()))) {
             throw std::runtime_error("failed to write intermediate extracted GVR: " + cliOptions.writeExtractedGvrPath.string());
         }
     }
 
     const auto exported = spice::gvm::ir::exportGvrPng(
-        std::span<const std::uint8_t>(extracted.texture.gvrData.data(), extracted.texture.gvrData.size()),
+        std::span<const std::uint8_t>(extracted.texture.encodedData.data(), extracted.texture.encodedData.size()),
         outputPath);
     writeMldTextureExtractReport(
         outputPath.parent_path() / (outputPath.stem().string() + ".mld_texture_extract_png.txt"),

@@ -11,7 +11,7 @@ namespace spice::mld::exporting {
 
 struct MldTextureReplacement {
     std::size_t textureIndex = 0;
-    std::vector<std::uint8_t> gvrData{};
+    std::vector<std::uint8_t> encodedData{};
     bool allowPostArchiveShift = false;
 };
 

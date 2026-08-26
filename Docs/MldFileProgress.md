@@ -28,6 +28,8 @@ Primary implementation references:
 
 Unknown bytes remain preserved from the original file. This means the exporter is currently best described as a preserving endian/AKLZ conversion writer, not a full MLD reassembler from semantic models.
 
+`MldFileWriter` is the canonical semantic writer. Its texture archive path is platform-neutral: GameCube entries retain GVR data and Dreamcast entries retain PVR data. Dreamcast record sizes and 32-byte alignment are regenerated when textures are added, removed, or replaced, and the archive is relocated when it no longer fits its source range. The compatibility exporter routes Dreamcast PVR replacements through this canonical writer.
+
 ## Minimal Fixture Shape
 
 `SpiceTests/test_mld_endian.cpp` builds a minimal valid MLD with:
@@ -48,6 +50,7 @@ That fixture is used to prove that big-endian and little-endian inputs parse to 
 - The 0x0C-byte unknown/padding region in each index entry from `0x38` through `0x43` is preserved but not named.
 - `realDataOffset` is preserved and validated only indirectly; current parsing follows per-entry address lists for actual payload discovery.
 - GOBJ sibling pointer base should be verified against reference data; current code uses `nodeOffset + 0x2C` as the base for both child and sibling relative pointers.
-- Texture archive record tail bytes in the 0x2C-byte name table stride are not yet named.
+- Dreamcast texture record control word `+0x20` is still semantically unknown; it is zero in the validated corpus.
+- The broader meaning of Dreamcast alignment control `0x80000000`, beyond its observed 32-byte `GBIX` alignment effect, remains unpromoted.
 - NJ/Ninja model and motion payloads are preserved/extracted but not fully decoded by SPICE MLD proper.
 - GRND and GOBJ support is intentionally partial and should be cross-checked against fresh Ghidra/reference evidence before treating all fields as final.

@@ -152,6 +152,9 @@
     <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
       <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\SpicePvm\SpicePvm.vcxproj">
+      <Project>{D15CAA0F-8C20-4740-B50E-27A7539B9287}</Project>
+    </ProjectReference>
   </ItemGroup>
   <PropertyGroup>
     <BuildSa3dDotnetBridge Condition="'$(BuildSa3dDotnetBridge)'==''">false</BuildSa3dDotnetBridge>

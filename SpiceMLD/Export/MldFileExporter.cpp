@@ -1,4 +1,5 @@
 #include "MldFileExporter.h"
+#include "MldFileWriter.h"
 
 #include "../../Compression/Aklz.h"
 #include "../../SpiceCore/Binary/EndianReader.h"
@@ -337,8 +338,8 @@ void applyTextureReplacement(std::vector<std::uint8_t>& out,
     if (replacement.textureIndex >= archive.entries.size()) {
         throw std::runtime_error("MLD texture replacement failed: texture index is out of range");
     }
-    if (replacement.gvrData.empty()) {
-        throw std::runtime_error("MLD texture replacement failed: replacement GVR data is empty");
+    if (replacement.encodedData.empty()) {
+        throw std::runtime_error("MLD texture replacement failed: replacement encoded texture data is empty");
     }
     if (archive.archiveStartOffset > out.size() || archive.archiveEndOffset > out.size()
         || archive.archiveStartOffset > archive.archiveEndOffset) {
@@ -349,8 +350,8 @@ void applyTextureReplacement(std::vector<std::uint8_t>& out,
     std::size_t rebuiltArchiveSize = archive.archivePrefixBytes.size();
     for (std::size_t i = 0; i < archive.entries.size(); ++i) {
         rebuiltArchiveSize += i == replacement.textureIndex
-            ? replacement.gvrData.size()
-            : archive.entries[i].gvrDataSize;
+            ? replacement.encodedData.size()
+            : archive.entries[i].encodedDataSize;
     }
 
     const bool hasPostArchiveSuffix = archive.archiveEndOffset < out.size();
@@ -365,21 +366,21 @@ void applyTextureReplacement(std::vector<std::uint8_t>& out,
 
     for (std::size_t i = 0; i < archive.entries.size(); ++i) {
         if (i == replacement.textureIndex) {
-            rebuilt.insert(rebuilt.end(), replacement.gvrData.begin(), replacement.gvrData.end());
+            rebuilt.insert(rebuilt.end(), replacement.encodedData.begin(), replacement.encodedData.end());
             continue;
         }
 
         const auto& entry = archive.entries[i];
-        if (!entry.gvrData.empty()) {
-            rebuilt.insert(rebuilt.end(), entry.gvrData.begin(), entry.gvrData.end());
+        if (!entry.encodedData.empty()) {
+            rebuilt.insert(rebuilt.end(), entry.encodedData.begin(), entry.encodedData.end());
             continue;
         }
-        if (entry.gvrDataOffset > out.size() || entry.gvrDataSize > out.size() - entry.gvrDataOffset) {
-            throw std::runtime_error("MLD texture replacement failed: original GVR range is invalid");
+        if (entry.encodedDataOffset > out.size() || entry.encodedDataSize > out.size() - entry.encodedDataOffset) {
+            throw std::runtime_error("MLD texture replacement failed: original encoded texture range is invalid");
         }
         rebuilt.insert(rebuilt.end(),
-            out.begin() + static_cast<std::ptrdiff_t>(entry.gvrDataOffset),
-            out.begin() + static_cast<std::ptrdiff_t>(entry.gvrDataOffset + entry.gvrDataSize));
+            out.begin() + static_cast<std::ptrdiff_t>(entry.encodedDataOffset),
+            out.begin() + static_cast<std::ptrdiff_t>(entry.encodedDataOffset + entry.encodedDataSize));
     }
 
     rebuilt.insert(rebuilt.end(),
@@ -393,6 +394,36 @@ void applyTextureReplacement(std::vector<std::uint8_t>& out,
 std::vector<std::uint8_t> MldFileExporter::exportFile(
     const model::MldFile& file,
     const MldExportOptions& options) const {
+    if (options.compressAklz && options.platform != model::TargetPlatform::GameCube)
+        throw std::runtime_error("AKLZ compression is GameCube-only");
+    if (options.textureReplacement.has_value() && file.textureArchive.has_value()) {
+        const auto& replacement = *options.textureReplacement;
+        if (replacement.textureIndex < file.textureArchive->entries.size() &&
+            file.textureArchive->entries[replacement.textureIndex].encoding == model::MldTextureEncoding::Pvr) {
+            if (replacement.encodedData.empty())
+                throw std::runtime_error("MLD texture replacement failed: replacement encoded texture data is empty");
+            const auto& archive = *file.textureArchive;
+            const auto& source = archive.entries[replacement.textureIndex];
+            if (archive.archiveEndOffset < file.decodedBytes.size() &&
+                replacement.encodedData.size() != source.encodedDataSize && !replacement.allowPostArchiveShift) {
+                throw std::runtime_error("MLD texture replacement would shift bytes after a non-terminal texture archive; pass --mld-allow-post-archive-shift to allow this");
+            }
+            auto edited = file;
+            edited.textureArchive->entries[replacement.textureIndex].encodedData = replacement.encodedData;
+            const auto written = MldFileWriter{}.write(edited, MldWriteOptions{
+                .platform = options.platform,
+                .compressAklz = options.compressAklz,
+                .rejectUnknownPointerRelocations = !replacement.allowPostArchiveShift,
+            });
+            if (!written.ok()) {
+                const auto error = std::find_if(written.diagnostics.begin(), written.diagnostics.end(), [](const auto& diagnostic) {
+                    return diagnostic.severity == model::MldDiagnostic::Severity::Error;
+                });
+                throw std::runtime_error(error == written.diagnostics.end() ? "MLD export failed" : error->message);
+            }
+            return written.bytes;
+        }
+    }
     auto out = file.originalBytes;
     if (out.empty()) {
         out.resize(kMldHeaderSize);
@@ -415,9 +446,6 @@ std::vector<std::uint8_t> MldFileExporter::exportFile(
     convertRawDataBlocks(out, file, targetEndian);
 
     if (options.compressAklz) {
-        if (options.platform != model::TargetPlatform::GameCube) {
-            throw std::runtime_error("AKLZ compression is GameCube-only");
-        }
         auto compressed = spice::compression::aklz::compress(out);
         if (!compressed.ok()) {
             throw std::runtime_error("AKLZ compression failed: " + std::string(spice::compression::aklz::errorToString(compressed.error)));

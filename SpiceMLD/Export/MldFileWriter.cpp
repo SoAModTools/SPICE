@@ -3,6 +3,7 @@
 #include "../Model/MldGroundEditing.h"
 #include "../../Compression/Aklz.h"
 #include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpicePvm/SpicePvm.h"
 
 #include <algorithm>
 #include <array>
@@ -182,11 +183,12 @@ void releaseKnownRange(std::vector<FreeRange>& ranges, const std::size_t offset,
 [[nodiscard]] std::uint32_t placeRelocated(
     std::vector<std::uint8_t>& bytes,
     std::vector<FreeRange>& ranges,
-    const std::span<const std::uint8_t> data) {
-    if (const auto gap = allocateKnownGap(bytes, ranges, data)) {
+    const std::span<const std::uint8_t> data,
+    const std::size_t alignment = 4U) {
+    if (const auto gap = allocateKnownGap(bytes, ranges, data, alignment)) {
         return *gap;
     }
-    return appendAligned(bytes, data);
+    return appendAligned(bytes, data, alignment);
 }
 
 [[nodiscard]] bool validateMesh(const model::MeshData& mesh, std::string& reason) {
@@ -434,8 +436,10 @@ void releaseKnownRange(std::vector<FreeRange>& ranges, const std::size_t offset,
 }
 
 [[nodiscard]] std::vector<std::uint8_t> buildTextureArchive(
-    const model::MldTextureArchive& archive, const Endian endian) {
+    const model::MldTextureArchive& archive, const Endian endian,
+    const std::size_t absoluteBaseOffset) {
     constexpr std::size_t recordSize = 44U;
+    constexpr std::uint32_t dreamcastAlignFlag = 0x80000000U;
     const auto requiredPrefixSize = 4U + archive.entries.size() * recordSize;
     const EndianReader prefixReader(archive.archivePrefixBytes, endian);
     const auto originalCount = prefixReader.try_read_u32(0U).value_or(0U);
@@ -454,7 +458,35 @@ void releaseKnownRange(std::vector<FreeRange>& ranges, const std::size_t offset,
         if (nameOffset + 32U <= out.size()) {
             writeAscii(out, nameOffset, archive.entries[i].textureName, 32U);
         }
-        out.insert(out.end(), archive.entries[i].gvrData.begin(), archive.entries[i].gvrData.end());
+        const auto& entry = archive.entries[i];
+        writeU32(out, nameOffset + 32U, entry.rawRecordWord0, endian);
+        writeU32(out, nameOffset + 36U, entry.rawRecordWord1, endian);
+
+        if (endian == Endian::Little) {
+            std::size_t prefixSize = entry.alignmentPrefixBytes.size();
+            if (entry.rawRecordWord1 == dreamcastAlignFlag)
+                prefixSize = (32U - ((absoluteBaseOffset + out.size()) & 31U)) & 31U;
+            else if (entry.rawRecordWord1 == 0U)
+                prefixSize = 0U;
+            if (entry.alignmentPrefixBytes.size() == prefixSize)
+                out.insert(out.end(), entry.alignmentPrefixBytes.begin(), entry.alignmentPrefixBytes.end());
+            else
+                out.resize(out.size() + prefixSize, 0U);
+        } else {
+            out.insert(out.end(), entry.alignmentPrefixBytes.begin(), entry.alignmentPrefixBytes.end());
+        }
+        const auto blockBegin = out.size();
+        out.insert(out.end(), entry.encodedData.begin(), entry.encodedData.end());
+        out.insert(out.end(), entry.trailingBlockBytes.begin(), entry.trailingBlockBytes.end());
+
+        if (endian == Endian::Little) {
+            const auto blockSize = out.size() - blockBegin;
+            if (blockSize > std::numeric_limits<std::uint32_t>::max())
+                return {};
+            writeU32(out, nameOffset + 40U, static_cast<std::uint32_t>(blockSize), endian);
+        } else {
+            writeU32(out, nameOffset + 40U, entry.declaredBlockSize, endian);
+        }
     }
     return out;
 }
@@ -599,7 +631,36 @@ MldWriteResult MldFileWriter::write(const model::MldFile& file, const MldWriteOp
     std::optional<std::uint32_t> textureOutput{};
     if (file.textureArchive.has_value()) {
         const auto& archive = *file.textureArchive;
-        const auto rebuilt = buildTextureArchive(archive, targetEndian);
+        const auto expectedEncoding = targetEndian == Endian::Little
+            ? model::MldTextureEncoding::Pvr : model::MldTextureEncoding::Gvr;
+        for (const auto& entry : archive.entries) {
+            const auto diagnosticOffset = entry.archiveOffset <= std::numeric_limits<std::uint32_t>::max()
+                ? std::optional<std::uint32_t>{static_cast<std::uint32_t>(entry.archiveOffset)}
+                : std::nullopt;
+            if (entry.encoding != expectedEncoding) {
+                addDiagnostic(result, model::MldDiagnostic::Severity::Error,
+                    "Texture encoding does not match the target MLD platform.", diagnosticOffset);
+                result.bytes.clear();
+                return result;
+            }
+            if (entry.encodedData.empty()) {
+                addDiagnostic(result, model::MldDiagnostic::Severity::Error,
+                    "Texture archive entry has no encoded texture bytes.", diagnosticOffset);
+                result.bytes.clear();
+                return result;
+            }
+            if (expectedEncoding == model::MldTextureEncoding::Pvr) {
+                const auto parsed = spice::pvm::parsing::parsePvrTexture(entry.encodedData);
+                if (parsed.status == spice::pvm::model::ParseStatus::Failed ||
+                    parsed.sourceRange.size != entry.encodedData.size()) {
+                    addDiagnostic(result, model::MldDiagnostic::Severity::Error,
+                        "Dreamcast texture archive entry is not exactly one valid PVR texture.", diagnosticOffset);
+                    result.bytes.clear();
+                    return result;
+                }
+            }
+        }
+        auto rebuilt = buildTextureArchive(archive, targetEndian, archive.archiveStartOffset);
         const auto originalSize = archive.archiveEndOffset >= archive.archiveStartOffset
             ? archive.archiveEndOffset - archive.archiveStartOffset : 0U;
         const bool changed = targetEndian != file.endian || archive.archiveStartOffset > file.decodedBytes.size()
@@ -617,7 +678,10 @@ MldWriteResult MldFileWriter::write(const model::MldFile& file, const MldWriteOp
                 textureOutput = static_cast<std::uint32_t>(archive.archiveStartOffset);
             } else {
                 releaseKnownRange(freeKnownRanges, archive.archiveStartOffset, originalSize);
-                textureOutput = placeRelocated(out, freeKnownRanges, rebuilt);
+                if (targetEndian == Endian::Little)
+                    rebuilt = buildTextureArchive(archive, targetEndian, 0U);
+                textureOutput = placeRelocated(out, freeKnownRanges, rebuilt,
+                    targetEndian == Endian::Little ? 32U : 4U);
                 resourceRelocations.emplace(static_cast<std::uint32_t>(archive.archiveStartOffset), *textureOutput);
             }
             result.layout.push_back(MldWriteLayoutRecord{

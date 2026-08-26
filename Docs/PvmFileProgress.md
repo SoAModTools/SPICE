@@ -9,12 +9,14 @@ Implemented in the standalone C++20 `SpicePvm` static library:
 - Largest-to-smallest logical mip results with physical source ranges.
 - Synthetic malformed-input, channel, Morton, VQ orientation, Small VQ, mipmap, and archive tests.
 - Read-only EU and US Dreamcast corpus validation.
+- Deterministic PVR encoding for every promoted pixel format and data layout.
+- Explicit or generated complete mip chains, normal VQ, and SDK-sized Small VQ codebooks.
+- Formal PVMH archive encoding with promoted metadata flags and preserved padding/metadata.
+- Dreamcast MLD PVR parsing and canonical texture archive replacement through SpiceMLD.
 
 Intentionally outside this deliverable:
 
-- PVR/PVM encoding.
 - PNG or other image-file I/O.
 - Command-line tools.
-- Texture replacement.
-- SpiceMLD integration.
+- Direct PNG-to-PVR command-line replacement workflows.
 - Decoding for YUV, bump-map, RGB555/PCX, or palettized formats not observed in the selected SoA corpus.

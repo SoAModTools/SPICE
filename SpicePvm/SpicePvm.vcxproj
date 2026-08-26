@@ -53,12 +53,16 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Decoding\PvrDecoder.h" />
+    <ClInclude Include="Encoding\PvmEncoder.h" />
+    <ClInclude Include="Encoding\PvrEncoder.h" />
     <ClInclude Include="Model\PvmTextureModel.h" />
     <ClInclude Include="Parsing\PvmParser.h" />
     <ClInclude Include="SpicePvm.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Decoding\PvrDecoder.cpp" />
+    <ClCompile Include="Encoding\PvmEncoder.cpp" />
+    <ClCompile Include="Encoding\PvrEncoder.cpp" />
     <ClCompile Include="Model\PvmTextureModel.cpp" />
     <ClCompile Include="Parsing\PvmParser.cpp" />
   </ItemGroup>

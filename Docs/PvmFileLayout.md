@@ -87,3 +87,13 @@ Uncompressed levels use two bytes per pixel. VQ levels use one byte per 2x2 vect
 The dimensions low nibble encodes `log2(width) - 2`; the next nibble encodes `log2(height) - 2`. The upper byte is retained and remains unknown. Header padding and metadata between `PVMH` and the first texture are retained verbatim. Flags `0x0010` and `0x0100`, and metadata chunk semantics such as `MDLN`, `COMM`, `CONV`, `IMGC`, and `PVMI`, remain unpromoted; their bytes are preserved rather than interpreted.
 
 Archive entries are paired with following PVR chunks in order. Count and pixel/layout/dimension/global-index identity mismatches are reported without discarding the partial archive model.
+
+## Encoding contract
+
+`spice::pvm::encoding` emits standalone `GBIX`/`PVRT` textures and formal `PVMH` archives from owning RGBA images. Mip images are accepted in logical largest-to-smallest order and emitted in the physical order described above. A single base image may request deterministic box-filter mip generation.
+
+RGBA channels are quantized to the selected 16-bit format with nearest-integer scaling. ARGB1555 uses an alpha threshold of 128. Direct layouts are the exact inverse of rectangle and Morton decoding. VQ layouts use deterministic frequency-weighted median-cut clustering over packed 2x2 vectors; inputs with no more unique vectors than the available codebook encode without VQ clustering loss. Codebook entries and index streams retain the decoder's x-major vector and Morton-index conventions.
+
+New VQ-mipmap textures are zero-padded to a 32-byte payload boundary by default. The API also preserves caller-supplied GBIX trailing bytes and the two unknown PVRT header bytes.
+
+Formal PVM encoding supports the promoted `0x000F` entry flags. Unknown PVMH flags are rejected for new output because their record contribution is not known. Caller-supplied PVMH header padding and metadata between PVMH and the first texture are retained verbatim.

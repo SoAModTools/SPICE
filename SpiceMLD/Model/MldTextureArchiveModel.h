@@ -7,11 +7,23 @@
 
 namespace spice::mld::model {
 
+enum class MldTextureEncoding {
+    Unknown,
+    Gvr,
+    Pvr,
+};
+
 struct MldTextureEntry {
     std::uint32_t archiveTextureIndex = 0;
     std::size_t archiveOffset = 0;
-    std::size_t gvrDataOffset = 0;
-    std::size_t gvrDataSize = 0;
+    std::size_t encodedDataOffset = 0;
+    std::size_t encodedDataSize = 0;
+    MldTextureEncoding encoding = MldTextureEncoding::Unknown;
+    std::uint32_t rawRecordWord0 = 0;
+    std::uint32_t rawRecordWord1 = 0;
+    std::uint32_t declaredBlockSize = 0;
+    std::vector<std::uint8_t> alignmentPrefixBytes{};
+    std::vector<std::uint8_t> trailingBlockBytes{};
     bool hasGlobalIndex = false;
     std::uint32_t globalIndex = 0;
     std::string textureName{};
@@ -26,7 +38,7 @@ struct MldTextureEntry {
     std::size_t imageDataOffset = 0;
     std::size_t imageDataSize = 0;
     std::size_t paletteDataSize = 0;
-    std::vector<std::uint8_t> gvrData{};
+    std::vector<std::uint8_t> encodedData{};
     bool decoded = false;
     std::vector<std::uint8_t> rgba8{};
     std::vector<std::string> diagnostics{};

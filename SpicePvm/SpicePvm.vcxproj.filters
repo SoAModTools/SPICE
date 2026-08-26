@@ -4,16 +4,21 @@
     <Filter Include="Model"><UniqueIdentifier>{20F29B15-B48D-4BF8-A071-F40212C96784}</UniqueIdentifier></Filter>
     <Filter Include="Parsing"><UniqueIdentifier>{A68BD425-E4E5-4802-ADE4-BD4FA7B66011}</UniqueIdentifier></Filter>
     <Filter Include="Decoding"><UniqueIdentifier>{5CB8D507-A755-4C44-ACB0-5104B278C884}</UniqueIdentifier></Filter>
+    <Filter Include="Encoding"><UniqueIdentifier>{477A31BF-E84D-4A6C-8B03-5D125BD950A0}</UniqueIdentifier></Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SpicePvm.h" />
     <ClInclude Include="Model\PvmTextureModel.h"><Filter>Model</Filter></ClInclude>
     <ClInclude Include="Parsing\PvmParser.h"><Filter>Parsing</Filter></ClInclude>
     <ClInclude Include="Decoding\PvrDecoder.h"><Filter>Decoding</Filter></ClInclude>
+    <ClInclude Include="Encoding\PvrEncoder.h"><Filter>Encoding</Filter></ClInclude>
+    <ClInclude Include="Encoding\PvmEncoder.h"><Filter>Encoding</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Model\PvmTextureModel.cpp"><Filter>Model</Filter></ClCompile>
     <ClCompile Include="Parsing\PvmParser.cpp"><Filter>Parsing</Filter></ClCompile>
     <ClCompile Include="Decoding\PvrDecoder.cpp"><Filter>Decoding</Filter></ClCompile>
+    <ClCompile Include="Encoding\PvrEncoder.cpp"><Filter>Encoding</Filter></ClCompile>
+    <ClCompile Include="Encoding\PvmEncoder.cpp"><Filter>Encoding</Filter></ClCompile>
   </ItemGroup>
 </Project>

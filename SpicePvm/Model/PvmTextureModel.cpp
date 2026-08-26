@@ -27,4 +27,29 @@ DataLayout dataLayoutFromRaw(const std::uint8_t raw) noexcept
     }
 }
 
+const char* toString(const PixelFormat format) noexcept
+{
+    switch (format) {
+    case PixelFormat::Argb1555: return "ARGB1555";
+    case PixelFormat::Rgb565: return "RGB565";
+    case PixelFormat::Argb4444: return "ARGB4444";
+    default: return "Unknown";
+    }
+}
+
+const char* toString(const DataLayout layout) noexcept
+{
+    switch (layout) {
+    case DataLayout::Twiddled: return "Twiddled";
+    case DataLayout::TwiddledMipmaps: return "TwiddledMipmaps";
+    case DataLayout::Vq: return "VQ";
+    case DataLayout::VqMipmaps: return "VQMipmaps";
+    case DataLayout::Rectangle: return "Rectangle";
+    case DataLayout::SmallVq: return "SmallVQ";
+    case DataLayout::SmallVqMipmaps: return "SmallVQMipmaps";
+    case DataLayout::TwiddledMipmapsDma: return "TwiddledMipmapsDMA";
+    default: return "Unknown";
+    }
+}
+
 } // namespace spice::pvm::model

@@ -101,11 +101,15 @@ The top-level `header.textureTableOffset` points to an MLD texture archive surfa
 
 | Offset | Size | Field | Current meaning |
 | --- | ---: | --- | --- |
-| `+0x00` | 4 | `count` | Number of texture-name records. Must be nonzero and no more than 4096. |
+| `+0x00` | 4 | `count` | Number of texture records. May be zero and must be no more than 4096. |
 | `+0x04 + i * 0x2C` | 0x20 | name | Fixed-width ASCII texture name. |
-| `+0x24 + i * 0x2C` | 0x0C | unknown record tail | Present in the 44-byte stride, not yet named in current model. |
+| `+0x24 + i * 0x2C` | 4 | control word 0 | Zero in the validated Dreamcast corpus; preserved raw. |
+| `+0x28 + i * 0x2C` | 4 | alignment control | `0` starts the encoded texture immediately. Dreamcast value `0x80000000` aligns the following `GBIX` to an absolute 32-byte boundary. |
+| `+0x2C + i * 0x2C` | 4 | encoded block size | Dreamcast byte count beginning at `GBIX`; leading alignment bytes are outside this size. Preserved raw for GameCube records. |
 
-After that, the parser delegates to the GVM parser starting at `textureTableOffset` and maps discovered GVR chunks into `MldTextureArchive` entries. Each mapped texture records archive offset, GVR source size, global index, pixel/data format, dimensions, image data range, optional decoded RGBA8, and diagnostics.
+GameCube MLDs are paired with following GVR chunks through SpiceGvm. Dreamcast MLDs are paired in record order with optional alignment bytes followed by `GBIX`/`PVRT` through SpicePvm. The platform-neutral archive model retains the three raw record words, alignment and trailing bytes, encoded texture bytes and ranges, global index, formats, dimensions, optional decoded RGBA8, and diagnostics.
+
+The canonical writer rewrites Dreamcast block sizes, maintains absolute 32-byte `GBIX` alignment, and relocates a resized archive while updating the top-level texture-table pointer. Existing alignment bytes are retained when their size remains valid; newly required alignment bytes are zero-filled.
 
 ## Raw Data Blocks and Address Ownership
 
