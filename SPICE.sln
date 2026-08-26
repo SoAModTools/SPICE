@@ -36,6 +36,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceStdCorpusScan", "Spice
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceContentGraph", "SpiceContentGraph\SpiceContentGraph.vcxproj", "{208F502E-EBB9-4AF0-A886-356757A46D41}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceTrade", "SpiceTrade\SpiceTrade.vcxproj", "{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceTests", "SpiceTests\SpiceTests.vcxproj", "{D528E9A2-9713-40A7-A7A1-21AF843E559E}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceFileParsing", "SpiceFileParsing\SpiceFileParsing.vcxproj", "{5D3077BE-5394-4707-8080-378AB630E54D}"
@@ -118,6 +120,10 @@ Global
 		{208F502E-EBB9-4AF0-A886-356757A46D41}.Debug|x64.Build.0 = Debug|x64
 		{208F502E-EBB9-4AF0-A886-356757A46D41}.Release|x64.ActiveCfg = Release|x64
 		{208F502E-EBB9-4AF0-A886-356757A46D41}.Release|x64.Build.0 = Release|x64
+		{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}.Debug|x64.ActiveCfg = Debug|x64
+		{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}.Debug|x64.Build.0 = Debug|x64
+		{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}.Release|x64.ActiveCfg = Release|x64
+		{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}.Release|x64.Build.0 = Release|x64
 		{D528E9A2-9713-40A7-A7A1-21AF843E559E}.Debug|x64.ActiveCfg = Debug|x64
 		{D528E9A2-9713-40A7-A7A1-21AF843E559E}.Debug|x64.Build.0 = Debug|x64
 		{D528E9A2-9713-40A7-A7A1-21AF843E559E}.Release|x64.ActiveCfg = Release|x64

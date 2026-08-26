@@ -1,5 +1,7 @@
 #include "AlxEnemyEventExport.h"
 
+#include "../SpiceTrade/SpiceTrade.h"
+
 #include <charconv>
 #include <fstream>
 #include <map>
@@ -11,37 +13,6 @@
 
 namespace spice::alx {
 namespace {
-
-std::vector<std::string> parseCsvRow(std::string_view line) {
-    std::vector<std::string> fields;
-    std::string field;
-    bool quoted = false;
-    for (std::size_t index = 0; index < line.size(); ++index) {
-        const char c = line[index];
-        if (quoted) {
-            if (c == '"' && index + 1 < line.size() && line[index + 1] == '"') {
-                field.push_back('"');
-                ++index;
-            } else if (c == '"') {
-                quoted = false;
-            } else {
-                field.push_back(c);
-            }
-        } else if (c == '"') {
-            quoted = true;
-        } else if (c == ',') {
-            fields.push_back(std::move(field));
-            field.clear();
-        } else if (c != '\r') {
-            field.push_back(c);
-        }
-    }
-    if (quoted) {
-        throw std::runtime_error("unterminated quoted CSV field");
-    }
-    fields.push_back(std::move(field));
-    return fields;
-}
 
 std::string jsonEscape(std::string_view value) {
     std::ostringstream out;
@@ -99,21 +70,36 @@ struct CombatantColumns {
     int absentId = -1;
 };
 
+std::string csvReadError(const spice::trade::alx::CsvReadResult& result) {
+    std::ostringstream message;
+    message << "failed to read ALX enemy-event CSV";
+    for (const auto& diagnostic : result.diagnostics) {
+        if (diagnostic.severity != spice::trade::alx::DiagnosticSeverity::Error) {
+            continue;
+        }
+        message << ": " << diagnostic.message;
+        if (diagnostic.row.has_value()) {
+            message << " at row " << *diagnostic.row;
+            if (diagnostic.column.has_value()) {
+                message << ", column " << *diagnostic.column;
+            }
+        }
+        break;
+    }
+    return message.str();
+}
+
 } // namespace
 
 void exportEnemyEventsCsvToJson(
     const std::filesystem::path& inputCsv,
     const std::filesystem::path& outputJson) {
-    std::ifstream input(inputCsv, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("failed to open ALX enemy-event CSV: " + inputCsv.string());
+    const auto read = spice::trade::alx::CsvReader{}.readFile(inputCsv);
+    if (!read.ok()) {
+        throw std::runtime_error(csvReadError(read));
     }
-
-    std::string headerLine;
-    if (!std::getline(input, headerLine)) {
-        throw std::runtime_error("ALX enemy-event CSV is empty");
-    }
-    const auto headers = parseCsvRow(headerLine);
+    const auto& document = *read.document;
+    const auto& headers = document.headers;
     std::map<std::string, std::size_t> columns;
     for (std::size_t index = 0; index < headers.size(); ++index) {
         columns.emplace(headers[index], index);
@@ -166,20 +152,9 @@ void exportEnemyEventsCsvToJson(
            << "  \"events\": [\n";
 
     bool firstEvent = true;
-    std::string line;
     int row = 1;
-    while (std::getline(input, line)) {
+    for (const auto& fields : document.rows) {
         ++row;
-        if (line.empty()) {
-            continue;
-        }
-        const auto fields = parseCsvRow(line);
-        if (fields.size() != headers.size()) {
-            throw std::runtime_error(
-                "ALX row " + std::to_string(row) + " has "
-                + std::to_string(fields.size()) + " fields; expected "
-                + std::to_string(headers.size()));
-        }
         if (!firstEvent) {
             output << ",\n";
         }
