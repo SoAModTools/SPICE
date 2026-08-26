@@ -4,23 +4,26 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
-#include <string>
+#include <vector>
 
 namespace spice::ect {
 
-struct EctParseOptions {
-    EctLayoutHint layoutHint{ EctLayoutHint::Auto };
+struct EctParseResult {
+    std::optional<EctFile> file{};
+    std::vector<EctDiagnostic> diagnostics{};
+
+    [[nodiscard]] bool ok() const noexcept;
 };
 
 class EctParser {
 public:
-    [[nodiscard]] static EctFile parse(std::span<const std::uint8_t> bytes,
-        std::string sourcePath = {},
-        EctParseOptions options = {});
+    [[nodiscard]] static EctParseResult parse(
+        std::span<const std::uint8_t> bytes,
+        EctLayout layout);
 
-    [[nodiscard]] static EctFile parseFile(const std::filesystem::path& path,
-        EctParseOptions options = {});
+    [[nodiscard]] static EctParseResult parseFile(const std::filesystem::path& path);
 };
 
 } // namespace spice::ect

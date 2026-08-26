@@ -10,6 +10,9 @@
     <Filter Include="Parser">
       <UniqueIdentifier>{D4787C41-3EF1-4982-825A-53D31435681D}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Writer">
+      <UniqueIdentifier>{7706D907-129A-4473-9EA3-AC76E8037D75}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="SpiceEct.h">
@@ -21,6 +24,9 @@
     <ClInclude Include="EctParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="EctFileWriter.h">
+      <Filter>Writer</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SpiceEct.cpp">
@@ -28,6 +34,9 @@
     </ClCompile>
     <ClCompile Include="EctParser.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="EctFileWriter.cpp">
+      <Filter>Writer</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

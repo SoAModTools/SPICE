@@ -95,11 +95,13 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="EctFileWriter.h" />
     <ClInclude Include="EctModel.h" />
     <ClInclude Include="EctParser.h" />
     <ClInclude Include="SpiceEct.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="EctFileWriter.cpp" />
     <ClCompile Include="EctParser.cpp" />
     <ClCompile Include="SpiceEct.cpp" />
   </ItemGroup>
