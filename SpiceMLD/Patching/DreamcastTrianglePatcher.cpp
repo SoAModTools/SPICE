@@ -126,7 +126,7 @@ MldPatchPlan planDreamcastTriangleSelectorPatches(
     if (file.parseStatus == model::MldParseStatus::Failed) {
         addError(result.diagnostics, "Cannot plan patches for a failed MLD parse.");
     }
-    if (file.sourcePlatform != model::TargetPlatform::Dreamcast || file.endian != spice::core::Endian::Little) {
+    if (file.sourcePlatform != model::TargetPlatform::Dreamcast || file.endian != spice::root::Endian::Little) {
         addError(result.diagnostics, "Dreamcast triangle selector patching requires a little-endian Dreamcast MLD.");
     }
     if (file.sourceWasCompressedAklz) {

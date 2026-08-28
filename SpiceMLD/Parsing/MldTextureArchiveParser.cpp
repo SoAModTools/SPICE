@@ -2,7 +2,7 @@
 
 #include "../../SpiceGvm/SpiceGvm.h"
 #include "../../SpicePvm/SpicePvm.h"
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <cctype>
@@ -48,9 +48,9 @@ void copyBytes(std::vector<std::uint8_t>& destination,
 
 bool initializeRecords(model::MldTextureArchive& out,
     const std::span<const std::uint8_t> bytes, const std::size_t textureTableOffset,
-    const spice::core::Endian endian, std::size_t& tableEnd)
+    const spice::root::Endian endian, std::size_t& tableEnd)
 {
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto count = reader.try_read_u32(textureTableOffset);
     if (!count.has_value()) {
         out.diagnostics.push_back("Texture archive record count is unreadable.");
@@ -209,7 +209,7 @@ void populatePvrArchive(model::MldTextureArchive& out, const std::span<const std
 } // namespace
 
 model::MldTextureArchive parseMldTextureArchive(const std::span<const std::uint8_t> bytes,
-    const std::size_t textureTableOffset, const spice::core::Endian endian)
+    const std::size_t textureTableOffset, const spice::root::Endian endian)
 {
     model::MldTextureArchive out;
     out.tableOffset = textureTableOffset;
@@ -218,7 +218,7 @@ model::MldTextureArchive parseMldTextureArchive(const std::span<const std::uint8
     std::size_t tableEnd = textureTableOffset;
     if (!initializeRecords(out, bytes, textureTableOffset, endian, tableEnd))
         return out;
-    if (endian == spice::core::Endian::Little)
+    if (endian == spice::root::Endian::Little)
         populatePvrArchive(out, bytes, tableEnd);
     else
         populateGvrArchive(out, bytes, textureTableOffset, tableEnd);

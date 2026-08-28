@@ -4,7 +4,7 @@ param(
 
     [string]$OutputDir = "SpiceBin\research\bin_gvr_blocks",
 
-    [string]$SpiceFileParsingExe = ".\x64\Debug\SpiceFileParsing.exe",
+    [string]$SpiceGrinderExe = ".\bin\x64\Debug\SpiceGrinder.exe",
 
     [switch]$SkipParse
 )
@@ -272,10 +272,10 @@ if ($index -eq 0 -or $SkipParse) {
     exit 0
 }
 
-$parser = Resolve-Path -LiteralPath $SpiceFileParsingExe -ErrorAction SilentlyContinue
+$parser = Resolve-Path -LiteralPath $SpiceGrinderExe -ErrorAction SilentlyContinue
 if ($null -eq $parser) {
     Write-Host "parseStatus=skipped-parser-not-found"
-    Write-Host "parser=$SpiceFileParsingExe"
+    Write-Host "parser=$SpiceGrinderExe"
     exit 0
 }
 

@@ -4,7 +4,7 @@
 #include "SctOpcodeMetadata.h"
 
 #include "../Compression/Aklz.h"
-#include "../SpiceCore/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -23,7 +23,7 @@ constexpr std::size_t kIndexEntrySize = 0x14;
 constexpr std::size_t kIndexNameOffset = 4;
 constexpr std::size_t kIndexNameMaxLen = 0x10;
 
-using Endian = spice::core::Endian;
+using Endian = spice::root::Endian;
 
 Endian resolveEndian(const SctFile& file, SctExportEndianPolicy policy) {
     switch (policy) {
@@ -55,7 +55,7 @@ void writeU32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_
 }
 
 std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset, Endian endian) {
-    return spice::core::EndianReader(bytes, endian).try_read_u32(offset).value_or(0u);
+    return spice::root::EndianReader(bytes, endian).try_read_u32(offset).value_or(0u);
 }
 
 void appendU32(std::vector<std::uint8_t>& bytes, std::uint32_t value, Endian endian) {

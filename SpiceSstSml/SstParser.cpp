@@ -1,7 +1,7 @@
 #include "SstParser.h"
 
 #include "../Compression/Aklz.h"
-#include "../SpiceCore/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <array>
@@ -11,8 +11,8 @@
 namespace spice::sstsml {
 namespace {
 
-using spice::core::Endian;
-using spice::core::EndianReader;
+using spice::root::Endian;
+using spice::root::EndianReader;
 
 constexpr std::uint32_t kSstTopLevelRecordStride = 0x10U;
 constexpr std::uint32_t kSstCommandRecordStride = 0x10U;

@@ -1,6 +1,6 @@
 #include "GobjParser.h"
 
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 #include "../common/ByteUtils.h"
 
 #include <cmath>
@@ -101,7 +101,7 @@ struct GobjVertexLayout {
 
 [[nodiscard]] std::optional<GobjAttachLayout> readGobjAttachLayout(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const std::uint32_t attachOffset,
     std::vector<std::string>& diagnostics) {
     if (static_cast<std::size_t>(attachOffset) + kAttachPayloadOffset + 4U > bytes.size()) {
@@ -110,7 +110,7 @@ struct GobjVertexLayout {
     }
 
     const std::uint32_t payloadOffset = attachOffset + kAttachPayloadOffset;
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto vertexRel = reader.try_read_i32(payloadOffset);
     if (!vertexRel.has_value()) {
         diagnostics.push_back("GOBJ attach has no vertex pointer at " + hexOffset(attachOffset) + ".");
@@ -137,13 +137,13 @@ struct GobjVertexLayout {
     };
 }
 
-[[nodiscard]] float readBams32Radians(std::span<const std::uint8_t> bytes, spice::core::Endian endian, const std::size_t offset) {
-    const spice::core::EndianReader reader(bytes, endian);
+[[nodiscard]] float readBams32Radians(std::span<const std::uint8_t> bytes, spice::root::Endian endian, const std::size_t offset) {
+    const spice::root::EndianReader reader(bytes, endian);
     return static_cast<float>(reader.try_read_i32(offset).value_or(0)) * (kTau / 65536.0F);
 }
 
-[[nodiscard]] model::Vec3 readVec3F32(std::span<const std::uint8_t> bytes, spice::core::Endian endian, const std::size_t offset) {
-    const spice::core::EndianReader reader(bytes, endian);
+[[nodiscard]] model::Vec3 readVec3F32(std::span<const std::uint8_t> bytes, spice::root::Endian endian, const std::size_t offset) {
+    const spice::root::EndianReader reader(bytes, endian);
     return model::Vec3{
         reader.try_read_f32(offset + 0U).value_or(0.0F),
         reader.try_read_f32(offset + 4U).value_or(0.0F),
@@ -151,7 +151,7 @@ struct GobjVertexLayout {
     };
 }
 
-[[nodiscard]] model::Vec3 readVec3Bams32(std::span<const std::uint8_t> bytes, spice::core::Endian endian, const std::size_t offset) {
+[[nodiscard]] model::Vec3 readVec3Bams32(std::span<const std::uint8_t> bytes, spice::root::Endian endian, const std::size_t offset) {
     return model::Vec3{
         readBams32Radians(bytes, endian, offset + 0U),
         readBams32Radians(bytes, endian, offset + 4U),
@@ -177,7 +177,7 @@ struct GobjVertexLayout {
 
 [[nodiscard]] model::Transform readNodeTransform(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const std::uint32_t nodeOffset) {
     model::Transform result{};
     result.position = readVec3F32(bytes, endian, nodeOffset + 8U);
@@ -227,7 +227,7 @@ struct GobjVertexLayout {
 
 [[nodiscard]] std::optional<model::MeshVertex> readGobjStreamVertex(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const std::uint32_t vertexOffset,
     const std::uint16_t floatIndex,
     const std::uint16_t vertexCount,
@@ -243,7 +243,7 @@ struct GobjVertexLayout {
     }
 
     model::MeshVertex vertex{};
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     vertex.position = model::Vec3{
         reader.try_read_f32(positionOffset + 0U).value_or(0.0F),
         reader.try_read_f32(positionOffset + 4U).value_or(0.0F),
@@ -276,7 +276,7 @@ struct GobjVertexLayout {
 
 [[nodiscard]] model::MeshData readGobjTriangleStreamMesh(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const std::uint32_t sourceOffset,
     const GobjAttachLayout& layout,
     model::GobjAttach* sourceAttach,
@@ -287,7 +287,7 @@ struct GobjVertexLayout {
         return mesh;
     }
 
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto header1 = reader.try_read_u32(layout.vertexOffset);
     const auto header2 = reader.try_read_u32(static_cast<std::size_t>(layout.vertexOffset) + 4U);
     if (!header1.has_value() || !header2.has_value()) {
@@ -437,7 +437,7 @@ struct GobjVertexLayout {
 
 struct WalkContext {
     std::span<const std::uint8_t> bytes{};
-    spice::core::Endian endian = spice::core::Endian::Big;
+    spice::root::Endian endian = spice::root::Endian::Big;
     GobjDecodeResult* result = nullptr;
     std::unordered_map<std::uint32_t, std::size_t> nodeIndexByOffset{};
     std::unordered_set<std::uint32_t> activeStack{};
@@ -468,7 +468,7 @@ struct WalkContext {
     node.parentNodeIndex = parentIndex;
     node.transform = readNodeTransform(context.bytes, context.endian, nodeOffset);
 
-    const spice::core::EndianReader reader(context.bytes, context.endian);
+    const spice::root::EndianReader reader(context.bytes, context.endian);
     const auto attachRel = reader.try_read_i32(nodeOffset);
     if (attachRel.has_value()) {
         if (const auto attachOffset = addRelativeTarget(nodeOffset, *attachRel, context.bytes.size())) {
@@ -516,7 +516,7 @@ struct WalkContext {
 
 } // namespace
 
-GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset, const spice::core::Endian endian) const {
+GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset, const spice::root::Endian endian) const {
     GobjDecodeResult result{};
     result.sourceOffset = sourceOffset;
 
@@ -530,7 +530,7 @@ GobjDecodeResult GobjParser::decode(std::span<const std::uint8_t> blockBytes, co
         return result;
     }
 
-    const spice::core::EndianReader reader(blockBytes, endian);
+    const spice::root::EndianReader reader(blockBytes, endian);
     const auto declaredSize = reader.try_read_u32(4U);
     if (!declaredSize.has_value() || *declaredSize < kRootNodeOffset + kNodeSize || *declaredSize > blockBytes.size()) {
         result.diagnostics.push_back("GOBJ block at " + hexOffset(sourceOffset) + " has an invalid declared size.");

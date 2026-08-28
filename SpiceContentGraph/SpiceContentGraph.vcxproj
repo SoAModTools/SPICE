@@ -120,7 +120,7 @@
     <ClCompile Include="SctGraphBuilder.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+    <ProjectReference Include="..\SpiceRoot\SpiceRoot.vcxproj">
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SpiceMLD\SpiceMLD.vcxproj">

@@ -2,7 +2,7 @@
 #include "SctOpcodeMetadata.h"
 #include "SctScptDecodeHelpers.h"
 
-#include "../SpiceCore/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 #include "../Compression/Aklz.h"
 
 #include <algorithm>
@@ -27,10 +27,10 @@ constexpr std::size_t kIndexNameMaxLen = 0x10;
 constexpr std::uint32_t kMaxOpcodeProbe = 265;
 constexpr std::uint32_t kScptStopCode = 0x0000001d;
 
-using Endian = spice::core::Endian;
+using Endian = spice::root::Endian;
 
 [[nodiscard]] std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset, Endian endian) {
-    return spice::core::EndianReader(bytes, endian).try_read_u32(offset).value_or(0U);
+    return spice::root::EndianReader(bytes, endian).try_read_u32(offset).value_or(0U);
 }
 
 [[nodiscard]] std::string readIndexName(std::span<const std::uint8_t> bytes, std::size_t offset) {

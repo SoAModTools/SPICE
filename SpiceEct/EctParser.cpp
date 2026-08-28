@@ -1,7 +1,7 @@
 #include "EctParser.h"
 
 #include "../Compression/Aklz.h"
-#include "../SpiceCore/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <cctype>
@@ -12,8 +12,8 @@
 namespace spice::ect {
 namespace {
 
-using spice::core::Endian;
-using spice::core::EndianReader;
+using spice::root::Endian;
+using spice::root::EndianReader;
 
 constexpr std::size_t kEncounterTableSize = 0x84U;
 constexpr std::size_t kEncounterEntrySize = 0x04U;

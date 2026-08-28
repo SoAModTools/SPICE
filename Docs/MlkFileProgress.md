@@ -13,7 +13,7 @@ Primary implementation references:
 - `SpiceMlk/MlkBlenderIrExport.cpp`
 - `SpiceMlk/MlkAnnotation.schema.json`
 - `SpiceMlk/MlkBlenderIrMetadata.schema.json`
-- `SpiceFileParsing/Operations/OperationExecution.cpp`
+- `SpiceMix/Operations/OperationExecution.cpp`
 - `SpiceTests/test_mlk_scanner.cpp`
 - `SpiceTests/test_mlk_corpus_export.cpp`
 - `SpiceTests/test_mlk_blender_ir_export.cpp`
@@ -216,11 +216,11 @@ Current low-confidence visual hypothesis: `pcp##.mlk` may be a party-composition
 
 ## Current SPICE Surfaces
 
-`SpiceFileParsing` supports two MLK investigation modes:
+`SpiceGrinder` supports two MLK investigation modes:
 
 ```powershell
-bin\x64\Debug\SpiceFileParsing.exe export-mlk-corpus --input <file-or-dir> --output <output-dir>
-bin\x64\Debug\SpiceFileParsing.exe export-mlk-blender-ir --input <file-or-dir> --output <output-dir> --annotation-repository SpiceMlk\annotations
+bin\x64\Debug\SpiceGrinder.exe export-mlk-corpus --input <file-or-dir> --output <output-dir>
+bin\x64\Debug\SpiceGrinder.exe export-mlk-blender-ir --input <file-or-dir> --output <output-dir> --annotation-repository SpiceMlk\annotations
 ```
 
 `export-mlk-corpus` writes:
@@ -275,7 +275,7 @@ Default behavior:
 Use this flag only when intentionally regenerating annotation documents:
 
 ```powershell
-bin\x64\Debug\SpiceFileParsing.exe export-mlk-blender-ir --input <file-or-dir> --output <output-dir> --annotation-repository SpiceMlk\annotations --overwrite-annotations
+bin\x64\Debug\SpiceGrinder.exe export-mlk-blender-ir --input <file-or-dir> --output <output-dir> --annotation-repository SpiceMlk\annotations --overwrite-annotations
 ```
 
 Annotation JSON contains:

@@ -1,7 +1,7 @@
 #include "GvmParser.h"
 
 #include "../Decoding/GvrDecoder.h"
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -25,19 +25,19 @@ constexpr std::uint32_t tagGvrt = makeTag('G', 'V', 'R', 'T');
 constexpr std::uint32_t tagGvmh = makeTag('G', 'V', 'M', 'H');
 
 [[nodiscard]] std::optional<std::uint32_t> readU32BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    return spice::core::EndianReader(bytes, spice::core::Endian::Big).try_read_u32(offset);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Big).try_read_u32(offset);
 }
 
 [[nodiscard]] std::optional<std::uint32_t> readU32LE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    return spice::core::EndianReader(bytes, spice::core::Endian::Little).try_read_u32(offset);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Little).try_read_u32(offset);
 }
 
 [[nodiscard]] std::optional<std::uint16_t> readU16BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    return spice::core::EndianReader(bytes, spice::core::Endian::Big).try_read_u16(offset);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Big).try_read_u16(offset);
 }
 
 [[nodiscard]] std::optional<std::uint16_t> readU16LE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    return spice::core::EndianReader(bytes, spice::core::Endian::Little).try_read_u16(offset);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Little).try_read_u16(offset);
 }
 
 [[nodiscard]] bool plausibleDimension(const std::uint16_t value) {

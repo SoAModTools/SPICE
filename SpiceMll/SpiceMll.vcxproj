@@ -124,7 +124,7 @@
     <ProjectReference Include="..\SpiceBin\SpiceBin.vcxproj">
       <Project>{CADB9B1C-FB06-4BDE-9B5E-2AA1836DEE05}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+    <ProjectReference Include="..\SpiceRoot\SpiceRoot.vcxproj">
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">

@@ -2,7 +2,7 @@
 
 #include "Types.h"
 #include "U32List.h"
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <bit>
 #include <cstddef>
@@ -108,10 +108,10 @@ inline void countNotZero(U32List& list, std::size_t& count) {
 [[nodiscard]] inline std::optional<IndexEntry> parseIndexEntry(std::span<const std::uint8_t> bytes,
     const std::size_t tableIndex,
     const std::size_t entryOffset,
-    const spice::core::Endian endian,
+    const spice::root::Endian endian,
     const IndexEntryCoordinateMapper& coordinateMapper,
     const IndexEntryWarningSink& warningSink) {
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto entryId = reader.try_read_u32(entryOffset + 0x00);
     const auto tblId = reader.try_read_u32(entryOffset + 0x04);
     const auto ptrGroundLinks = reader.try_read_u32(entryOffset + 0x08);

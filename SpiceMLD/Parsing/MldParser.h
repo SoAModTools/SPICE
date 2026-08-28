@@ -138,7 +138,7 @@ struct ExtractedMldSpatialBlock {
     Kind kind = Kind::UnknownObject;
     std::uint32_t offset = 0;
     std::size_t size = 0;
-    spice::core::Endian endian = spice::core::Endian::Big;
+    spice::root::Endian endian = spice::root::Endian::Big;
     std::string tag{};
     std::string sizeSource{};
     std::vector<BlockOwnerRef> owners{};

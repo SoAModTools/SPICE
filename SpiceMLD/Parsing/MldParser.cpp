@@ -9,7 +9,7 @@
 #include "GrndParser.h"
 #include "MldTextureArchiveParser.h"
 
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 #include "../../Sa3Dport/Sa3Dport.h"
 
 #include <algorithm>
@@ -31,8 +31,8 @@ using spice::mld::model::GrndSurface;
 using spice::mld::model::UnknownEntry;
 using spice::mld::model::Vec3;
 using spice::mld::model::WalkSurfaceNode;
-using spice::core::Endian;
-using spice::core::EndianReader;
+using spice::root::Endian;
+using spice::root::EndianReader;
 
 constexpr std::uint32_t makeTag(const char a, const char b, const char c, const char d) {
     return static_cast<std::uint32_t>(a) |
@@ -1993,7 +1993,7 @@ ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& o
         if (options.exportBlenderIrJson) {
             result.diagnostics.push_back(ParseDiagnostic{
                 .severity = ParseDiagnostic::Severity::Warning,
-                .message = "Parser-owned Blender IR file output is deprecated; SpiceFileParsing must write projection artifacts.",
+                .message = "Parser-owned Blender IR file output is deprecated; SpiceMix must write projection artifacts.",
             });
         }
     }

@@ -148,7 +148,7 @@
     <ProjectReference Include="..\Sa3Dport\Sa3Dport.vcxproj">
       <Project>{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+    <ProjectReference Include="..\SpiceRoot\SpiceRoot.vcxproj">
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
@@ -160,10 +160,10 @@
   </ItemGroup>
   <PropertyGroup>
     <BuildSa3dDotnetBridge Condition="'$(BuildSa3dDotnetBridge)'==''">false</BuildSa3dDotnetBridge>
-    <SpiceRoot>$(MSBuildThisFileDirectory)..\</SpiceRoot>
-    <Sa3dSubmoduleRoot>$(SpiceRoot)third-party\SA3D.Modeling\src</Sa3dSubmoduleRoot>
-    <Sa3dBridgeProject>$(SpiceRoot)tools\sa3d_ref_runner\SA3DRefRunner.csproj</Sa3dBridgeProject>
-    <Sa3dBridgeOutputDir>$(SpiceRoot)bin\$(Platform)\$(Configuration)\sa3d_bridge\</Sa3dBridgeOutputDir>
+    <SpiceRepoRoot>$(MSBuildThisFileDirectory)..\</SpiceRepoRoot>
+    <Sa3dSubmoduleRoot>$(SpiceRepoRoot)third-party\SA3D.Modeling\src</Sa3dSubmoduleRoot>
+    <Sa3dBridgeProject>$(SpiceRepoRoot)tools\sa3d_ref_runner\SA3DRefRunner.csproj</Sa3dBridgeProject>
+    <Sa3dBridgeOutputDir>$(SpiceRepoRoot)bin\$(Platform)\$(Configuration)\sa3d_bridge\</Sa3dBridgeOutputDir>
   </PropertyGroup>
   <Target Name="BuildSa3dDependencies" AfterTargets="Build" Condition="'$(Platform)' == 'x64' and '$(BuildSa3dDotnetBridge)' == 'true'">
     <Message Text="[SpiceMLD] Building SA3D submodule (.NET projects) from $(Sa3dSubmoduleRoot)..." Importance="high" />

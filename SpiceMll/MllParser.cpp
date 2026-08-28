@@ -3,7 +3,7 @@
 #include "../Compression/Aklz.h"
 #include "../SpiceBin/BinParser.h"
 #include "../SpiceGvm/Parsing/GvmParser.h"
-#include "../SpiceCore/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <array>
@@ -19,8 +19,8 @@
 namespace spice::mll {
 namespace {
 
-using spice::core::Endian;
-using spice::core::EndianReader;
+using spice::root::Endian;
+using spice::root::EndianReader;
 
 constexpr std::uint32_t kMllRecordsOffset = 0x08U;
 constexpr std::uint32_t kMllRecordStride = 0x20U;

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../Model/MldGroundModel.h"
-#include "../../SpiceCore/Binary/Endian.h"
+#include "../../SpiceRoot/Binary/Endian.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,7 +27,7 @@ class GobjParser {
 public:
     [[nodiscard]] GobjDecodeResult decode(std::span<const std::uint8_t> blockBytes,
         std::uint32_t sourceOffset = 0,
-        spice::core::Endian endian = spice::core::Endian::Big) const;
+        spice::root::Endian endian = spice::root::Endian::Big) const;
 };
 
 } // namespace spice::mld::parsing

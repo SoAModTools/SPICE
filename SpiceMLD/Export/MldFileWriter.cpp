@@ -2,7 +2,7 @@
 
 #include "../Model/MldGroundEditing.h"
 #include "../../Compression/Aklz.h"
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 #include "../../SpicePvm/SpicePvm.h"
 
 #include <algorithm>
@@ -18,8 +18,8 @@
 namespace spice::mld::exporting {
 namespace {
 
-using spice::core::Endian;
-using spice::core::EndianReader;
+using spice::root::Endian;
+using spice::root::EndianReader;
 
 constexpr std::size_t kHeaderSize = 0x14U;
 constexpr std::size_t kEntrySize = 0x68U;

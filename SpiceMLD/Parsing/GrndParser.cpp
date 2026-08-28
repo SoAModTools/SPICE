@@ -1,6 +1,6 @@
 #include "GrndParser.h"
 
-#include "../../SpiceCore/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 #include "../common/ByteUtils.h"
 
 #include <algorithm>
@@ -88,7 +88,7 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::optional<TriangleSet> readTriangleSet(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const std::size_t setOffset,
     const std::size_t nextSetOrBlockEnd,
     std::vector<std::string>& diagnostics) {
@@ -97,7 +97,7 @@ struct TriangleRefHash {
         return std::nullopt;
     }
 
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto vertexRel = reader.try_read_i32(setOffset + 0x0CU);
     const auto streamRel = reader.try_read_i32(setOffset + 0x10U);
     const auto triangleCount = reader.try_read_u32(setOffset + 0x14U);
@@ -130,14 +130,14 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::optional<StreamEntry> readStreamEntry(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const TriangleSet& set,
     const std::size_t index) {
     if (index >= set.streamEntryCount) {
         return std::nullopt;
     }
     const auto offset = set.triangleStreamOffset + (index * 4U);
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto floatIndex = reader.try_read_u16(offset);
     const auto flags = reader.try_read_u16(offset + 2U);
     if (!floatIndex.has_value() || !flags.has_value()) {
@@ -151,7 +151,7 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::optional<model::MeshVertex> readVertexForFloatIndex(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const TriangleSet& set,
     const std::uint16_t floatIndex) {
     const std::size_t offset = set.vertexBlockOffset + (static_cast<std::size_t>(floatIndex) * 4U);
@@ -159,7 +159,7 @@ struct TriangleRefHash {
         return std::nullopt;
     }
 
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto px = reader.try_read_f32(offset);
     const auto py = reader.try_read_f32(offset + 4U);
     const auto pz = reader.try_read_f32(offset + 8U);
@@ -179,7 +179,7 @@ struct TriangleRefHash {
 
 [[nodiscard]] std::uint32_t getOrCreateVertex(
     std::span<const std::uint8_t> bytes,
-    spice::core::Endian endian,
+    spice::root::Endian endian,
     const TriangleSet& set,
     const std::uint16_t floatIndex,
     std::unordered_map<std::uint64_t, std::uint32_t>& vertexIndexByKey,
@@ -204,7 +204,7 @@ struct TriangleRefHash {
 
 } // namespace
 
-GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset, const spice::core::Endian endian) const {
+GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, const std::uint32_t sourceOffset, const spice::root::Endian endian) const {
     GrndDecodeResult result{};
     if (blockBytes.size() < 0x2CU) {
         result.diagnostics.push_back("GRND block at " + hexOffset(sourceOffset) + " is too small.");
@@ -216,7 +216,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
         return result;
     }
 
-    const spice::core::EndianReader blockReader(blockBytes, endian);
+    const spice::root::EndianReader blockReader(blockBytes, endian);
     const auto declaredSize = blockReader.try_read_u32(4U);
     if (!declaredSize.has_value() || *declaredSize < 0x2CU || *declaredSize > blockBytes.size()) {
         result.diagnostics.push_back("GRND block at " + hexOffset(sourceOffset) + " has an invalid declared size.");
@@ -225,7 +225,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
 
     const auto bytes = blockBytes.first(static_cast<std::size_t>(*declaredSize));
     constexpr std::size_t innerHeader = 0x10U;
-    const spice::core::EndianReader reader(bytes, endian);
+    const spice::root::EndianReader reader(bytes, endian);
     const auto relTriangleSets = reader.try_read_i32(innerHeader);
     const auto relQuadRegistry = reader.try_read_i32(innerHeader + 4U);
     const auto gridX = reader.try_read_u16(innerHeader + 0x10U);

@@ -1,7 +1,7 @@
 #include "StandaloneMldTextureScan.h"
 
 #include "../Compression/Aklz.h"
-#include "../SpiceCore/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 #include "../SpiceGvm/Parsing/GvmParser.h"
 
 #include <algorithm>
@@ -17,8 +17,8 @@
 namespace spice::mll {
 namespace {
 
-using spice::core::Endian;
-using spice::core::EndianReader;
+using spice::root::Endian;
+using spice::root::EndianReader;
 
 constexpr std::uint32_t kMldIndexEntryStride = 0x68U;
 constexpr std::uint32_t kTextureRecordStride = 0x2cU;

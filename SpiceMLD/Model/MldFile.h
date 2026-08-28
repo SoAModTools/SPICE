@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../SpiceCore/Binary/Endian.h"
+#include "../../SpiceRoot/Binary/Endian.h"
 #include "IndexEntry.h"
 #include "MldGroundModel.h"
 #include "MldTextureArchiveModel.h"
@@ -164,7 +164,7 @@ struct MldGroundResource {
 struct MldFile {
     MldParseStatus parseStatus = MldParseStatus::Empty;
     TargetPlatform sourcePlatform = TargetPlatform::Unknown;
-    spice::core::Endian endian = spice::core::Endian::Big;
+    spice::root::Endian endian = spice::root::Endian::Big;
     bool sourceWasCompressedAklz = false;
     MldHeader header{};
     std::vector<MldIndexEntryRecord> entries{};

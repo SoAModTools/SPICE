@@ -120,7 +120,7 @@
     <ProjectReference Include="..\Compression\Compression.vcxproj">
       <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">
+    <ProjectReference Include="..\SpiceRoot\SpiceRoot.vcxproj">
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SpiceMLD\SpiceMLD.vcxproj">

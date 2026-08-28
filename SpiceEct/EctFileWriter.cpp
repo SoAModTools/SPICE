@@ -1,7 +1,7 @@
 #include "EctFileWriter.h"
 
 #include "../Compression/Aklz.h"
-#include "../SpiceCore/Binary/EndianWriter.h"
+#include "../SpiceRoot/Binary/EndianWriter.h"
 
 #include <algorithm>
 #include <limits>
@@ -12,8 +12,8 @@
 namespace spice::ect {
 namespace {
 
-using spice::core::Endian;
-using spice::core::EndianWriter;
+using spice::root::Endian;
+using spice::root::EndianWriter;
 
 constexpr std::size_t kEncounterTableSize = 0x84U;
 constexpr std::size_t kIndexedHeaderSize = 0x08U;
