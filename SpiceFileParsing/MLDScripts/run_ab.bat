@@ -2,26 +2,22 @@
 setlocal enableextensions enabledelayedexpansion
 
 set "SPICE_FILE_PARSER=%~1"
-if "%SPICE_FILE_PARSER%"=="" set "SPICE_FILE_PARSER=..\..\bin\x64\Debug\SpiceFileParsing.exe"
-
 set "INPUT_DIR=%~2"
-if "%INPUT_DIR%"=="" set "INPUT_DIR=..\inputs"
-
 set "OUTPUT_DIR=%~3"
-if "%OUTPUT_DIR%"=="" set "OUTPUT_DIR=..\parsed\ab"
+
+if "%SPICE_FILE_PARSER%"=="" goto :usage
+if "%INPUT_DIR%"=="" goto :usage
+if "%OUTPUT_DIR%"=="" goto :usage
 
 if not exist "%SPICE_FILE_PARSER%" (
   echo [run_ab] ERROR: SpiceFileParsing.exe not found at "%SPICE_FILE_PARSER%"
   echo [run_ab] Usage:
-  echo [run_ab]   run_ab.bat [SpiceFileParsing.exe] [input_dir] [output_dir]
+  echo [run_ab]   run_ab.bat SpiceFileParsing.exe input_dir output_dir
   exit /b 1
 )
 
-if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
-
-set "COMMAND=%SPICE_FILE_PARSER% %INPUT_DIR% %OUTPUT_DIR% --ab-sa3d-port-vs-sa3d-bridge"
-echo [run_ab] !COMMAND!
-call !COMMAND!
+echo [run_ab] "%SPICE_FILE_PARSER%" compare-mld-sa3d --input "%INPUT_DIR%" --output "%OUTPUT_DIR%"
+"%SPICE_FILE_PARSER%" compare-mld-sa3d --input "%INPUT_DIR%" --output "%OUTPUT_DIR%"
 set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
@@ -31,3 +27,8 @@ if not "%EXIT_CODE%"=="0" (
 
 echo [run_ab] Completed successfully.
 exit /b 0
+
+:usage
+echo [run_ab] Usage:
+echo [run_ab]   run_ab.bat SpiceFileParsing.exe input_dir output_dir
+exit /b 2

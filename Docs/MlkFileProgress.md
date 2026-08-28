@@ -13,7 +13,7 @@ Primary implementation references:
 - `SpiceMlk/MlkBlenderIrExport.cpp`
 - `SpiceMlk/MlkAnnotation.schema.json`
 - `SpiceMlk/MlkBlenderIrMetadata.schema.json`
-- `SpiceFileParsing/SpiceFileParsing.cpp`
+- `SpiceFileParsing/Operations/OperationExecution.cpp`
 - `SpiceTests/test_mlk_scanner.cpp`
 - `SpiceTests/test_mlk_corpus_export.cpp`
 - `SpiceTests/test_mlk_blender_ir_export.cpp`
@@ -219,11 +219,11 @@ Current low-confidence visual hypothesis: `pcp##.mlk` may be a party-composition
 `SpiceFileParsing` supports two MLK investigation modes:
 
 ```powershell
-bin\x64\Debug\SpiceFileParsing.exe <file-or-dir> <output-dir> --export-mlk-corpus
-bin\x64\Debug\SpiceFileParsing.exe <file-or-dir> <output-dir> --export-mlk-blender-ir
+bin\x64\Debug\SpiceFileParsing.exe export-mlk-corpus --input <file-or-dir> --output <output-dir>
+bin\x64\Debug\SpiceFileParsing.exe export-mlk-blender-ir --input <file-or-dir> --output <output-dir> --annotation-repository SpiceMlk\annotations
 ```
 
-`--export-mlk-corpus` writes:
+`export-mlk-corpus` writes:
 
 - `mlk_corpus.json`
 - `mlk_corpus_files.csv`
@@ -233,7 +233,7 @@ bin\x64\Debug\SpiceFileParsing.exe <file-or-dir> <output-dir> --export-mlk-blend
 - `mlk_corpus_raw_word12_by_kind.csv`
 - `mlk_corpus_embedded_mld_summary.csv`
 
-`--export-mlk-blender-ir` writes one output folder per MLK file containing:
+`export-mlk-blender-ir` writes one output folder per MLK file containing:
 
 - `<stem>_mlk_combined_blender_ir_scene.json`
 - `<stem>_mlk_blender_manifest.json`
@@ -255,7 +255,8 @@ The sidecar metadata preserves the original and adjusted `fxnName` values plus r
 
 ## Living Annotations
 
-`--export-mlk-blender-ir` also seeds local living annotation documents under:
+`export-mlk-blender-ir` also seeds local living annotation documents under the
+required `--annotation-repository` path:
 
 ```text
 SpiceMlk/annotations/<stem>/<stem>.mlk_annotation.json
@@ -274,7 +275,7 @@ Default behavior:
 Use this flag only when intentionally regenerating annotation documents:
 
 ```powershell
-bin\x64\Debug\SpiceFileParsing.exe <file-or-dir> <output-dir> --export-mlk-blender-ir --overwrite-mlk-annotations
+bin\x64\Debug\SpiceFileParsing.exe export-mlk-blender-ir --input <file-or-dir> --output <output-dir> --annotation-repository SpiceMlk\annotations --overwrite-annotations
 ```
 
 Annotation JSON contains:

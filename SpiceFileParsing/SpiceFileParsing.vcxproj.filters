@@ -13,12 +13,54 @@
     <ClCompile Include="AlxEnemyEventExport.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="SpiceFileParsing.cpp">
+    <ClCompile Include="Cli\CliParser.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Application\OperationPreflight.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Application\OperationRunner.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Operations\OperationExecution.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AlxEnemyEventExport.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Application\Operation.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Application\OperationPreflight.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Application\OperationRunner.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Cli\CliParser.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Operations\AklzAlxOperations.inl">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Operations\GvrOperations.inl">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Operations\MldOperations.inl">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Operations\MlkStdContentGraphOperations.inl">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Operations\OperationExecution.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Operations\SctSmlOperations.inl">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>

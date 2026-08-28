@@ -140,10 +140,24 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="AlxEnemyEventExport.cpp" />
-    <ClCompile Include="SpiceFileParsing.cpp" />
+    <ClCompile Include="Cli\CliParser.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="Application\OperationPreflight.cpp" />
+    <ClCompile Include="Application\OperationRunner.cpp" />
+    <ClCompile Include="Operations\OperationExecution.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AlxEnemyEventExport.h" />
+    <ClInclude Include="Application\Operation.h" />
+    <ClInclude Include="Application\OperationPreflight.h" />
+    <ClInclude Include="Application\OperationRunner.h" />
+    <ClInclude Include="Cli\CliParser.h" />
+    <ClInclude Include="Operations\AklzAlxOperations.inl" />
+    <ClInclude Include="Operations\GvrOperations.inl" />
+    <ClInclude Include="Operations\MldOperations.inl" />
+    <ClInclude Include="Operations\MlkStdContentGraphOperations.inl" />
+    <ClInclude Include="Operations\OperationExecution.h" />
+    <ClInclude Include="Operations\SctSmlOperations.inl" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\SpiceCore\SpiceCore.vcxproj">

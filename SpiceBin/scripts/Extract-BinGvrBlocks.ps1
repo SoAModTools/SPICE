@@ -279,7 +279,7 @@ if ($null -eq $parser) {
     exit 0
 }
 
-& $parser.Path $extractDir.FullName $parseDir.FullName --gvr-only --export-gvr-image-ir
+& $parser.Path export-gvr-image-ir --input $extractDir.FullName --output $parseDir.FullName
 $exitCode = $LASTEXITCODE
 Write-Host "parseStatus=ran"
 Write-Host "parseExitCode=$exitCode"
