@@ -39,6 +39,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="DocumentWorkbenches.cpp" />
+    <ClCompile Include="SstSmlWorkbench.cpp" />
     <ClCompile Include="TextureViewport.cpp" />
     <ClCompile Include="TaskController.cpp" />
   </ItemGroup>

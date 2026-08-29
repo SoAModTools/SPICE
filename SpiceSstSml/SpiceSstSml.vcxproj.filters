@@ -31,6 +31,9 @@
     <ClInclude Include="BattleStageParser.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SstCommandCatalog.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
     <ClInclude Include="SmlBlenderIrCombiner.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -43,6 +46,9 @@
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="BattleStageParser.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstCommandCatalog.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="SstSmlExport.cpp">

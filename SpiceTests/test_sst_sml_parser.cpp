@@ -1,6 +1,7 @@
 #include "../Compression/Aklz.h"
 #include "../SpiceMLD/SpiceMLD.h"
 #include "../SpiceSstSml/SpiceSstSml.h"
+#include "../SpiceSstSml/SstCommandCatalog.h"
 
 #include <gtest/gtest.h>
 
@@ -440,6 +441,18 @@ spice::mld::model::BlenderIrScene makeSingleEntryBlenderIrScene(
 }
 
 } // namespace
+
+TEST(SpiceSstSmlParser, CommandCatalogCoversEveryPromotedWalkerType) {
+    for (std::int16_t type = 0; type <= 11; ++type) {
+        const auto entry = commandCatalogEntry(type);
+        ASSERT_TRUE(entry.has_value()) << "missing command type " << type;
+        EXPECT_EQ(entry->type, type);
+        EXPECT_FALSE(entry->label.empty());
+        EXPECT_FALSE(entry->description.empty());
+    }
+    EXPECT_FALSE(commandCatalogEntry(-1).has_value());
+    EXPECT_FALSE(commandCatalogEntry(12).has_value());
+}
 
 TEST(SpiceSstSmlParser, ParsesUncompressedSmlTableAndEmbeddedMldSpans) {
     const auto bytes = makeSml();

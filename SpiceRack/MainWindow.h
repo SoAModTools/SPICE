@@ -13,6 +13,7 @@
 #include <vector>
 
 class DocumentWorkbench;
+class QAction;
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDragMoveEvent;
@@ -52,6 +53,7 @@ private:
     void chooseNewPvr();
     void addWorkbench(DocumentWorkbench* workbench);
     void refreshTabTitle(DocumentWorkbench* workbench);
+    void refreshDocumentActions();
     void closeTab(int index);
     [[nodiscard]] DocumentWorkbench* currentWorkbench() const;
     [[nodiscard]] int existingDocumentIndex(const std::filesystem::path& path) const;
@@ -71,6 +73,7 @@ private:
     QWidget* eventPanel_ = nullptr;
     QPushButton* cancelJob_ = nullptr;
     QToolButton* eventsToggle_ = nullptr;
+    QAction* saveAsAction_ = nullptr;
     int eventAttention_ = 0;
     std::deque<std::filesystem::path> droppedDocuments_{};
     QStringList droppedDocumentIssues_{};

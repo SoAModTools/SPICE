@@ -12,9 +12,6 @@
     <Filter Include="Parser">
       <UniqueIdentifier>{aea6f113-81c7-418e-ac15-e8fdcdbfe668}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Reference">
-      <UniqueIdentifier>{6F0AF9A2-748C-4620-A6F2-7D13385824B3}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Export">
       <UniqueIdentifier>{dd5829f4-8403-4472-9f7b-9b27bdbbb0d7}</UniqueIdentifier>
     </Filter>
@@ -73,10 +70,5 @@
     <ClCompile Include="SctSemanticComparer.cpp">
       <Filter>Model</Filter>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="SALSA_default_instructions_reference.md">
-      <Filter>Reference</Filter>
-    </None>
   </ItemGroup>
 </Project>

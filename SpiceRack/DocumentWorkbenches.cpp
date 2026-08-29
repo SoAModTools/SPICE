@@ -751,7 +751,7 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
 MldWorkbench::~MldWorkbench() = default;
 QString MldWorkbench::displayName() const { return qpath(impl_->session->overview().sourcePath.filename()); }
 bool MldWorkbench::dirty() const { return impl_->session->dirty(); }
-std::optional<std::filesystem::path> MldWorkbench::sourcePath() const { return impl_->session->overview().sourcePath; }
+std::vector<std::filesystem::path> MldWorkbench::sourcePaths() const { return { impl_->session->overview().sourcePath }; }
 bool MldWorkbench::runSmokeChecks() {
     const int exportsIndex = impl_->pages->indexOf(impl_->exportStagedNotice->parentWidget());
     const bool exportsPageReady = exportsIndex >= 0
@@ -911,7 +911,12 @@ GvrWorkbench::GvrWorkbench(std::shared_ptr<spice::mix::GvrDocumentSession> sessi
 GvrWorkbench::~GvrWorkbench() = default;
 QString GvrWorkbench::displayName() const { return QString::fromStdString(impl_->session->snapshot().displayName); }
 bool GvrWorkbench::dirty() const { return impl_->session->dirty(); }
-std::optional<std::filesystem::path> GvrWorkbench::sourcePath() const { return impl_->session->snapshot().sourcePath; }
+std::vector<std::filesystem::path> GvrWorkbench::sourcePaths() const {
+    const auto path = impl_->session->snapshot().sourcePath;
+    return path.has_value()
+        ? std::vector<std::filesystem::path>{ *path }
+        : std::vector<std::filesystem::path>{};
+}
 bool GvrWorkbench::runSmokeChecks() {
     return impl_->viewport
         && !impl_->viewport->hasFileDropHandler()
@@ -1047,7 +1052,12 @@ PvrWorkbench::PvrWorkbench(std::shared_ptr<spice::mix::PvrDocumentSession> sessi
 PvrWorkbench::~PvrWorkbench() = default;
 QString PvrWorkbench::displayName() const { return QString::fromStdString(impl_->session->snapshot().displayName); }
 bool PvrWorkbench::dirty() const { return impl_->session->dirty(); }
-std::optional<std::filesystem::path> PvrWorkbench::sourcePath() const { return impl_->session->snapshot().sourcePath; }
+std::vector<std::filesystem::path> PvrWorkbench::sourcePaths() const {
+    const auto path = impl_->session->snapshot().sourcePath;
+    return path.has_value()
+        ? std::vector<std::filesystem::path>{ *path }
+        : std::vector<std::filesystem::path>{};
+}
 bool PvrWorkbench::runSmokeChecks() {
     return impl_->viewport
         && impl_->encoding.group && impl_->encoding.group->isVisible()

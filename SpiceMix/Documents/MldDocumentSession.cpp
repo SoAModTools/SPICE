@@ -1,13 +1,13 @@
 #include "MldDocumentSession.h"
 
 #include "DocumentSupport.h"
+#include "MldInspectionSupport.h"
 #include "PvrDocumentSupport.h"
 #include "../../SpiceGvm/Image/PngCodec.h"
 #include "../../SpiceMLD/Export/BlenderIrJsonExporter.h"
 #include "../../SpiceMLD/Export/MldEntryListJsonExporter.h"
 #include "../../SpiceMLD/Export/MldFileWriter.h"
 #include "../../SpiceMLD/Parsing/MldParser.h"
-#include "../../SpiceRoot/Binary/Endian.h"
 
 #include <algorithm>
 #include <span>
@@ -24,39 +24,6 @@ struct MldDocumentSession::Impl {
 };
 
 namespace {
-
-const char* platformName(const spice::mld::model::TargetPlatform platform) {
-    switch (platform) {
-    case spice::mld::model::TargetPlatform::Dreamcast: return "Dreamcast";
-    case spice::mld::model::TargetPlatform::GameCube: return "GameCube";
-    default: return "Unknown";
-    }
-}
-
-const char* statusName(const spice::mld::model::MldParseStatus status) {
-    switch (status) {
-    case spice::mld::model::MldParseStatus::Empty: return "Empty";
-    case spice::mld::model::MldParseStatus::Partial: return "Partial";
-    case spice::mld::model::MldParseStatus::Complete: return "Complete";
-    case spice::mld::model::MldParseStatus::Failed: return "Failed";
-    }
-    return "Unknown";
-}
-
-TextureEncodingKind encodingKind(const spice::mld::model::MldTextureEncoding encoding) {
-    switch (encoding) {
-    case spice::mld::model::MldTextureEncoding::Gvr: return TextureEncodingKind::Gvr;
-    case spice::mld::model::MldTextureEncoding::Pvr: return TextureEncodingKind::Pvr;
-    default: return TextureEncodingKind::Unknown;
-    }
-}
-
-DocumentDiagnostic convertDiagnostic(const spice::mld::model::MldDiagnostic& diagnostic) {
-    EventLevel level = EventLevel::Info;
-    if (diagnostic.severity == spice::mld::model::MldDiagnostic::Severity::Warning) level = EventLevel::Warning;
-    if (diagnostic.severity == spice::mld::model::MldDiagnostic::Severity::Error) level = EventLevel::Error;
-    return { .level = level, .message = diagnostic.message, .sourceOffset = diagnostic.sourceOffset };
-}
 
 template <typename ImplType>
 spice::mld::model::MldTextureEntry* textureAt(ImplType& impl, const std::size_t index) {
@@ -114,91 +81,23 @@ MldDocumentSession::OpenResult MldDocumentSession::open(
 }
 
 MldOverviewSnapshot MldDocumentSession::overview() const {
-    MldOverviewSnapshot out{};
-    out.sourcePath = impl_->protectedSourcePath;
-    out.platform = platformName(impl_->file.sourcePlatform);
-    out.endian = impl_->file.endian == spice::root::Endian::Little ? "Little" : "Big";
-    out.parseStatus = statusName(impl_->file.parseStatus);
-    out.sourceWasAklz = impl_->file.sourceWasCompressedAklz;
-    out.entryCount = impl_->file.entries.size();
-    out.textureCount = impl_->file.textureArchive.has_value() ? impl_->file.textureArchive->entries.size() : 0;
-    out.objectResourceCount = impl_->file.objectResources.size();
-    out.groundResourceCount = impl_->file.groundResources.size();
-    out.motionResourceCount = impl_->file.motionResources.size();
-    out.dirty = dirty();
-    return out;
+    return documents::projectMldOverview(impl_->file, impl_->protectedSourcePath, dirty());
 }
 
 std::vector<MldEntrySnapshot> MldDocumentSession::entries() const {
-    std::vector<MldEntrySnapshot> out{};
-    out.reserve(impl_->file.entries.size());
-    for (const auto& record : impl_->file.entries) {
-        const auto& entry = record.entry;
-        out.push_back(MldEntrySnapshot{
-            .tableIndex = entry.tableIndex,
-            .entryId = entry.entryId,
-            .tableId = entry.tblId,
-            .functionName = entry.fxnName,
-            .positionX = entry.transform.position.x,
-            .positionY = entry.transform.position.y,
-            .positionZ = entry.transform.position.z,
-            .rotationX = entry.transform.rotationRaw.x,
-            .rotationY = entry.transform.rotationRaw.y,
-            .rotationZ = entry.transform.rotationRaw.z,
-            .scaleX = entry.transform.scale.x,
-            .scaleY = entry.transform.scale.y,
-            .scaleZ = entry.transform.scale.z,
-            .objectCount = entry.objectCount,
-            .groundCount = entry.groundCount,
-            .motionCount = entry.motionCount,
-            .texturesPointer = entry.texturesPointer,
-        });
-    }
-    return out;
+    return documents::projectMldEntries(impl_->file);
 }
 
 std::vector<MldTextureSnapshot> MldDocumentSession::textures() const {
-    std::vector<MldTextureSnapshot> out{};
-    if (!impl_->file.textureArchive.has_value()) return out;
-    out.reserve(impl_->file.textureArchive->entries.size());
-    for (std::size_t index = 0; index < impl_->file.textureArchive->entries.size(); ++index) {
-        const auto& texture = impl_->file.textureArchive->entries[index];
-        out.push_back(MldTextureSnapshot{
-            .index = index,
-            .name = texture.textureName,
-            .encoding = encodingKind(texture.encoding),
-            .format = texture.sourceFormat,
-            .paletteFormat = texture.sourcePaletteFormat,
-            .width = texture.width,
-            .height = texture.height,
-            .mipmaps = texture.hasMipmaps,
-            .hasGlobalIndex = texture.hasGlobalIndex,
-            .globalIndex = texture.globalIndex,
-            .encodedSize = texture.encodedData.size(),
-            .decoded = texture.decoded && !texture.rgba8.empty(),
-            .dirty = index < impl_->dirtyTextures.size() && impl_->dirtyTextures[index],
-            .diagnostics = texture.diagnostics,
-        });
-    }
-    return out;
+    return documents::projectMldTextures(impl_->file, impl_->dirtyTextures);
 }
 
 std::vector<DocumentDiagnostic> MldDocumentSession::diagnostics() const {
-    std::vector<DocumentDiagnostic> out{};
-    out.reserve(impl_->file.parseDiagnostics.size());
-    for (const auto& diagnostic : impl_->file.parseDiagnostics) out.push_back(convertDiagnostic(diagnostic));
-    if (impl_->file.textureArchive.has_value()) {
-        for (const auto& message : impl_->file.textureArchive->diagnostics) {
-            out.push_back({ .level = EventLevel::Warning, .message = message });
-        }
-    }
-    return out;
+    return documents::projectMldDiagnostics(impl_->file);
 }
 
 std::optional<RgbaImageSnapshot> MldDocumentSession::texturePreview(const std::size_t index) const {
-    const auto* texture = textureAt(*impl_, index);
-    if (!texture || !texture->decoded || texture->rgba8.empty()) return std::nullopt;
-    return RgbaImageSnapshot{ .width = texture->width, .height = texture->height, .rgba8 = texture->rgba8 };
+    return documents::projectMldTexturePreview(impl_->file, index);
 }
 
 bool MldDocumentSession::dirty() const noexcept {

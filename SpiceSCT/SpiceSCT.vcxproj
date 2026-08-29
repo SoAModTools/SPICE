@@ -125,9 +125,6 @@
       <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
     </ProjectReference>
   </ItemGroup>
-  <ItemGroup>
-    <None Include="SALSA_default_instructions_reference.md" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

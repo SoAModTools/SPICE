@@ -4,6 +4,7 @@
 #include "../SpiceMix/Documents/GvrDocumentSession.h"
 #include "../SpiceMix/Documents/MldDocumentSession.h"
 #include "../SpiceMix/Documents/PvrDocumentSession.h"
+#include "../SpiceMix/Documents/SstSmlDocumentSession.h"
 
 #include <QtWidgets/QWidget>
 
@@ -11,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <vector>
 
 class DocumentWorkbench : public QWidget {
 public:
@@ -19,7 +21,8 @@ public:
 
     [[nodiscard]] virtual QString displayName() const = 0;
     [[nodiscard]] virtual bool dirty() const = 0;
-    [[nodiscard]] virtual std::optional<std::filesystem::path> sourcePath() const = 0;
+    [[nodiscard]] virtual std::vector<std::filesystem::path> sourcePaths() const = 0;
+    [[nodiscard]] virtual bool canSaveAs() const = 0;
     [[nodiscard]] virtual bool runSmokeChecks() = 0;
     virtual void requestSaveAs(std::function<void(bool)> completed = {}) = 0;
 
@@ -40,7 +43,8 @@ public:
 
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override;
-    [[nodiscard]] std::optional<std::filesystem::path> sourcePath() const override;
+    [[nodiscard]] std::vector<std::filesystem::path> sourcePaths() const override;
+    [[nodiscard]] bool canSaveAs() const override { return true; }
     [[nodiscard]] bool runSmokeChecks() override;
     void requestSaveAs(std::function<void(bool)> completed = {}) override;
 
@@ -57,7 +61,8 @@ public:
 
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override;
-    [[nodiscard]] std::optional<std::filesystem::path> sourcePath() const override;
+    [[nodiscard]] std::vector<std::filesystem::path> sourcePaths() const override;
+    [[nodiscard]] bool canSaveAs() const override { return true; }
     [[nodiscard]] bool runSmokeChecks() override;
     void requestSaveAs(std::function<void(bool)> completed = {}) override;
 
@@ -74,7 +79,26 @@ public:
 
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override;
-    [[nodiscard]] std::optional<std::filesystem::path> sourcePath() const override;
+    [[nodiscard]] std::vector<std::filesystem::path> sourcePaths() const override;
+    [[nodiscard]] bool canSaveAs() const override { return true; }
+    [[nodiscard]] bool runSmokeChecks() override;
+    void requestSaveAs(std::function<void(bool)> completed = {}) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class SstSmlWorkbench final : public DocumentWorkbench {
+public:
+    explicit SstSmlWorkbench(std::shared_ptr<spice::mix::SstSmlDocumentSession> session,
+        QWidget* parent = nullptr);
+    ~SstSmlWorkbench() override;
+
+    [[nodiscard]] QString displayName() const override;
+    [[nodiscard]] bool dirty() const override { return false; }
+    [[nodiscard]] std::vector<std::filesystem::path> sourcePaths() const override;
+    [[nodiscard]] bool canSaveAs() const override { return false; }
     [[nodiscard]] bool runSmokeChecks() override;
     void requestSaveAs(std::function<void(bool)> completed = {}) override;
 

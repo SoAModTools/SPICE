@@ -100,6 +100,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="BattleStageParser.h" />
+    <ClInclude Include="SstCommandCatalog.h" />
     <ClInclude Include="SmlBlenderIrCombiner.h" />
     <ClInclude Include="SmlParser.h" />
     <ClInclude Include="SpiceSstSml.h" />
@@ -109,6 +110,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BattleStageParser.cpp" />
+    <ClCompile Include="SstCommandCatalog.cpp" />
     <ClCompile Include="SmlBlenderIrCombiner.cpp" />
     <ClCompile Include="SmlParser.cpp" />
     <ClCompile Include="SstParser.cpp" />

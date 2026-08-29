@@ -51,7 +51,18 @@ QString normalizedPathKey(const std::filesystem::path& path) {
 
 bool supportedDocumentPath(const std::filesystem::path& path) {
     const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
-    return extension == ".mld" || extension == ".gvr" || extension == ".pvr";
+    return extension == ".mld" || extension == ".gvr" || extension == ".pvr"
+        || extension == ".sml" || extension == ".sst";
+}
+
+QString logicalDocumentKey(const std::filesystem::path& path) {
+    const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
+    if (extension == ".sml" || extension == ".sst") {
+        const auto parent = normalizedPath(path.has_parent_path() ? path.parent_path() : std::filesystem::current_path());
+        return (QString::fromStdWString(parent.wstring()) + "/"
+            + QString::fromStdWString(path.stem().wstring()) + ".sst-sml").toCaseFolded();
+    }
+    return normalizedPathKey(path);
 }
 
 struct DocumentDropClassification {
@@ -79,7 +90,7 @@ DocumentDropClassification classifyDocumentDrop(const QMimeData* mimeData) {
             result.issues.push_back(QString("Unsupported file type: %1").arg(local));
             continue;
         }
-        const auto key = normalizedPathKey(path);
+        const auto key = logicalDocumentKey(path);
         if (seen.contains(key)) continue;
         seen.insert(key);
         result.paths.push_back(path);
@@ -104,9 +115,9 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     auto* newPvrAction = fileMenu->addAction("New &PVR from PNG...");
     connect(newPvrAction, &QAction::triggered, this, [this]() { chooseNewPvr(); });
     fileMenu->addSeparator();
-    auto* saveAsAction = fileMenu->addAction("Save &As...");
-    saveAsAction->setShortcut(QKeySequence::SaveAs);
-    connect(saveAsAction, &QAction::triggered, this, [this]() {
+    saveAsAction_ = fileMenu->addAction("Save &As...");
+    saveAsAction_->setShortcut(QKeySequence::SaveAs);
+    connect(saveAsAction_, &QAction::triggered, this, [this]() {
         if (auto* workbench = currentWorkbench()) workbench->requestSaveAs();
     });
     auto* closeAction = fileMenu->addAction("&Close document");
@@ -120,7 +131,8 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     auto* aboutAction = helpMenu->addAction("&About SpiceRack");
     connect(aboutAction, &QAction::triggered, this, [this]() {
         QMessageBox::about(this, "About SpiceRack",
-            "SpiceRack is the visual frontend for inspecting MLD files and editing GVR and PVR textures.\n\n"
+            "SpiceRack is the visual frontend for inspecting MLD and paired SST/SML files "
+            "and editing GVR and PVR textures.\n\n"
             "Document operations are provided by the shared, non-Qt SpiceMix layer.");
     });
 
@@ -129,8 +141,10 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     tabs_->setMovable(true);
     tabs_->setDocumentMode(true);
     connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](const int index) { closeTab(index); });
+    connect(tabs_, &QTabWidget::currentChanged, this, [this]() { refreshDocumentActions(); });
     auto* welcome = new QLabel(
-        "<h2>SpiceRack</h2><p>Open an MLD, GVR, or PVR file, or create a new texture from a PNG.</p>"
+        "<h2>SpiceRack</h2><p>Open an MLD, paired SST/SML, GVR, or PVR document, "
+        "or create a new texture from a PNG.</p>"
         "<p>MLD texture changes are staged until <b>Save As</b>; the original MLD is never overwritten.</p>", tabs_);
     welcome->setAlignment(Qt::AlignCenter);
     welcome->setWordWrap(true);
@@ -187,6 +201,7 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
         statusBar()->showMessage(busy ? QString::fromStdString(label) : "Ready");
     });
     statusBar()->showMessage("Ready");
+    refreshDocumentActions();
 }
 
 void SpiceRackMainWindow::setEventsExpanded(const bool expanded) {
@@ -220,22 +235,27 @@ bool SpiceRackMainWindow::runSmokeChecks() {
     dropMime.setUrls({ QUrl::fromLocalFile("C:/rack-drop/one.MLD"),
         QUrl::fromLocalFile("C:/rack-drop/two.gVr"),
         QUrl::fromLocalFile("C:/RACK-DROP/ONE.mld"),
+        QUrl::fromLocalFile("C:/rack-drop/s006.SML"),
+        QUrl::fromLocalFile("C:/rack-drop/S006.sst"),
         QUrl::fromLocalFile("C:/rack-drop/replacement.png"),
         QUrl("https://example.invalid/remote.pvr") });
     const auto classified = classifyDocumentDrop(&dropMime);
-    const bool dropRouting = classified.paths.size() == 2
+    const bool dropRouting = classified.paths.size() == 3
         && classified.issues.size() == 2
         && supportedDocumentPath("upper.PVR")
+        && supportedDocumentPath("stage.SML")
         && !supportedDocumentPath("replacement.png")
         && !centralWidget()->property("documentDropActive").toBool();
     auto* workbench = currentWorkbench();
     return startsCollapsed && expanded && collapsed && rendering && dropRouting
+        && saveAsAction_->isEnabled() == (workbench && workbench->canSaveAs())
         && (!workbench || workbench->runSmokeChecks());
 }
 
 void SpiceRackMainWindow::chooseOpenDocument() {
     const auto path = QFileDialog::getOpenFileName(this, "Open SPICE document", {},
-        "Supported files (*.mld *.gvr *.pvr);;MLD files (*.mld);;GVR files (*.gvr);;PVR files (*.pvr);;All files (*)");
+        "Supported files (*.mld *.sml *.sst *.gvr *.pvr);;MLD files (*.mld);;SST/SML pairs (*.sml *.sst);;"
+        "GVR files (*.gvr);;PVR files (*.pvr);;All files (*)");
     if (!path.isEmpty()) openDocument(fspath(path));
 }
 
@@ -306,7 +326,7 @@ void SpiceRackMainWindow::openDocumentBatch(const std::vector<std::filesystem::p
                 .arg(QString::fromStdWString(path.wstring())));
             continue;
         }
-        const auto key = normalizedPathKey(path);
+        const auto key = logicalDocumentKey(path);
         if (seen.contains(key)) continue;
         seen.insert(key);
         accepted.push_back(path);
@@ -324,14 +344,16 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
         return;
     }
     const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
-    if (extension != ".mld" && extension != ".gvr" && extension != ".pvr") {
-        if (completed) completed({ .message = "This workbench opens .mld, .gvr, and .pvr files." });
+    if (extension != ".mld" && extension != ".gvr" && extension != ".pvr"
+        && extension != ".sml" && extension != ".sst") {
+        if (completed) completed({ .message = "This workbench opens .mld, paired .sml/.sst, .gvr, and .pvr files." });
         return;
     }
     struct OpenState {
         spice::mix::MldDocumentSession::OpenResult mld{};
         spice::mix::GvrDocumentSession::OpenResult gvr{};
         spice::mix::PvrDocumentSession::OpenResult pvr{};
+        spice::mix::SstSmlDocumentSession::OpenResult sstSml{};
     };
     auto state = std::make_shared<OpenState>();
     auto completion = std::make_shared<std::function<void(DocumentOpenOutcome)>>(std::move(completed));
@@ -340,7 +362,8 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
         [path, extension, state](const auto& context) {
             if (extension == ".mld") state->mld = spice::mix::MldDocumentSession::open(path, context);
             else if (extension == ".gvr") state->gvr = spice::mix::GvrDocumentSession::open(path, context);
-            else state->pvr = spice::mix::PvrDocumentSession::open(path, context);
+            else if (extension == ".pvr") state->pvr = spice::mix::PvrDocumentSession::open(path, context);
+            else state->sstSml = spice::mix::SstSmlDocumentSession::open(path, context);
         }, [self, extension, state, completion]() mutable {
             if (!self) return;
             DocumentOpenOutcome outcome{};
@@ -353,9 +376,14 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
             } else if (extension == ".pvr" && state->pvr.result.ok() && state->pvr.session) {
                 self->addWorkbench(new PvrWorkbench(state->pvr.session, self->tasks_, self));
                 outcome.success = true;
+            } else if ((extension == ".sml" || extension == ".sst")
+                && state->sstSml.result.ok() && state->sstSml.session) {
+                self->addWorkbench(new SstSmlWorkbench(state->sstSml.session, self));
+                outcome.success = true;
             } else {
                 const auto message = extension == ".mld" ? state->mld.result.message
-                    : extension == ".gvr" ? state->gvr.result.message : state->pvr.result.message;
+                    : extension == ".gvr" ? state->gvr.result.message
+                    : extension == ".pvr" ? state->pvr.result.message : state->sstSml.result.message;
                 outcome.message = QString::fromStdString(message);
             }
             if (outcome.success) outcome.message = "Opened document.";
@@ -377,11 +405,17 @@ void SpiceRackMainWindow::addWorkbench(DocumentWorkbench* workbench) {
     tabs_->setCurrentIndex(index);
     workbench->setStateChanged([this, workbench]() { refreshTabTitle(workbench); });
     refreshTabTitle(workbench);
+    refreshDocumentActions();
 }
 
 void SpiceRackMainWindow::refreshTabTitle(DocumentWorkbench* workbench) {
     const int index = tabs_->indexOf(workbench);
     if (index >= 0) tabs_->setTabText(index, workbench->displayName() + (workbench->dirty() ? " *" : ""));
+}
+
+void SpiceRackMainWindow::refreshDocumentActions() {
+    const auto* workbench = currentWorkbench();
+    if (saveAsAction_) saveAsAction_->setEnabled(workbench && workbench->canSaveAs());
 }
 
 DocumentWorkbench* SpiceRackMainWindow::currentWorkbench() const {
@@ -392,8 +426,10 @@ int SpiceRackMainWindow::existingDocumentIndex(const std::filesystem::path& path
     const auto wanted = normalizedPathKey(path);
     for (int index = 0; index < tabs_->count(); ++index) {
         const auto* workbench = dynamic_cast<DocumentWorkbench*>(tabs_->widget(index));
-        if (workbench && workbench->sourcePath().has_value()
-            && normalizedPathKey(*workbench->sourcePath()) == wanted) return index;
+        if (!workbench) continue;
+        for (const auto& sourcePath : workbench->sourcePaths()) {
+            if (normalizedPathKey(sourcePath) == wanted) return index;
+        }
     }
     return -1;
 }
@@ -544,6 +580,7 @@ void SpiceRackMainWindow::closeTab(const int index) {
     }
     tabs_->removeTab(index);
     workbench->deleteLater();
+    refreshDocumentActions();
 }
 
 void SpiceRackMainWindow::closeEvent(QCloseEvent* event) {
