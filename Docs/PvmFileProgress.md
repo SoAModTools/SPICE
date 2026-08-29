@@ -1,24 +1,13 @@
-# SpicePvm Progress
+# PVM/PVR File Progress
 
-Implemented in the standalone C++20 `SpicePvm` static library:
+## Current Support
 
-- Owning PVR/PVM models with raw identifiers, exact source bytes, source ranges, parse status, and diagnostics.
-- Strict parsing for `PVMH`, optional `GBIX`, `PVRT`, formal archives, and embedded scans.
-- RGBA decoding for ARGB1555, RGB565, and ARGB4444.
-- Rectangle, square twiddled, mipmapped twiddled, VQ, mipmapped VQ, Small VQ, mipmapped Small VQ, and DMA-prefixed mipmapped twiddled layouts.
-- Largest-to-smallest logical mip results with physical source ranges.
-- Synthetic malformed-input, channel, Morton, VQ orientation, Small VQ, mipmap, and archive tests.
-- Read-only EU and US Dreamcast corpus validation.
-- Deterministic PVR encoding for every promoted pixel format and data layout.
-- Arbitrary GBIX metadata following the global index is retained and can be re-emitted.
-- Explicit or generated complete mip chains, normal VQ, and SDK-sized Small VQ codebooks.
-- Formal PVMH archive encoding with promoted metadata flags and preserved padding/metadata.
-- Dreamcast MLD PVR parsing and canonical texture archive replacement through SpiceMLD.
-- Typed standalone and embedded PVR document editing through SpiceMix and SpiceRack.
+SPICE parses standalone and archived Dreamcast textures with optional GBIX metadata and formal PVMH tables. It decodes ARGB1555, RGB565, and ARGB4444 across linear, twiddled, mipmapped, VQ, Small VQ, and DMA-prefixed twiddled layouts. Logical mip results are presented largest to smallest while retaining their physical source ranges.
 
-Intentionally outside this deliverable:
+The same promoted formats can be encoded from RGBA images, including complete mip chains and PVM archives. PVR data embedded in Dreamcast MLD texture archives is handled through this project, so MLD remains responsible only for archive placement and record association.
 
-- PNG or other image-file I/O.
-- Command-line tools.
-- Direct PNG-to-PVR command-line replacement workflows.
-- Decoding for YUV, bump-map, RGB555/PCX, or palettized formats not observed in the selected SoA corpus.
+## Known Limitations
+
+Unsupported pixel families such as YUV, bump-map, RGB555/PCX, and palettized data remain parseable as raw identifiers but are not decoded. Small VQ support is limited to the established 16, 32, and 64 pixel dimensions. Unknown PVMH flags and metadata chunks are preserved for existing files but are not interpreted or generated as new structured records.
+
+VQ encoding is deterministic but can be lossy when the source has more unique 2x2 vectors than the codebook allows. Archive metadata inconsistencies are reported while preserving the partial model.

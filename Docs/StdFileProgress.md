@@ -1,24 +1,13 @@
 # STD File Progress
 
-This document tracks STD semantic-editing guidance, re-export policy, and workflow notes that are not strictly file layout.
+## Current Support
 
-## References And Context
+SPICE recognizes the two big-endian STD forms after AKLZ decompression: fixed action-row tables and sentinel-terminated entry tables with separately addressed payloads. It preserves both headers, record keys, callback or type selectors, payload bounds, and opaque bytes. Several entry payload families have promoted sizes and guarded semantic fields, while unknown payloads remain raw spans.
 
-Core binary layout and semantic-editing contract for Skies of Arcadia Legends `.std` files in `SpiceStd`.
+Action rows and entry payloads are intentionally separate models. An action row selects a callback family; an entry’s combined opcode/location code selects a payload family. Shared action keys can relate the two at runtime, but they do not make them one serialized table.
 
-Disc `.std` files are AKLZ-wrapped. Parse all layout fields from the decompressed byte stream. Numeric fields are big-endian.
+## Known Limitations
 
-## Semantic Editing Notes
+Many action-row fields are callback-local, and many payload fields are mode- or flag-dependent. They cannot be edited safely from their offset alone. Unknown callback indices, flags, modes, and entry types remain preserve-only. Runtime-created rows and runtime pointer fixups are not source records and are never synthesized as file content.
 
-- Keep `%s_STD` action rows separate from `%s0_STD` entry payloads. Combatant action rows can install callbacks that later use action-view payload lists, but the two tables are different editing surfaces.
-- `0x0003002a` records can suppress or replace the synthetic action-view camera path for an action key. The runtime count gate is equivalent to `CountMatchingStd0Entries(root, key, -1, 0x2a, 3)`: a nonzero count uses serialized action-view payloads, while a zero count may allow a synthetic action-view record. Do not infer camera behavior from a `%s_STD` `callbackIndex` alone.
-- Treat action-view timing, mode, and camera-RNG eligibility as `0x0003002a` payload semantics. The `%s_STD` action row selects or schedules the visual/action callback path; it does not itself encode the final action-view record mode.
-- Do not treat queued instruction parameter writes as persistent combatant worksheet `field6_0x6` writes. They are separate runtime state and only become STD selectors through specific lookup paths.
-- Current static evidence keeps regular battle MLD resources adjacent to STD visual-resource setup rather than part of the STD entry-handler table. Do not model MLD named-function dispatch as an STD payload owner unless a later trace proves that bridge.
-
-## Re-Export Rules
-
-- Do not synthesize runtime-only rows.
-- Preserve source bytes for every field outside the active owning surface.
-- Entry payload bodies remain opaque byte spans unless a known semantic field is explicitly edited.
-- Runtime-mutated fields must re-export from original source bytes unless the editor explicitly owns the file field.
+Current semantic support is strongest for selected camera, icon, stream, sound/effect, character, and model-placement payload families, but some field labels remain provisional.

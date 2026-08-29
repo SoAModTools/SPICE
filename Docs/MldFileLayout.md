@@ -1,244 +1,103 @@
 # MLD File Layout
 
-This document describes the promoted MLD container and payload block layouts implemented by SPICE. Research status, fixture notes, export behavior, and open gaps live in `Docs/MldFileProgress.md`.
+MLD files combine an entry index with model, ground, motion, texture-list, and texture-archive data.
 
-## Platform and Endian
+## Encoding
 
-MLD files are parsed as either big-endian or little-endian. Current code treats:
-
-- Big-endian as GameCube.
-- Little-endian as Dreamcast.
-
-Endian detection reads the top-level header both ways and chooses the interpretation whose entry count and index table bounds are plausible. If both are plausible, the parser chooses the one with the smaller entry count.
-
-MLD input may be wrapped in AKLZ compression. `MldParser::parseFile` detects AKLZ, decompresses it, and parses the decompressed bytes. `MldFileExporter` can write AKLZ only for GameCube output.
+GameCube MLD data is big-endian and may be AKLZ-wrapped. Dreamcast MLD data is raw little-endian. Four-character block tags remain byte strings and are not byte-swapped.
 
 ## Top-Level Header
 
-The top-level MLD header is 0x14 bytes. All numeric fields use the detected file endian.
+The header is `0x14` bytes.
 
-| Offset | Size | Field | Current meaning |
+| Offset | Size | Field | Meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 4 | `entryCount` | Number of 0x68-byte index entries. Must be nonzero and no more than 65536 in current validation. |
-| `0x04` | 4 | `indexTableOffset` | Absolute file offset of the index entry table. |
-| `0x08` | 4 | `functionParametersOffset` | Header-level pointer into function parameter data. Current code preserves it but primarily follows per-entry list pointers. |
-| `0x0C` | 4 | `realDataOffset` | Header-level pointer to real payload data. In current fixtures this points at the first GRND block. |
-| `0x10` | 4 | `textureTableOffset` | Absolute file offset of the texture archive/name table. |
+| `0x00` | 4 | `entryCount` | Number of `0x68`-byte index entries. |
+| `0x04` | 4 | `indexTableOffset` | Absolute offset of the index table. |
+| `0x08` | 4 | `functionParametersOffset` | Header-level function-parameter pointer. |
+| `0x0C` | 4 | `realDataOffset` | Header-level payload-data pointer. |
+| `0x10` | 4 | `textureTableOffset` | Absolute offset of the texture archive table. |
 
-The index table is considered valid when `indexTableOffset + entryCount * 0x68` fits inside the file.
+## Index Entry
 
-## Index Entry Table
+Each index entry is `0x68` bytes.
 
-Each index entry is 0x68 bytes. The table starts at `header.indexTableOffset`; entry `i` starts at `indexTableOffset + i * 0x68`.
-
-| Offset in entry | Size | Field | Current meaning |
+| Offset | Size | Field | Meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 4 | `entryId` | Source entry identifier. |
-| `0x04` | 4 | `tblId` | Table or script dispatch identifier. Content graph tests use this to connect MLD entries to SCT sections. |
-| `0x08` | 4 | `groundLinksPointer` | Absolute pointer to a counted U32 list of linked ground IDs. |
-| `0x0C` | 4 | `paramList2Pointer` | Absolute pointer to a counted U32 list. Semantics not fully named yet. |
-| `0x10` | 4 | `functionParametersPointer` | Absolute pointer to a counted U32 list of function parameters. |
-| `0x14` | 4 | `objectAddressesPointer` | Absolute pointer to a counted U32 list of object block addresses. |
-| `0x18` | 4 | `groundAddressesPointer` | Absolute pointer to a counted U32 list of ground block addresses. |
-| `0x1C` | 4 | `motionAddressesPointer` | Absolute pointer to a counted U32 list of motion block addresses. |
-| `0x20` | 4 | `texturesPointer` | Pointer to entry texture list data. This may point directly at NJTL/GJTL data, a wrapper pointing to NJTL/GJTL at `+0x08`, or a simpler counted record table. |
-| `0x24` | 0x14 | `fxnName` | Null-terminated or fixed-width ASCII function name. Non-printable bytes become `?` in parser output. |
-| `0x38` | 0x0C | Unknown/padding | Preserved in `rawBytes`, not currently named by parser/exporter. |
-| `0x44` | 4 | `position.x` | 32-bit float. |
-| `0x48` | 4 | `position.y` | 32-bit float. |
-| `0x4C` | 4 | `position.z` | 32-bit float. |
-| `0x50` | 4 | `rotation.x` | 32-bit float interpreted as degrees in index-entry parsing. Converted to radians/quaternion for the model. |
-| `0x54` | 4 | `rotation.y` | 32-bit float interpreted as degrees. |
-| `0x58` | 4 | `rotation.z` | 32-bit float interpreted as degrees. |
-| `0x5C` | 4 | `scale.x` | 32-bit float. |
-| `0x60` | 4 | `scale.y` | 32-bit float. |
-| `0x64` | 4 | `scale.z` | 32-bit float. |
-
-The exporter rewrites these fields when changing target platform endian. Bytes not described above remain from `MldFile::originalBytes`.
+| `0x00` | 4 | `entryId` | Entry identifier. |
+| `0x04` | 4 | `tblId` | Table or dispatch identifier. |
+| `0x08` | 4 | `groundLinksPointer` | Absolute pointer to a counted U32 list. |
+| `0x0C` | 4 | `paramList2Pointer` | Absolute pointer to a counted U32 list; meaning unknown. |
+| `0x10` | 4 | `functionParametersPointer` | Absolute pointer to function parameters. |
+| `0x14` | 4 | `objectAddressesPointer` | Absolute pointer to object block addresses. |
+| `0x18` | 4 | `groundAddressesPointer` | Absolute pointer to ground block addresses. |
+| `0x1C` | 4 | `motionAddressesPointer` | Absolute pointer to motion block addresses. |
+| `0x20` | 4 | `texturesPointer` | Pointer to entry-local texture-list data. |
+| `0x24` | `0x14` | `functionName` | Fixed-width or null-terminated ASCII name. |
+| `0x38` | `0x0C` | `unknown` | Opaque bytes. |
+| `0x44` | `0x0C` | `position` | Three 32-bit floats. |
+| `0x50` | `0x0C` | `rotation` | Three 32-bit floats, interpreted as degrees. |
+| `0x5C` | `0x0C` | `scale` | Three 32-bit floats. |
 
 ## Counted U32 Lists
 
-Many index entry fields point to the same simple list structure:
-
-| Offset | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `+0x00` | 4 | `count` | Number of U32 values. Current parser rejects suspicious counts above 65536. |
-| `+0x04` | `count * 4` | `values` | U32 values in file endian. |
-
-The parser must read and preserve exactly `count` values. This matters for motion address lists: the game indexes this list by animation slot, so a zero value means "this model has no animation for this slot" rather than "remove this list entry." A motion list such as `[0, 0x1234, 0, 0x5678]` therefore has four animation slots and two present motion payload addresses. `motionCount` is only the count of nonzero values and must not be used as the motion list length.
-
-Zero-valued object, ground, and motion addresses are ignored only when building unique payload-address sets for extraction/classification. The original counted lists still retain their zero slots.
+Address and parameter lists begin with a U32 count followed by that many U32 values. Zero values are valid list slots, particularly in motion lists, and must not be removed when preserving animation-slot numbering.
 
 ## Entry Texture Lists
 
-Per-entry `texturesPointer` has multiple observed/currently supported forms.
-
-### Direct or Wrapped NJTL/GJTL
-
-The parser recognizes `NJTL` and `GJTL` tags at `texturesPointer`. If the tag is not at `texturesPointer`, it also checks a wrapper pointer at `texturesPointer + 0x08`.
-
-For an NJTL/GJTL block, current parsing treats:
-
-| Relative offset | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 4 | tag | `NJTL` or `GJTL`, read as ASCII bytes. |
-| `0x04` | 4 | blockSize | Payload size after the 8-byte block header. |
-| `0x0C` | 4 | textureCount | Number of texture records. |
-| payload `0x08 + i * 0x0C` | 4 | namePointer | Offset inside the NJTL/GJTL payload to a null-terminated texture name. |
-
-### Simple Counted Texture Record Table
-
-If no NJTL/GJTL tag is present, current code also accepts a simpler table when:
-
-- `texturesPointer + 0x04` is a count no larger than 4096.
-- The table fits in the file as `8 + count * 12` bytes.
-
-In that form, each 12-byte record begins with a file-absolute name pointer.
+Entry texture lists may be direct `NJTL`/`GJTL` chunks, wrappers whose pointer at `+0x08` leads to such a chunk, or simple counted tables of `0x0C`-byte records. In `NJTL`/`GJTL`, the tag is at `+0x00`, payload size at `+0x04`, texture count at `+0x0C`, and each texture record contains a name pointer.
 
 ## Texture Archive Table
 
-The top-level `header.textureTableOffset` points to an MLD texture archive surface. Current code first reads a local name table:
+The archive begins with a U32 count followed by `0x2C`-byte records.
 
-| Offset | Size | Field | Current meaning |
+| Record offset | Size | Field |
+| --- | ---: | --- |
+| `0x00` | `0x20` | Fixed-width texture name |
+| `0x20` | 4 | Control word |
+| `0x24` | 4 | Alignment or descriptor control |
+| `0x28` | 4 | Encoded texture block size |
+
+GameCube archives associate records with GVR texture chunks. Dreamcast archives associate records in order with optional alignment followed by `GBIX`/`PVRT`; alignment control `0x80000000` places `GBIX` on an absolute 32-byte boundary.
+
+## Payload Blocks
+
+Object, ground, and motion blocks are reached through their owning address lists. Known tags include `GRND`, `GOBJ`, `NJCM`, `GJCM`, `NJTL`, and `GJTL`. `GRND` and `GOBJ` store a declared block size at `+0x04`; unknown blocks must remain bounded and preserved according to their owning list.
+
+## GRND Block
+
+The promoted GRND header is:
+
+| Offset | Size | Field | Meaning |
 | --- | ---: | --- | --- |
-| `+0x00` | 4 | `count` | Number of texture records. May be zero and must be no more than 4096. |
-| `+0x04 + i * 0x2C` | 0x20 | name | Fixed-width ASCII texture name. |
-| `+0x24 + i * 0x2C` | 4 | control word 0 | Zero in the validated Dreamcast corpus; preserved raw. |
-| `+0x28 + i * 0x2C` | 4 | alignment control | `0` starts the encoded texture immediately. Dreamcast value `0x80000000` aligns the following `GBIX` to an absolute 32-byte boundary. |
-| `+0x2C + i * 0x2C` | 4 | encoded block size | Dreamcast byte count beginning at `GBIX`; leading alignment bytes are outside this size. Preserved raw for GameCube records. |
-
-GameCube MLDs are paired with following GVR chunks through SpiceGvm. Dreamcast MLDs are paired in record order with optional alignment bytes followed by `GBIX`/`PVRT` through SpicePvm. The platform-neutral archive model retains the three raw record words, alignment and trailing bytes, encoded texture bytes and ranges, global index, formats, dimensions, optional decoded RGBA8, and diagnostics.
-
-The canonical writer rewrites Dreamcast block sizes, maintains absolute 32-byte `GBIX` alignment, and relocates a resized archive while updating the top-level texture-table pointer. Existing alignment bytes are retained when their size remains valid; newly required alignment bytes are zero-filled.
-
-## Raw Data Blocks and Address Ownership
-
-Payload blocks are discovered by following the address lists from index entries:
-
-- `objectAddressesPointer` values are object candidates.
-- `groundAddressesPointer` values are ground candidates.
-- `motionAddressesPointer` values are motion candidates. The full counted list is retained as the animation-slot table; zero slots are skipped only when discovering concrete motion payload blocks.
-- `texturesPointer` values are texture-list candidates.
-
-Current raw block classification is tag-based:
-
-| Tag | Kind | Notes |
-| --- | --- | --- |
-| `GRND` | Ground | Has a declared size at block offset `+0x04`. |
-| `GOBJ` | Object | Has a declared size at block offset `+0x04`. |
-| `NJCM`, `GJCM`, `NJTL`, `GJTL` | Ninja | Preserved/extracted, but legacy Ninja parsing has been removed from MLD parsing. |
-| Other | Unknown | Preserved as unknown object/ground depending on owner list. |
-
-For `GRND` and `GOBJ`, block size is normally read from the block header at `+0x04` in the detected MLD endian. The spatial extraction path can also probe little-endian and big-endian sizes and, if no plausible declared size is found, fall back to the distance to the next candidate address.
-
-## GRND Blocks
-
-GRND blocks are decoded as collision/walk surface geometry. Current decoder requirements:
-
-- Block starts with ASCII `GRND`.
-- Declared size is at `+0x04`.
-- Minimum useful decoded block size is 0x2C.
-- Current parser treats `0x10` as the start of an inner header.
-
-Known GRND inner layout:
-
-| Relative offset | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 4 | tag | `GRND`. |
-| `0x04` | 4 | declaredSize | Size of the GRND block. |
-| `0x10` | 4 | `relTriangleSets` | Signed relative pointer. Base is `0x10`. |
-| `0x14` | 4 | `relQuadRegistry` | Signed relative pointer. Base is `0x10`. |
-| `0x18` | 4 | `gridOriginX` | Floating-point X origin for the collision-cell grid. This is independent of triangle-set translation. |
-| `0x1C` | 4 | `gridOriginZ` | Floating-point Z origin for the collision-cell grid. This is independent of triangle-set translation. |
-| `0x20` | 2 | `gridX` | Grid width/count value. |
-| `0x22` | 2 | `gridZ` | Grid depth/count value. |
+| `0x00` | 4 | Tag | ASCII `GRND`. |
+| `0x04` | 4 | `declaredSize` | Block size. |
+| `0x10` | 4 | `triangleSetsRelative` | Signed relative pointer based at `0x10`. |
+| `0x14` | 4 | `quadRegistryRelative` | Signed relative pointer based at `0x10`. |
+| `0x18` | 4 | `gridOriginX` | Grid origin X float. |
+| `0x1C` | 4 | `gridOriginZ` | Grid origin Z float. |
+| `0x20` | 2 | `gridX` | Grid width. |
+| `0x22` | 2 | `gridZ` | Grid depth. |
 | `0x24` | 2 | `cellSizeX` | Cell size in X. |
 | `0x26` | 2 | `cellSizeZ` | Cell size in Z. |
-| `0x28` | 2 | `triangleSetCount` | Number of triangle-set headers. |
+| `0x28` | 2 | `triangleSetCount` | Number of `0x18`-byte triangle-set headers. |
 | `0x2A` | 2 | `quadCellCount` | Number of quad-grid cells. |
 
-Triangle-set headers are 0x18 bytes each. Current decoder names these fields:
+Each triangle-set header stores a translation vector, a relative vertex pointer based at field `+0x0C`, a relative stream pointer based at field `+0x10`, and a declared triangle count. Stream entries are U16 float indexes plus U16 flags. A negative flag on the third entry reverses winding. A referenced vertex contains position XYZ followed by normal XYZ as six floats.
 
-| Offset in triangle set | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 4 | `localToResourceTranslation.x` | Floating-point X translation applied to stored positions in this set. |
-| `0x04` | 4 | `localToResourceTranslation.y` | Floating-point Y translation applied to stored positions in this set. |
-| `0x08` | 4 | `localToResourceTranslation.z` | Floating-point Z translation applied to stored positions in this set. |
-| `0x0C` | 4 | `vertexRel` | Signed relative pointer. Base is `setOffset + 0x0C`. |
-| `0x10` | 4 | `streamRel` | Signed relative pointer. Base is `setOffset + 0x10`. |
-| `0x14` | 4 | `declaredTriangleCount` | Declared triangle count. Current stream length is mostly inferred from stream-to-vertex span. |
+The quad registry begins with four bytes followed by `quadCellCount` records. Each record contains a U32 reference count and a signed relative pointer, based at that pointer field, to U16 triangle-set/U16 triangle-index pairs.
 
-`GrndTriangleSet::verticesByFloatIndex` retains the stored set-local positions. The canonical `GrndData::mesh` adds the owning set's translation to each position, producing resource-local geometry. Normals are copied without translation. The MLD index-entry transform remains a separate whole-resource transform applied by world/instance consumers.
+## GOBJ Block
 
-No-edit writes retain the original GRND bytes. Semantic GRND rebuilds currently canonicalize geometry into one triangle set with a zero translation and write the already translated canonical mesh positions, preserving resource-local placement. Grid origins are written independently.
+GOBJ begins with tag and declared size, then a root node at `+0x10`. Nodes are `0x34` bytes.
 
-Triangle stream entries are 4 bytes:
+| Node offset | Size | Field |
+| --- | ---: | --- |
+| `0x00` | 4 | Relative attach pointer; zero means none |
+| `0x08` | `0x0C` | Position floats |
+| `0x14` | `0x0C` | Rotation values |
+| `0x20` | `0x0C` | Scale floats |
+| `0x2C` | 4 | Relative child pointer |
+| `0x30` | 4 | Relative sibling pointer |
 
-| Offset | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `+0x00` | 2 | `floatIndex` | Index into the float stream. Vertex byte offset is `vertexBlockOffset + floatIndex * 4`. |
-| `+0x02` | 2 | `flags` | Signed value. A negative flag on the third stream entry reverses triangle winding. |
-
-Each vertex referenced by a triangle stream entry is read as six floats at `vertexBlockOffset + floatIndex * 4`: position XYZ followed by normal XYZ, for 24 bytes total.
-
-The quad registry starts at `quadRegistryOffset`. Current code skips 4 bytes, then reads `quadCellCount` records of 8 bytes:
-
-| Offset in quad cell | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 4 | `refCount` | Number of triangle references for this grid cell. |
-| `0x04` | 4 | `relRefList` | Signed relative pointer. Base is this field address. |
-
-Each triangle reference is 4 bytes: U16 triangle-set index plus U16 triangle stream index. The decoder deduplicates `(triangleSet, triangleIndex)` references across grid cells before emitting mesh triangles.
-
-## GOBJ Blocks
-
-GOBJ blocks are decoded as object node trees with stream mesh payloads.
-
-Current decoder requirements:
-
-- Block starts with ASCII `GOBJ`.
-- Declared size is at `+0x04`.
-- Root node is at relative offset `0x10`.
-- Node size is 0x34 bytes.
-
-Known GOBJ node layout:
-
-| Offset in node | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 4 | `attachRel` | Signed relative pointer from node offset to an attach record. Zero means no attach. |
-| `0x08` | 12 | position | Three 32-bit floats. |
-| `0x14` | 12 | rotation | Three BAMS32 values converted to radians/quaternion. |
-| `0x20` | 12 | scale | Three 32-bit floats. |
-| `0x2C` | 4 | `childRel` | Signed relative pointer. Base is `nodeOffset + 0x2C`. |
-| `0x30` | 4 | `siblingRel` | Signed relative pointer. Current code also uses `nodeOffset + 0x2C` as the base. |
-
-Known GOBJ attach/mesh layout:
-
-| Relative offset | Size | Field | Current meaning |
-| --- | ---: | --- | --- |
-| `attach + 0x10` | 4 | `vertexRel` | Signed relative pointer from `attach + 0x10` to the vertex chunk. |
-| `attach + 0x10 + 76` | variable | poly stream | 4-byte records read until the vertex chunk. |
-| `vertexOffset + 0x00` | 4 | vertex header 1 | Current parser supports low-byte chunk types `0x22`, `0x29`, and `0x2B`. |
-| `vertexOffset + 0x04` | 4 | vertex header 2 | High 16 bits are interpreted as vertex count. |
-
-Poly stream entries are U16 `floatIndex` plus U16 `flags`. `0xFFFF` in either half is a separator. Unsupported/control records break the current run. For valid stream entries, a float index is accepted when it is at least 2 and aligned as `(floatIndex - 2) % recordWords == 0`. Position is read at `vertexOffset + floatIndex * 4`; when present, normal data begins at `vertexOffset + ((bucket * recordWords) + 5) * 4`.
-
-## Dreamcast Triangle Selector Patching
-
-GRND and GOBJ canonical triangles retain the absolute source offsets of their three stream-entry flag words. These offsets refer directly to the physical file for uncompressed little-endian Dreamcast MLD files.
-
-The patching API treats the third flag word as the face word. Its high bit remains the stream-winding bit, while the low 15 bits contain a packed decimal value. A selector edit replaces only decimal digit `(low15 / 10) % 10`; all other digits and bits are preserved. Every replacement digit from 0 through 9 is structurally accepted on every decoded GRND or GOBJ triangle. Runtime meaning and area-specific validity are deliberately outside the MLD patcher.
-
-Each planned patch contains a two-byte file range, its expected original bytes, and its replacement bytes. Plans reject stale source data, conflicting writes, missing provenance, compressed or non-Dreamcast inputs, and offsets outside the retained source. Application validates all records before writing any bytes.
-
-GOBJ triangles are produced from sliding three-entry windows within a run. Consecutive faces therefore share stream entries. Editing one face's third word can also change a raw first or second word displayed on a later face, but it does not change that later face's selector unless the shared entry is also its third word.
-
-## NJ/Ninja Blocks
-
-Current MLD parsing no longer has the older legacy NJCM/NJTL model parser. It still preserves and extracts NJ-like blocks for migration/parity work:
-
-- `NJTL`/`GJTL` texture-list blocks.
-- `NJCM`/`GJCM` object/model blocks.
-- Motion blocks referenced by motion address lists.
-
-The extraction code can combine an `NJTL`/`GJTL` immediately followed by an object `NJCM`/`GJCM` into one extracted object block and marks that as including an NJTL prefix.
+An attach record points from `attach + 0x10` to a vertex chunk. The polygon stream occupies the preceding range after its attach metadata and uses U16 float-index/U16 flag entries, with `0xFFFF` separators. Vertex chunk headers identify the vertex record form and count; unsupported chunk data remains opaque.

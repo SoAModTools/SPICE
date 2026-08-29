@@ -1,231 +1,79 @@
 # SCT File Layout
 
-This document describes the promoted SCT container, section, instruction, expression, control-flow, footer, and raw-preservation layouts implemented by SPICE. Export behavior, fixture notes, and open gaps live in `Docs/SctFileProgress.md`.
+SCT files contain named script and string sections followed by optional footer data.
 
-## Compression and Endian
+## Encoding
 
-SCT input may be wrapped in AKLZ compression. `SctParser::parse` detects AKLZ, decompresses it, records `originalCompressedAklz`, and parses the decompressed payload. `SctBinaryExporter` writes canonical uncompressed SCT bytes by default and can optionally AKLZ-compress the exported bytes.
+SCT may be raw or AKLZ-wrapped. Decoded numeric fields can be big-endian or little-endian. All offsets below refer to the decoded file.
 
-SCT numeric fields are parsed as either big-endian or little-endian. Current endian detection is based on the section count at file offset `0x08`: it reads the count both ways and chooses big-endian when the big-endian value is less than or equal to the little-endian value. This is a practical heuristic, not a magic-based header check.
+## Container Header
 
-## Top-Level Container
-
-The SCT container begins with a 12-byte header, followed by a fixed-size section index table, followed by concatenated section payload bytes.
-
-| Offset | Size | Field | Current meaning |
+| Offset | Size | Field | Meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 8 | header prefix | Preserved by parser/exporter as `headerBytes[0..8)`. Current SPICE code does not name these bytes. |
-| `0x08` | 4 | `sectionCount` | Number of section index rows. Determines the index table size. |
+| `0x00` | 8 | `headerPrefix` | Preserved bytes whose fields are not yet named. |
+| `0x08` | 4 | `sectionCount` | Number of section index rows. |
+| `0x0C` | `sectionCount * 0x14` | `sectionIndex` | Section start offsets and names. |
 
-The section index table starts at `0x0C` and has `sectionCount` rows of 0x14 bytes each. Payload data starts at:
+The shared payload arena begins at:
 
 ```text
 dataStart = 0x0C + sectionCount * 0x14
 ```
 
-All section start offsets stored in the index are relative to `dataStart`, not absolute file offsets.
-
 ## Section Index Row
 
-Each section index row is 0x14 bytes.
+Each row is `0x14` bytes.
 
-| Offset in row | Size | Field | Current meaning |
+| Offset | Size | Field | Meaning |
 | --- | ---: | --- | --- |
-| `0x00` | 4 | `payloadStart` | Start offset relative to `dataStart`. |
-| `0x04` | 0x10 | `name` | Fixed-width ASCII name, zero-terminated if shorter than 16 bytes. |
+| `0x00` | 4 | `payloadStart` | Offset relative to `dataStart`. |
+| `0x04` | `0x10` | `name` | Fixed-width, normally null-terminated ASCII name. |
 
-There is no explicit section size in the row. Current parser computes each row's end from the next row's `payloadStart`; the final row initially ends at the end of the payload, then may be shortened if a footer is inferred.
-
-If a row name is empty, SPICE synthesizes `section_<index>` in the parsed model.
-
-## Section Payloads
-
-The bytes after the index table are a single payload arena. A section's raw byte range is:
-
-```text
-start = dataStart + row[i].payloadStart
-end   = dataStart + row[i + 1].payloadStart
-```
-
-for non-final rows. Final-row end is initially `fileSize`, but footer handling may move it earlier.
-
-Current SPICE section kinds:
-
-| Kind | Current detection |
-| --- | --- |
-| `Script` | Row is treated as code and walked from its payload start. |
-| `String` | Row is treated as text/string payload. |
-| `Label` | Label-only row used as a string group label. |
-| `Unknown` | Invalid bounds or not enough evidence. |
-
-Section classification is partly heuristic. The parser uses row names, label preambles, opcode boundary probes, and neighboring string sections. Label-only rows before string rows can become `Label` sections and open a string group.
+Rows do not store a size. A section normally ends at the next row’s start; the final section ends at the footer boundary or end of file.
 
 ## Label and String Preamble
 
-Several string and label-like sections begin with an opcode-9 preamble. Current parser detects a preamble by reading 32-bit words from the start of a section until it sees SCPT stop code `0x0000001D`.
-
-Known preamble shape:
-
-| Word | Field | Current meaning |
-| ---: | --- | --- |
-| `0` | opcode `9` | `LabelOrStringPrefix`. |
-| `1..N` | SCPT expression words | Label/string metadata expression. |
-| final | `0x0000001D` | SCPT stop code. Text starts after this word for string sections. |
-
-The parser can detect this preamble in the base file endian or the opposite endian. Text bytes after the preamble are decoded as printable ASCII, newline, carriage return, or tab. Zero bytes are skipped during display decoding.
+Label and string sections can begin with an opcode-9 word, followed by an SCPT expression and the stop word `0x0000001D`. String bytes begin after the stop word. Text and other noninstruction bytes remain part of the section’s raw span.
 
 ## Script Instructions
 
-Script instructions are word-based. Current parser treats one instruction as:
+Instructions are sequences of 32-bit words:
 
 ```text
-optional metadata prefixes
-opcode word
-operand words
+optional prefixes
+opcode
+operands
 ```
 
-Each word is 32 bits in the chosen instruction endian. The instruction boundary probe accepts opcodes up to `265`. If the base-endian word is implausible but the opposite-endian word is plausible, the instruction is marked as swapped. A swapped word equal to opcode `4` is rejected as suspicious because it aliases an SCPT float-literal preamble.
+Operand count and which operands contain variable-length SCPT expressions depend on the opcode. Some patterns contain repeated operand groups whose count is supplied by an earlier operand.
 
-`SctInstruction` records both local `offset` within its section and global `payloadOffset` within the payload arena.
+Two serialized prefixes are known:
 
-## Instruction Prefixes
+| Prefix | Structure |
+| ---: | --- |
+| `13` | Marks the following instruction as skip-refresh. |
+| `129` | Followed by a delay expression, an instruction byte length, then the real opcode and operands. |
 
-Two instruction-level prefixes are currently recognized.
+## SCPT Expressions
 
-### Skip Refresh Prefix
+SCPT operands are stack expressions encoded as 32-bit words and terminated by `0x0000001D`. Known word families include integer, float, bit, and byte variable references; fixed-decimal and floating-point literals; arithmetic and comparison operators; and several one-word sentinel values. A float-literal prefix consumes the following word as its float bits.
 
-| Word | Value | Current meaning |
-| ---: | --- | --- |
-| `0` | `13` | Skip-refresh prefix. Parsed as `SctInstruction::skipRefresh = true`. |
+## Control-Flow Offsets
 
-When present, opcode decoding continues at the next word.
+Branch targets are relative to positions in the shared payload arena and may cross section rows.
 
-### Scheduled Prefix
-
-| Word | Value | Current meaning |
-| ---: | --- | --- |
-| `0` | `129` | Scheduled-instruction prefix. |
-| `1..N` | SCPT expression | Frame-delay expression. Parsed with the SCPT analyzer until stop code. |
-| next | byte length | Byte length of the actual instruction payload after the scheduled prefix. |
-| next | opcode | Real instruction opcode. |
-
-The exporter can canonicalize prefixes so `13` precedes `129`, followed by the scheduled delay expression, length word, opcode, and operands.
-
-## Opcode and Operand Metadata
-
-Current opcode parameter sizes come from `kSalsaOpcodeParamPatterns`, an array with entries for opcodes `0..265`. Each opcode pattern describes:
-
-- Nominal parameter count.
-- Which parameters are SCPT-analyzed expressions.
-- Loop parameter ranges.
-- Iteration-count parameter index.
-- Jump/switch target parameter indexes.
-- Special loop-break values for some patterns.
-
-The parser expands looped parameter groups when an iteration count requires additional parameter slots, except for known external-loop-break cases such as opcodes `118` and `119` with iteration count `0x00010000`.
-
-Known high-confidence semantic opcodes in current metadata:
-
-| Opcode | Mnemonic | Role |
-| ---: | --- | --- |
-| `0` | `If` | Branch. |
-| `3` | `Switch` | Switch/case branch. |
-| `9` | `LabelOrStringPrefix` | Label/string prefix payload. |
-| `10` | `Jump` | Unconditional jump. |
-| `11` | `CallSubscript` | Subscript call. |
-| `12` | `Return` | Return/terminator. |
-| `23` | `LoadMldFile` | Raw MLD path/footer reference. |
-| `43` | `LoadScriptByName` | Raw SCT/script target name reference. |
-| `210` | `WarpCurrentAreaByString` | Raw string target; queues the current-area warp path through field substate 12. |
-| `238` | `ReturnToOverworldAtPosition` | Three SCPT expression position tuple; not a direct SCT/script resource reference. |
-| `257` | `ExitShipBattleToScript` | Ship-battle exit script transition through field substate 15; raw SCT/script footer reference. |
-| `265` | `GeneratedReputationListDialog` | Generated wanted/reputation list dialog; parameter 1 is a label/string reference. |
-
-Unknown opcodes are still decoded as raw words when possible and receive fallback mnemonic `op_<number>`.
-
-Opcode `257` keeps the same one-word raw string footer-reference shape. The mnemonic was corrected from the legacy `LoadScriptGameState7` label because native evidence shows a field-substate-15 script transition plus previous-area sentinel `40000`, not a direct top-level game-state-7 request.
-
-## SCPT Parameter Expressions
-
-Some instruction operands are not simple one-word integers. For parameters flagged in `kSalsaOpcodeParamPatterns.scptAnalyzeMask`, the parser consumes a variable-length SCPT expression stream.
-
-Known SCPT expression rules in current code:
-
-| Word/prefix | Current meaning |
-| --- | --- |
-| `0x0000001D` | Stop/return-values code. Ends SCPT expression. |
-| `0x7F7FFFFF`, `0x00800000`, `0x7FFFFFFF` | No-loop/sentinel values accepted as one-word expressions. |
-| `0x00000000..0x00000011` selected values | Compare/assignment operators. |
-| `0x0000000B..0x00000016` selected values | Arithmetic operators. |
-| `0x50000000` prefix | Int variable reference. |
-| `0x40000000` prefix | Float variable reference. |
-| `0x20000000` prefix | Bit variable reference. |
-| `0x10000000` prefix | Byte variable reference. |
-| `0x08000000` prefix | Fixed decimal literal. |
-| `0x04000000` prefix | Float literal; consumes the next word as float bits. |
-
-The SCPT analyzer is stack-driven and stops at a stack overflow threshold or stop code. It stores a display value, raw-word trace, and optional AST for each decoded expression.
-
-## Control Flow Offsets
-
-Current branch math is payload-relative.
-
-For opcodes `0` and `10`, the branch target is computed as:
+For `If` and `Jump` instructions:
 
 ```text
-target = instructionOffset + instructionSizeBytes + signedOperand - 4
+target = instructionOffset + instructionSize + signedOperand - 4
 ```
 
-For switch opcode `3`, each switch-case jump parameter is interpreted relative to the payload offset of that jump operand word:
+For switch entries:
 
 ```text
-target = jumpWordOffset + signedOperand
+target = jumpOperandOffset + signedOperand
 ```
 
-Control-flow targets can cross section index rows. The parser stores global payload targets and also maps them back to local section offsets when possible. Targets that land inside an already decoded instruction are skipped and reported as diagnostics rather than decoded as overlapping instructions.
+## Footer
 
-## Footer and Footer Strings
-
-SCT files can have trailing footer bytes after the final indexed section. Current parser represents this as `SctFooter`.
-
-The footer starts at one of:
-
-- The first null terminator after the final string section's label/string preamble.
-- A boundary inferred from valid footer string references and an aligned final-section terminator.
-- The end of payload if no footer bytes are detected.
-
-Footer bytes are preserved as raw bytes. Footer entries are discovered from instruction parameters whose opcode/parameter pair is marked as a footer string reference.
-
-Known footer-reference metadata:
-
-| Opcode | Parameter | Kind | Relative signed? |
-| ---: | ---: | --- | --- |
-| `23` | `0` | raw string | yes |
-| `24` | `0` | SCT string | yes |
-| `25` | `1` | SCT string | no |
-| `43` | `0` | raw string | no |
-| `54` | `1` | raw string | yes |
-| `69` | `0` | raw string | yes |
-| `110` | `0` | raw string | no |
-| `113` | `0` | raw string | no |
-| `144` | `0` | SCT string | yes |
-| `155` | `1` | SCT string | yes |
-| `210` | `0` | raw string | no |
-| `214` | `0` | raw string | no |
-| `215` | `1` | raw string | no |
-| `248` | `0` | raw string | no |
-| `250` | `0` | raw string | no |
-| `257` | `0` | raw string | no |
-| `265` | `1` | SCT string | yes |
-
-Footer entries are null-terminated byte strings. Current decoded display skips zero bytes and substitutes `?` for non-printable bytes. Footer SCT strings are grouped under a synthetic `_Footer_` string group.
-
-## Raw Spans, Unknown Regions, and Unreached Code
-
-Current parser preserves bytes that are not part of reached instructions through raw spans and unknown regions.
-
-- `rawSpans` preserve string payloads, string preambles, label/group-label bytes, and other raw section bytes.
-- `unknownRegions` mark bytes inside script sections not covered by reached instructions.
-- `unreachedCode` is decoded only when `SctParseOptions::decodeUnreachedCode` is enabled. This keeps speculative unreachable instruction decoding separate from the main reached instruction list.
-
-The default parse path walks global script instructions from script-row entry points and follows control flow. Unreachable garbage in a script section is not exported as canonical instructions.
+Bytes after the final indexed section form an optional footer. Some instruction operands address null-terminated footer strings through absolute or signed-relative offsets. The exact reference rule is opcode-specific. Footer bytes, referenced strings, and unclassified padding must remain preserved even when their semantic role is unknown.
