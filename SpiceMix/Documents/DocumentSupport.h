@@ -10,6 +10,7 @@
 #include <fstream>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -102,6 +103,12 @@ inline DocumentResult writeBytesSafely(const std::filesystem::path& outputPath,
     }
 #endif
     return { .message = "Saved " + outputPath.string() };
+}
+
+inline DocumentResult writeTextSafely(
+    const std::filesystem::path& outputPath, const std::string_view text) {
+    return writeBytesSafely(outputPath, std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
 }
 
 inline spice::gvm::model::TextureFormat runtimeFormat(const GvrTextureFormat format) {

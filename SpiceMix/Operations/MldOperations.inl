@@ -594,60 +594,6 @@ void writeJsonU8Array(std::ostream& out, const std::vector<std::uint8_t>& values
     out << "]";
 }
 
-void writeMldEntryListJson(
-    const std::filesystem::path& outPath,
-    const std::filesystem::path& sourcePath,
-    const spice::mld::parsing::ParseResult& result) {
-    std::ofstream out(outPath, std::ios::binary);
-    out << "{\n";
-    out << "  \"schema\": \"spice_mld_entry_list_v1\",\n";
-    out << "  \"source\": \"" << jsonEscape(sourcePath.string()) << "\",\n";
-    out << "  \"entry_count\": " << result.entryList.size() << ",\n";
-    out << "  \"entries\": [\n";
-    for (std::size_t i = 0; i < result.entryList.size(); ++i) {
-        const auto& entry = result.entryList[i];
-        out << "    {\n";
-        out << "      \"table_index\": " << entry.tableIndex << ",\n";
-        out << "      \"entryID\": " << entry.entryId << ",\n";
-        out << "      \"tableID\": " << entry.tblId << ",\n";
-        out << "      \"function\": \"" << jsonEscape(entry.fxnName) << "\",\n";
-        out << "      \"object_count\": " << entry.objectCount << ",\n";
-        out << "      \"ground_count\": " << entry.groundCount << ",\n";
-        out << "      \"motion_count\": " << entry.motionCount << ",\n";
-        out << "      \"texture_count\": " << entry.textureCount << ",\n";
-        out << "      \"textures_pointer\": " << entry.texturesPointer << ",\n";
-        out << "      \"textures_pointer_hex\": \"" << hexU32ForFile(entry.texturesPointer) << "\",\n";
-        out << "      \"ground_links\": ";
-        writeJsonU32Array(out, entry.groundLinks);
-        out << ",\n";
-        out << "      \"param_list2\": ";
-        writeJsonU32Array(out, entry.paramList2);
-        out << ",\n";
-        out << "      \"function_parameters\": ";
-        writeJsonU32Array(out, entry.functionParameters);
-        out << ",\n";
-        out << "      \"object_addresses\": ";
-        writeJsonU32Array(out, entry.objectAddresses);
-        out << ",\n";
-        out << "      \"ground_addresses\": ";
-        writeJsonU32Array(out, entry.groundAddresses);
-        out << ",\n";
-        out << "      \"motion_addresses\": ";
-        writeJsonU32Array(out, entry.motionAddresses);
-        out << ",\n";
-        out << "      \"texture_names\": ";
-        writeJsonStringArray(out, entry.textureNames);
-        out << "\n";
-        out << "    }";
-        if (i + 1 < result.entryList.size()) {
-            out << ",";
-        }
-        out << "\n";
-    }
-    out << "  ]\n";
-    out << "}\n";
-}
-
 void writeSctDetailedJson(const std::filesystem::path& outPath, const spice::sct::SctParseResult& result) {
     std::ofstream out(outPath, std::ios::binary);
     out << "{\n";
@@ -2045,4 +1991,3 @@ void writeBridgeAbComparison(
         out << "comparison.status=pass\n";
     }
 }
-

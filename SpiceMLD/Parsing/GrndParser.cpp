@@ -21,6 +21,7 @@ constexpr std::uint32_t kGrndTag = 0x47524E44U; // "GRND"
 
 struct TriangleSet {
     std::size_t headerOffset = 0;
+    model::Vec3 localToResourceTranslation{};
     std::size_t vertexBlockOffset = 0;
     std::size_t triangleStreamOffset = 0;
     std::size_t streamEntryCount = 0;
@@ -98,10 +99,14 @@ struct TriangleRefHash {
     }
 
     const spice::root::EndianReader reader(bytes, endian);
+    const auto translationX = reader.try_read_f32(setOffset);
+    const auto translationY = reader.try_read_f32(setOffset + 4U);
+    const auto translationZ = reader.try_read_f32(setOffset + 8U);
     const auto vertexRel = reader.try_read_i32(setOffset + 0x0CU);
     const auto streamRel = reader.try_read_i32(setOffset + 0x10U);
     const auto triangleCount = reader.try_read_u32(setOffset + 0x14U);
-    if (!vertexRel.has_value() || !streamRel.has_value() || !triangleCount.has_value()) {
+    if (!translationX.has_value() || !translationY.has_value() || !translationZ.has_value() ||
+        !vertexRel.has_value() || !streamRel.has_value() || !triangleCount.has_value()) {
         diagnostics.push_back("GRND triangle set header is truncated at " + hexOffset(setOffset) + ".");
         return std::nullopt;
     }
@@ -115,6 +120,7 @@ struct TriangleRefHash {
 
     TriangleSet out{};
     out.headerOffset = setOffset;
+    out.localToResourceTranslation = model::Vec3{ *translationX, *translationY, *translationZ };
     out.vertexBlockOffset = *vertexBlockOffset;
     out.triangleStreamOffset = *triangleStreamOffset;
     out.declaredTriangleCount = *triangleCount;
@@ -190,12 +196,15 @@ struct TriangleRefHash {
         return found->second;
     }
 
-    const auto vertex = readVertexForFloatIndex(bytes, endian, set, floatIndex);
+    auto vertex = readVertexForFloatIndex(bytes, endian, set, floatIndex);
     if (!vertex.has_value()) {
         ++skippedReferenceCount;
         return std::numeric_limits<std::uint32_t>::max();
     }
 
+    vertex->position.x += set.localToResourceTranslation.x;
+    vertex->position.y += set.localToResourceTranslation.y;
+    vertex->position.z += set.localToResourceTranslation.z;
     const auto index = static_cast<std::uint32_t>(mesh.vertices.size());
     mesh.vertices.push_back(*vertex);
     vertexIndexByKey.emplace(key, index);
@@ -228,6 +237,8 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
     const spice::root::EndianReader reader(bytes, endian);
     const auto relTriangleSets = reader.try_read_i32(innerHeader);
     const auto relQuadRegistry = reader.try_read_i32(innerHeader + 4U);
+    const auto gridOriginX = reader.try_read_f32(innerHeader + 8U);
+    const auto gridOriginZ = reader.try_read_f32(innerHeader + 0x0CU);
     const auto gridX = reader.try_read_u16(innerHeader + 0x10U);
     const auto gridZ = reader.try_read_u16(innerHeader + 0x12U);
     const auto cellSizeX = reader.try_read_u16(innerHeader + 0x14U);
@@ -236,6 +247,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
     const auto quadCellCount = reader.try_read_u16(innerHeader + 0x1AU);
 
     if (!relTriangleSets.has_value() || !relQuadRegistry.has_value() ||
+        !gridOriginX.has_value() || !gridOriginZ.has_value() ||
         !gridX.has_value() || !gridZ.has_value() || !cellSizeX.has_value() || !cellSizeZ.has_value() ||
         !triangleSetCount.has_value() || !quadCellCount.has_value()) {
         result.diagnostics.push_back("GRND block at " + hexOffset(sourceOffset) + " has a truncated inner header.");
@@ -250,6 +262,8 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
     result.quadCellCount = *quadCellCount;
     result.data.outerHeaderBytes.assign(bytes.begin(), bytes.begin() + 0x10U);
     result.data.innerHeaderUnknownBytes.assign(bytes.begin() + 0x18U, bytes.begin() + 0x20U);
+    result.data.gridOriginX = *gridOriginX;
+    result.data.gridOriginZ = *gridOriginZ;
     result.data.gridX = *gridX;
     result.data.gridZ = *gridZ;
     result.data.cellSizeX = *cellSizeX;
@@ -284,6 +298,7 @@ GrndDecodeResult GrndParser::decode(std::span<const std::uint8_t> blockBytes, co
         sourceSet.sourceHeaderOffset = static_cast<std::uint32_t>(setOffset);
         sourceSet.headerPrefixBytes.assign(bytes.begin() + static_cast<std::ptrdiff_t>(setOffset),
             bytes.begin() + static_cast<std::ptrdiff_t>(setOffset + 0x0CU));
+        sourceSet.localToResourceTranslation = set->localToResourceTranslation;
         sourceSet.declaredTriangleCount = set->declaredTriangleCount;
         sourceSet.streamEntries.reserve(set->streamEntryCount);
         for (std::size_t streamIndex = 0; streamIndex < set->streamEntryCount; ++streamIndex) {

@@ -4,6 +4,7 @@
 #include "Export/BlenderIrJsonExporter.h"
 #include "Export/MldFileExporter.h"
 #include "Export/MldFileWriter.h"
+#include "Export/MldEntryListJsonExporter.h"
 #include "Model/SearchWorldModel.h"
 #include "Model/BlenderIrModel.h"
 #include "Model/GeometryModel.h"

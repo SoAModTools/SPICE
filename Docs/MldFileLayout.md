@@ -148,6 +148,8 @@ Known GRND inner layout:
 | `0x04` | 4 | declaredSize | Size of the GRND block. |
 | `0x10` | 4 | `relTriangleSets` | Signed relative pointer. Base is `0x10`. |
 | `0x14` | 4 | `relQuadRegistry` | Signed relative pointer. Base is `0x10`. |
+| `0x18` | 4 | `gridOriginX` | Floating-point X origin for the collision-cell grid. This is independent of triangle-set translation. |
+| `0x1C` | 4 | `gridOriginZ` | Floating-point Z origin for the collision-cell grid. This is independent of triangle-set translation. |
 | `0x20` | 2 | `gridX` | Grid width/count value. |
 | `0x22` | 2 | `gridZ` | Grid depth/count value. |
 | `0x24` | 2 | `cellSizeX` | Cell size in X. |
@@ -159,9 +161,16 @@ Triangle-set headers are 0x18 bytes each. Current decoder names these fields:
 
 | Offset in triangle set | Size | Field | Current meaning |
 | --- | ---: | --- | --- |
+| `0x00` | 4 | `localToResourceTranslation.x` | Floating-point X translation applied to stored positions in this set. |
+| `0x04` | 4 | `localToResourceTranslation.y` | Floating-point Y translation applied to stored positions in this set. |
+| `0x08` | 4 | `localToResourceTranslation.z` | Floating-point Z translation applied to stored positions in this set. |
 | `0x0C` | 4 | `vertexRel` | Signed relative pointer. Base is `setOffset + 0x0C`. |
 | `0x10` | 4 | `streamRel` | Signed relative pointer. Base is `setOffset + 0x10`. |
 | `0x14` | 4 | `declaredTriangleCount` | Declared triangle count. Current stream length is mostly inferred from stream-to-vertex span. |
+
+`GrndTriangleSet::verticesByFloatIndex` retains the stored set-local positions. The canonical `GrndData::mesh` adds the owning set's translation to each position, producing resource-local geometry. Normals are copied without translation. The MLD index-entry transform remains a separate whole-resource transform applied by world/instance consumers.
+
+No-edit writes retain the original GRND bytes. Semantic GRND rebuilds currently canonicalize geometry into one triangle set with a zero translation and write the already translated canonical mesh positions, preserving resource-local placement. Grid origins are written independently.
 
 Triangle stream entries are 4 bytes:
 

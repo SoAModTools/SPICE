@@ -251,6 +251,8 @@ void releaseKnownRange(std::vector<FreeRange>& ranges, const std::size_t offset,
     writeU32(out, 4U, static_cast<std::uint32_t>(totalSize), endian);
     writeU32(out, inner, static_cast<std::uint32_t>(setsOffset - inner), endian);
     writeU32(out, inner + 4U, static_cast<std::uint32_t>(registryOffset - inner), endian);
+    writeF32(out, inner + 8U, data.gridOriginX, endian);
+    writeF32(out, inner + 0x0CU, data.gridOriginZ, endian);
     writeU16(out, inner + 0x10U, data.gridX, endian);
     writeU16(out, inner + 0x12U, data.gridZ, endian);
     writeU16(out, inner + 0x14U, data.cellSizeX, endian);

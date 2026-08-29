@@ -20,6 +20,7 @@ struct GrndStreamEntry {
 struct GrndTriangleSet {
     std::uint32_t sourceHeaderOffset = 0;
     std::vector<std::uint8_t> headerPrefixBytes{};
+    Vec3 localToResourceTranslation{};
     std::uint32_t declaredTriangleCount = 0;
     std::vector<GrndStreamEntry> streamEntries{};
     std::map<std::uint16_t, MeshVertex> verticesByFloatIndex{};
@@ -45,6 +46,8 @@ struct GrndCell {
 struct GrndData {
     std::vector<std::uint8_t> outerHeaderBytes{};
     std::vector<std::uint8_t> innerHeaderUnknownBytes{};
+    float gridOriginX = 0.0F;
+    float gridOriginZ = 0.0F;
     std::uint16_t gridX = 0;
     std::uint16_t gridZ = 0;
     std::uint16_t cellSizeX = 0;
@@ -139,6 +142,8 @@ inline void hashMesh(std::uint64_t& hash, const MeshData& mesh) {
 
 [[nodiscard]] inline std::uint64_t semanticHash(const GrndData& data) {
     std::uint64_t hash = 1469598103934665603ULL;
+    detail::hashGroundWord(hash, std::bit_cast<std::uint32_t>(data.gridOriginX));
+    detail::hashGroundWord(hash, std::bit_cast<std::uint32_t>(data.gridOriginZ));
     detail::hashGroundWord(hash, data.gridX);
     detail::hashGroundWord(hash, data.gridZ);
     detail::hashGroundWord(hash, data.cellSizeX);

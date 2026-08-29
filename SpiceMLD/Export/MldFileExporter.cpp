@@ -173,6 +173,8 @@ void convertGrndBlock(std::vector<std::uint8_t>& out, const model::MldRawDataBlo
     constexpr std::size_t innerHeader = 0x10U;
     copyU32(innerHeader);
     copyU32(innerHeader + 4U);
+    copyU32(innerHeader + 8U);
+    copyU32(innerHeader + 0x0CU);
     for (std::size_t rel = innerHeader + 0x10U; rel <= innerHeader + 0x1AU; rel += 2U) {
         copyU16(rel);
     }
@@ -190,6 +192,9 @@ void convertGrndBlock(std::vector<std::uint8_t>& out, const model::MldRawDataBlo
             if (setOffset + 0x18U > size) {
                 break;
             }
+            copyU32(setOffset);
+            copyU32(setOffset + 4U);
+            copyU32(setOffset + 8U);
             copyU32(setOffset + 0x0CU);
             copyU32(setOffset + 0x10U);
             copyU32(setOffset + 0x14U);

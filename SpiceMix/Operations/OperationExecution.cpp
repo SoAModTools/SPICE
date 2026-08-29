@@ -627,7 +627,12 @@ int executeDirectoryOperation(
                 auto entryListParsed = mldParser.project(mldFile, entryListOptions);
 
                 const auto entryListOutPath = outputDir / (entry.path().stem().string() + ".mld.entries.json");
-                writeMldEntryListJson(entryListOutPath, entry.path(), entryListParsed);
+                std::ofstream entryListOut(entryListOutPath, std::ios::binary);
+                entryListOut << spice::mld::exporting::MldEntryListJsonExporter{}.toJson(
+                    entry.path(), entryListParsed.entryList);
+                if (!entryListOut) {
+                    throw std::runtime_error("failed to write MLD entry list: " + entryListOutPath.string());
+                }
                 ++filesProcessed;
                 continue;
             }

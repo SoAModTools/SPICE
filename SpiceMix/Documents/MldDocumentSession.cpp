@@ -2,6 +2,8 @@
 
 #include "DocumentSupport.h"
 #include "../../SpiceGvm/Image/PngCodec.h"
+#include "../../SpiceMLD/Export/BlenderIrJsonExporter.h"
+#include "../../SpiceMLD/Export/MldEntryListJsonExporter.h"
 #include "../../SpiceMLD/Export/MldFileWriter.h"
 #include "../../SpiceMLD/Parsing/MldParser.h"
 #include "../../SpiceRoot/Binary/Endian.h"
@@ -301,6 +303,91 @@ DocumentResult MldDocumentSession::exportTexturePng(const std::size_t index,
         spice::gvm::image::writePngRgba8(outputPath, image);
         documents::emit(context, EventLevel::Info, "Exported PNG " + outputPath.string());
         return { .message = "Exported texture PNG." };
+    } catch (const std::exception& error) {
+        documents::emit(context, EventLevel::Error, error.what());
+        return documents::failure(error.what());
+    }
+}
+
+DocumentResult MldDocumentSession::exportBlenderIrJson(
+    const std::filesystem::path& outputPath, const DocumentContext& context) const {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    if (outputPath.empty() || outputPath.filename().empty()) {
+        return documents::failure("A Blender IR JSON output file is required.");
+    }
+    try {
+        documents::emit(context, EventLevel::Progress, "Building MLD Blender IR.");
+        spice::mld::parsing::ParseOptions options{};
+        options.buildBlenderIntermediateIr = true;
+        const auto projected = spice::mld::parsing::MldParser{}.project(impl_->file, options);
+        std::vector<std::string> diagnostics = projected.blenderIrDiagnostics;
+        for (const auto& diagnostic : projected.diagnostics) {
+            diagnostics.push_back(diagnostic.message);
+            if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Warning) {
+                documents::emit(context, EventLevel::Warning, diagnostic.message);
+            } else if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Error) {
+                documents::emit(context, EventLevel::Error, diagnostic.message);
+            }
+        }
+        for (const auto& diagnostic : projected.blenderIrDiagnostics) {
+            documents::emit(context, EventLevel::Warning, diagnostic);
+        }
+        if (!projected.blenderIrScene.has_value()) {
+            return documents::failure("MLD Blender IR could not be produced.", std::move(diagnostics));
+        }
+        if (context.stopToken.stop_requested()) return documents::cancelled();
+        documents::emit(context, EventLevel::Progress, "Writing MLD Blender IR JSON.");
+        const auto json = spice::mld::exporting::BlenderIrJsonExporter{}.toJson(*projected.blenderIrScene);
+        auto result = documents::writeTextSafely(outputPath, json);
+        result.diagnostics = std::move(diagnostics);
+        if (result.ok()) {
+            result.message = "Exported MLD Blender IR JSON.";
+            documents::emit(context, EventLevel::Info, result.message + " " + outputPath.string());
+        } else {
+            documents::emit(context, EventLevel::Error, result.message);
+        }
+        return result;
+    } catch (const std::exception& error) {
+        documents::emit(context, EventLevel::Error, error.what());
+        return documents::failure(error.what());
+    }
+}
+
+DocumentResult MldDocumentSession::exportEntryListJson(
+    const std::filesystem::path& outputPath, const DocumentContext& context) const {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    if (outputPath.empty() || outputPath.filename().empty()) {
+        return documents::failure("An MLD entry-list JSON output file is required.");
+    }
+    try {
+        documents::emit(context, EventLevel::Progress, "Building detailed MLD entry list.");
+        spice::mld::parsing::ParseOptions options{};
+        options.entryListOnly = true;
+        options.buildBlenderIntermediateIr = false;
+        const auto projected = spice::mld::parsing::MldParser{}.project(impl_->file, options);
+        std::vector<std::string> diagnostics{};
+        diagnostics.reserve(projected.diagnostics.size());
+        for (const auto& diagnostic : projected.diagnostics) {
+            diagnostics.push_back(diagnostic.message);
+            if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Warning) {
+                documents::emit(context, EventLevel::Warning, diagnostic.message);
+            } else if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Error) {
+                documents::emit(context, EventLevel::Error, diagnostic.message);
+            }
+        }
+        if (context.stopToken.stop_requested()) return documents::cancelled();
+        documents::emit(context, EventLevel::Progress, "Writing detailed MLD entry-list JSON.");
+        const auto json = spice::mld::exporting::MldEntryListJsonExporter{}.toJson(
+            impl_->protectedSourcePath, projected.entryList);
+        auto result = documents::writeTextSafely(outputPath, json);
+        result.diagnostics = std::move(diagnostics);
+        if (result.ok()) {
+            result.message = "Exported detailed MLD entry-list JSON.";
+            documents::emit(context, EventLevel::Info, result.message + " " + outputPath.string());
+        } else {
+            documents::emit(context, EventLevel::Error, result.message);
+        }
+        return result;
     } catch (const std::exception& error) {
         documents::emit(context, EventLevel::Error, error.what());
         return documents::failure(error.what());

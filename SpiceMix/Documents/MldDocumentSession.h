@@ -94,6 +94,10 @@ public:
         const DocumentContext& context = {}) const;
     DocumentResult exportTexturePng(std::size_t index, const std::filesystem::path& outputPath,
         const DocumentContext& context = {}) const;
+    DocumentResult exportBlenderIrJson(const std::filesystem::path& outputPath,
+        const DocumentContext& context = {}) const;
+    DocumentResult exportEntryListJson(const std::filesystem::path& outputPath,
+        const DocumentContext& context = {}) const;
     DocumentResult saveAs(const std::filesystem::path& outputPath, const DocumentContext& context = {});
 
 private:

@@ -46,6 +46,8 @@ bool assignGrndTrianglesToIntersectingCells(
         addDiagnostic(diagnostics, "GRND grid dimensions and cell sizes must be nonzero.");
         return false;
     }
+    data.gridOriginX = options.originX;
+    data.gridOriginZ = options.originZ;
     const auto cellCount = static_cast<std::size_t>(data.gridX) * static_cast<std::size_t>(data.gridZ);
     data.cells.assign(cellCount, GrndCell{});
     const auto triangleCount = data.mesh.indices.size() / 3U;
