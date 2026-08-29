@@ -1,14 +1,14 @@
 #include "MainWindow.h"
 
 #include "DocumentWorkbenches.h"
+#include "TextureViewport.h"
 
 #include <QtCore/QPointer>
 #include <QtGui/QAction>
 #include <QtGui/QCloseEvent>
 #include <QtGui/QKeySequence>
-#include <QtWidgets/QDockWidget>
 #include <QtWidgets/QFileDialog>
-#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QFrame>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QListWidget>
 #include <QtWidgets/QMenuBar>
@@ -17,8 +17,10 @@
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
+#include <algorithm>
 #include <memory>
 #include <system_error>
 
@@ -80,25 +82,35 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     welcome->setWordWrap(true);
     tabs_->addTab(welcome, "Welcome");
     tabs_->tabBar()->setTabButton(0, QTabBar::RightSide, nullptr);
-    setCentralWidget(tabs_);
+    auto* central = new QWidget(this);
+    auto* centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+    centralLayout->addWidget(tabs_, 1);
 
-    auto* dock = new QDockWidget("Jobs and events", this);
-    dock->setObjectName("jobsAndEventsDock");
-    auto* dockBody = new QWidget(dock);
-    auto* dockLayout = new QVBoxLayout(dockBody);
-    auto* jobRow = new QHBoxLayout();
-    jobStatus_ = new QLabel("Idle", dockBody);
-    cancelJob_ = new QPushButton("Cancel", dockBody);
-    cancelJob_->setEnabled(false);
+    eventPanel_ = new QFrame(central);
+    eventPanel_->setObjectName("eventsPanel");
+    eventPanel_->setFixedHeight(200);
+    auto* eventLayout = new QVBoxLayout(eventPanel_);
+    eventLayout->setContentsMargins(4, 4, 4, 4);
+    events_ = new QListWidget(eventPanel_);
+    eventLayout->addWidget(events_);
+    centralLayout->addWidget(eventPanel_);
+    eventPanel_->hide();
+    setCentralWidget(central);
+
+    cancelJob_ = new QPushButton("Cancel", this);
+    cancelJob_->setVisible(false);
     connect(cancelJob_, &QPushButton::clicked, this, [this]() { tasks_.cancel(); });
-    jobRow->addWidget(jobStatus_);
-    jobRow->addStretch();
-    jobRow->addWidget(cancelJob_);
-    events_ = new QListWidget(dockBody);
-    dockLayout->addLayout(jobRow);
-    dockLayout->addWidget(events_);
-    dock->setWidget(dockBody);
-    addDockWidget(Qt::BottomDockWidgetArea, dock);
+    eventsToggle_ = new QToolButton(this);
+    eventsToggle_->setObjectName("eventsToggle");
+    eventsToggle_->setArrowType(Qt::UpArrow);
+    eventsToggle_->setToolTip("Show jobs and events");
+    eventsToggle_->setAutoRaise(true);
+    connect(eventsToggle_, &QToolButton::clicked, this,
+        [this]() { setEventsExpanded(eventPanel_->isHidden()); });
+    statusBar()->addPermanentWidget(cancelJob_);
+    statusBar()->addPermanentWidget(eventsToggle_);
 
     tasks_.setEventSink([this](const spice::mix::OperationEvent& event) {
         const QString prefix = event.level == spice::mix::EventLevel::Error ? "Error: "
@@ -106,14 +118,49 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
             : event.level == spice::mix::EventLevel::Progress ? "Working: " : "";
         events_->addItem(prefix + QString::fromStdString(event.message));
         events_->scrollToBottom();
+        if (event.level == spice::mix::EventLevel::Warning
+            || event.level == spice::mix::EventLevel::Error) {
+            emphasizeEvents(event.level);
+        }
     });
     tasks_.setBusySink([this](const bool busy, const std::string& label) {
-        jobStatus_->setText(busy ? QString::fromStdString(label) : "Idle");
-        cancelJob_->setEnabled(busy);
+        cancelJob_->setVisible(busy);
         tabs_->setEnabled(!busy);
         statusBar()->showMessage(busy ? QString::fromStdString(label) : "Ready");
     });
     statusBar()->showMessage("Ready");
+}
+
+void SpiceRackMainWindow::setEventsExpanded(const bool expanded) {
+    eventPanel_->setVisible(expanded);
+    eventsToggle_->setArrowType(expanded ? Qt::DownArrow : Qt::UpArrow);
+    eventsToggle_->setToolTip(expanded ? "Hide jobs and events" : "Show jobs and events");
+    if (expanded) {
+        eventAttention_ = 0;
+        eventsToggle_->setStyleSheet({});
+        events_->scrollToBottom();
+    }
+}
+
+void SpiceRackMainWindow::emphasizeEvents(const spice::mix::EventLevel level) {
+    if (!eventPanel_->isHidden()) return;
+    const int attention = level == spice::mix::EventLevel::Error ? 2 : 1;
+    eventAttention_ = std::max(eventAttention_, attention);
+    eventsToggle_->setStyleSheet(eventAttention_ == 2
+        ? "QToolButton { color: #ff6b6b; font-weight: bold; }"
+        : "QToolButton { color: #e6b450; font-weight: bold; }");
+}
+
+bool SpiceRackMainWindow::runSmokeChecks() {
+    const bool startsCollapsed = eventPanel_->isHidden();
+    setEventsExpanded(true);
+    const bool expanded = !eventPanel_->isHidden() && eventsToggle_->arrowType() == Qt::DownArrow;
+    setEventsExpanded(false);
+    const bool collapsed = eventPanel_->isHidden() && eventsToggle_->arrowType() == Qt::UpArrow;
+    const bool rendering = TextureViewport::runRenderingSmokeChecks();
+    auto* workbench = currentWorkbench();
+    return startsCollapsed && expanded && collapsed && rendering
+        && (!workbench || workbench->runSmokeChecks());
 }
 
 void SpiceRackMainWindow::chooseOpenDocument() {

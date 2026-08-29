@@ -1,8 +1,7 @@
 #include "DocumentWorkbenches.h"
+#include "TextureViewport.h"
 
 #include <QtCore/QPointer>
-#include <QtGui/QImage>
-#include <QtGui/QPixmap>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFileDialog>
@@ -34,19 +33,24 @@ std::filesystem::path fspath(const QString& path) {
     return std::filesystem::path(path.toStdWString());
 }
 
-QPixmap previewPixmap(const std::optional<spice::mix::RgbaImageSnapshot>& preview,
-    const QSize& target = QSize(520, 520)) {
-    if (!preview.has_value() || preview->empty()) return {};
-    QImage image(preview->rgba8.data(), static_cast<int>(preview->width),
-        static_cast<int>(preview->height), QImage::Format_RGBA8888);
-    return QPixmap::fromImage(image.copy()).scaled(target, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+std::filesystem::path mldBlenderIrFilename(const std::filesystem::path& source) {
+    auto filename = source.stem();
+    filename += ".json";
+    return filename;
+}
+
+std::filesystem::path mldEntryListFilename(const std::filesystem::path& source) {
+    auto filename = source.stem();
+    filename += ".mld.entries.json";
+    return filename;
 }
 
 void showResult(QWidget* parent, const spice::mix::DocumentResult& result) {
     if (result.status == spice::mix::OperationStatus::Failure) {
         QMessageBox::critical(parent, "SpiceRack", QString::fromStdString(result.message));
     } else if (result.status == spice::mix::OperationStatus::Cancelled) {
-        QMessageBox::information(parent, "SpiceRack", "The operation was cancelled.");
+        QMessageBox::information(parent, "SpiceRack", result.message.empty()
+            ? "The operation was cancelled." : QString::fromStdString(result.message));
     }
 }
 
@@ -137,6 +141,13 @@ EncodingControls addEncodingControls(QVBoxLayout* layout, const bool includeAklz
         form->addRow("Wrapper", controls.aklz);
     }
     layout->addWidget(controls.group);
+    const auto setExpanded = [group = controls.group](const bool expanded) {
+        const auto children = group->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
+        for (auto* child : children) child->setVisible(expanded);
+        group->setMaximumHeight(expanded ? QWIDGETSIZE_MAX : 30);
+    };
+    QObject::connect(controls.group, &QGroupBox::toggled, controls.group, setExpanded);
+    setExpanded(false);
     return controls;
 }
 
@@ -158,9 +169,16 @@ struct MldWorkbench::Impl {
     QLabel* overview = nullptr;
     QTableWidget* entryTable = nullptr;
     QTableWidget* textureTable = nullptr;
-    QLabel* preview = nullptr;
+    TextureViewport* viewport = nullptr;
     QLabel* textureDetails = nullptr;
     QTextEdit* diagnosticText = nullptr;
+    QTextEdit* textureDiagnostics = nullptr;
+    QLabel* readOnlyExplanation = nullptr;
+    QLabel* exportStagedNotice = nullptr;
+    QPushButton* replaceButton = nullptr;
+    QPushButton* exportBlenderIrButton = nullptr;
+    QPushButton* exportEntryListButton = nullptr;
+    QPushButton* exportBothButton = nullptr;
     QCheckBox* allowDimensions = nullptr;
     EncodingControls encoding{};
 
@@ -173,6 +191,7 @@ struct MldWorkbench::Impl {
                 QString::fromStdString(item.parseStatus), item.sourceWasAklz ? "yes" : "no")
             .arg(item.entryCount).arg(item.textureCount).arg(item.objectResourceCount)
             .arg(item.groundResourceCount).arg(item.motionResourceCount));
+        if (exportStagedNotice) exportStagedNotice->setVisible(session->dirty());
     }
 
     void refreshEntries() {
@@ -216,22 +235,29 @@ struct MldWorkbench::Impl {
         const int row = textureTable->currentRow();
         const auto textures = session->textures();
         if (row < 0 || row >= static_cast<int>(textures.size())) {
-            preview->setPixmap({});
-            preview->setText("No texture selected");
+            viewport->setImage(std::nullopt, "No texture selected");
             textureDetails->clear();
+            replaceButton->setEnabled(false);
+            allowDimensions->setEnabled(false);
+            encoding.group->setEnabled(false);
+            readOnlyExplanation->hide();
             return;
         }
         const auto& item = textures[static_cast<std::size_t>(row)];
-        const auto pixmap = previewPixmap(session->texturePreview(static_cast<std::size_t>(row)));
-        preview->setPixmap(pixmap);
-        if (pixmap.isNull()) preview->setText("No decoded preview available");
+        viewport->setImage(session->texturePreview(static_cast<std::size_t>(row)));
         textureDetails->setText(QString(
-            "%1 | %2 | %3 x %4 | palette %5 | mipmaps %6 | global index %7 | %8 bytes")
+            "<b>%1</b><br>%2 | %3<br>%4 x %5<br>Palette: %6<br>Mipmaps: %7<br>Global index: %8<br>Encoded size: %9 bytes")
+            .arg(QString::fromStdString(item.name))
             .arg(encodingName(item.encoding), QString::fromStdString(item.format))
             .arg(item.width).arg(item.height).arg(QString::fromStdString(item.paletteFormat))
             .arg(item.mipmaps ? "yes" : "no")
             .arg(item.hasGlobalIndex ? QString::number(item.globalIndex) : "none")
             .arg(item.encodedSize));
+        const bool editable = item.encoding == spice::mix::TextureEncodingKind::Gvr;
+        replaceButton->setEnabled(editable);
+        allowDimensions->setEnabled(editable);
+        encoding.group->setEnabled(editable);
+        readOnlyExplanation->setVisible(!editable);
     }
 
     void refreshDiagnostics() {
@@ -244,6 +270,7 @@ struct MldWorkbench::Impl {
             text += '\n';
         }
         diagnosticText->setPlainText(text);
+        if (textureDiagnostics) textureDiagnostics->setPlainText(text);
     }
 };
 
@@ -279,43 +306,105 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
 
     auto* texturePage = new QWidget(impl_->pages);
     auto* textureRoot = new QVBoxLayout(texturePage);
-    auto* splitter = new QSplitter(texturePage);
+    textureRoot->setContentsMargins(0, 0, 0, 0);
+    auto* splitter = new QSplitter(Qt::Horizontal, texturePage);
     impl_->textureTable = new QTableWidget(splitter);
+    impl_->textureTable->setMinimumWidth(280);
     impl_->textureTable->setColumnCount(6);
     impl_->textureTable->setHorizontalHeaderLabels({ "Index", "Name", "Kind", "Format", "Size", "State" });
     impl_->textureTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     impl_->textureTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     impl_->textureTable->setSelectionMode(QAbstractItemView::SingleSelection);
     impl_->textureTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    auto* detail = new QWidget(splitter);
-    auto* detailLayout = new QVBoxLayout(detail);
-    impl_->preview = new QLabel("No texture selected", detail);
-    impl_->preview->setAlignment(Qt::AlignCenter);
-    impl_->preview->setMinimumSize(320, 260);
-    impl_->textureDetails = new QLabel(detail);
+    impl_->viewport = new TextureViewport(splitter);
+    impl_->viewport->setMinimumSize(320, 260);
+
+    auto* sidebar = new QWidget(splitter);
+    sidebar->setObjectName("textureEditorSidebar");
+    sidebar->setMinimumWidth(260);
+    auto* detailLayout = new QVBoxLayout(sidebar);
+    auto* metadataTitle = new QLabel("<b>Texture metadata</b>", sidebar);
+    impl_->textureDetails = new QLabel(sidebar);
     impl_->textureDetails->setWordWrap(true);
-    detailLayout->addWidget(impl_->preview, 1);
+    impl_->textureDetails->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    detailLayout->addWidget(metadataTitle);
     detailLayout->addWidget(impl_->textureDetails);
-    auto* controlsRow = new QHBoxLayout();
-    auto* replace = new QPushButton("Replace from PNG...", detail);
-    auto* extract = new QPushButton("Extract native...", detail);
-    auto* exportPng = new QPushButton("Export PNG...", detail);
-    auto* revert = new QPushButton("Revert texture", detail);
-    controlsRow->addWidget(replace);
-    controlsRow->addWidget(extract);
-    controlsRow->addWidget(exportPng);
-    controlsRow->addWidget(revert);
-    detailLayout->addLayout(controlsRow);
-    impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", detail);
+    impl_->replaceButton = new QPushButton("Replace from PNG...", sidebar);
+    auto* exportPng = new QPushButton("Export PNG...", sidebar);
+    auto* extract = new QPushButton("Extract native...", sidebar);
+    auto* revert = new QPushButton("Revert texture", sidebar);
+    auto* revertAll = new QPushButton("Revert all staged texture changes", sidebar);
+    detailLayout->addWidget(impl_->replaceButton);
+    detailLayout->addWidget(exportPng);
+    detailLayout->addWidget(extract);
+    detailLayout->addWidget(revert);
+    detailLayout->addWidget(revertAll);
+    impl_->readOnlyExplanation = new QLabel(
+        "PVR texture: preview, PNG export, and native extraction are available. Replacement and encoding are read-only.",
+        sidebar);
+    impl_->readOnlyExplanation->setWordWrap(true);
+    impl_->readOnlyExplanation->setStyleSheet("color: palette(mid);");
+    detailLayout->addWidget(impl_->readOnlyExplanation);
+    impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", sidebar);
     detailLayout->addWidget(impl_->allowDimensions);
     impl_->encoding = addEncodingControls(detailLayout, false);
+    detailLayout->addStretch();
+    detailLayout->addWidget(new QLabel("<b>Diagnostics</b>", sidebar));
+    impl_->textureDiagnostics = new QTextEdit(sidebar);
+    impl_->textureDiagnostics->setReadOnly(true);
+    impl_->textureDiagnostics->setMaximumHeight(120);
+    detailLayout->addWidget(impl_->textureDiagnostics);
     splitter->addWidget(impl_->textureTable);
-    splitter->addWidget(detail);
+    splitter->addWidget(impl_->viewport);
+    splitter->addWidget(sidebar);
     splitter->setStretchFactor(1, 1);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, false);
+    splitter->setCollapsible(2, false);
+    splitter->setSizes({ 340, 620, 320 });
     textureRoot->addWidget(splitter);
-    auto* revertAll = new QPushButton("Revert all staged texture changes", texturePage);
-    textureRoot->addWidget(revertAll, 0, Qt::AlignRight);
     impl_->pages->addTab(texturePage, "Textures");
+
+    auto* exportsPage = new QWidget(impl_->pages);
+    exportsPage->setObjectName("mldExportsPage");
+    auto* exportsLayout = new QVBoxLayout(exportsPage);
+    impl_->exportStagedNotice = new QLabel(
+        "This document has staged changes. Exports will represent the current workbench state.", exportsPage);
+    impl_->exportStagedNotice->setObjectName("mldExportStagedNotice");
+    impl_->exportStagedNotice->setWordWrap(true);
+    impl_->exportStagedNotice->setStyleSheet(
+        "QLabel { background: #5c4818; color: #ffe29a; border: 1px solid #9a7730; padding: 6px; }");
+    exportsLayout->addWidget(impl_->exportStagedNotice);
+
+    auto* blenderGroup = new QGroupBox("Blender IR JSON", exportsPage);
+    auto* blenderLayout = new QVBoxLayout(blenderGroup);
+    auto* blenderDescription = new QLabel(
+        "Export the current MLD scene, geometry, materials, textures, instances, and animations as Blender intermediate representation JSON.",
+        blenderGroup);
+    blenderDescription->setWordWrap(true);
+    impl_->exportBlenderIrButton = new QPushButton("Export Blender IR...", blenderGroup);
+    impl_->exportBlenderIrButton->setObjectName("mldExportBlenderIrButton");
+    blenderLayout->addWidget(blenderDescription);
+    blenderLayout->addWidget(impl_->exportBlenderIrButton, 0, Qt::AlignLeft);
+    exportsLayout->addWidget(blenderGroup);
+
+    auto* entryGroup = new QGroupBox("Detailed Entry JSON", exportsPage);
+    auto* exportEntryLayout = new QVBoxLayout(entryGroup);
+    auto* entryDescription = new QLabel(
+        "Export spice_mld_entry_list_v1 with entry IDs, functions, counts, pointers, links, parameters, resource addresses, and texture names.",
+        entryGroup);
+    entryDescription->setWordWrap(true);
+    impl_->exportEntryListButton = new QPushButton("Export Entry JSON...", entryGroup);
+    impl_->exportEntryListButton->setObjectName("mldExportEntryListButton");
+    exportEntryLayout->addWidget(entryDescription);
+    exportEntryLayout->addWidget(impl_->exportEntryListButton, 0, Qt::AlignLeft);
+    exportsLayout->addWidget(entryGroup);
+
+    impl_->exportBothButton = new QPushButton("Export Both to Folder...", exportsPage);
+    impl_->exportBothButton->setObjectName("mldExportBothButton");
+    exportsLayout->addWidget(impl_->exportBothButton, 0, Qt::AlignLeft);
+    exportsLayout->addStretch();
+    impl_->pages->addTab(exportsPage, "Exports");
 
     auto* diagnosticsPage = new QWidget(impl_->pages);
     auto* diagnosticsLayout = new QVBoxLayout(diagnosticsPage);
@@ -326,7 +415,87 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
 
     connect(impl_->textureTable, &QTableWidget::currentCellChanged, this,
         [this](int, int, int, int) { impl_->refreshSelectedTexture(); });
-    connect(replace, &QPushButton::clicked, this, [this]() {
+    connect(impl_->exportBlenderIrButton, &QPushButton::clicked, this, [this]() {
+        const auto source = impl_->session->overview().sourcePath;
+        const auto suggested = source.parent_path() / mldBlenderIrFilename(source);
+        const auto output = QFileDialog::getSaveFileName(this, "Export MLD Blender IR JSON",
+            qpath(suggested), "JSON files (*.json)");
+        if (output.isEmpty()) return;
+        auto result = std::make_shared<spice::mix::DocumentResult>();
+        QPointer<MldWorkbench> self(this);
+        if (!impl_->tasks->run("Export MLD Blender IR", [session = impl_->session,
+            path = fspath(output), result](const auto& context) {
+                *result = session->exportBlenderIrJson(path, context);
+            }, [self, result]() {
+                if (self) showResult(self, *result);
+            })) {
+            QMessageBox::information(this, "SpiceRack", "Finish or cancel the current job first.");
+        }
+    });
+    connect(impl_->exportEntryListButton, &QPushButton::clicked, this, [this]() {
+        const auto source = impl_->session->overview().sourcePath;
+        const auto suggested = source.parent_path() / mldEntryListFilename(source);
+        const auto output = QFileDialog::getSaveFileName(this, "Export Detailed MLD Entry JSON",
+            qpath(suggested), "JSON files (*.json)");
+        if (output.isEmpty()) return;
+        auto result = std::make_shared<spice::mix::DocumentResult>();
+        QPointer<MldWorkbench> self(this);
+        if (!impl_->tasks->run("Export MLD entry JSON", [session = impl_->session,
+            path = fspath(output), result](const auto& context) {
+                *result = session->exportEntryListJson(path, context);
+            }, [self, result]() {
+                if (self) showResult(self, *result);
+            })) {
+            QMessageBox::information(this, "SpiceRack", "Finish or cancel the current job first.");
+        }
+    });
+    connect(impl_->exportBothButton, &QPushButton::clicked, this, [this]() {
+        const auto source = impl_->session->overview().sourcePath;
+        const auto selectedFolder = QFileDialog::getExistingDirectory(
+            this, "Export MLD JSON Artifacts", qpath(source.parent_path()));
+        if (selectedFolder.isEmpty()) return;
+        const auto folder = fspath(selectedFolder);
+        const auto blenderPath = folder / mldBlenderIrFilename(source);
+        const auto entryPath = folder / mldEntryListFilename(source);
+        std::error_code error{};
+        const bool blenderExists = std::filesystem::exists(blenderPath, error) && !error;
+        error.clear();
+        const bool entryExists = std::filesystem::exists(entryPath, error) && !error;
+        if ((blenderExists || entryExists)
+            && QMessageBox::question(this, "Replace existing exports",
+                "One or more generated export files already exist in that folder. Replace them?",
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+
+        auto result = std::make_shared<spice::mix::DocumentResult>();
+        QPointer<MldWorkbench> self(this);
+        if (!impl_->tasks->run("Export MLD JSON artifacts", [session = impl_->session,
+            blenderPath, entryPath, result](const auto& context) {
+                const auto blenderResult = session->exportBlenderIrJson(blenderPath, context);
+                if (!blenderResult.ok()) {
+                    *result = blenderResult;
+                    return;
+                }
+                const auto entryResult = session->exportEntryListJson(entryPath, context);
+                if (!entryResult.ok()) {
+                    *result = entryResult;
+                    result->message = "Blender IR was exported to " + blenderPath.string()
+                        + ", but the entry-list export did not complete: " + entryResult.message;
+                    if (context.report) {
+                        context.report({ .level = spice::mix::EventLevel::Warning,
+                            .message = result->message });
+                    }
+                    return;
+                }
+                result->message = "Exported MLD Blender IR and detailed entry-list JSON.";
+            }, [self, result]() {
+                if (self) showResult(self, *result);
+            })) {
+            QMessageBox::information(this, "SpiceRack", "Finish or cancel the current job first.");
+        }
+    });
+    connect(impl_->replaceButton, &QPushButton::clicked, this, [this]() {
         const int row = impl_->textureTable->currentRow();
         if (row < 0) return;
         const auto input = QFileDialog::getOpenFileName(this, "Replacement PNG", {}, "PNG images (*.png)");
@@ -390,6 +559,22 @@ MldWorkbench::~MldWorkbench() = default;
 QString MldWorkbench::displayName() const { return qpath(impl_->session->overview().sourcePath.filename()); }
 bool MldWorkbench::dirty() const { return impl_->session->dirty(); }
 std::optional<std::filesystem::path> MldWorkbench::sourcePath() const { return impl_->session->overview().sourcePath; }
+bool MldWorkbench::runSmokeChecks() {
+    const int exportsIndex = impl_->pages->indexOf(impl_->exportStagedNotice->parentWidget());
+    const bool exportsPageReady = exportsIndex >= 0
+        && impl_->pages->tabText(exportsIndex) == "Exports"
+        && exportsIndex + 1 < impl_->pages->count()
+        && impl_->pages->tabText(exportsIndex + 1) == "Diagnostics"
+        && impl_->exportBlenderIrButton
+        && impl_->exportEntryListButton
+        && impl_->exportBothButton
+        && impl_->exportStagedNotice->isHidden() == !dirty();
+    return impl_->viewport
+        && exportsPageReady
+        && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
+        && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
+        && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });
+}
 
 void MldWorkbench::requestSaveAs(std::function<void(bool)> completed) {
     if (impl_->tasks->busy()) {
@@ -415,7 +600,7 @@ struct GvrWorkbench::Impl {
     GvrWorkbench* owner = nullptr;
     std::shared_ptr<spice::mix::GvrDocumentSession> session{};
     RackTaskController* tasks = nullptr;
-    QLabel* preview = nullptr;
+    TextureViewport* viewport = nullptr;
     QLabel* details = nullptr;
     QTextEdit* diagnostics = nullptr;
     QCheckBox* allowDimensions = nullptr;
@@ -423,10 +608,8 @@ struct GvrWorkbench::Impl {
 
     void refresh() {
         const auto item = session->snapshot();
-        const auto pixmap = previewPixmap(session->preview(), QSize(640, 520));
-        preview->setPixmap(pixmap);
-        if (pixmap.isNull()) preview->setText("No decoded preview available");
-        details->setText(QString("%1 | %2 x %3 | palette %4 | mipmaps %5 | global index %6 | wrapper %7")
+        viewport->setImage(session->preview());
+        details->setText(QString("<b>%1</b><br>%2 x %3<br>Palette: %4<br>Mipmaps: %5<br>Global index: %6<br>Wrapper: %7")
             .arg(QString::fromStdString(item.format)).arg(item.width).arg(item.height)
             .arg(QString::fromStdString(item.paletteFormat)).arg(item.mipmaps ? "yes" : "no")
             .arg(item.hasGlobalIndex ? QString::number(item.globalIndex) : "none")
@@ -445,30 +628,42 @@ GvrWorkbench::GvrWorkbench(std::shared_ptr<spice::mix::GvrDocumentSession> sessi
     impl_->session = std::move(session);
     impl_->tasks = &tasks;
     auto* root = new QVBoxLayout(this);
-    impl_->preview = new QLabel("No decoded preview available", this);
-    impl_->preview->setAlignment(Qt::AlignCenter);
-    impl_->preview->setMinimumSize(480, 300);
-    root->addWidget(impl_->preview, 1);
-    impl_->details = new QLabel(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    impl_->viewport = new TextureViewport(splitter);
+    impl_->viewport->setMinimumSize(480, 300);
+    auto* sidebar = new QWidget(splitter);
+    sidebar->setObjectName("textureEditorSidebar");
+    sidebar->setMinimumWidth(260);
+    auto* sidebarLayout = new QVBoxLayout(sidebar);
+    sidebarLayout->addWidget(new QLabel("<b>Texture metadata</b>", sidebar));
+    impl_->details = new QLabel(sidebar);
     impl_->details->setWordWrap(true);
-    root->addWidget(impl_->details);
-    auto* buttons = new QHBoxLayout();
-    auto* replace = new QPushButton("Replace from PNG...", this);
-    auto* exportPng = new QPushButton("Export PNG...", this);
-    auto* revert = new QPushButton("Revert", this);
-    buttons->addWidget(replace);
-    buttons->addWidget(exportPng);
-    buttons->addWidget(revert);
-    buttons->addStretch();
-    root->addLayout(buttons);
-    impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", this);
+    impl_->details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    sidebarLayout->addWidget(impl_->details);
+    auto* replace = new QPushButton("Replace from PNG...", sidebar);
+    auto* exportPng = new QPushButton("Export PNG...", sidebar);
+    auto* revert = new QPushButton("Revert", sidebar);
+    sidebarLayout->addWidget(replace);
+    sidebarLayout->addWidget(exportPng);
+    sidebarLayout->addWidget(revert);
+    impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", sidebar);
     impl_->allowDimensions->setChecked(true);
-    root->addWidget(impl_->allowDimensions);
-    impl_->encoding = addEncodingControls(root, true);
-    impl_->diagnostics = new QTextEdit(this);
+    sidebarLayout->addWidget(impl_->allowDimensions);
+    impl_->encoding = addEncodingControls(sidebarLayout, true);
+    sidebarLayout->addStretch();
+    sidebarLayout->addWidget(new QLabel("<b>Diagnostics</b>", sidebar));
+    impl_->diagnostics = new QTextEdit(sidebar);
     impl_->diagnostics->setReadOnly(true);
-    impl_->diagnostics->setMaximumHeight(110);
-    root->addWidget(impl_->diagnostics);
+    impl_->diagnostics->setMaximumHeight(140);
+    sidebarLayout->addWidget(impl_->diagnostics);
+    splitter->addWidget(impl_->viewport);
+    splitter->addWidget(sidebar);
+    splitter->setStretchFactor(0, 1);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, false);
+    splitter->setSizes({ 900, 320 });
+    root->addWidget(splitter);
 
     connect(replace, &QPushButton::clicked, this, [this]() {
         const auto input = QFileDialog::getOpenFileName(this, "Replacement PNG", {}, "PNG images (*.png)");
@@ -508,6 +703,12 @@ GvrWorkbench::~GvrWorkbench() = default;
 QString GvrWorkbench::displayName() const { return QString::fromStdString(impl_->session->snapshot().displayName); }
 bool GvrWorkbench::dirty() const { return impl_->session->dirty(); }
 std::optional<std::filesystem::path> GvrWorkbench::sourcePath() const { return impl_->session->snapshot().sourcePath; }
+bool GvrWorkbench::runSmokeChecks() {
+    return impl_->viewport
+        && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
+        && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
+        && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });
+}
 
 void GvrWorkbench::requestSaveAs(std::function<void(bool)> completed) {
     if (impl_->tasks->busy()) {

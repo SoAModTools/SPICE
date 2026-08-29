@@ -31,10 +31,14 @@ int main(int argc, char** argv) {
         if (smokePath.has_value()) {
             QTimer::singleShot(0, &window, [&window, &application, path = *smokePath]() {
                 window.openDocument(path,
-                    [&application](const bool success) { application.exit(success ? 0 : 1); }, false);
+                    [&window, &application](const bool success) {
+                        application.exit(success && window.runSmokeChecks() ? 0 : 1);
+                    }, false);
             });
         } else {
-            QTimer::singleShot(0, &application, &QCoreApplication::quit);
+            QTimer::singleShot(0, &window, [&window, &application]() {
+                application.exit(window.runSmokeChecks() ? 0 : 1);
+            });
         }
     }
     return application.exec();

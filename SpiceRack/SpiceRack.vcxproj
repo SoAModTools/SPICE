@@ -39,11 +39,13 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="DocumentWorkbenches.cpp" />
+    <ClCompile Include="TextureViewport.cpp" />
     <ClCompile Include="TaskController.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DocumentWorkbenches.h" />
     <ClInclude Include="MainWindow.h" />
+    <ClInclude Include="TextureViewport.h" />
     <ClInclude Include="TaskController.h" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="..\SpiceMix\SpiceMix.vcxproj"><Project>{92E102AE-65E7-4C12-98B1-3C5EBDCE83A0}</Project></ProjectReference></ItemGroup>

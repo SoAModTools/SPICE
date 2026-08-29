@@ -19,6 +19,7 @@ public:
     [[nodiscard]] virtual QString displayName() const = 0;
     [[nodiscard]] virtual bool dirty() const = 0;
     [[nodiscard]] virtual std::optional<std::filesystem::path> sourcePath() const = 0;
+    [[nodiscard]] virtual bool runSmokeChecks() = 0;
     virtual void requestSaveAs(std::function<void(bool)> completed = {}) = 0;
 
     void setStateChanged(std::function<void()> callback) { stateChanged_ = std::move(callback); }
@@ -39,6 +40,7 @@ public:
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override;
     [[nodiscard]] std::optional<std::filesystem::path> sourcePath() const override;
+    [[nodiscard]] bool runSmokeChecks() override;
     void requestSaveAs(std::function<void(bool)> completed = {}) override;
 
 private:
@@ -55,6 +57,7 @@ public:
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override;
     [[nodiscard]] std::optional<std::filesystem::path> sourcePath() const override;
+    [[nodiscard]] bool runSmokeChecks() override;
     void requestSaveAs(std::function<void(bool)> completed = {}) override;
 
 private:

@@ -5,11 +5,13 @@
     <ClCompile Include="main.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="MainWindow.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="DocumentWorkbenches.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="TextureViewport.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="TaskController.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DocumentWorkbenches.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="MainWindow.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="TextureViewport.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="TaskController.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>
