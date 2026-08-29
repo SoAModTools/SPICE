@@ -45,6 +45,8 @@
     <ClCompile Include="AlxEnemyEventExport.cpp" />
     <ClCompile Include="Application\OperationPreflight.cpp" />
     <ClCompile Include="Application\OperationRunner.cpp" />
+    <ClCompile Include="Documents\GvrDocumentSession.cpp" />
+    <ClCompile Include="Documents\MldDocumentSession.cpp" />
     <ClCompile Include="Operations\OperationExecution.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -52,6 +54,10 @@
     <ClInclude Include="Application\Operation.h" />
     <ClInclude Include="Application\OperationPreflight.h" />
     <ClInclude Include="Application\OperationRunner.h" />
+    <ClInclude Include="Documents\DocumentSupport.h" />
+    <ClInclude Include="Documents\DocumentTypes.h" />
+    <ClInclude Include="Documents\GvrDocumentSession.h" />
+    <ClInclude Include="Documents\MldDocumentSession.h" />
     <ClInclude Include="Operations\AklzAlxOperations.inl" />
     <ClInclude Include="Operations\GvrOperations.inl" />
     <ClInclude Include="Operations\MldOperations.inl" />

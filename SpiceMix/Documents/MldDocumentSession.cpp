@@ -1,0 +1,333 @@
+#include "MldDocumentSession.h"
+
+#include "DocumentSupport.h"
+#include "../../SpiceGvm/Image/PngCodec.h"
+#include "../../SpiceMLD/Export/MldFileWriter.h"
+#include "../../SpiceMLD/Parsing/MldParser.h"
+#include "../../SpiceRoot/Binary/Endian.h"
+
+#include <algorithm>
+#include <span>
+#include <stdexcept>
+#include <utility>
+
+namespace spice::mix {
+
+struct MldDocumentSession::Impl {
+    std::filesystem::path protectedSourcePath{};
+    spice::mld::model::MldFile file{};
+    std::vector<spice::mld::model::MldTextureEntry> savedTextures{};
+    std::vector<bool> dirtyTextures{};
+};
+
+namespace {
+
+const char* platformName(const spice::mld::model::TargetPlatform platform) {
+    switch (platform) {
+    case spice::mld::model::TargetPlatform::Dreamcast: return "Dreamcast";
+    case spice::mld::model::TargetPlatform::GameCube: return "GameCube";
+    default: return "Unknown";
+    }
+}
+
+const char* statusName(const spice::mld::model::MldParseStatus status) {
+    switch (status) {
+    case spice::mld::model::MldParseStatus::Empty: return "Empty";
+    case spice::mld::model::MldParseStatus::Partial: return "Partial";
+    case spice::mld::model::MldParseStatus::Complete: return "Complete";
+    case spice::mld::model::MldParseStatus::Failed: return "Failed";
+    }
+    return "Unknown";
+}
+
+TextureEncodingKind encodingKind(const spice::mld::model::MldTextureEncoding encoding) {
+    switch (encoding) {
+    case spice::mld::model::MldTextureEncoding::Gvr: return TextureEncodingKind::Gvr;
+    case spice::mld::model::MldTextureEncoding::Pvr: return TextureEncodingKind::Pvr;
+    default: return TextureEncodingKind::Unknown;
+    }
+}
+
+DocumentDiagnostic convertDiagnostic(const spice::mld::model::MldDiagnostic& diagnostic) {
+    EventLevel level = EventLevel::Info;
+    if (diagnostic.severity == spice::mld::model::MldDiagnostic::Severity::Warning) level = EventLevel::Warning;
+    if (diagnostic.severity == spice::mld::model::MldDiagnostic::Severity::Error) level = EventLevel::Error;
+    return { .level = level, .message = diagnostic.message, .sourceOffset = diagnostic.sourceOffset };
+}
+
+template <typename ImplType>
+spice::mld::model::MldTextureEntry* textureAt(ImplType& impl, const std::size_t index) {
+    if (!impl.file.textureArchive.has_value() || index >= impl.file.textureArchive->entries.size()) return nullptr;
+    return &impl.file.textureArchive->entries[index];
+}
+
+template <typename ImplType>
+const spice::mld::model::MldTextureEntry* textureAt(const ImplType& impl, const std::size_t index) {
+    if (!impl.file.textureArchive.has_value() || index >= impl.file.textureArchive->entries.size()) return nullptr;
+    return &impl.file.textureArchive->entries[index];
+}
+
+} // namespace
+
+MldDocumentSession::MldDocumentSession(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+MldDocumentSession::~MldDocumentSession() = default;
+MldDocumentSession::MldDocumentSession(MldDocumentSession&&) noexcept = default;
+MldDocumentSession& MldDocumentSession::operator=(MldDocumentSession&&) noexcept = default;
+
+MldDocumentSession::OpenResult MldDocumentSession::open(
+    const std::filesystem::path& path, const DocumentContext& context) {
+    if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
+    try {
+        if (path.empty() || !std::filesystem::is_regular_file(path)) {
+            return { .result = documents::failure("A readable MLD input file is required.") };
+        }
+        documents::emit(context, EventLevel::Progress, "Opening MLD " + path.string());
+        const auto bytes = documents::readBytes(path);
+        if (bytes.empty()) return { .result = documents::failure("The MLD input file is empty.") };
+        if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
+        auto impl = std::make_unique<Impl>();
+        impl->protectedSourcePath = path;
+        impl->file = spice::mld::parsing::MldParser{}.parseBytes(bytes);
+        if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
+        std::vector<std::string> diagnosticText{};
+        for (const auto& diagnostic : impl->file.parseDiagnostics) diagnosticText.push_back(diagnostic.message);
+        if (impl->file.parseStatus == spice::mld::model::MldParseStatus::Failed) {
+            return { .result = documents::failure("MLD parsing failed.", std::move(diagnosticText)) };
+        }
+        if (impl->file.textureArchive.has_value()) {
+            impl->savedTextures = impl->file.textureArchive->entries;
+            impl->dirtyTextures.resize(impl->savedTextures.size(), false);
+        }
+        auto session = std::shared_ptr<MldDocumentSession>(new MldDocumentSession(std::move(impl)));
+        documents::emit(context, EventLevel::Info, "Opened MLD " + path.filename().string());
+        return { .session = std::move(session),
+            .result = { .message = "MLD document is ready.", .diagnostics = std::move(diagnosticText) } };
+    } catch (const std::exception& error) {
+        documents::emit(context, EventLevel::Error, error.what());
+        return { .result = documents::failure(error.what()) };
+    }
+}
+
+MldOverviewSnapshot MldDocumentSession::overview() const {
+    MldOverviewSnapshot out{};
+    out.sourcePath = impl_->protectedSourcePath;
+    out.platform = platformName(impl_->file.sourcePlatform);
+    out.endian = impl_->file.endian == spice::root::Endian::Little ? "Little" : "Big";
+    out.parseStatus = statusName(impl_->file.parseStatus);
+    out.sourceWasAklz = impl_->file.sourceWasCompressedAklz;
+    out.entryCount = impl_->file.entries.size();
+    out.textureCount = impl_->file.textureArchive.has_value() ? impl_->file.textureArchive->entries.size() : 0;
+    out.objectResourceCount = impl_->file.objectResources.size();
+    out.groundResourceCount = impl_->file.groundResources.size();
+    out.motionResourceCount = impl_->file.motionResources.size();
+    out.dirty = dirty();
+    return out;
+}
+
+std::vector<MldEntrySnapshot> MldDocumentSession::entries() const {
+    std::vector<MldEntrySnapshot> out{};
+    out.reserve(impl_->file.entries.size());
+    for (const auto& record : impl_->file.entries) {
+        const auto& entry = record.entry;
+        out.push_back(MldEntrySnapshot{
+            .tableIndex = entry.tableIndex,
+            .entryId = entry.entryId,
+            .tableId = entry.tblId,
+            .functionName = entry.fxnName,
+            .positionX = entry.transform.position.x,
+            .positionY = entry.transform.position.y,
+            .positionZ = entry.transform.position.z,
+            .rotationX = entry.transform.rotationRaw.x,
+            .rotationY = entry.transform.rotationRaw.y,
+            .rotationZ = entry.transform.rotationRaw.z,
+            .scaleX = entry.transform.scale.x,
+            .scaleY = entry.transform.scale.y,
+            .scaleZ = entry.transform.scale.z,
+            .objectCount = entry.objectCount,
+            .groundCount = entry.groundCount,
+            .motionCount = entry.motionCount,
+            .texturesPointer = entry.texturesPointer,
+        });
+    }
+    return out;
+}
+
+std::vector<MldTextureSnapshot> MldDocumentSession::textures() const {
+    std::vector<MldTextureSnapshot> out{};
+    if (!impl_->file.textureArchive.has_value()) return out;
+    out.reserve(impl_->file.textureArchive->entries.size());
+    for (std::size_t index = 0; index < impl_->file.textureArchive->entries.size(); ++index) {
+        const auto& texture = impl_->file.textureArchive->entries[index];
+        out.push_back(MldTextureSnapshot{
+            .index = index,
+            .name = texture.textureName,
+            .encoding = encodingKind(texture.encoding),
+            .format = texture.sourceFormat,
+            .paletteFormat = texture.sourcePaletteFormat,
+            .width = texture.width,
+            .height = texture.height,
+            .mipmaps = texture.hasMipmaps,
+            .hasGlobalIndex = texture.hasGlobalIndex,
+            .globalIndex = texture.globalIndex,
+            .encodedSize = texture.encodedData.size(),
+            .decoded = texture.decoded && !texture.rgba8.empty(),
+            .dirty = index < impl_->dirtyTextures.size() && impl_->dirtyTextures[index],
+            .diagnostics = texture.diagnostics,
+        });
+    }
+    return out;
+}
+
+std::vector<DocumentDiagnostic> MldDocumentSession::diagnostics() const {
+    std::vector<DocumentDiagnostic> out{};
+    out.reserve(impl_->file.parseDiagnostics.size());
+    for (const auto& diagnostic : impl_->file.parseDiagnostics) out.push_back(convertDiagnostic(diagnostic));
+    if (impl_->file.textureArchive.has_value()) {
+        for (const auto& message : impl_->file.textureArchive->diagnostics) {
+            out.push_back({ .level = EventLevel::Warning, .message = message });
+        }
+    }
+    return out;
+}
+
+std::optional<RgbaImageSnapshot> MldDocumentSession::texturePreview(const std::size_t index) const {
+    const auto* texture = textureAt(*impl_, index);
+    if (!texture || !texture->decoded || texture->rgba8.empty()) return std::nullopt;
+    return RgbaImageSnapshot{ .width = texture->width, .height = texture->height, .rgba8 = texture->rgba8 };
+}
+
+bool MldDocumentSession::dirty() const noexcept {
+    return std::any_of(impl_->dirtyTextures.begin(), impl_->dirtyTextures.end(), [](const bool value) { return value; });
+}
+
+DocumentResult MldDocumentSession::replaceGvrTexture(const std::size_t index,
+    const std::filesystem::path& pngPath, const GvrEncodingOverrides& overrides,
+    const bool allowDimensionChange, const DocumentContext& context) {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    auto* texture = textureAt(*impl_, index);
+    if (!texture) return documents::failure("The selected MLD texture index is out of range.");
+    if (texture->encoding != spice::mld::model::MldTextureEncoding::Gvr) {
+        return documents::failure("Only GVR textures can be replaced in this workbench. PVR textures are read-only.");
+    }
+    try {
+        if (pngPath.empty() || !std::filesystem::is_regular_file(pngPath)) {
+            return documents::failure("A readable replacement PNG is required.");
+        }
+        const auto source = spice::gvm::ir::readGvrSourceMetadata(texture->encodedData);
+        const auto image = spice::gvm::image::readPngRgba8(pngPath);
+        if (!allowDimensionChange && (image.width != source.texture.width || image.height != source.texture.height)) {
+            return documents::failure("Replacement PNG dimensions do not match the selected MLD texture.");
+        }
+        if (context.stopToken.stop_requested()) return documents::cancelled();
+        const auto encodeOptions = documents::makeEncoding(overrides, source.texture);
+        const auto replacement = spice::gvm::encoding::encodeGvr(image, encodeOptions);
+        const auto replacementMetadata = spice::gvm::ir::readGvrSourceMetadata(replacement);
+        if (replacementMetadata.texture.textureFormat == spice::gvm::model::TextureFormat::Unknown
+            || !replacementMetadata.texture.decodedBaseLevel.has_value()) {
+            return documents::failure("The staged replacement could not be decoded.", replacementMetadata.diagnostics);
+        }
+        texture->encodedData = replacement;
+        texture->encodedDataSize = replacement.size();
+        texture->hasGlobalIndex = replacementMetadata.texture.hasGlobalIndex;
+        texture->globalIndex = replacementMetadata.texture.globalIndex;
+        texture->pixelFormat = replacementMetadata.texture.rawFlags;
+        texture->dataFormat = replacementMetadata.texture.rawDataFormat;
+        texture->sourceFormat = spice::gvm::model::to_string(replacementMetadata.texture.textureFormat);
+        texture->sourcePaletteFormat = spice::gvm::model::to_string(replacementMetadata.texture.paletteFormat);
+        texture->hasMipmaps = replacementMetadata.texture.hasMipmaps;
+        texture->hasInternalPalette = replacementMetadata.texture.hasInternalPalette;
+        texture->width = replacementMetadata.texture.width;
+        texture->height = replacementMetadata.texture.height;
+        texture->imageDataOffset = replacementMetadata.texture.imageDataOffset;
+        texture->imageDataSize = replacementMetadata.texture.imageDataSize;
+        texture->paletteDataSize = replacementMetadata.texture.paletteData.size();
+        texture->decoded = true;
+        texture->rgba8 = replacementMetadata.texture.decodedBaseLevel->rgba8;
+        texture->diagnostics = replacementMetadata.diagnostics;
+        impl_->dirtyTextures[index] = true;
+        documents::emit(context, EventLevel::Info, "Staged replacement for MLD texture " + std::to_string(index) + ".");
+        return { .message = "Texture replacement staged.", .diagnostics = replacementMetadata.diagnostics };
+    } catch (const std::exception& error) {
+        documents::emit(context, EventLevel::Error, error.what());
+        return documents::failure(error.what());
+    }
+}
+
+DocumentResult MldDocumentSession::revertTexture(const std::size_t index) {
+    auto* texture = textureAt(*impl_, index);
+    if (!texture || index >= impl_->savedTextures.size()) {
+        return documents::failure("The selected MLD texture index is out of range.");
+    }
+    *texture = impl_->savedTextures[index];
+    impl_->dirtyTextures[index] = false;
+    return { .message = "Texture changes reverted." };
+}
+
+DocumentResult MldDocumentSession::revertAll() {
+    if (!impl_->file.textureArchive.has_value()) return { .message = "There are no texture changes to revert." };
+    impl_->file.textureArchive->entries = impl_->savedTextures;
+    std::fill(impl_->dirtyTextures.begin(), impl_->dirtyTextures.end(), false);
+    return { .message = "All staged texture changes reverted." };
+}
+
+DocumentResult MldDocumentSession::extractNativeTexture(const std::size_t index,
+    const std::filesystem::path& outputPath, const DocumentContext& context) const {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    const auto* texture = textureAt(*impl_, index);
+    if (!texture) return documents::failure("The selected MLD texture index is out of range.");
+    if (texture->encoding == spice::mld::model::MldTextureEncoding::Unknown || texture->encodedData.empty()) {
+        return documents::failure("The selected texture has no native encoded payload.");
+    }
+    auto result = documents::writeBytesSafely(outputPath, texture->encodedData);
+    if (result.ok()) documents::emit(context, EventLevel::Info, result.message);
+    return result;
+}
+
+DocumentResult MldDocumentSession::exportTexturePng(const std::size_t index,
+    const std::filesystem::path& outputPath, const DocumentContext& context) const {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    const auto preview = texturePreview(index);
+    if (!preview.has_value()) return documents::failure("The selected texture has no decoded image to export.");
+    if (outputPath.empty() || outputPath.filename().empty()) return documents::failure("A PNG output file is required.");
+    try {
+        spice::gvm::model::RgbaImage image{
+            .width = preview->width,
+            .height = preview->height,
+            .rgba8 = preview->rgba8,
+        };
+        if (outputPath.has_parent_path()) std::filesystem::create_directories(outputPath.parent_path());
+        spice::gvm::image::writePngRgba8(outputPath, image);
+        documents::emit(context, EventLevel::Info, "Exported PNG " + outputPath.string());
+        return { .message = "Exported texture PNG." };
+    } catch (const std::exception& error) {
+        documents::emit(context, EventLevel::Error, error.what());
+        return documents::failure(error.what());
+    }
+}
+
+DocumentResult MldDocumentSession::saveAs(
+    const std::filesystem::path& outputPath, const DocumentContext& context) {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    if (outputPath.empty() || outputPath.filename().empty()) return documents::failure("An MLD output file is required.");
+    if (documents::samePath(outputPath, impl_->protectedSourcePath)) {
+        return documents::failure("Save As cannot overwrite the original MLD source file.");
+    }
+    const auto written = spice::mld::exporting::MldFileWriter{}.write(impl_->file);
+    std::vector<std::string> diagnostics{};
+    for (const auto& diagnostic : written.diagnostics) diagnostics.push_back(diagnostic.message);
+    if (!written.ok() || written.bytes.empty()) {
+        return documents::failure("The MLD writer rejected the staged document.", std::move(diagnostics));
+    }
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    auto result = documents::writeBytesSafely(outputPath, written.bytes);
+    result.diagnostics = std::move(diagnostics);
+    if (!result.ok()) return result;
+    if (impl_->file.textureArchive.has_value()) impl_->savedTextures = impl_->file.textureArchive->entries;
+    std::fill(impl_->dirtyTextures.begin(), impl_->dirtyTextures.end(), false);
+    documents::emit(context, EventLevel::Info, result.message);
+    return result;
+}
+
+} // namespace spice::mix

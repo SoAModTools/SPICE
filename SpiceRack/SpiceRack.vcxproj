@@ -38,8 +38,14 @@
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MainWindow.cpp" />
+    <ClCompile Include="DocumentWorkbenches.cpp" />
+    <ClCompile Include="TaskController.cpp" />
   </ItemGroup>
-  <ItemGroup><ClInclude Include="MainWindow.h" /></ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DocumentWorkbenches.h" />
+    <ClInclude Include="MainWindow.h" />
+    <ClInclude Include="TaskController.h" />
+  </ItemGroup>
   <ItemGroup><ProjectReference Include="..\SpiceMix\SpiceMix.vcxproj"><Project>{92E102AE-65E7-4C12-98B1-3C5EBDCE83A0}</Project></ProjectReference></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Condition="Exists('$(QtMsBuild)\qt.targets')"><Import Project="$(QtMsBuild)\qt.targets" /></ImportGroup>
