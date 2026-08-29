@@ -3,6 +3,7 @@
 #include "TaskController.h"
 #include "../SpiceMix/Documents/GvrDocumentSession.h"
 #include "../SpiceMix/Documents/MldDocumentSession.h"
+#include "../SpiceMix/Documents/PvrDocumentSession.h"
 
 #include <QtWidgets/QWidget>
 
@@ -53,6 +54,23 @@ public:
     GvrWorkbench(std::shared_ptr<spice::mix::GvrDocumentSession> session,
         RackTaskController& tasks, QWidget* parent = nullptr);
     ~GvrWorkbench() override;
+
+    [[nodiscard]] QString displayName() const override;
+    [[nodiscard]] bool dirty() const override;
+    [[nodiscard]] std::optional<std::filesystem::path> sourcePath() const override;
+    [[nodiscard]] bool runSmokeChecks() override;
+    void requestSaveAs(std::function<void(bool)> completed = {}) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class PvrWorkbench final : public DocumentWorkbench {
+public:
+    PvrWorkbench(std::shared_ptr<spice::mix::PvrDocumentSession> session,
+        RackTaskController& tasks, QWidget* parent = nullptr);
+    ~PvrWorkbench() override;
 
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override;

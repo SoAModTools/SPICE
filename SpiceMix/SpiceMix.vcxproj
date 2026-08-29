@@ -104,7 +104,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(SpiceRepoRoot)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SpiceRepoRoot)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -118,7 +118,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(SpiceRepoRoot)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SpiceRepoRoot)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -127,6 +127,8 @@
     <ClCompile Include="Application\OperationRunner.cpp" />
     <ClCompile Include="Documents\GvrDocumentSession.cpp" />
     <ClCompile Include="Documents\MldDocumentSession.cpp" />
+    <ClCompile Include="Documents\PvrDocumentSession.cpp" />
+    <ClCompile Include="Documents\PvrDocumentSupport.cpp" />
     <ClCompile Include="Operations\OperationExecution.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -138,6 +140,8 @@
     <ClInclude Include="Documents\DocumentTypes.h" />
     <ClInclude Include="Documents\GvrDocumentSession.h" />
     <ClInclude Include="Documents\MldDocumentSession.h" />
+    <ClInclude Include="Documents\PvrDocumentSession.h" />
+    <ClInclude Include="Documents\PvrDocumentSupport.h" />
     <ClInclude Include="Operations\AklzAlxOperations.inl" />
     <ClInclude Include="Operations\GvrOperations.inl" />
     <ClInclude Include="Operations\MldOperations.inl" />

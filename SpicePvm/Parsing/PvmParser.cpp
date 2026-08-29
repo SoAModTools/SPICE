@@ -145,9 +145,11 @@ model::PvrTexture parsePvrTexture(
             return texture;
         }
         texture.gbixRange = model::ByteRange{sourceOffset, gbixSize};
-        if (gbixPayloadSize >= 4)
+        if (gbixPayloadSize >= 4) {
             texture.globalIndex = readU32(bytes, sourceOffset + 8);
-        else
+            texture.gbixTrailingBytes = copyRange(
+                bytes, sourceOffset + 12, gbixPayloadSize - 4);
+        } else
             addDiagnostic(texture.diagnostics, DiagnosticSeverity::Warning, sourceOffset + 4,
                 "GBIX payload is too small to contain a global index");
         if (!checkedAdd(sourceOffset, gbixSize, pvrtOffset)) {

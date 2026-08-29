@@ -88,6 +88,11 @@ public:
         const GvrEncodingOverrides& overrides = {},
         bool allowDimensionChange = false,
         const DocumentContext& context = {});
+    DocumentResult replacePvrTexture(std::size_t index,
+        const std::filesystem::path& pngPath,
+        const PvrEncodingOverrides& overrides = {},
+        bool allowDimensionChange = false,
+        const DocumentContext& context = {});
     DocumentResult revertTexture(std::size_t index);
     DocumentResult revertAll();
     DocumentResult extractNativeTexture(std::size_t index, const std::filesystem::path& outputPath,

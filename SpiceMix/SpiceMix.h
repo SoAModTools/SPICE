@@ -6,3 +6,4 @@
 #include "Documents/DocumentTypes.h"
 #include "Documents/GvrDocumentSession.h"
 #include "Documents/MldDocumentSession.h"
+#include "Documents/PvrDocumentSession.h"

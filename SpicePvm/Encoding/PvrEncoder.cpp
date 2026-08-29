@@ -525,11 +525,15 @@ PvrEncodeResult encodePvrTexture(
     }
 
     if (options.includeGlobalIndex) {
+        if (options.gbixTrailingBytes.size() > std::numeric_limits<std::uint32_t>::max() - 4U) {
+            addError(result, 0, "GBIX trailing metadata exceeds the 32-bit chunk-size field");
+            return result;
+        }
         appendTag(result.bytes, "GBIX");
-        appendU32(result.bytes, 8U);
+        appendU32(result.bytes, static_cast<std::uint32_t>(4U + options.gbixTrailingBytes.size()));
         appendU32(result.bytes, options.globalIndex);
         result.bytes.insert(result.bytes.end(), options.gbixTrailingBytes.begin(), options.gbixTrailingBytes.end());
-        result.gbixRange = model::ByteRange{0U, 16U};
+        result.gbixRange = model::ByteRange{0U, 12U + options.gbixTrailingBytes.size()};
     }
     const auto pvrtOffset = result.bytes.size();
     appendTag(result.bytes, "PVRT");

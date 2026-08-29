@@ -72,6 +72,7 @@ struct PvrTexture {
     ByteRange pvrtRange;
     ByteRange textureDataRange;
     std::optional<std::uint32_t> globalIndex;
+    std::vector<std::uint8_t> gbixTrailingBytes;
     std::uint8_t rawPixelFormat = 0;
     std::uint8_t rawDataLayout = 0;
     std::uint16_t width = 0;

@@ -10,9 +10,11 @@ Implemented in the standalone C++20 `SpicePvm` static library:
 - Synthetic malformed-input, channel, Morton, VQ orientation, Small VQ, mipmap, and archive tests.
 - Read-only EU and US Dreamcast corpus validation.
 - Deterministic PVR encoding for every promoted pixel format and data layout.
+- Arbitrary GBIX metadata following the global index is retained and can be re-emitted.
 - Explicit or generated complete mip chains, normal VQ, and SDK-sized Small VQ codebooks.
 - Formal PVMH archive encoding with promoted metadata flags and preserved padding/metadata.
 - Dreamcast MLD PVR parsing and canonical texture archive replacement through SpiceMLD.
+- Typed standalone and embedded PVR document editing through SpiceMix and SpiceRack.
 
 Intentionally outside this deliverable:
 

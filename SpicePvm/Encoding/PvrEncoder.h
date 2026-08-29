@@ -16,7 +16,7 @@ struct PvrEncodeOptions {
     bool generateMipmaps = false;
     bool includeGlobalIndex = false;
     std::uint32_t globalIndex = 0;
-    std::array<std::uint8_t, 4> gbixTrailingBytes{};
+    std::vector<std::uint8_t> gbixTrailingBytes = std::vector<std::uint8_t>(4U, 0U);
     std::array<std::uint8_t, 2> pvrtUnknownHeader{};
     bool alignVqMipmapsTo32Bytes = true;
 };

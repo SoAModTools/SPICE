@@ -50,6 +50,40 @@ struct GvrSaveOptions {
     AklzPolicy aklz = AklzPolicy::Preserve;
 };
 
+enum class PvrPixelFormat {
+    ARGB1555,
+    RGB565,
+    ARGB4444,
+};
+
+enum class PvrDataLayout {
+    Twiddled,
+    TwiddledMipmaps,
+    Vq,
+    VqMipmaps,
+    Rectangle,
+    SmallVq,
+    SmallVqMipmaps,
+    TwiddledMipmapsDma,
+};
+
+enum class PvrGlobalIndexKind {
+    Preserve,
+    None,
+    Value,
+};
+
+struct PvrGlobalIndexOverride {
+    PvrGlobalIndexKind kind = PvrGlobalIndexKind::Preserve;
+    std::uint32_t value = 0;
+};
+
+struct PvrEncodingOverrides {
+    std::optional<PvrPixelFormat> pixelFormat{};
+    std::optional<PvrDataLayout> dataLayout{};
+    PvrGlobalIndexOverride globalIndex{};
+};
+
 enum class TextureEncodingKind {
     Unknown,
     Gvr,

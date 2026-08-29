@@ -54,7 +54,7 @@ void showResult(QWidget* parent, const spice::mix::DocumentResult& result) {
     }
 }
 
-struct EncodingControls {
+struct GvrEncodingControls {
     QGroupBox* group = nullptr;
     QComboBox* format = nullptr;
     QComboBox* palette = nullptr;
@@ -86,9 +86,10 @@ struct EncodingControls {
     }
 };
 
-EncodingControls addEncodingControls(QVBoxLayout* layout, const bool includeAklz) {
-    EncodingControls controls{};
+GvrEncodingControls addGvrEncodingControls(QVBoxLayout* layout, const bool includeAklz) {
+    GvrEncodingControls controls{};
     controls.group = new QGroupBox("Advanced encoding", layout->parentWidget());
+    controls.group->setObjectName("gvrEncodingControls");
     controls.group->setCheckable(true);
     controls.group->setChecked(false);
     auto* form = new QFormLayout(controls.group);
@@ -151,6 +152,90 @@ EncodingControls addEncodingControls(QVBoxLayout* layout, const bool includeAklz
     return controls;
 }
 
+struct PvrEncodingControls {
+    QGroupBox* group = nullptr;
+    QComboBox* pixelFormat = nullptr;
+    QComboBox* dataLayout = nullptr;
+    QComboBox* globalMode = nullptr;
+    QDoubleSpinBox* globalValue = nullptr;
+
+    spice::mix::PvrEncodingOverrides overrides() const {
+        spice::mix::PvrEncodingOverrides out{};
+        if (!group || !group->isChecked()) return out;
+        const int formatValue = pixelFormat->currentData().toInt();
+        if (formatValue >= 0) out.pixelFormat = static_cast<spice::mix::PvrPixelFormat>(formatValue);
+        const int layoutValue = dataLayout->currentData().toInt();
+        if (layoutValue >= 0) out.dataLayout = static_cast<spice::mix::PvrDataLayout>(layoutValue);
+        out.globalIndex.kind = static_cast<spice::mix::PvrGlobalIndexKind>(globalMode->currentData().toInt());
+        if (out.globalIndex.kind == spice::mix::PvrGlobalIndexKind::Value) {
+            out.globalIndex.value = static_cast<std::uint32_t>(globalValue->value());
+        }
+        return out;
+    }
+};
+
+PvrEncodingControls addPvrEncodingControls(QVBoxLayout* layout) {
+    PvrEncodingControls controls{};
+    controls.group = new QGroupBox("Advanced PVR encoding", layout->parentWidget());
+    controls.group->setObjectName("pvrEncodingControls");
+    controls.group->setCheckable(true);
+    controls.group->setChecked(false);
+    auto* form = new QFormLayout(controls.group);
+
+    controls.pixelFormat = new QComboBox(controls.group);
+    controls.pixelFormat->addItem("Preserve current", -1);
+    controls.pixelFormat->addItem("ARGB1555", static_cast<int>(spice::mix::PvrPixelFormat::ARGB1555));
+    controls.pixelFormat->addItem("RGB565", static_cast<int>(spice::mix::PvrPixelFormat::RGB565));
+    controls.pixelFormat->addItem("ARGB4444", static_cast<int>(spice::mix::PvrPixelFormat::ARGB4444));
+    form->addRow("Pixel format", controls.pixelFormat);
+
+    controls.dataLayout = new QComboBox(controls.group);
+    controls.dataLayout->addItem("Preserve current", -1);
+    const std::pair<const char*, spice::mix::PvrDataLayout> layouts[] = {
+        { "Twiddled", spice::mix::PvrDataLayout::Twiddled },
+        { "Twiddled + mipmaps", spice::mix::PvrDataLayout::TwiddledMipmaps },
+        { "VQ", spice::mix::PvrDataLayout::Vq },
+        { "VQ + mipmaps", spice::mix::PvrDataLayout::VqMipmaps },
+        { "Rectangle", spice::mix::PvrDataLayout::Rectangle },
+        { "Small VQ", spice::mix::PvrDataLayout::SmallVq },
+        { "Small VQ + mipmaps", spice::mix::PvrDataLayout::SmallVqMipmaps },
+        { "Twiddled mipmaps DMA", spice::mix::PvrDataLayout::TwiddledMipmapsDma },
+    };
+    for (const auto& [name, value] : layouts) {
+        controls.dataLayout->addItem(name, static_cast<int>(value));
+    }
+    form->addRow("Data layout", controls.dataLayout);
+
+    controls.globalMode = new QComboBox(controls.group);
+    controls.globalMode->addItem("Preserve current", static_cast<int>(spice::mix::PvrGlobalIndexKind::Preserve));
+    controls.globalMode->addItem("None", static_cast<int>(spice::mix::PvrGlobalIndexKind::None));
+    controls.globalMode->addItem("Value", static_cast<int>(spice::mix::PvrGlobalIndexKind::Value));
+    controls.globalValue = new QDoubleSpinBox(controls.group);
+    controls.globalValue->setDecimals(0);
+    controls.globalValue->setRange(0, 4294967295.0);
+    auto* globalRow = new QWidget(controls.group);
+    auto* globalLayout = new QHBoxLayout(globalRow);
+    globalLayout->setContentsMargins(0, 0, 0, 0);
+    globalLayout->addWidget(controls.globalMode);
+    globalLayout->addWidget(controls.globalValue);
+    form->addRow("Global index", globalRow);
+    auto* note = new QLabel(
+        "VQ layouts are deterministic but lossy. Twiddled and VQ layouts require square power-of-two images; Small VQ supports 16, 32, and 64 pixels.",
+        controls.group);
+    note->setWordWrap(true);
+    form->addRow(note);
+
+    layout->addWidget(controls.group);
+    const auto setExpanded = [group = controls.group](const bool expanded) {
+        const auto children = group->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
+        for (auto* child : children) child->setVisible(expanded);
+        group->setMaximumHeight(expanded ? QWIDGETSIZE_MAX : 30);
+    };
+    QObject::connect(controls.group, &QGroupBox::toggled, controls.group, setExpanded);
+    setExpanded(false);
+    return controls;
+}
+
 QString encodingName(const spice::mix::TextureEncodingKind kind) {
     switch (kind) {
     case spice::mix::TextureEncodingKind::Gvr: return "GVR";
@@ -180,7 +265,8 @@ struct MldWorkbench::Impl {
     QPushButton* exportEntryListButton = nullptr;
     QPushButton* exportBothButton = nullptr;
     QCheckBox* allowDimensions = nullptr;
-    EncodingControls encoding{};
+    GvrEncodingControls encoding{};
+    PvrEncodingControls pvrEncoding{};
 
     void refreshOverview() {
         const auto item = session->overview();
@@ -239,24 +325,37 @@ struct MldWorkbench::Impl {
             textureDetails->clear();
             replaceButton->setEnabled(false);
             allowDimensions->setEnabled(false);
-            encoding.group->setEnabled(false);
+            encoding.group->hide();
+            pvrEncoding.group->hide();
             readOnlyExplanation->hide();
             return;
         }
         const auto& item = textures[static_cast<std::size_t>(row)];
         viewport->setImage(session->texturePreview(static_cast<std::size_t>(row)));
-        textureDetails->setText(QString(
-            "<b>%1</b><br>%2 | %3<br>%4 x %5<br>Palette: %6<br>Mipmaps: %7<br>Global index: %8<br>Encoded size: %9 bytes")
-            .arg(QString::fromStdString(item.name))
-            .arg(encodingName(item.encoding), QString::fromStdString(item.format))
-            .arg(item.width).arg(item.height).arg(QString::fromStdString(item.paletteFormat))
-            .arg(item.mipmaps ? "yes" : "no")
-            .arg(item.hasGlobalIndex ? QString::number(item.globalIndex) : "none")
-            .arg(item.encodedSize));
-        const bool editable = item.encoding == spice::mix::TextureEncodingKind::Gvr;
+        if (item.encoding == spice::mix::TextureEncodingKind::Pvr) {
+            textureDetails->setText(QString(
+                "<b>%1</b><br>PVR<br>Pixel format: %2<br>Data layout: %3<br>%4 x %5<br>Mipmaps: %6<br>Global index: %7<br>Encoded size: %8 bytes")
+                .arg(QString::fromStdString(item.name), QString::fromStdString(item.format),
+                    QString::fromStdString(item.paletteFormat))
+                .arg(item.width).arg(item.height).arg(item.mipmaps ? "yes" : "no")
+                .arg(item.hasGlobalIndex ? QString::number(item.globalIndex) : "none")
+                .arg(item.encodedSize));
+        } else {
+            textureDetails->setText(QString(
+                "<b>%1</b><br>%2 | %3<br>%4 x %5<br>Palette: %6<br>Mipmaps: %7<br>Global index: %8<br>Encoded size: %9 bytes")
+                .arg(QString::fromStdString(item.name))
+                .arg(encodingName(item.encoding), QString::fromStdString(item.format))
+                .arg(item.width).arg(item.height).arg(QString::fromStdString(item.paletteFormat))
+                .arg(item.mipmaps ? "yes" : "no")
+                .arg(item.hasGlobalIndex ? QString::number(item.globalIndex) : "none")
+                .arg(item.encodedSize));
+        }
+        const bool editable = item.encoding == spice::mix::TextureEncodingKind::Gvr
+            || item.encoding == spice::mix::TextureEncodingKind::Pvr;
         replaceButton->setEnabled(editable);
         allowDimensions->setEnabled(editable);
-        encoding.group->setEnabled(editable);
+        encoding.group->setVisible(item.encoding == spice::mix::TextureEncodingKind::Gvr);
+        pvrEncoding.group->setVisible(item.encoding == spice::mix::TextureEncodingKind::Pvr);
         readOnlyExplanation->setVisible(!editable);
     }
 
@@ -340,14 +439,15 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
     detailLayout->addWidget(revert);
     detailLayout->addWidget(revertAll);
     impl_->readOnlyExplanation = new QLabel(
-        "PVR texture: preview, PNG export, and native extraction are available. Replacement and encoding are read-only.",
+        "This texture has an unsupported or unknown native encoding. Preview, PNG export, or extraction may still be available.",
         sidebar);
     impl_->readOnlyExplanation->setWordWrap(true);
     impl_->readOnlyExplanation->setStyleSheet("color: palette(mid);");
     detailLayout->addWidget(impl_->readOnlyExplanation);
     impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", sidebar);
     detailLayout->addWidget(impl_->allowDimensions);
-    impl_->encoding = addEncodingControls(detailLayout, false);
+    impl_->encoding = addGvrEncodingControls(detailLayout, false);
+    impl_->pvrEncoding = addPvrEncodingControls(detailLayout);
     detailLayout->addStretch();
     detailLayout->addWidget(new QLabel("<b>Diagnostics</b>", sidebar));
     impl_->textureDiagnostics = new QTextEdit(sidebar);
@@ -497,14 +597,23 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
     });
     connect(impl_->replaceButton, &QPushButton::clicked, this, [this]() {
         const int row = impl_->textureTable->currentRow();
-        if (row < 0) return;
+        const auto textures = impl_->session->textures();
+        if (row < 0 || row >= static_cast<int>(textures.size())) return;
+        const auto encoding = textures[static_cast<std::size_t>(row)].encoding;
         const auto input = QFileDialog::getOpenFileName(this, "Replacement PNG", {}, "PNG images (*.png)");
         if (input.isEmpty()) return;
         const auto result = std::make_shared<spice::mix::DocumentResult>();
         QPointer<MldWorkbench> self(this);
         impl_->tasks->run("Replace MLD texture", [session = impl_->session, row, inputPath = fspath(input),
-            settings = impl_->encoding.overrides(), allow = impl_->allowDimensions->isChecked(), result](const auto& context) {
-                *result = session->replaceGvrTexture(static_cast<std::size_t>(row), inputPath, settings, allow, context);
+            encoding, gvrSettings = impl_->encoding.overrides(), pvrSettings = impl_->pvrEncoding.overrides(),
+            allow = impl_->allowDimensions->isChecked(), result](const auto& context) {
+                if (encoding == spice::mix::TextureEncodingKind::Pvr) {
+                    *result = session->replacePvrTexture(
+                        static_cast<std::size_t>(row), inputPath, pvrSettings, allow, context);
+                } else {
+                    *result = session->replaceGvrTexture(
+                        static_cast<std::size_t>(row), inputPath, gvrSettings, allow, context);
+                }
             }, [self, result]() {
                 if (!self) return;
                 showResult(self, *result);
@@ -569,8 +678,19 @@ bool MldWorkbench::runSmokeChecks() {
         && impl_->exportEntryListButton
         && impl_->exportBothButton
         && impl_->exportStagedNotice->isHidden() == !dirty();
+    const auto textures = impl_->session->textures();
+    bool encodingControlsReady = true;
+    if (!textures.empty()) {
+        const auto kind = textures.front().encoding;
+        encodingControlsReady = kind == spice::mix::TextureEncodingKind::Gvr
+            ? !impl_->encoding.group->isHidden() && impl_->pvrEncoding.group->isHidden()
+            : kind == spice::mix::TextureEncodingKind::Pvr
+                ? impl_->encoding.group->isHidden() && !impl_->pvrEncoding.group->isHidden()
+                : impl_->encoding.group->isHidden() && impl_->pvrEncoding.group->isHidden();
+    }
     return impl_->viewport
         && exportsPageReady
+        && encodingControlsReady
         && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
         && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
         && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });
@@ -604,7 +724,7 @@ struct GvrWorkbench::Impl {
     QLabel* details = nullptr;
     QTextEdit* diagnostics = nullptr;
     QCheckBox* allowDimensions = nullptr;
-    EncodingControls encoding{};
+    GvrEncodingControls encoding{};
 
     void refresh() {
         const auto item = session->snapshot();
@@ -650,7 +770,7 @@ GvrWorkbench::GvrWorkbench(std::shared_ptr<spice::mix::GvrDocumentSession> sessi
     impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", sidebar);
     impl_->allowDimensions->setChecked(true);
     sidebarLayout->addWidget(impl_->allowDimensions);
-    impl_->encoding = addEncodingControls(sidebarLayout, true);
+    impl_->encoding = addGvrEncodingControls(sidebarLayout, true);
     sidebarLayout->addStretch();
     sidebarLayout->addWidget(new QLabel("<b>Diagnostics</b>", sidebar));
     impl_->diagnostics = new QTextEdit(sidebar);
@@ -721,6 +841,142 @@ void GvrWorkbench::requestSaveAs(std::function<void(bool)> completed) {
     auto result = std::make_shared<spice::mix::DocumentResult>();
     QPointer<GvrWorkbench> self(this);
     impl_->tasks->run("Save GVR As", [session = impl_->session, path = fspath(output), result](const auto& context) {
+        *result = session->saveAs(path, context);
+    }, [self, result, completed = std::move(completed)]() mutable {
+        if (!self) return;
+        showResult(self, *result);
+        if (result->ok()) self->impl_->refresh();
+        if (completed) completed(result->ok());
+    });
+}
+
+struct PvrWorkbench::Impl {
+    PvrWorkbench* owner = nullptr;
+    std::shared_ptr<spice::mix::PvrDocumentSession> session{};
+    RackTaskController* tasks = nullptr;
+    TextureViewport* viewport = nullptr;
+    QLabel* details = nullptr;
+    QTextEdit* diagnostics = nullptr;
+    QCheckBox* allowDimensions = nullptr;
+    PvrEncodingControls encoding{};
+
+    void refresh() {
+        const auto item = session->snapshot();
+        viewport->setImage(session->preview());
+        details->setText(QString(
+            "<b>%1</b><br>Data layout: %2<br>%3 x %4<br>Mipmaps: %5<br>Global index: %6")
+            .arg(QString::fromStdString(item.pixelFormat), QString::fromStdString(item.dataLayout))
+            .arg(item.width).arg(item.height).arg(item.mipmaps ? "yes" : "no")
+            .arg(item.hasGlobalIndex ? QString::number(item.globalIndex) : "none"));
+        QString diagnosticText{};
+        for (const auto& diagnostic : item.diagnostics) {
+            diagnosticText += QString::fromStdString(diagnostic) + '\n';
+        }
+        diagnostics->setPlainText(diagnosticText);
+        owner->notifyStateChanged();
+    }
+};
+
+PvrWorkbench::PvrWorkbench(std::shared_ptr<spice::mix::PvrDocumentSession> session,
+    RackTaskController& tasks, QWidget* parent)
+    : DocumentWorkbench(parent), impl_(std::make_unique<Impl>()) {
+    setObjectName("pvrWorkbench");
+    impl_->owner = this;
+    impl_->session = std::move(session);
+    impl_->tasks = &tasks;
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    auto* splitter = new QSplitter(Qt::Horizontal, this);
+    impl_->viewport = new TextureViewport(splitter);
+    impl_->viewport->setMinimumSize(480, 300);
+    auto* sidebar = new QWidget(splitter);
+    sidebar->setObjectName("textureEditorSidebar");
+    sidebar->setMinimumWidth(260);
+    auto* sidebarLayout = new QVBoxLayout(sidebar);
+    sidebarLayout->addWidget(new QLabel("<b>Texture metadata</b>", sidebar));
+    impl_->details = new QLabel(sidebar);
+    impl_->details->setWordWrap(true);
+    impl_->details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    sidebarLayout->addWidget(impl_->details);
+    auto* replace = new QPushButton("Replace from PNG...", sidebar);
+    auto* exportPng = new QPushButton("Export PNG...", sidebar);
+    auto* revert = new QPushButton("Revert", sidebar);
+    sidebarLayout->addWidget(replace);
+    sidebarLayout->addWidget(exportPng);
+    sidebarLayout->addWidget(revert);
+    impl_->allowDimensions = new QCheckBox("Allow replacement dimension changes", sidebar);
+    impl_->allowDimensions->setChecked(true);
+    sidebarLayout->addWidget(impl_->allowDimensions);
+    impl_->encoding = addPvrEncodingControls(sidebarLayout);
+    sidebarLayout->addStretch();
+    sidebarLayout->addWidget(new QLabel("<b>Diagnostics</b>", sidebar));
+    impl_->diagnostics = new QTextEdit(sidebar);
+    impl_->diagnostics->setReadOnly(true);
+    impl_->diagnostics->setMaximumHeight(140);
+    sidebarLayout->addWidget(impl_->diagnostics);
+    splitter->addWidget(impl_->viewport);
+    splitter->addWidget(sidebar);
+    splitter->setStretchFactor(0, 1);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, false);
+    splitter->setSizes({ 900, 320 });
+    root->addWidget(splitter);
+
+    connect(replace, &QPushButton::clicked, this, [this]() {
+        const auto input = QFileDialog::getOpenFileName(this, "Replacement PNG", {}, "PNG images (*.png)");
+        if (input.isEmpty()) return;
+        auto result = std::make_shared<spice::mix::DocumentResult>();
+        QPointer<PvrWorkbench> self(this);
+        impl_->tasks->run("Replace PVR image", [session = impl_->session, path = fspath(input),
+            settings = impl_->encoding.overrides(), allow = impl_->allowDimensions->isChecked(),
+            result](const auto& context) {
+                *result = session->replaceImage(path, settings, allow, context);
+            }, [self, result]() {
+                if (!self) return;
+                showResult(self, *result);
+                if (result->ok()) self->impl_->refresh();
+            });
+    });
+    connect(exportPng, &QPushButton::clicked, this, [this]() {
+        const auto output = QFileDialog::getSaveFileName(this, "Export PNG", {}, "PNG images (*.png)");
+        if (output.isEmpty()) return;
+        auto result = std::make_shared<spice::mix::DocumentResult>();
+        QPointer<PvrWorkbench> self(this);
+        impl_->tasks->run("Export PVR PNG", [session = impl_->session, path = fspath(output), result](const auto& context) {
+            *result = session->exportPng(path, context);
+        }, [self, result]() { if (self) showResult(self, *result); });
+    });
+    connect(revert, &QPushButton::clicked, this, [this]() {
+        const auto result = impl_->session->revert();
+        showResult(this, result);
+        if (result.ok()) impl_->refresh();
+    });
+    impl_->refresh();
+}
+
+PvrWorkbench::~PvrWorkbench() = default;
+QString PvrWorkbench::displayName() const { return QString::fromStdString(impl_->session->snapshot().displayName); }
+bool PvrWorkbench::dirty() const { return impl_->session->dirty(); }
+std::optional<std::filesystem::path> PvrWorkbench::sourcePath() const { return impl_->session->snapshot().sourcePath; }
+bool PvrWorkbench::runSmokeChecks() {
+    return impl_->viewport
+        && impl_->encoding.group && impl_->encoding.group->isVisible()
+        && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
+        && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
+        && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });
+}
+
+void PvrWorkbench::requestSaveAs(std::function<void(bool)> completed) {
+    if (impl_->tasks->busy()) {
+        QMessageBox::information(this, "SpiceRack", "Finish or cancel the current job first.");
+        if (completed) completed(false);
+        return;
+    }
+    const auto output = QFileDialog::getSaveFileName(this, "Save PVR As", {}, "PVR files (*.pvr)");
+    if (output.isEmpty()) { if (completed) completed(false); return; }
+    auto result = std::make_shared<spice::mix::DocumentResult>();
+    QPointer<PvrWorkbench> self(this);
+    impl_->tasks->run("Save PVR As", [session = impl_->session, path = fspath(output), result](const auto& context) {
         *result = session->saveAs(path, context);
     }, [self, result, completed = std::move(completed)]() mutable {
         if (!self) return;

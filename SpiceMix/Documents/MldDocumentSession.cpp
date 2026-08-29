@@ -1,6 +1,7 @@
 #include "MldDocumentSession.h"
 
 #include "DocumentSupport.h"
+#include "PvrDocumentSupport.h"
 #include "../../SpiceGvm/Image/PngCodec.h"
 #include "../../SpiceMLD/Export/BlenderIrJsonExporter.h"
 #include "../../SpiceMLD/Export/MldEntryListJsonExporter.h"
@@ -211,7 +212,7 @@ DocumentResult MldDocumentSession::replaceGvrTexture(const std::size_t index,
     auto* texture = textureAt(*impl_, index);
     if (!texture) return documents::failure("The selected MLD texture index is out of range.");
     if (texture->encoding != spice::mld::model::MldTextureEncoding::Gvr) {
-        return documents::failure("Only GVR textures can be replaced in this workbench. PVR textures are read-only.");
+        return documents::failure("The selected MLD texture is not a GVR texture.");
     }
     try {
         if (pngPath.empty() || !std::filesystem::is_regular_file(pngPath)) {
@@ -255,6 +256,62 @@ DocumentResult MldDocumentSession::replaceGvrTexture(const std::size_t index,
         documents::emit(context, EventLevel::Error, error.what());
         return documents::failure(error.what());
     }
+}
+
+DocumentResult MldDocumentSession::replacePvrTexture(const std::size_t index,
+    const std::filesystem::path& pngPath, const PvrEncodingOverrides& overrides,
+    const bool allowDimensionChange, const DocumentContext& context) {
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+    auto* texture = textureAt(*impl_, index);
+    if (!texture) return documents::failure("The selected MLD texture index is out of range.");
+    if (texture->encoding != spice::mld::model::MldTextureEncoding::Pvr) {
+        return documents::failure("The selected MLD texture is not a PVR texture.");
+    }
+    documents::emit(context, EventLevel::Progress,
+        "Encoding replacement for MLD PVR texture " + std::to_string(index) + ".");
+    auto encoded = documents::encodePvrFromPng(pngPath, overrides, texture->encodedData);
+    if (!encoded.result.ok() || !encoded.candidate.has_value()) {
+        documents::emit(context, EventLevel::Error, encoded.result.message);
+        return encoded.result;
+    }
+    const auto& candidate = *encoded.candidate;
+    if (!allowDimensionChange
+        && (candidate.texture.width != texture->width || candidate.texture.height != texture->height)) {
+        return documents::failure("Replacement PNG dimensions do not match the selected MLD texture.");
+    }
+    if (context.stopToken.stop_requested()) return documents::cancelled();
+
+    auto replacement = *texture;
+    replacement.encodedData = candidate.bytes;
+    replacement.encodedDataSize = candidate.bytes.size();
+    replacement.hasGlobalIndex = candidate.texture.globalIndex.has_value();
+    replacement.globalIndex = candidate.texture.globalIndex.value_or(0U);
+    replacement.pixelFormat = candidate.texture.rawPixelFormat;
+    replacement.dataFormat = candidate.texture.rawDataLayout;
+    replacement.sourceFormat = spice::pvm::model::toString(candidate.texture.pixelFormat);
+    replacement.sourcePaletteFormat = spice::pvm::model::toString(candidate.texture.dataLayout);
+    using Layout = spice::pvm::model::DataLayout;
+    replacement.hasMipmaps = candidate.texture.dataLayout == Layout::TwiddledMipmaps
+        || candidate.texture.dataLayout == Layout::VqMipmaps
+        || candidate.texture.dataLayout == Layout::SmallVqMipmaps
+        || candidate.texture.dataLayout == Layout::TwiddledMipmapsDma;
+    replacement.hasInternalPalette = false;
+    replacement.width = candidate.texture.width;
+    replacement.height = candidate.texture.height;
+    replacement.imageDataOffset = candidate.texture.textureDataRange.offset;
+    replacement.imageDataSize = candidate.texture.textureDataRange.size;
+    replacement.paletteDataSize = 0U;
+    replacement.decoded = !candidate.decoded.mipLevels.empty()
+        && !candidate.decoded.mipLevels.front().image.pixels.empty();
+    replacement.rgba8 = replacement.decoded
+        ? candidate.decoded.mipLevels.front().image.pixels : std::vector<std::uint8_t>{};
+    replacement.diagnostics = candidate.diagnostics;
+    *texture = std::move(replacement);
+    impl_->dirtyTextures[index] = true;
+    documents::emit(context, EventLevel::Info,
+        "Staged replacement for MLD PVR texture " + std::to_string(index) + ".");
+    encoded.result.message = "PVR texture replacement staged.";
+    return encoded.result;
 }
 
 DocumentResult MldDocumentSession::revertTexture(const std::size_t index) {

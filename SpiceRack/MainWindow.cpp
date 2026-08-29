@@ -49,6 +49,8 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     connect(openAction, &QAction::triggered, this, [this]() { chooseOpenDocument(); });
     auto* newGvrAction = fileMenu->addAction("New &GVR from PNG...");
     connect(newGvrAction, &QAction::triggered, this, [this]() { chooseNewGvr(); });
+    auto* newPvrAction = fileMenu->addAction("New &PVR from PNG...");
+    connect(newPvrAction, &QAction::triggered, this, [this]() { chooseNewPvr(); });
     fileMenu->addSeparator();
     auto* saveAsAction = fileMenu->addAction("Save &As...");
     saveAsAction->setShortcut(QKeySequence::SaveAs);
@@ -66,7 +68,7 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     auto* aboutAction = helpMenu->addAction("&About SpiceRack");
     connect(aboutAction, &QAction::triggered, this, [this]() {
         QMessageBox::about(this, "About SpiceRack",
-            "SpiceRack is the visual frontend for inspecting MLD files and editing GVR textures.\n\n"
+            "SpiceRack is the visual frontend for inspecting MLD files and editing GVR and PVR textures.\n\n"
             "Document operations are provided by the shared, non-Qt SpiceMix layer.");
     });
 
@@ -76,7 +78,7 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     tabs_->setDocumentMode(true);
     connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](const int index) { closeTab(index); });
     auto* welcome = new QLabel(
-        "<h2>SpiceRack</h2><p>Open an MLD or GVR file, or create a new GVR from a PNG.</p>"
+        "<h2>SpiceRack</h2><p>Open an MLD, GVR, or PVR file, or create a new texture from a PNG.</p>"
         "<p>MLD texture changes are staged until <b>Save As</b>; the original MLD is never overwritten.</p>", tabs_);
     welcome->setAlignment(Qt::AlignCenter);
     welcome->setWordWrap(true);
@@ -165,8 +167,27 @@ bool SpiceRackMainWindow::runSmokeChecks() {
 
 void SpiceRackMainWindow::chooseOpenDocument() {
     const auto path = QFileDialog::getOpenFileName(this, "Open SPICE document", {},
-        "Supported files (*.mld *.gvr);;MLD files (*.mld);;GVR files (*.gvr);;All files (*)");
+        "Supported files (*.mld *.gvr *.pvr);;MLD files (*.mld);;GVR files (*.gvr);;PVR files (*.pvr);;All files (*)");
     if (!path.isEmpty()) openDocument(fspath(path));
+}
+
+void SpiceRackMainWindow::chooseNewPvr() {
+    const auto path = QFileDialog::getOpenFileName(this, "Create PVR from PNG", {}, "PNG images (*.png)");
+    if (path.isEmpty()) return;
+    auto result = std::make_shared<spice::mix::PvrDocumentSession::OpenResult>();
+    QPointer<SpiceRackMainWindow> self(this);
+    if (!tasks_.run("Create PVR document", [path = fspath(path), result](const auto& context) {
+        *result = spice::mix::PvrDocumentSession::createFromPng(path, context);
+    }, [self, result]() {
+        if (!self) return;
+        if (!result->result.ok() || !result->session) {
+            QMessageBox::critical(self, "SpiceRack", QString::fromStdString(result->result.message));
+            return;
+        }
+        self->addWorkbench(new PvrWorkbench(result->session, self->tasks_, self));
+    })) {
+        QMessageBox::information(this, "SpiceRack", "Finish or cancel the current job first.");
+    }
 }
 
 void SpiceRackMainWindow::chooseNewGvr() {
@@ -197,21 +218,23 @@ void SpiceRackMainWindow::openDocument(const std::filesystem::path& path,
         return;
     }
     const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
-    if (extension != ".mld" && extension != ".gvr") {
-        if (showErrors) QMessageBox::critical(this, "SpiceRack", "This workbench currently opens .mld and .gvr files.");
+    if (extension != ".mld" && extension != ".gvr" && extension != ".pvr") {
+        if (showErrors) QMessageBox::critical(this, "SpiceRack", "This workbench opens .mld, .gvr, and .pvr files.");
         if (completed) completed(false);
         return;
     }
     struct OpenState {
         spice::mix::MldDocumentSession::OpenResult mld{};
         spice::mix::GvrDocumentSession::OpenResult gvr{};
+        spice::mix::PvrDocumentSession::OpenResult pvr{};
     };
     auto state = std::make_shared<OpenState>();
     QPointer<SpiceRackMainWindow> self(this);
     const bool started = tasks_.run("Open " + path.filename().string(),
         [path, extension, state](const auto& context) {
             if (extension == ".mld") state->mld = spice::mix::MldDocumentSession::open(path, context);
-            else state->gvr = spice::mix::GvrDocumentSession::open(path, context);
+            else if (extension == ".gvr") state->gvr = spice::mix::GvrDocumentSession::open(path, context);
+            else state->pvr = spice::mix::PvrDocumentSession::open(path, context);
         }, [self, extension, state, completed = std::move(completed), showErrors]() mutable {
             if (!self) return;
             bool success = false;
@@ -221,9 +244,13 @@ void SpiceRackMainWindow::openDocument(const std::filesystem::path& path,
             } else if (extension == ".gvr" && state->gvr.result.ok() && state->gvr.session) {
                 self->addWorkbench(new GvrWorkbench(state->gvr.session, self->tasks_, self));
                 success = true;
+            } else if (extension == ".pvr" && state->pvr.result.ok() && state->pvr.session) {
+                self->addWorkbench(new PvrWorkbench(state->pvr.session, self->tasks_, self));
+                success = true;
             } else {
-                const auto& result = extension == ".mld" ? state->mld.result : state->gvr.result;
-                if (showErrors) QMessageBox::critical(self, "SpiceRack", QString::fromStdString(result.message));
+                const auto message = extension == ".mld" ? state->mld.result.message
+                    : extension == ".gvr" ? state->gvr.result.message : state->pvr.result.message;
+                if (showErrors) QMessageBox::critical(self, "SpiceRack", QString::fromStdString(message));
             }
             if (completed) completed(success);
         });

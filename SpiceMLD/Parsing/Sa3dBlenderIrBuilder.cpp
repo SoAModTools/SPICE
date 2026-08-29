@@ -871,7 +871,7 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
         outTexture.hasTextureId = true;
         outTexture.sourceOffset = tx.encodedDataOffset;
         outTexture.sourceSize = tx.encodedDataSize;
-        outTexture.encodedFormat = "gvr";
+        outTexture.encodedFormat = tx.encoding == model::MldTextureEncoding::Pvr ? "pvr" : "gvr";
         outTexture.sourceContainer = "gvm";
         outTexture.sourceTextureFormat = tx.sourceFormat;
         outTexture.sourcePaletteFormat = tx.sourcePaletteFormat;

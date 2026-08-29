@@ -29,6 +29,7 @@ protected:
 private:
     void chooseOpenDocument();
     void chooseNewGvr();
+    void chooseNewPvr();
     void addWorkbench(DocumentWorkbench* workbench);
     void refreshTabTitle(DocumentWorkbench* workbench);
     void closeTab(int index);
