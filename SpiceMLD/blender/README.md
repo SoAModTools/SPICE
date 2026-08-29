@@ -64,7 +64,7 @@ Open **3D View -> Sidebar -> SPICE -> Triangle Metadata** to:
 - show attributed sky-rift force regions by exact runtime force class;
 - show encounter-selector regions from the authored tens digit;
 - resolve Area 99 encounter zone and table ID per visible surface position;
-- resolve dungeon encounter table IDs directly from selectors `1..7`;
+- resolve dungeon encounter table IDs directly from authored selectors `1..9`;
 - checker the sky-rift force and resolved encounter layers without merging them;
 - switch between inferred Area 99 lookup pages and surface/forced altitude bands;
 - show remaining payload groups and unclassified decoded classes in the
@@ -100,6 +100,13 @@ force path. Other decoded classes are not labeled as force behavior.
 The encounter-selector view uses only the authored decimal tens digit. Payload
 groups and unclassified high-byte classes do not influence encounter resolution
 and appear only in the unattributed-values view.
+
+Static GameCube consumers directly establish the tens digit as the encounter
+selector, the hundreds digit as a surface-response payload, the ones digit as a
+collision/camera modifier family, and the thousands contribution as a high-bit
+ground class observed in Area 99. The Dreamcast executable directly confirms the
+same decoder arithmetic; equivalent Dreamcast consumer meanings remain a
+cross-version inference until independently traced.
 
 The encounter selector is context-dependent: dungeon maps use it directly as a
 table ID, while area 99 uses it as a local lane for a separate contextual lookup.

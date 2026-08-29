@@ -1,8 +1,13 @@
 #include "BlenderIrJsonExporter.h"
 
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace spice::mld::exporting {
 namespace {
@@ -22,16 +27,90 @@ void writeJsonString(std::ostringstream& out, const std::string& value) {
     out << '"';
 }
 
-void writeVec3(std::ostringstream& out, const model::Vec3& v) {
-    out << '[' << v.x << ',' << v.y << ',' << v.z << ']';
+struct NonFiniteCollector {
+    static constexpr std::size_t kPathLimit = 32U;
+    std::size_t count = 0;
+    std::vector<std::string> paths{};
+
+    void record(std::string path) {
+        ++count;
+        if (paths.size() < kPathLimit) {
+            paths.push_back(std::move(path));
+        }
+    }
+
+    [[nodiscard]] std::string diagnostic() const {
+        std::string message = "Blender IR JSON sanitized " + std::to_string(count) +
+            " non-finite floating-point value(s) to 0.0";
+        if (!paths.empty()) {
+            message += "; paths: ";
+            for (std::size_t i = 0; i < paths.size(); ++i) {
+                if (i != 0U) {
+                    message += ", ";
+                }
+                message += paths[i];
+            }
+        }
+        if (count > paths.size()) {
+            message += "; omitted " + std::to_string(count - paths.size()) + " additional path(s)";
+        }
+        return message + ".";
+    }
+};
+
+void writeFiniteFloat(
+    std::ostringstream& out,
+    const float value,
+    std::string path,
+    NonFiniteCollector& nonFinite) {
+    if (std::isfinite(value)) {
+        out << value;
+    } else {
+        out << "0.0";
+        nonFinite.record(std::move(path));
+    }
 }
 
-void writeVec2(std::ostringstream& out, const model::Vec2& v) {
-    out << '[' << v.x << ',' << v.y << ']';
+void writeVec3(
+    std::ostringstream& out,
+    const model::Vec3& v,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
+    out << '[';
+    writeFiniteFloat(out, v.x, path + ".x", nonFinite);
+    out << ',';
+    writeFiniteFloat(out, v.y, path + ".y", nonFinite);
+    out << ',';
+    writeFiniteFloat(out, v.z, path + ".z", nonFinite);
+    out << ']';
 }
 
-void writeQuat(std::ostringstream& out, const model::Quat& q) {
-    out << '[' << q.x << ',' << q.y << ',' << q.z << ',' << q.w << ']';
+void writeVec2(
+    std::ostringstream& out,
+    const model::Vec2& v,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
+    out << '[';
+    writeFiniteFloat(out, v.x, path + ".x", nonFinite);
+    out << ',';
+    writeFiniteFloat(out, v.y, path + ".y", nonFinite);
+    out << ']';
+}
+
+void writeQuat(
+    std::ostringstream& out,
+    const model::Quat& q,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
+    out << '[';
+    writeFiniteFloat(out, q.x, path + ".x", nonFinite);
+    out << ',';
+    writeFiniteFloat(out, q.y, path + ".y", nonFinite);
+    out << ',';
+    writeFiniteFloat(out, q.z, path + ".z", nonFinite);
+    out << ',';
+    writeFiniteFloat(out, q.w, path + ".w", nonFinite);
+    out << ']';
 }
 
 void writeColor(std::ostringstream& out, const model::ColorRgba8& c) {
@@ -41,71 +120,102 @@ void writeColor(std::ostringstream& out, const model::ColorRgba8& c) {
         << ',' << static_cast<unsigned int>(c.a) << ']';
 }
 
-void writeSpot(std::ostringstream& out, const model::SpotlightValue& spot) {
-    out << "{\"nearDistance\":" << spot.nearDistance
-        << ",\"farDistance\":" << spot.farDistance
-        << ",\"insideAngle\":" << spot.insideAngle
-        << ",\"outsideAngle\":" << spot.outsideAngle << '}';
-}
-
-void writeTransform(std::ostringstream& out, const model::Transform& tx) {
-    out << "{\"position\":";
-    writeVec3(out, tx.position);
-    out << ",\"rotationRaw\":";
-    writeVec3(out, tx.rotationRaw);
-    out << ",\"rotation\":";
-    writeQuat(out, tx.rotation);
-    out << ",\"scale\":";
-    writeVec3(out, tx.scale);
+void writeSpot(
+    std::ostringstream& out,
+    const model::SpotlightValue& spot,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
+    out << "{\"nearDistance\":";
+    writeFiniteFloat(out, spot.nearDistance, path + ".nearDistance", nonFinite);
+    out << ",\"farDistance\":";
+    writeFiniteFloat(out, spot.farDistance, path + ".farDistance", nonFinite);
+    out << ",\"insideAngle\":";
+    writeFiniteFloat(out, spot.insideAngle, path + ".insideAngle", nonFinite);
+    out << ",\"outsideAngle\":";
+    writeFiniteFloat(out, spot.outsideAngle, path + ".outsideAngle", nonFinite);
     out << '}';
 }
 
-void writeVec3Keyframes(std::ostringstream& out, const std::vector<model::BlenderIrVec3Keyframe>& keys) {
+void writeTransform(
+    std::ostringstream& out,
+    const model::Transform& tx,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
+    out << "{\"position\":";
+    writeVec3(out, tx.position, nonFinite, path + ".position");
+    out << ",\"rotationRaw\":";
+    writeVec3(out, tx.rotationRaw, nonFinite, path + ".rotationRaw");
+    out << ",\"rotation\":";
+    writeQuat(out, tx.rotation, nonFinite, path + ".rotation");
+    out << ",\"scale\":";
+    writeVec3(out, tx.scale, nonFinite, path + ".scale");
+    out << '}';
+}
+
+void writeVec3Keyframes(
+    std::ostringstream& out,
+    const std::vector<model::BlenderIrVec3Keyframe>& keys,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (i != 0) {
             out << ',';
         }
         out << "{\"frame\":" << keys[i].frame << ",\"value\":";
-        writeVec3(out, keys[i].value);
+        writeVec3(out, keys[i].value, nonFinite, path + "[" + std::to_string(i) + "].value");
         out << '}';
     }
     out << ']';
 }
 
-void writeQuatKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrQuatKeyframe>& keys) {
+void writeQuatKeyframes(
+    std::ostringstream& out,
+    const std::vector<model::BlenderIrQuatKeyframe>& keys,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (i != 0) {
             out << ',';
         }
         out << "{\"frame\":" << keys[i].frame << ",\"value\":";
-        writeQuat(out, keys[i].value);
+        writeQuat(out, keys[i].value, nonFinite, path + "[" + std::to_string(i) + "].value");
         out << '}';
     }
     out << ']';
 }
 
-void writeVec2Keyframes(std::ostringstream& out, const std::vector<model::BlenderIrVec2Keyframe>& keys) {
+void writeVec2Keyframes(
+    std::ostringstream& out,
+    const std::vector<model::BlenderIrVec2Keyframe>& keys,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (i != 0) {
             out << ',';
         }
         out << "{\"frame\":" << keys[i].frame << ",\"value\":";
-        writeVec2(out, keys[i].value);
+        writeVec2(out, keys[i].value, nonFinite, path + "[" + std::to_string(i) + "].value");
         out << '}';
     }
     out << ']';
 }
 
-void writeFloatKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrFloatKeyframe>& keys) {
+void writeFloatKeyframes(
+    std::ostringstream& out,
+    const std::vector<model::BlenderIrFloatKeyframe>& keys,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (i != 0) {
             out << ',';
         }
-        out << "{\"frame\":" << keys[i].frame << ",\"value\":" << keys[i].value << '}';
+        out << "{\"frame\":" << keys[i].frame << ",\"value\":";
+        writeFiniteFloat(out, keys[i].value, path + "[" + std::to_string(i) + "].value", nonFinite);
+        out << '}';
     }
     out << ']';
 }
@@ -123,20 +233,28 @@ void writeColorKeyframes(std::ostringstream& out, const std::vector<model::Blend
     out << ']';
 }
 
-void writeSpotKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrSpotKeyframe>& keys) {
+void writeSpotKeyframes(
+    std::ostringstream& out,
+    const std::vector<model::BlenderIrSpotKeyframe>& keys,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (i != 0) {
             out << ',';
         }
         out << "{\"frame\":" << keys[i].frame << ",\"value\":";
-        writeSpot(out, keys[i].value);
+        writeSpot(out, keys[i].value, nonFinite, path + "[" + std::to_string(i) + "].value");
         out << '}';
     }
     out << ']';
 }
 
-void writeVectorArrayKeyframes(std::ostringstream& out, const std::vector<model::BlenderIrVectorArrayKeyframe>& keys) {
+void writeVectorArrayKeyframes(
+    std::ostringstream& out,
+    const std::vector<model::BlenderIrVectorArrayKeyframe>& keys,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     out << '[';
     for (std::size_t i = 0; i < keys.size(); ++i) {
         if (i != 0) {
@@ -149,26 +267,31 @@ void writeVectorArrayKeyframes(std::ostringstream& out, const std::vector<model:
             if (vi != 0) {
                 out << ',';
             }
-            writeVec3(out, keys[i].values[vi]);
+            writeVec3(out, keys[i].values[vi], nonFinite,
+                path + "[" + std::to_string(i) + "].values[" + std::to_string(vi) + "]");
         }
         out << "]}";
     }
     out << ']';
 }
 
-void writeAnimationChannelKeyframes(std::ostringstream& out, const model::BlenderIrAnimationChannel& channel) {
+void writeAnimationChannelKeyframes(
+    std::ostringstream& out,
+    const model::BlenderIrAnimationChannel& channel,
+    NonFiniteCollector& nonFinite,
+    const std::string& path) {
     if (!channel.vec3Values.empty()) {
-        writeVec3Keyframes(out, channel.vec3Values);
+        writeVec3Keyframes(out, channel.vec3Values, nonFinite, path);
     } else if (!channel.vec2Values.empty()) {
-        writeVec2Keyframes(out, channel.vec2Values);
+        writeVec2Keyframes(out, channel.vec2Values, nonFinite, path);
     } else if (!channel.floatValues.empty()) {
-        writeFloatKeyframes(out, channel.floatValues);
+        writeFloatKeyframes(out, channel.floatValues, nonFinite, path);
     } else if (!channel.colorValues.empty()) {
         writeColorKeyframes(out, channel.colorValues);
     } else if (!channel.spotValues.empty()) {
-        writeSpotKeyframes(out, channel.spotValues);
+        writeSpotKeyframes(out, channel.spotValues, nonFinite, path);
     } else {
-        writeVectorArrayKeyframes(out, channel.vectorArrayValues);
+        writeVectorArrayKeyframes(out, channel.vectorArrayValues, nonFinite, path);
     }
 }
 
@@ -212,6 +335,7 @@ void writeAnimationChannelKeyframes(std::ostringstream& out, const model::Blende
 
 std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) const {
     std::ostringstream out;
+    NonFiniteCollector nonFinite{};
     out << "{\"meshes\":[";
 
     for (std::size_t meshIdx = 0; meshIdx < scene.meshes.size(); ++meshIdx) {
@@ -248,10 +372,14 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 out << ',';
             }
             const auto& v = mesh.vertices[vIdx];
+            const auto vertexPath = "meshes[" + std::to_string(meshIdx) + "].vertices[" +
+                std::to_string(vIdx) + "]";
             out << '{';
-            out << "\"position\":[" << v.position.x << ',' << v.position.y << ',' << v.position.z << ']';
+            out << "\"position\":";
+            writeVec3(out, v.position, nonFinite, vertexPath + ".position");
             out << ",\"hasPosition\":" << (v.hasPosition ? "true" : "false");
-            out << ",\"normal\":[" << v.normal.x << ',' << v.normal.y << ',' << v.normal.z << ']';
+            out << ",\"normal\":";
+            writeVec3(out, v.normal, nonFinite, vertexPath + ".normal");
             out << ",\"hasNormal\":" << (v.hasNormal ? "true" : "false");
             out << ",\"rawUserAttributesU32\":";
             if (v.rawUserAttributesU32.has_value()) {
@@ -265,7 +393,10 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                     out << ',';
                 }
                 out << "{\"boneOrNodeIndex\":" << v.weights[wi].boneOrNodeIndex
-                    << ",\"weight\":" << v.weights[wi].weight << '}';
+                    << ",\"weight\":";
+                writeFiniteFloat(out, v.weights[wi].weight,
+                    vertexPath + ".weights[" + std::to_string(wi) + "].weight", nonFinite);
+                out << '}';
             }
             out << "]}";
         }
@@ -299,8 +430,12 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 << ",\"textureFiltering\":" << static_cast<unsigned>(material.textureFiltering)
                 << ",\"sourceAlpha\":" << static_cast<unsigned>(material.sourceAlpha)
                 << ",\"destinationAlpha\":" << static_cast<unsigned>(material.destinationAlpha)
-                << ",\"mipmapDistanceMultiplier\":" << material.mipmapDistanceMultiplier
-                << ",\"textureId\":" << material.textureId
+                << ",\"mipmapDistanceMultiplier\":";
+            writeFiniteFloat(out, material.mipmapDistanceMultiplier,
+                "meshes[" + std::to_string(meshIdx) + "].materials[" + std::to_string(matIdx) +
+                    "].mipmapDistanceMultiplier",
+                nonFinite);
+            out << ",\"textureId\":" << material.textureId
                 << ",\"textureName\":";
             writeJsonString(out, material.textureName);
             out
@@ -326,12 +461,24 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                     out << ',';
                 }
                 const auto& corner = ts.corners[cIdx];
+                const auto cornerPath = "meshes[" + std::to_string(meshIdx) + "].triangleSets[" +
+                    std::to_string(tsIdx) + "].corners[" + std::to_string(cIdx) + "]";
                 out << '{'
                     << "\"vertexIndex\":" << corner.vertexIndex
-                    << ",\"u\":" << corner.u
-                    << ",\"v\":" << corner.v
-                    << ",\"hasUv\":" << (corner.hasUv ? "true" : "false")
-                    << ",\"color\":[" << corner.colorR << ',' << corner.colorG << ',' << corner.colorB << ',' << corner.colorA << ']'
+                    << ",\"u\":";
+                writeFiniteFloat(out, corner.u, cornerPath + ".u", nonFinite);
+                out << ",\"v\":";
+                writeFiniteFloat(out, corner.v, cornerPath + ".v", nonFinite);
+                out << ",\"hasUv\":" << (corner.hasUv ? "true" : "false")
+                    << ",\"color\":[";
+                writeFiniteFloat(out, corner.colorR, cornerPath + ".color[0]", nonFinite);
+                out << ',';
+                writeFiniteFloat(out, corner.colorG, cornerPath + ".color[1]", nonFinite);
+                out << ',';
+                writeFiniteFloat(out, corner.colorB, cornerPath + ".color[2]", nonFinite);
+                out << ',';
+                writeFiniteFloat(out, corner.colorA, cornerPath + ".color[3]", nonFinite);
+                out << "]"
                     << ",\"hasColor\":" << (corner.hasColor ? "true" : "false")
                     << '}';
             }
@@ -397,7 +544,9 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 out << "null";
             }
             out << ",\"localTransform\":";
-            writeTransform(out, node.localTransform);
+            writeTransform(out, node.localTransform, nonFinite,
+                "objectTrees[" + std::to_string(treeIdx) + "].nodes[" + std::to_string(nodeIdx) +
+                    "].localTransform");
             out << ",\"parentNodeIndex\":";
             if (node.parentNodeIndex.has_value()) {
                 out << *node.parentNodeIndex;
@@ -430,7 +579,8 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
         out << ",\"fxnName\":";
         writeJsonString(out, entry.fxnName);
         out << ",\"transform\":";
-        writeTransform(out, entry.transform);
+        writeTransform(out, entry.transform, nonFinite,
+            "indexEntries[" + std::to_string(idx) + "].transform");
 
         out << ",\"functionParameters\":[";
         for (std::size_t pi = 0; pi < entry.functionParameters.size(); ++pi) {
@@ -504,15 +654,16 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 out << ',';
             }
             const auto& node = animation.nodes[ni];
+            const auto nodePath = "animations[" + std::to_string(ai) + "].nodes[" + std::to_string(ni) + "]";
             out << "{\"nodeIndex\":" << node.nodeIndex
                 << ",\"position\":";
-            writeVec3Keyframes(out, node.position);
+            writeVec3Keyframes(out, node.position, nonFinite, nodePath + ".position");
             out << ",\"eulerRotation\":";
-            writeVec3Keyframes(out, node.eulerRotation);
+            writeVec3Keyframes(out, node.eulerRotation, nonFinite, nodePath + ".eulerRotation");
             out << ",\"scale\":";
-            writeVec3Keyframes(out, node.scale);
+            writeVec3Keyframes(out, node.scale, nonFinite, nodePath + ".scale");
             out << ",\"quaternionRotation\":";
-            writeQuatKeyframes(out, node.quaternionRotation);
+            writeQuatKeyframes(out, node.quaternionRotation, nonFinite, nodePath + ".quaternionRotation");
             out << '}';
         }
         out << ']';
@@ -529,7 +680,8 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
             out << ",\"valueType\":";
             writeJsonString(out, channel.valueType);
             out << ",\"keyframes\":";
-            writeAnimationChannelKeyframes(out, channel);
+            writeAnimationChannelKeyframes(out, channel, nonFinite,
+                "animations[" + std::to_string(ai) + "].channels[" + std::to_string(ci) + "].keyframes");
             out << '}';
         }
         out << ']';
@@ -603,6 +755,12 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
             out << ',';
         }
         writeJsonString(out, scene.diagnostics[ii]);
+    }
+    if (nonFinite.count != 0U) {
+        if (!scene.diagnostics.empty()) {
+            out << ',';
+        }
+        writeJsonString(out, nonFinite.diagnostic());
     }
     out << "]}";
 

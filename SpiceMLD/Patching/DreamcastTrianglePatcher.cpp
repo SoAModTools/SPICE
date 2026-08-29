@@ -1,4 +1,6 @@
-#include "DreamcastTrianglePatcher.h"
+#include "TriangleMetadataPatcher.h"
+
+#include "../../Compression/Aklz.h"
 
 #include <algorithm>
 #include <limits>
@@ -40,7 +42,7 @@ struct ResolvedTriangle {
 
 [[nodiscard]] std::optional<ResolvedTriangle> resolveTriangle(
     const model::MldGroundResource& resource,
-    const DreamcastTriangleSelectorEdit& edit,
+    const TriangleSelectorEdit& edit,
     std::vector<model::MldDiagnostic>& diagnostics) {
     if (edit.resourceKind == TriangleResourceKind::Grnd) {
         if (edit.gobjNodeIndex.has_value()) {
@@ -94,7 +96,15 @@ struct ResolvedTriangle {
     };
 }
 
-[[nodiscard]] std::array<std::uint8_t, 2> littleEndianBytes(const std::uint16_t value) {
+[[nodiscard]] std::array<std::uint8_t, 2> endianBytes(
+    const std::uint16_t value,
+    const spice::root::Endian endian) {
+    if (endian == spice::root::Endian::Big) {
+        return {
+            static_cast<std::uint8_t>((value >> 8U) & 0xFFU),
+            static_cast<std::uint8_t>(value & 0xFFU),
+        };
+    }
     return {
         static_cast<std::uint8_t>(value & 0xFFU),
         static_cast<std::uint8_t>((value >> 8U) & 0xFFU),
@@ -119,24 +129,32 @@ bool MldPatchApplyResult::ok() const noexcept {
     return !hasErrors(diagnostics);
 }
 
-MldPatchPlan planDreamcastTriangleSelectorPatches(
+MldPatchPlan planTriangleSelectorPatches(
     const model::MldFile& file,
-    const std::span<const DreamcastTriangleSelectorEdit> edits) {
+    const std::span<const TriangleSelectorEdit> edits) {
     MldPatchPlan result{};
+    result.endian = file.endian;
+    result.sourceWasCompressedAklz = file.sourceWasCompressedAklz;
     if (file.parseStatus == model::MldParseStatus::Failed) {
         addError(result.diagnostics, "Cannot plan patches for a failed MLD parse.");
     }
-    if (file.sourcePlatform != model::TargetPlatform::Dreamcast || file.endian != spice::root::Endian::Little) {
-        addError(result.diagnostics, "Dreamcast triangle selector patching requires a little-endian Dreamcast MLD.");
+    const bool validPlatformEndian =
+        (file.sourcePlatform == model::TargetPlatform::Dreamcast && file.endian == spice::root::Endian::Little) ||
+        (file.sourcePlatform == model::TargetPlatform::GameCube && file.endian == spice::root::Endian::Big);
+    if (!validPlatformEndian) {
+        addError(result.diagnostics, "Triangle selector patching requires a recognized MLD platform and matching endian.");
     }
-    if (file.sourceWasCompressedAklz) {
-        addError(result.diagnostics, "Dreamcast triangle selector patching does not support compressed MLD files.");
+    if (file.sourceWasCompressedAklz && file.sourcePlatform != model::TargetPlatform::GameCube) {
+        addError(result.diagnostics, "AKLZ-wrapped triangle selector patching is supported only for GameCube MLD files.");
     }
     if (file.sourceBytes.empty()) {
-        addError(result.diagnostics, "Dreamcast triangle selector patching requires preserved source bytes.");
+        addError(result.diagnostics, "Triangle selector patching requires preserved source bytes.");
     }
-    if (file.decodedBytes.size() != file.sourceBytes.size()) {
-        addError(result.diagnostics, "Dreamcast source and decoded MLD sizes do not match.");
+    if (file.decodedBytes.empty()) {
+        addError(result.diagnostics, "Triangle selector patching requires preserved decoded MLD bytes.");
+    }
+    if (!file.sourceWasCompressedAklz && file.decodedBytes.size() != file.sourceBytes.size()) {
+        addError(result.diagnostics, "Uncompressed source and decoded MLD sizes do not match.");
     }
     if (!result.ok()) {
         return result;
@@ -185,10 +203,10 @@ MldPatchPlan planDreamcastTriangleSelectorPatches(
         }
         const auto replacementWord = static_cast<std::uint16_t>(
             (resolved->rawFaceWord & 0x8000U) | static_cast<std::uint16_t>(replacementLow));
-        const auto expected = littleEndianBytes(resolved->rawFaceWord);
-        const auto replacement = littleEndianBytes(replacementWord);
-        if (!bytesMatch(file.sourceBytes, resolved->flagSourceOffset, expected) ||
-            !bytesMatch(file.decodedBytes, resolved->flagSourceOffset, expected)) {
+        const auto expected = endianBytes(resolved->rawFaceWord, file.endian);
+        const auto replacement = endianBytes(replacementWord, file.endian);
+        if (!bytesMatch(file.decodedBytes, resolved->flagSourceOffset, expected) ||
+            (!file.sourceWasCompressedAklz && !bytesMatch(file.sourceBytes, resolved->flagSourceOffset, expected))) {
             addError(result.diagnostics, "The triangle source bytes do not match the parsed metadata word.",
                 diagnosticOffset(resolved->flagSourceOffset));
             continue;
@@ -209,16 +227,16 @@ MldPatchPlan planDreamcastTriangleSelectorPatches(
         }
 
         MldBytePatch patch{
-            .fileOffset = resolved->flagSourceOffset,
+            .decodedPayloadOffset = resolved->flagSourceOffset,
             .expectedBytes = expected,
             .replacementBytes = replacement,
             .source = edit,
         };
-        const auto [existing, patchInserted] = patchesByOffset.emplace(patch.fileOffset, patch);
+        const auto [existing, patchInserted] = patchesByOffset.emplace(patch.decodedPayloadOffset, patch);
         if (!patchInserted && (existing->second.expectedBytes != patch.expectedBytes ||
             existing->second.replacementBytes != patch.replacementBytes)) {
             addError(result.diagnostics, "Conflicting triangle selector edits target the same source word.",
-                diagnosticOffset(patch.fileOffset));
+                diagnosticOffset(patch.decodedPayloadOffset));
         }
     }
 
@@ -226,6 +244,18 @@ MldPatchPlan planDreamcastTriangleSelectorPatches(
     for (auto& [offset, patch] : patchesByOffset) {
         (void)offset;
         result.patches.push_back(std::move(patch));
+    }
+    return result;
+}
+
+MldPatchPlan planDreamcastTriangleSelectorPatches(
+    const model::MldFile& file,
+    const std::span<const DreamcastTriangleSelectorEdit> edits) {
+    auto result = planTriangleSelectorPatches(file, edits);
+    if (file.sourcePlatform != model::TargetPlatform::Dreamcast || file.endian != spice::root::Endian::Little ||
+        file.sourceWasCompressedAklz) {
+        result.patches.clear();
+        addError(result.diagnostics, "Dreamcast triangle selector patching requires an uncompressed little-endian Dreamcast MLD.");
     }
     return result;
 }
@@ -245,23 +275,25 @@ MldPatchApplyResult applyMldPatchPlan(
         ordered.push_back(&patch);
     }
     std::sort(ordered.begin(), ordered.end(), [](const auto* lhs, const auto* rhs) {
-        return lhs->fileOffset < rhs->fileOffset;
+        return lhs->decodedPayloadOffset < rhs->decodedPayloadOffset;
     });
 
     std::optional<std::size_t> previousEnd{};
     for (const auto* patch : ordered) {
-        if (patch->fileOffset > bytes.size() || patch->expectedBytes.size() > bytes.size() - patch->fileOffset) {
-            addError(result.diagnostics, "An MLD byte patch is out of bounds.", diagnosticOffset(patch->fileOffset));
+        if (patch->decodedPayloadOffset > bytes.size() ||
+            patch->expectedBytes.size() > bytes.size() - patch->decodedPayloadOffset) {
+            addError(result.diagnostics, "An MLD byte patch is out of bounds.",
+                diagnosticOffset(patch->decodedPayloadOffset));
             continue;
         }
-        if (previousEnd.has_value() && patch->fileOffset < *previousEnd) {
-            addError(result.diagnostics, "MLD byte patches overlap.", diagnosticOffset(patch->fileOffset));
+        if (previousEnd.has_value() && patch->decodedPayloadOffset < *previousEnd) {
+            addError(result.diagnostics, "MLD byte patches overlap.", diagnosticOffset(patch->decodedPayloadOffset));
             continue;
         }
-        previousEnd = patch->fileOffset + patch->expectedBytes.size();
-        if (!bytesMatch(bytes, patch->fileOffset, patch->expectedBytes)) {
+        previousEnd = patch->decodedPayloadOffset + patch->expectedBytes.size();
+        if (!bytesMatch(bytes, patch->decodedPayloadOffset, patch->expectedBytes)) {
             addError(result.diagnostics, "The MLD bytes no longer match a patch's expected value.",
-                diagnosticOffset(patch->fileOffset));
+                diagnosticOffset(patch->decodedPayloadOffset));
         }
     }
     if (!result.ok()) {
@@ -269,10 +301,69 @@ MldPatchApplyResult applyMldPatchPlan(
     }
 
     for (const auto* patch : ordered) {
-        bytes[patch->fileOffset] = patch->replacementBytes[0];
-        bytes[patch->fileOffset + 1U] = patch->replacementBytes[1];
+        bytes[patch->decodedPayloadOffset] = patch->replacementBytes[0];
+        bytes[patch->decodedPayloadOffset + 1U] = patch->replacementBytes[1];
     }
     result.appliedPatchCount = ordered.size();
+    return result;
+}
+
+MldPatchApplyResult materializeMldPatchPlan(
+    const std::span<const std::uint8_t> sourceBytes,
+    const MldPatchPlan& plan) {
+    MldPatchApplyResult result{};
+    if (!plan.ok()) {
+        addError(result.diagnostics, "Cannot materialize an invalid MLD patch plan.");
+        return result;
+    }
+    if (plan.patches.empty()) {
+        result.bytes.assign(sourceBytes.begin(), sourceBytes.end());
+        return result;
+    }
+
+    std::vector<std::uint8_t> decoded{};
+    if (plan.sourceWasCompressedAklz) {
+        if (!spice::compression::aklz::isAklz(sourceBytes)) {
+            addError(result.diagnostics, "The patch plan expects an AKLZ-wrapped source file.");
+            return result;
+        }
+        auto decompressed = spice::compression::aklz::decompress(sourceBytes);
+        if (!decompressed.ok()) {
+            addError(result.diagnostics, "AKLZ decompression failed while materializing the patch plan.");
+            return result;
+        }
+        decoded = std::move(decompressed.bytes);
+    } else {
+        if (spice::compression::aklz::isAklz(sourceBytes)) {
+            addError(result.diagnostics, "The patch plan expects an uncompressed MLD source file.");
+            return result;
+        }
+        decoded.assign(sourceBytes.begin(), sourceBytes.end());
+    }
+
+    const auto applied = applyMldPatchPlan(decoded, plan);
+    result.appliedPatchCount = applied.appliedPatchCount;
+    result.diagnostics = applied.diagnostics;
+    if (!result.ok()) {
+        return result;
+    }
+
+    if (!plan.sourceWasCompressedAklz) {
+        result.bytes = std::move(decoded);
+        return result;
+    }
+
+    auto compressed = spice::compression::aklz::compress(decoded);
+    if (!compressed.ok()) {
+        addError(result.diagnostics, "AKLZ compression failed while materializing the patch plan.");
+        return result;
+    }
+    auto verified = spice::compression::aklz::decompress(compressed.bytes);
+    if (!verified.ok() || verified.bytes != decoded) {
+        addError(result.diagnostics, "AKLZ patch output failed decoded-payload verification.");
+        return result;
+    }
+    result.bytes = std::move(compressed.bytes);
     return result;
 }
 

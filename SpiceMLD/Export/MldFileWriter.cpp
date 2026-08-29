@@ -390,7 +390,27 @@ void releaseKnownRange(std::vector<FreeRange>& ranges, const std::size_t offset,
                 writeF32(out, offset + 20U, vertex.normal.z, endian);
             }
             if (recordWords == 7U) {
-                writeU32(out, offset + 24U, vertex.rawUserAttributesU32.value_or(0U), endian);
+                if (attach.vertexChunk.chunkType == 0x2AU) {
+                    if (!vertex.diffuseColor.has_value()) {
+                        reason = "GOBJ NormalDiffuse vertex is missing its diffuse color";
+                        return std::nullopt;
+                    }
+                    const auto& color = *vertex.diffuseColor;
+                    const auto argb = (static_cast<std::uint32_t>(color.a) << 24U) |
+                        (static_cast<std::uint32_t>(color.r) << 16U) |
+                        (static_cast<std::uint32_t>(color.g) << 8U) |
+                        static_cast<std::uint32_t>(color.b);
+                    writeU32(out, offset + 24U, argb, endian);
+                } else if (attach.vertexChunk.chunkType == 0x2BU) {
+                    if (!vertex.rawUserAttributesU32.has_value()) {
+                        reason = "GOBJ NormalUserAttributes vertex is missing its raw attribute word";
+                        return std::nullopt;
+                    }
+                    writeU32(out, offset + 24U, *vertex.rawUserAttributesU32, endian);
+                } else {
+                    reason = "GOBJ seven-word vertex layout has an unsupported chunk type";
+                    return std::nullopt;
+                }
             }
         }
     }

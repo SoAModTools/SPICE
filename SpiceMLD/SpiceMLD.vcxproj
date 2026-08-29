@@ -109,12 +109,14 @@
     <ClInclude Include="Model\MldFile.h" />
     <ClInclude Include="Model\MldGroundModel.h" />
     <ClInclude Include="Model\MldGroundEditing.h" />
+    <ClInclude Include="Model\TriangleMetadata.h" />
     <ClInclude Include="Model\MldTextureArchiveModel.h" />
     <ClInclude Include="Model\SearchWorldModel.h" />
     <ClInclude Include="Model\Types.h" />
     <ClInclude Include="Model\U32List.h" />
     <ClInclude Include="Model\WorldModel.h" />
     <ClInclude Include="Patching\DreamcastTrianglePatcher.h" />
+    <ClInclude Include="Patching\TriangleMetadataPatcher.h" />
     <ClInclude Include="Parsing\EntryHandlers.h" />
     <ClInclude Include="Parsing\BlenderIrDiagnostics.h" />
     <ClInclude Include="Parsing\GvrTextureDecoder.h" />

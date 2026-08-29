@@ -141,11 +141,29 @@ bool synchronizeGobjSourceView(GobjData& data, std::vector<std::string>* diagnos
         if (!validateMesh(node.streamMesh, diagnostics)) {
             return false;
         }
-        const bool hasUser = std::any_of(node.streamMesh.vertices.begin(), node.streamMesh.vertices.end(),
+        const bool anyDiffuse = std::any_of(node.streamMesh.vertices.begin(), node.streamMesh.vertices.end(),
+            [](const auto& vertex) { return vertex.diffuseColor.has_value(); });
+        const bool allDiffuse = std::all_of(node.streamMesh.vertices.begin(), node.streamMesh.vertices.end(),
+            [](const auto& vertex) { return vertex.diffuseColor.has_value(); });
+        const bool anyUser = std::any_of(node.streamMesh.vertices.begin(), node.streamMesh.vertices.end(),
+            [](const auto& vertex) { return vertex.rawUserAttributesU32.has_value(); });
+        const bool allUser = std::all_of(node.streamMesh.vertices.begin(), node.streamMesh.vertices.end(),
             [](const auto& vertex) { return vertex.rawUserAttributesU32.has_value(); });
         const bool hasNormals = std::all_of(node.streamMesh.vertices.begin(), node.streamMesh.vertices.end(),
             [](const auto& vertex) { return vertex.hasNormal; });
-        const std::uint8_t recordWords = hasUser ? 7U : (hasNormals ? 6U : 3U);
+        if (anyDiffuse != allDiffuse || anyUser != allUser) {
+            addDiagnostic(diagnostics, "GOBJ vertex chunk attributes must be present on every vertex or no vertices.");
+            return false;
+        }
+        if (anyDiffuse && anyUser) {
+            addDiagnostic(diagnostics, "GOBJ vertices cannot combine diffuse colors with raw user attributes.");
+            return false;
+        }
+        if ((anyDiffuse || anyUser) && !hasNormals) {
+            addDiagnostic(diagnostics, "GOBJ diffuse and user-attribute layouts require normals on every vertex.");
+            return false;
+        }
+        const std::uint8_t recordWords = (anyDiffuse || anyUser) ? 7U : (hasNormals ? 6U : 3U);
         if (node.streamMesh.vertices.size() > (std::numeric_limits<std::uint16_t>::max() - 2U) / recordWords + 1U) {
             addDiagnostic(diagnostics, "GOBJ mesh has too many vertices for its selected chunk layout.");
             return false;
@@ -154,7 +172,7 @@ bool synchronizeGobjSourceView(GobjData& data, std::vector<std::string>* diagnos
             node.attach.emplace();
         }
         auto& attach = *node.attach;
-        attach.vertexChunk.chunkType = hasUser ? 0x2BU : (hasNormals ? 0x29U : 0x22U);
+        attach.vertexChunk.chunkType = anyDiffuse ? 0x2AU : (anyUser ? 0x2BU : (hasNormals ? 0x29U : 0x22U));
         attach.vertexChunk.recordWords = recordWords;
         attach.vertexChunk.verticesByFloatIndex.clear();
         for (std::size_t vertex = 0; vertex < node.streamMesh.vertices.size(); ++vertex) {

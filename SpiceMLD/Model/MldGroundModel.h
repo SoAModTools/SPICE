@@ -123,6 +123,13 @@ inline void hashMesh(std::uint64_t& hash, const MeshData& mesh) {
         hashVec3(hash, vertex.position);
         hashVec3(hash, vertex.normal);
         hashGroundWord(hash, vertex.hasNormal);
+        if (vertex.diffuseColor.has_value()) {
+            hashGroundWord(hash, vertex.diffuseColor->r);
+            hashGroundWord(hash, vertex.diffuseColor->g);
+            hashGroundWord(hash, vertex.diffuseColor->b);
+            hashGroundWord(hash, vertex.diffuseColor->a);
+        }
+        hashGroundWord(hash, vertex.diffuseColor.has_value());
         hashGroundWord(hash, vertex.rawUserAttributesU32.value_or(0U));
         hashGroundWord(hash, vertex.rawUserAttributesU32.has_value());
     }

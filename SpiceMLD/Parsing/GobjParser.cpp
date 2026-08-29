@@ -35,6 +35,7 @@ struct GobjVertexLayout {
     std::uint8_t chunkType = 0;
     std::uint8_t recordWords = 0;
     bool hasNormal = false;
+    bool hasDiffuseColor = false;
     bool hasUserAttributes = false;
 };
 
@@ -194,6 +195,7 @@ struct GobjVertexLayout {
             .chunkType = chunkType,
             .recordWords = 3U,
             .hasNormal = false,
+            .hasDiffuseColor = false,
             .hasUserAttributes = false,
         };
     case 0x29U:
@@ -201,6 +203,15 @@ struct GobjVertexLayout {
             .chunkType = chunkType,
             .recordWords = 6U,
             .hasNormal = true,
+            .hasDiffuseColor = false,
+            .hasUserAttributes = false,
+        };
+    case 0x2AU:
+        return GobjVertexLayout{
+            .chunkType = chunkType,
+            .recordWords = 7U,
+            .hasNormal = true,
+            .hasDiffuseColor = true,
             .hasUserAttributes = false,
         };
     case 0x2BU:
@@ -208,6 +219,7 @@ struct GobjVertexLayout {
             .chunkType = chunkType,
             .recordWords = 7U,
             .hasNormal = true,
+            .hasDiffuseColor = false,
             .hasUserAttributes = true,
         };
     default:
@@ -262,14 +274,23 @@ struct GobjVertexLayout {
             reader.try_read_f32(normalOffset + 8U).value_or(0.0F),
         };
     }
-    if (layout.hasUserAttributes) {
+    if (layout.hasDiffuseColor || layout.hasUserAttributes) {
         const std::size_t attributeOffset = static_cast<std::size_t>(vertexOffset) +
             ((bucket * layout.recordWords) + 8U) * 4U;
-        const auto rawAttributes = reader.try_read_u32(attributeOffset);
-        if (!rawAttributes.has_value()) {
+        const auto rawValue = reader.try_read_u32(attributeOffset);
+        if (!rawValue.has_value()) {
             return std::nullopt;
         }
-        vertex.rawUserAttributesU32 = *rawAttributes;
+        if (layout.hasDiffuseColor) {
+            vertex.diffuseColor = model::ColorRgba8{
+                .r = static_cast<std::uint8_t>((*rawValue >> 16U) & 0xFFU),
+                .g = static_cast<std::uint8_t>((*rawValue >> 8U) & 0xFFU),
+                .b = static_cast<std::uint8_t>(*rawValue & 0xFFU),
+                .a = static_cast<std::uint8_t>((*rawValue >> 24U) & 0xFFU),
+            };
+        } else {
+            vertex.rawUserAttributesU32 = *rawValue;
+        }
     }
     return vertex;
 }

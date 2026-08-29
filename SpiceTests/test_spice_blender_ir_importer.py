@@ -495,12 +495,12 @@ class PositionAwareEncounterTests(unittest.TestCase):
             with self.subTest(mode=mode, zero="table"):
                 self.assertEqual(IMPORTER._resolved_encounter_color(mode, 1, 0), neutral)
 
-    def test_dungeon_table_ids_are_direct_and_bounded(self) -> None:
+    def test_dungeon_table_ids_accept_every_authored_decimal_selector(self) -> None:
         self.assertEqual(IMPORTER._dungeon_encounter_table_id(0), 0)
         self.assertEqual(IMPORTER._dungeon_encounter_table_id(10), 1)
         self.assertEqual(IMPORTER._dungeon_encounter_table_id(70), 7)
-        self.assertIsNone(IMPORTER._dungeon_encounter_table_id(80))
-        self.assertIsNone(IMPORTER._dungeon_encounter_table_id(90))
+        self.assertEqual(IMPORTER._dungeon_encounter_table_id(80), 8)
+        self.assertEqual(IMPORTER._dungeon_encounter_table_id(90), 9)
 
 if __name__ == "__main__":
     unittest.main()

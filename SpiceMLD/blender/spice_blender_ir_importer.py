@@ -286,10 +286,7 @@ def _resolve_area99_encounter(
 
 
 def _dungeon_encounter_table_id(raw_word_2: int) -> int | None:
-    lane = _area99_encounter_lane(raw_word_2)
-    if lane == 0:
-        return 0
-    return lane if lane <= 7 else None
+    return _area99_encounter_lane(raw_word_2)
 
 
 def _oklab_to_linear_rgb(

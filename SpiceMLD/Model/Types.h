@@ -50,6 +50,7 @@ struct MeshVertex {
     Vec3 position{};
     Vec3 normal{};
     bool hasNormal = true;
+    std::optional<ColorRgba8> diffuseColor{};
     std::optional<std::uint32_t> rawUserAttributesU32{};
     float u = 0.0f;
     float v = 0.0f;

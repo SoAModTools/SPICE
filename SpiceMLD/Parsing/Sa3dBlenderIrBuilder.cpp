@@ -842,6 +842,17 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
         for (const auto index : node.streamMesh.indices) {
             model::BlenderIrCorner corner{};
             corner.vertexIndex = index;
+            if (index < node.streamMesh.vertices.size()) {
+                const auto& sourceVertex = node.streamMesh.vertices[index];
+                if (sourceVertex.diffuseColor.has_value()) {
+                    constexpr float kByteToUnit = 1.0F / 255.0F;
+                    corner.colorR = static_cast<float>(sourceVertex.diffuseColor->r) * kByteToUnit;
+                    corner.colorG = static_cast<float>(sourceVertex.diffuseColor->g) * kByteToUnit;
+                    corner.colorB = static_cast<float>(sourceVertex.diffuseColor->b) * kByteToUnit;
+                    corner.colorA = static_cast<float>(sourceVertex.diffuseColor->a) * kByteToUnit;
+                    corner.hasColor = true;
+                }
+            }
             triangleSet.corners.push_back(corner);
         }
         triangleSet.triangleMetadata = node.streamMesh.triangleMetadata;
