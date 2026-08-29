@@ -4,8 +4,15 @@
 #include "TextureViewport.h"
 
 #include <QtCore/QPointer>
+#include <QtCore/QMimeData>
+#include <QtCore/QTimer>
+#include <QtCore/QUrl>
 #include <QtGui/QAction>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QDragEnterEvent>
+#include <QtGui/QDragLeaveEvent>
+#include <QtGui/QDragMoveEvent>
+#include <QtGui/QDropEvent>
 #include <QtGui/QKeySequence>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
@@ -15,12 +22,14 @@
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QStatusBar>
+#include <QtWidgets/QStyle>
 #include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
+#include <deque>
 #include <memory>
 #include <system_error>
 
@@ -36,12 +45,55 @@ std::filesystem::path normalizedPath(const std::filesystem::path& path) {
     return error ? path.lexically_normal() : canonical;
 }
 
+QString normalizedPathKey(const std::filesystem::path& path) {
+    return QString::fromStdWString(normalizedPath(path).wstring()).toCaseFolded();
+}
+
+bool supportedDocumentPath(const std::filesystem::path& path) {
+    const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
+    return extension == ".mld" || extension == ".gvr" || extension == ".pvr";
+}
+
+struct DocumentDropClassification {
+    std::deque<std::filesystem::path> paths{};
+    QStringList issues{};
+};
+
+DocumentDropClassification classifyDocumentDrop(const QMimeData* mimeData) {
+    DocumentDropClassification result{};
+    if (!mimeData || !mimeData->hasUrls()) return result;
+    QSet<QString> seen{};
+    for (const auto& url : mimeData->urls()) {
+        if (!url.isLocalFile()) {
+            result.issues.push_back(QString("Unsupported non-local URL: %1").arg(url.toDisplayString()));
+            continue;
+        }
+        const auto local = url.toLocalFile();
+        const std::filesystem::path path(local.toStdWString());
+        std::error_code error{};
+        if (std::filesystem::is_directory(path, error) && !error) {
+            result.issues.push_back(QString("Directories are not supported: %1").arg(local));
+            continue;
+        }
+        if (!supportedDocumentPath(path)) {
+            result.issues.push_back(QString("Unsupported file type: %1").arg(local));
+            continue;
+        }
+        const auto key = normalizedPathKey(path);
+        if (seen.contains(key)) continue;
+        seen.insert(key);
+        result.paths.push_back(path);
+    }
+    return result;
+}
+
 } // namespace
 
 SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     : QMainWindow(parent), tasks_(this) {
     setWindowTitle("SpiceRack");
     resize(1280, 820);
+    setAcceptDrops(true);
 
     auto* fileMenu = menuBar()->addMenu("&File");
     auto* openAction = fileMenu->addAction("&Open...");
@@ -85,6 +137,10 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     tabs_->addTab(welcome, "Welcome");
     tabs_->tabBar()->setTabButton(0, QTabBar::RightSide, nullptr);
     auto* central = new QWidget(this);
+    central->setObjectName("rackCentralWidget");
+    central->setProperty("documentDropActive", false);
+    central->setStyleSheet(
+        "QWidget#rackCentralWidget[documentDropActive=\"true\"] { border: 3px dashed #64beff; }");
     auto* centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
@@ -160,8 +216,20 @@ bool SpiceRackMainWindow::runSmokeChecks() {
     setEventsExpanded(false);
     const bool collapsed = eventPanel_->isHidden() && eventsToggle_->arrowType() == Qt::UpArrow;
     const bool rendering = TextureViewport::runRenderingSmokeChecks();
+    QMimeData dropMime{};
+    dropMime.setUrls({ QUrl::fromLocalFile("C:/rack-drop/one.MLD"),
+        QUrl::fromLocalFile("C:/rack-drop/two.gVr"),
+        QUrl::fromLocalFile("C:/RACK-DROP/ONE.mld"),
+        QUrl::fromLocalFile("C:/rack-drop/replacement.png"),
+        QUrl("https://example.invalid/remote.pvr") });
+    const auto classified = classifyDocumentDrop(&dropMime);
+    const bool dropRouting = classified.paths.size() == 2
+        && classified.issues.size() == 2
+        && supportedDocumentPath("upper.PVR")
+        && !supportedDocumentPath("replacement.png")
+        && !centralWidget()->property("documentDropActive").toBool();
     auto* workbench = currentWorkbench();
-    return startsCollapsed && expanded && collapsed && rendering
+    return startsCollapsed && expanded && collapsed && rendering && dropRouting
         && (!workbench || workbench->runSmokeChecks());
 }
 
@@ -211,16 +279,53 @@ void SpiceRackMainWindow::chooseNewGvr() {
 
 void SpiceRackMainWindow::openDocument(const std::filesystem::path& path,
     std::function<void(bool)> completed, const bool showErrors) {
+    openDocumentDetailed(path,
+        [this, completed = std::move(completed), showErrors](DocumentOpenOutcome outcome) mutable {
+            if (!outcome.success && showErrors) {
+                if (outcome.busy) QMessageBox::information(this, "SpiceRack", outcome.message);
+                else QMessageBox::critical(this, "SpiceRack", outcome.message);
+            }
+            if (completed) completed(outcome.success);
+        });
+}
+
+void SpiceRackMainWindow::openDocumentBatch(const std::vector<std::filesystem::path>& paths,
+    std::function<void(bool)> completed, const bool showSummary) {
+    std::deque<std::filesystem::path> accepted{};
+    QStringList issues{};
+    QSet<QString> seen{};
+    for (const auto& path : paths) {
+        std::error_code error{};
+        if (std::filesystem::is_directory(path, error) && !error) {
+            issues.push_back(QString("Directories are not supported: %1")
+                .arg(QString::fromStdWString(path.wstring())));
+            continue;
+        }
+        if (!supportedDocumentPath(path)) {
+            issues.push_back(QString("Unsupported file type: %1")
+                .arg(QString::fromStdWString(path.wstring())));
+            continue;
+        }
+        const auto key = normalizedPathKey(path);
+        if (seen.contains(key)) continue;
+        seen.insert(key);
+        accepted.push_back(path);
+    }
+    beginDroppedDocumentBatch(std::move(accepted), std::move(issues),
+        std::move(completed), showSummary);
+}
+
+void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path,
+    std::function<void(DocumentOpenOutcome)> completed) {
     const int existing = existingDocumentIndex(path);
     if (existing >= 0) {
         tabs_->setCurrentIndex(existing);
-        if (completed) completed(true);
+        if (completed) completed({ .success = true, .message = "Document was already open." });
         return;
     }
     const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
     if (extension != ".mld" && extension != ".gvr" && extension != ".pvr") {
-        if (showErrors) QMessageBox::critical(this, "SpiceRack", "This workbench opens .mld, .gvr, and .pvr files.");
-        if (completed) completed(false);
+        if (completed) completed({ .message = "This workbench opens .mld, .gvr, and .pvr files." });
         return;
     }
     struct OpenState {
@@ -229,34 +334,36 @@ void SpiceRackMainWindow::openDocument(const std::filesystem::path& path,
         spice::mix::PvrDocumentSession::OpenResult pvr{};
     };
     auto state = std::make_shared<OpenState>();
+    auto completion = std::make_shared<std::function<void(DocumentOpenOutcome)>>(std::move(completed));
     QPointer<SpiceRackMainWindow> self(this);
     const bool started = tasks_.run("Open " + path.filename().string(),
         [path, extension, state](const auto& context) {
             if (extension == ".mld") state->mld = spice::mix::MldDocumentSession::open(path, context);
             else if (extension == ".gvr") state->gvr = spice::mix::GvrDocumentSession::open(path, context);
             else state->pvr = spice::mix::PvrDocumentSession::open(path, context);
-        }, [self, extension, state, completed = std::move(completed), showErrors]() mutable {
+        }, [self, extension, state, completion]() mutable {
             if (!self) return;
-            bool success = false;
+            DocumentOpenOutcome outcome{};
             if (extension == ".mld" && state->mld.result.ok() && state->mld.session) {
                 self->addWorkbench(new MldWorkbench(state->mld.session, self->tasks_, self));
-                success = true;
+                outcome.success = true;
             } else if (extension == ".gvr" && state->gvr.result.ok() && state->gvr.session) {
                 self->addWorkbench(new GvrWorkbench(state->gvr.session, self->tasks_, self));
-                success = true;
+                outcome.success = true;
             } else if (extension == ".pvr" && state->pvr.result.ok() && state->pvr.session) {
                 self->addWorkbench(new PvrWorkbench(state->pvr.session, self->tasks_, self));
-                success = true;
+                outcome.success = true;
             } else {
                 const auto message = extension == ".mld" ? state->mld.result.message
                     : extension == ".gvr" ? state->gvr.result.message : state->pvr.result.message;
-                if (showErrors) QMessageBox::critical(self, "SpiceRack", QString::fromStdString(message));
+                outcome.message = QString::fromStdString(message);
             }
-            if (completed) completed(success);
+            if (outcome.success) outcome.message = "Opened document.";
+            if (*completion) (*completion)(std::move(outcome));
         });
     if (!started) {
-        if (showErrors) QMessageBox::information(this, "SpiceRack", "Finish or cancel the current job first.");
-        if (completed) completed(false);
+        if (*completion) (*completion)({ .busy = true,
+            .message = "Finish or cancel the current job first." });
     }
 }
 
@@ -282,13 +389,133 @@ DocumentWorkbench* SpiceRackMainWindow::currentWorkbench() const {
 }
 
 int SpiceRackMainWindow::existingDocumentIndex(const std::filesystem::path& path) const {
-    const auto wanted = normalizedPath(path);
+    const auto wanted = normalizedPathKey(path);
     for (int index = 0; index < tabs_->count(); ++index) {
         const auto* workbench = dynamic_cast<DocumentWorkbench*>(tabs_->widget(index));
         if (workbench && workbench->sourcePath().has_value()
-            && normalizedPath(*workbench->sourcePath()) == wanted) return index;
+            && normalizedPathKey(*workbench->sourcePath()) == wanted) return index;
     }
     return -1;
+}
+
+void SpiceRackMainWindow::beginDroppedDocumentBatch(
+    std::deque<std::filesystem::path> paths, QStringList issues,
+    std::function<void(bool)> completed, const bool showSummary) {
+    if (tasks_.busy() || droppedBatchActive_) {
+        statusBar()->showMessage("Finish or cancel the current job before dropping documents.", 4000);
+        if (completed) completed(false);
+        return;
+    }
+    droppedDocuments_ = std::move(paths);
+    droppedDocumentIssues_ = std::move(issues);
+    droppedDocumentSuccesses_ = 0;
+    droppedBatchActive_ = true;
+    droppedBatchShowSummary_ = showSummary;
+    droppedBatchCompleted_ = std::move(completed);
+    openNextDroppedDocument();
+}
+
+void SpiceRackMainWindow::openNextDroppedDocument() {
+    if (droppedDocuments_.empty()) {
+        finishDroppedDocumentBatch();
+        return;
+    }
+    const auto path = std::move(droppedDocuments_.front());
+    droppedDocuments_.pop_front();
+    openDocumentDetailed(path, [this, path](DocumentOpenOutcome outcome) {
+        if (outcome.success) {
+            ++droppedDocumentSuccesses_;
+        } else {
+            droppedDocumentIssues_.push_back(QString("%1: %2")
+                .arg(QString::fromStdWString(path.filename().wstring()), outcome.message));
+        }
+        QTimer::singleShot(0, this, [this]() { openNextDroppedDocument(); });
+    });
+}
+
+void SpiceRackMainWindow::finishDroppedDocumentBatch() {
+    droppedBatchActive_ = false;
+    const int issues = droppedDocumentIssues_.size();
+    const bool success = issues == 0 && droppedDocumentSuccesses_ > 0;
+    statusBar()->showMessage(QString("Opened or activated %1 document(s); %2 skipped or failed.")
+        .arg(droppedDocumentSuccesses_).arg(issues), 6000);
+    if (issues > 0 && droppedBatchShowSummary_) {
+        const QString details = droppedDocumentIssues_.join('\n');
+        events_->addItem("Warning: Drag-and-drop completed with skipped or failed files.");
+        events_->scrollToBottom();
+        emphasizeEvents(spice::mix::EventLevel::Warning);
+        QMessageBox warning(QMessageBox::Warning, "Drag-and-drop results",
+            QString("Opened or activated %1 document(s). %2 file(s) were skipped or failed.")
+                .arg(droppedDocumentSuccesses_).arg(issues),
+            QMessageBox::Ok, this);
+        warning.setDetailedText(details);
+        warning.exec();
+    }
+    droppedDocuments_.clear();
+    droppedDocumentIssues_.clear();
+    droppedDocumentSuccesses_ = 0;
+    droppedBatchShowSummary_ = true;
+    auto completed = std::move(droppedBatchCompleted_);
+    if (completed) completed(success);
+}
+
+void SpiceRackMainWindow::setDocumentDropHighlight(const bool active) {
+    auto* central = centralWidget();
+    if (!central || central->property("documentDropActive").toBool() == active) return;
+    central->setProperty("documentDropActive", active);
+    central->style()->unpolish(central);
+    central->style()->polish(central);
+    central->update();
+}
+
+void SpiceRackMainWindow::dragEnterEvent(QDragEnterEvent* event) {
+    const auto classified = classifyDocumentDrop(event->mimeData());
+    if (classified.paths.empty()) {
+        event->ignore();
+        return;
+    }
+    if (tasks_.busy() || droppedBatchActive_) {
+        statusBar()->showMessage("Finish or cancel the current job before dropping documents.", 4000);
+        event->ignore();
+        return;
+    }
+    setDocumentDropHighlight(true);
+    statusBar()->showMessage(QString("Drop to open %1 document(s).").arg(classified.paths.size()));
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+
+void SpiceRackMainWindow::dragMoveEvent(QDragMoveEvent* event) {
+    const auto classified = classifyDocumentDrop(event->mimeData());
+    if (classified.paths.empty() || tasks_.busy() || droppedBatchActive_) {
+        setDocumentDropHighlight(false);
+        event->ignore();
+        return;
+    }
+    setDocumentDropHighlight(true);
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+}
+
+void SpiceRackMainWindow::dragLeaveEvent(QDragLeaveEvent* event) {
+    setDocumentDropHighlight(false);
+    if (!tasks_.busy() && !droppedBatchActive_) statusBar()->showMessage("Ready");
+    event->accept();
+}
+
+void SpiceRackMainWindow::dropEvent(QDropEvent* event) {
+    setDocumentDropHighlight(false);
+    const auto classified = classifyDocumentDrop(event->mimeData());
+    if (classified.paths.empty() || tasks_.busy() || droppedBatchActive_) {
+        if (tasks_.busy() || droppedBatchActive_) {
+            statusBar()->showMessage("Finish or cancel the current job before dropping documents.", 4000);
+        }
+        event->ignore();
+        return;
+    }
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+    beginDroppedDocumentBatch(classified.paths, classified.issues);
 }
 
 void SpiceRackMainWindow::closeTab(const int index) {

@@ -1,6 +1,12 @@
 #include "TextureViewport.h"
 
 #include <QtCore/QEvent>
+#include <QtCore/QMimeData>
+#include <QtCore/QUrl>
+#include <QtGui/QDragEnterEvent>
+#include <QtGui/QDragLeaveEvent>
+#include <QtGui/QDragMoveEvent>
+#include <QtGui/QDropEvent>
 #include <QtGui/QImage>
 #include <QtGui/QPainter>
 #include <QtWidgets/QComboBox>
@@ -12,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <optional>
 
 namespace {
 
@@ -69,6 +76,15 @@ QImage renderScaled(const QImage& source, const QSize targetSize,
     return result;
 }
 
+std::optional<std::filesystem::path> singleLocalFile(const QMimeData* mimeData) {
+    if (!mimeData || !mimeData->hasUrls()) return std::nullopt;
+    const auto urls = mimeData->urls();
+    if (urls.size() != 1 || !urls.front().isLocalFile()) return std::nullopt;
+    const auto local = urls.front().toLocalFile();
+    if (local.isEmpty()) return std::nullopt;
+    return std::filesystem::path(local.toStdWString());
+}
+
 } // namespace
 
 class TextureCanvas final : public QWidget {
@@ -88,6 +104,7 @@ public:
     [[nodiscard]] QSize imageSize() const noexcept { return image_.size(); }
     [[nodiscard]] bool hasImage() const noexcept { return !image_.isNull(); }
     [[nodiscard]] double scale() const noexcept { return scale_; }
+    [[nodiscard]] bool dropCueActive() const noexcept { return dropCueActive_; }
 
     void setScale(const double scale) {
         scale_ = scale;
@@ -101,6 +118,12 @@ public:
 
     void setBackground(const TextureViewport::BackgroundMode background) {
         background_ = background;
+        update();
+    }
+
+    void setDropCue(const bool active, QString message = {}) {
+        dropCueActive_ = active;
+        dropCueMessage_ = std::move(message);
         update();
     }
 
@@ -126,6 +149,17 @@ protected:
         painter.setRenderHint(QPainter::SmoothPixmapTransform,
             sampling_ == TextureViewport::SamplingMode::Linear);
         painter.drawImage(target, image_);
+
+        if (dropCueActive_) {
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.fillRect(rect(), QColor(30, 115, 190, 70));
+            QPen border(QColor(100, 190, 255), 3, Qt::DashLine);
+            painter.setPen(border);
+            painter.drawRect(rect().adjusted(4, 4, -5, -5));
+            painter.setPen(Qt::white);
+            painter.drawText(rect().adjusted(20, 20, -20, -20),
+                Qt::AlignCenter | Qt::TextWordWrap, dropCueMessage_);
+        }
     }
 
 private:
@@ -134,6 +168,8 @@ private:
     double scale_ = 1.0;
     TextureViewport::SamplingMode sampling_ = TextureViewport::SamplingMode::Nearest;
     TextureViewport::BackgroundMode background_ = TextureViewport::BackgroundMode::Checkerboard;
+    bool dropCueActive_ = false;
+    QString dropCueMessage_{};
 };
 
 TextureViewport::TextureViewport(QWidget* parent)
@@ -181,6 +217,7 @@ TextureViewport::TextureViewport(QWidget* parent)
     scrollArea_->setFrameShape(QFrame::StyledPanel);
     canvas_ = new TextureCanvas(scrollArea_);
     scrollArea_->setWidget(canvas_);
+    scrollArea_->viewport()->setAcceptDrops(false);
     scrollArea_->viewport()->installEventFilter(this);
     root->addWidget(scrollArea_, 1);
 
@@ -234,6 +271,23 @@ void TextureViewport::setBackgroundMode(const BackgroundMode mode) {
     background_->setCurrentIndex(background_->findData(static_cast<int>(mode)));
 }
 
+void TextureViewport::setSingleFileDropHandler(
+    FileDropEvaluator evaluator, FileDropHandler handler) {
+    dropEvaluator_ = std::move(evaluator);
+    dropHandler_ = std::move(handler);
+    scrollArea_->viewport()->setAcceptDrops(
+        static_cast<bool>(dropEvaluator_) && static_cast<bool>(dropHandler_));
+    if (!hasFileDropHandler()) clearDropCue();
+}
+
+bool TextureViewport::hasFileDropHandler() const noexcept {
+    return static_cast<bool>(dropEvaluator_) && static_cast<bool>(dropHandler_);
+}
+
+bool TextureViewport::canAcceptFileDrop(const std::filesystem::path& path) const {
+    return hasFileDropHandler() && dropEvaluator_(path).has_value();
+}
+
 bool TextureViewport::verifyViewControlsDoNotInvoke(const std::function<bool()>& stateProbe) {
     const bool initialState = stateProbe();
     const auto initialSampling = samplingMode();
@@ -270,12 +324,78 @@ bool TextureViewport::runRenderingSmokeChecks() {
             linearHasIntermediate = linearHasIntermediate || (linearRed > 0 && linearRed < 255);
         }
     }
-    return !nearestHasIntermediate && linearHasIntermediate;
+    if (nearestHasIntermediate || !linearHasIntermediate) return false;
+
+    TextureViewport viewport{};
+    bool invoked = false;
+    std::filesystem::path dropped{};
+    viewport.setSingleFileDropHandler(
+        [](const std::filesystem::path& path) -> std::optional<QString> {
+            return path.extension() == ".accepted" ? std::optional<QString>("Drop accepted file") : std::nullopt;
+        }, [&invoked, &dropped](const std::filesystem::path& path) {
+            invoked = true;
+            dropped = path;
+        });
+    QMimeData acceptedMime{};
+    acceptedMime.setUrls({ QUrl::fromLocalFile("C:/drop-test.accepted") });
+    const auto acceptedPath = singleLocalFile(&acceptedMime);
+    if (!acceptedPath.has_value() || !viewport.canAcceptFileDrop(*acceptedPath)) return false;
+    viewport.canvas_->setDropCue(true, "Drop accepted file");
+    if (!viewport.canvas_->dropCueActive()) return false;
+    viewport.dropHandler_(*acceptedPath);
+    viewport.clearDropCue();
+    if (viewport.canvas_->dropCueActive() || !invoked || dropped.extension() != ".accepted") return false;
+
+    invoked = false;
+    QMimeData multipleMime{};
+    multipleMime.setUrls({ QUrl::fromLocalFile("C:/one.accepted"),
+        QUrl::fromLocalFile("C:/two.accepted") });
+    return !singleLocalFile(&multipleMime).has_value() && !invoked;
 }
 
 bool TextureViewport::eventFilter(QObject* watched, QEvent* event) {
-    if (watched == scrollArea_->viewport() && event->type() == QEvent::Resize) updateCanvasGeometry();
+    if (watched != scrollArea_->viewport()) return QWidget::eventFilter(watched, event);
+    if (event->type() == QEvent::Resize) updateCanvasGeometry();
+    if (!hasFileDropHandler()) return QWidget::eventFilter(watched, event);
+
+    if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+        auto* drag = static_cast<QDropEvent*>(event);
+        const auto path = singleLocalFile(drag->mimeData());
+        const auto feedback = path.has_value() ? dropEvaluator_(*path) : std::nullopt;
+        if (!feedback.has_value()) {
+            clearDropCue();
+            drag->ignore();
+            return false;
+        }
+        canvas_->setDropCue(true, *feedback);
+        drag->setDropAction(Qt::CopyAction);
+        drag->accept();
+        return true;
+    }
+    if (event->type() == QEvent::DragLeave) {
+        clearDropCue();
+        event->accept();
+        return true;
+    }
+    if (event->type() == QEvent::Drop) {
+        auto* drop = static_cast<QDropEvent*>(event);
+        const auto path = singleLocalFile(drop->mimeData());
+        const auto feedback = path.has_value() ? dropEvaluator_(*path) : std::nullopt;
+        clearDropCue();
+        if (!path.has_value() || !feedback.has_value()) {
+            drop->ignore();
+            return false;
+        }
+        drop->setDropAction(Qt::CopyAction);
+        drop->accept();
+        dropHandler_(*path);
+        return true;
+    }
     return QWidget::eventFilter(watched, event);
+}
+
+void TextureViewport::clearDropCue() {
+    canvas_->setDropCue(false);
 }
 
 void TextureViewport::updateCanvasGeometry() {

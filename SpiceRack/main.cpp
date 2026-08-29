@@ -4,18 +4,17 @@
 #include <QtWidgets/QApplication>
 
 #include <filesystem>
-#include <optional>
 #include <string_view>
+#include <vector>
 
 int main(int argc, char** argv) {
     bool smokeTest = false;
-    std::optional<std::filesystem::path> smokePath{};
+    std::vector<std::filesystem::path> smokePaths{};
     for (int index = 1; index < argc; ++index) {
         if (std::string_view(argv[index]) == "--smoke-test") {
             smokeTest = true;
-            if (index + 1 < argc && std::string_view(argv[index + 1]).front() != '-') {
-                smokePath = std::filesystem::path(argv[++index]);
-            }
+        } else if (smokeTest && std::string_view(argv[index]).front() != '-') {
+            smokePaths.emplace_back(argv[index]);
         }
     }
 
@@ -28,9 +27,9 @@ int main(int argc, char** argv) {
     window.show();
 
     if (smokeTest) {
-        if (smokePath.has_value()) {
-            QTimer::singleShot(0, &window, [&window, &application, path = *smokePath]() {
-                window.openDocument(path,
+        if (!smokePaths.empty()) {
+            QTimer::singleShot(0, &window, [&window, &application, paths = std::move(smokePaths)]() {
+                window.openDocumentBatch(paths,
                     [&window, &application](const bool success) {
                         application.exit(success && window.runSmokeChecks() ? 0 : 1);
                     }, false);

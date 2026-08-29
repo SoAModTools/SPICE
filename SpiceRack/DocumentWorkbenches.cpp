@@ -2,6 +2,7 @@
 #include "TextureViewport.h"
 
 #include <QtCore/QPointer>
+#include <QtGui/QImageReader>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFileDialog>
@@ -371,6 +372,103 @@ struct MldWorkbench::Impl {
         diagnosticText->setPlainText(text);
         if (textureDiagnostics) textureDiagnostics->setPlainText(text);
     }
+
+    [[nodiscard]] std::optional<QString> replacementDropFeedback(
+        const std::filesystem::path& path) const {
+        if (tasks->busy()) return std::nullopt;
+        const auto extension = QString::fromStdWString(path.extension().wstring());
+        if (extension.compare(".png", Qt::CaseInsensitive) != 0) return std::nullopt;
+        const int row = textureTable->currentRow();
+        const auto textures = session->textures();
+        if (row < 0 || row >= static_cast<int>(textures.size())) return std::nullopt;
+        const auto& item = textures[static_cast<std::size_t>(row)];
+        if (item.encoding != spice::mix::TextureEncodingKind::Gvr
+            && item.encoding != spice::mix::TextureEncodingKind::Pvr) return std::nullopt;
+        return QString("Drop PNG to replace \"%1\"").arg(QString::fromStdString(item.name));
+    }
+
+    void requestTextureReplacement(const std::filesystem::path& inputPath) {
+        if (tasks->busy()) {
+            QMessageBox::information(owner, "SpiceRack", "Finish or cancel the current job first.");
+            return;
+        }
+        const int row = textureTable->currentRow();
+        const auto textures = session->textures();
+        if (row < 0 || row >= static_cast<int>(textures.size())) return;
+        const auto& item = textures[static_cast<std::size_t>(row)];
+        if (item.encoding != spice::mix::TextureEncodingKind::Gvr
+            && item.encoding != spice::mix::TextureEncodingKind::Pvr) return;
+
+        QImageReader reader(qpath(inputPath));
+        reader.setDecideFormatFromContent(true);
+        if (!reader.canRead() || reader.format().toLower() != "png" || !reader.size().isValid()) {
+            QMessageBox::critical(owner, "SpiceRack", "The dropped or selected file is not a readable PNG image.");
+            return;
+        }
+        const QSize replacementSize = reader.size();
+        const bool dimensionsDiffer = replacementSize.width() != static_cast<int>(item.width)
+            || replacementSize.height() != static_cast<int>(item.height);
+        const bool allowDimensionChange = allowDimensions->isChecked();
+        if (dimensionsDiffer && !allowDimensionChange) {
+            QMessageBox::information(owner, "Replacement dimensions differ",
+                QString("%1 is %2 x %3, but texture %4 is %5 x %6.\n\n"
+                    "Enable 'Allow replacement dimension changes' in the texture sidebar before replacing it.")
+                    .arg(qpath(inputPath.filename())).arg(replacementSize.width()).arg(replacementSize.height())
+                    .arg(item.index).arg(item.width).arg(item.height));
+            return;
+        }
+
+        QString encodingSummary{};
+        if (item.encoding == spice::mix::TextureEncodingKind::Pvr) {
+            encodingSummary = pvrEncoding.group->isChecked()
+                ? QString("PVR overrides: pixel format %1, data layout %2, global index %3")
+                    .arg(pvrEncoding.pixelFormat->currentText(), pvrEncoding.dataLayout->currentText(),
+                        pvrEncoding.globalMode->currentText())
+                : "Current PVR encoding properties will be preserved.";
+        } else {
+            encodingSummary = encoding.group->isChecked()
+                ? QString("GVR overrides: format %1, palette %2, mipmaps %3, global index %4")
+                    .arg(encoding.format->currentText(), encoding.palette->currentText(),
+                        encoding.mipmaps->currentText(), encoding.globalMode->currentText())
+                : "Current GVR encoding properties will be preserved.";
+        }
+        QString question = item.dirty
+            ? "Replace the currently staged image?"
+            : "Replace the selected texture?";
+        question += QString("\n\nPNG: %1 (%2 x %3)\nTexture %4: \"%5\" (%6, %7 x %8)\n%9")
+            .arg(qpath(inputPath.filename())).arg(replacementSize.width()).arg(replacementSize.height())
+            .arg(item.index).arg(QString::fromStdString(item.name), encodingName(item.encoding))
+            .arg(item.width).arg(item.height).arg(encodingSummary);
+        if (dimensionsDiffer) {
+            question += QString("\nDimensions will change from %1 x %2 to %3 x %4.")
+                .arg(item.width).arg(item.height).arg(replacementSize.width()).arg(replacementSize.height());
+        }
+        question += "\n\nThe replacement will be staged. The source MLD will not be modified.";
+        if (QMessageBox::question(owner, "Replace MLD texture", question,
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+
+        const auto encodingKind = item.encoding;
+        const auto gvrSettings = encoding.overrides();
+        const auto pvrSettings = pvrEncoding.overrides();
+        auto result = std::make_shared<spice::mix::DocumentResult>();
+        QPointer<MldWorkbench> self(owner);
+        const bool started = tasks->run("Replace MLD texture",
+            [document = session, row, inputPath, encodingKind, gvrSettings, pvrSettings,
+                allowDimensionChange, result](const auto& context) {
+                if (encodingKind == spice::mix::TextureEncodingKind::Pvr) {
+                    *result = document->replacePvrTexture(
+                        static_cast<std::size_t>(row), inputPath, pvrSettings, allowDimensionChange, context);
+                } else {
+                    *result = document->replaceGvrTexture(
+                        static_cast<std::size_t>(row), inputPath, gvrSettings, allowDimensionChange, context);
+                }
+            }, [self, result]() {
+                if (!self) return;
+                showResult(self, *result);
+                if (result->ok()) self->impl_->refreshTextures();
+            });
+        if (!started) QMessageBox::information(owner, "SpiceRack", "Finish or cancel the current job first.");
+    }
 };
 
 MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> session,
@@ -515,6 +613,12 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
 
     connect(impl_->textureTable, &QTableWidget::currentCellChanged, this,
         [this](int, int, int, int) { impl_->refreshSelectedTexture(); });
+    impl_->viewport->setSingleFileDropHandler(
+        [this](const std::filesystem::path& path) {
+            return impl_->replacementDropFeedback(path);
+        }, [this](const std::filesystem::path& path) {
+            impl_->requestTextureReplacement(path);
+        });
     connect(impl_->exportBlenderIrButton, &QPushButton::clicked, this, [this]() {
         const auto source = impl_->session->overview().sourcePath;
         const auto suggested = source.parent_path() / mldBlenderIrFilename(source);
@@ -596,29 +700,9 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
         }
     });
     connect(impl_->replaceButton, &QPushButton::clicked, this, [this]() {
-        const int row = impl_->textureTable->currentRow();
-        const auto textures = impl_->session->textures();
-        if (row < 0 || row >= static_cast<int>(textures.size())) return;
-        const auto encoding = textures[static_cast<std::size_t>(row)].encoding;
         const auto input = QFileDialog::getOpenFileName(this, "Replacement PNG", {}, "PNG images (*.png)");
         if (input.isEmpty()) return;
-        const auto result = std::make_shared<spice::mix::DocumentResult>();
-        QPointer<MldWorkbench> self(this);
-        impl_->tasks->run("Replace MLD texture", [session = impl_->session, row, inputPath = fspath(input),
-            encoding, gvrSettings = impl_->encoding.overrides(), pvrSettings = impl_->pvrEncoding.overrides(),
-            allow = impl_->allowDimensions->isChecked(), result](const auto& context) {
-                if (encoding == spice::mix::TextureEncodingKind::Pvr) {
-                    *result = session->replacePvrTexture(
-                        static_cast<std::size_t>(row), inputPath, pvrSettings, allow, context);
-                } else {
-                    *result = session->replaceGvrTexture(
-                        static_cast<std::size_t>(row), inputPath, gvrSettings, allow, context);
-                }
-            }, [self, result]() {
-                if (!self) return;
-                showResult(self, *result);
-                if (result->ok()) self->impl_->refreshTextures();
-            });
+        impl_->requestTextureReplacement(fspath(input));
     });
     connect(extract, &QPushButton::clicked, this, [this]() {
         const int row = impl_->textureTable->currentRow();
@@ -691,6 +775,11 @@ bool MldWorkbench::runSmokeChecks() {
     return impl_->viewport
         && exportsPageReady
         && encodingControlsReady
+        && impl_->viewport->hasFileDropHandler()
+        && (textures.empty() || impl_->viewport->canAcceptFileDrop("replacement.PNG")
+            == (textures.front().encoding == spice::mix::TextureEncodingKind::Gvr
+                || textures.front().encoding == spice::mix::TextureEncodingKind::Pvr))
+        && !impl_->viewport->canAcceptFileDrop("replacement.jpg")
         && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
         && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
         && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });
@@ -825,6 +914,7 @@ bool GvrWorkbench::dirty() const { return impl_->session->dirty(); }
 std::optional<std::filesystem::path> GvrWorkbench::sourcePath() const { return impl_->session->snapshot().sourcePath; }
 bool GvrWorkbench::runSmokeChecks() {
     return impl_->viewport
+        && !impl_->viewport->hasFileDropHandler()
         && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
         && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
         && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });
@@ -961,6 +1051,7 @@ std::optional<std::filesystem::path> PvrWorkbench::sourcePath() const { return i
 bool PvrWorkbench::runSmokeChecks() {
     return impl_->viewport
         && impl_->encoding.group && impl_->encoding.group->isVisible()
+        && !impl_->viewport->hasFileDropHandler()
         && impl_->viewport->samplingMode() == TextureViewport::SamplingMode::Nearest
         && impl_->viewport->zoomMode() == TextureViewport::ZoomMode::IntegerFit
         && impl_->viewport->verifyViewControlsDoNotInvoke([this]() { return dirty(); });

@@ -5,6 +5,7 @@
 #include <QtWidgets/QWidget>
 
 #include <functional>
+#include <filesystem>
 #include <optional>
 
 class QComboBox;
@@ -14,6 +15,9 @@ class TextureCanvas;
 
 class TextureViewport final : public QWidget {
 public:
+    using FileDropEvaluator = std::function<std::optional<QString>(const std::filesystem::path&)>;
+    using FileDropHandler = std::function<void(const std::filesystem::path&)>;
+
     enum class SamplingMode {
         Nearest,
         Linear,
@@ -48,6 +52,9 @@ public:
     void setSamplingMode(SamplingMode mode);
     void setZoomMode(ZoomMode mode);
     void setBackgroundMode(BackgroundMode mode);
+    void setSingleFileDropHandler(FileDropEvaluator evaluator, FileDropHandler handler);
+    [[nodiscard]] bool hasFileDropHandler() const noexcept;
+    [[nodiscard]] bool canAcceptFileDrop(const std::filesystem::path& path) const;
 
     [[nodiscard]] bool verifyViewControlsDoNotInvoke(const std::function<bool()>& stateProbe);
     [[nodiscard]] static bool runRenderingSmokeChecks();
@@ -56,6 +63,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+    void clearDropCue();
     void updateCanvasGeometry();
 
     QScrollArea* scrollArea_ = nullptr;
@@ -63,4 +71,6 @@ private:
     QComboBox* sampling_ = nullptr;
     QComboBox* zoom_ = nullptr;
     QComboBox* background_ = nullptr;
+    FileDropEvaluator dropEvaluator_{};
+    FileDropHandler dropHandler_{};
 };

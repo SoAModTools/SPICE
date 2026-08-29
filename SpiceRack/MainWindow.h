@@ -3,12 +3,20 @@
 #include "TaskController.h"
 
 #include <QtCore/QSet>
+#include <QtCore/QString>
+#include <QtCore/QStringList>
 #include <QtWidgets/QMainWindow>
 
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <vector>
 
 class DocumentWorkbench;
+class QDragEnterEvent;
+class QDragLeaveEvent;
+class QDragMoveEvent;
+class QDropEvent;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -21,12 +29,24 @@ public:
 
     void openDocument(const std::filesystem::path& path,
         std::function<void(bool)> completed = {}, bool showErrors = true);
+    void openDocumentBatch(const std::vector<std::filesystem::path>& paths,
+        std::function<void(bool)> completed = {}, bool showSummary = true);
     [[nodiscard]] bool runSmokeChecks();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dragLeaveEvent(QDragLeaveEvent* event) override;
+    void dragMoveEvent(QDragMoveEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
 
 private:
+    struct DocumentOpenOutcome {
+        bool success = false;
+        bool busy = false;
+        QString message{};
+    };
+
     void chooseOpenDocument();
     void chooseNewGvr();
     void chooseNewPvr();
@@ -35,6 +55,13 @@ private:
     void closeTab(int index);
     [[nodiscard]] DocumentWorkbench* currentWorkbench() const;
     [[nodiscard]] int existingDocumentIndex(const std::filesystem::path& path) const;
+    void openDocumentDetailed(const std::filesystem::path& path,
+        std::function<void(DocumentOpenOutcome)> completed);
+    void beginDroppedDocumentBatch(std::deque<std::filesystem::path> paths, QStringList issues,
+        std::function<void(bool)> completed = {}, bool showSummary = true);
+    void openNextDroppedDocument();
+    void finishDroppedDocumentBatch();
+    void setDocumentDropHighlight(bool active);
     void setEventsExpanded(bool expanded);
     void emphasizeEvents(spice::mix::EventLevel level);
 
@@ -45,5 +72,11 @@ private:
     QPushButton* cancelJob_ = nullptr;
     QToolButton* eventsToggle_ = nullptr;
     int eventAttention_ = 0;
+    std::deque<std::filesystem::path> droppedDocuments_{};
+    QStringList droppedDocumentIssues_{};
+    int droppedDocumentSuccesses_ = 0;
+    bool droppedBatchActive_ = false;
+    bool droppedBatchShowSummary_ = true;
+    std::function<void(bool)> droppedBatchCompleted_{};
     QSet<DocumentWorkbench*> discardedForWindowClose_{};
 };
