@@ -396,6 +396,8 @@ std::string formatMlkCorpusJson(const MlkCorpusScanResult& corpus) {
         out << "],\n";
         out << "      \"recordCountCandidate\": " << scan.recordCountCandidate << ",\n";
         out << "      \"selectedRecordCount\": " << scan.selectedRecordCount << ",\n";
+        out << "      \"descriptorRecordCount\": " << scan.descriptorRecordCount << ",\n";
+        out << "      \"unavailableTrailingRecordCount\": " << scan.unavailableTrailingRecordCount << ",\n";
         out << "      \"recordCountSource\": ";
         writeJsonString(out, toString(scan.recordCountSource));
         out << ",\n";
@@ -496,7 +498,7 @@ std::string formatMlkCorpusJson(const MlkCorpusScanResult& corpus) {
 std::string formatMlkCorpusFilesCsv(const MlkCorpusScanResult& corpus) {
     std::ostringstream out;
     out << "path,rawSize,decodedSize,sourceWasCompressedAklz,headerWord0,headerWord1,headerWord2,headerWord3,"
-           "recordCountCandidate,selectedRecordCount,recordCountSource,tableShape,firstPayloadOffset,"
+           "recordCountCandidate,selectedRecordCount,descriptorRecordCount,unavailableTrailingRecordCount,recordCountSource,tableShape,firstPayloadOffset,"
            "recordCountInferredFromFirstPayloadOffset,recordCountMatchesFirstPayloadOffset,recordTableEndOffset,"
            "recordTableInBounds,infoCount,warningCount,errorCount,embeddedMldPlausibleRecordCount,"
            "embeddedMldEntryListAcceptedCount,payloadOutOfBoundsCount,duplicateKeyCount\n";
@@ -512,6 +514,8 @@ std::string formatMlkCorpusFilesCsv(const MlkCorpusScanResult& corpus) {
             << scan.headerWords[3] << ","
             << scan.recordCountCandidate << ","
             << scan.selectedRecordCount << ","
+            << scan.descriptorRecordCount << ","
+            << scan.unavailableTrailingRecordCount << ","
             << csvEscape(toString(scan.recordCountSource)) << ","
             << csvEscape(toString(tableShapeForFile(file))) << ","
             << scan.firstPayloadOffset << ","
@@ -601,7 +605,7 @@ std::string formatMlkCorpusWord12HistogramCsv(const MlkCorpusScanResult& corpus)
 
 std::string formatMlkCorpusAnomaliesCsv(const MlkCorpusScanResult& corpus) {
     std::ostringstream out;
-    out << "path,tableShape,recordCountCandidate,selectedRecordCount,recordCountSource,"
+    out << "path,tableShape,recordCountCandidate,selectedRecordCount,descriptorRecordCount,unavailableTrailingRecordCount,recordCountSource,"
            "firstPayloadOffset,recordCountInferredFromFirstPayloadOffset,recordCountMatchesFirstPayloadOffset,"
            "recordTableEndOffset,recordTableInBounds,infoCount,warningCount,errorCount,"
            "payloadOutOfBoundsCount,duplicateKeyCount,embeddedMldPlausibleRecordCount,"
@@ -618,6 +622,8 @@ std::string formatMlkCorpusAnomaliesCsv(const MlkCorpusScanResult& corpus) {
             << csvEscape(toString(shape)) << ","
             << scan.recordCountCandidate << ","
             << scan.selectedRecordCount << ","
+            << scan.descriptorRecordCount << ","
+            << scan.unavailableTrailingRecordCount << ","
             << csvEscape(toString(scan.recordCountSource)) << ","
             << scan.firstPayloadOffset << ","
             << scan.recordCountInferredFromFirstPayloadOffset << ","

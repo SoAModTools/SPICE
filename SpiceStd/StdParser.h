@@ -9,8 +9,15 @@
 
 namespace spice::stdfile {
 
-[[nodiscard]] StdFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath = {});
-[[nodiscard]] StdFile parseFile(const std::filesystem::path& path);
+struct StdParseOptions {
+    std::optional<spice::root::Endian> forcedEndian{};
+};
+
+[[nodiscard]] StdFile parseBytes(std::vector<std::uint8_t> bytes,
+    std::string sourcePath = {},
+    const StdParseOptions& options = {});
+[[nodiscard]] StdFile parseFile(const std::filesystem::path& path,
+    const StdParseOptions& options = {});
 
 [[nodiscard]] StdExportResult exportBytes(
     const StdFile& file,

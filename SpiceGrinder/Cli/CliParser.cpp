@@ -314,6 +314,7 @@ std::string commandHelp(std::string_view command) {
     if (command == "export-mlk-blender-ir") return prefix + "--input <file-or-dir> --output <dir> --annotation-repository <dir> [--overwrite-annotations]\n";
     if (command == "export-content-graph") return prefix + "--input <dir> --output <dir> [--projection full|sections|world] [--decompressed-output <dir>]\n";
     if (command == "export-alx-enemy-events") return prefix + "--input <csv> --output <json>\n";
+    if (command == "audit-dreamcast-parity") return prefix + "--dreamcast-us <dir> --gamecube-us <dir> --output <dir> [--dreamcast-eu-disc1 <dir> --dreamcast-eu-disc2 <dir> --gamecube-eu <dir>]\n";
     if (command == "create-gvr") return prefix + "--input <png> --output <gvr> [encoding options]\n";
     if (command == "replace-gvr") return prefix + "--source <gvr> --input <png> --output <gvr> [encoding options]\n";
     if (command == "gvr-to-png") return prefix + "--input <gvr> --output <png>\n";
@@ -332,7 +333,7 @@ const std::unordered_set<std::string_view>& commands() {
         "parse-sct", "export-sct", "export-sml-research", "export-std-json", "export-mlk-corpus",
         "export-mlk-blender-ir", "export-content-graph", "export-alx-enemy-events", "create-gvr",
         "replace-gvr", "gvr-to-png", "create-gvr-batch", "replace-gvr-batch", "export-gvr-image-ir",
-        "import-gvr-image-ir", "compress-aklz", "decompress-aklz"
+        "import-gvr-image-ir", "compress-aklz", "decompress-aklz", "audit-dreamcast-parity"
     };
     return result;
 }
@@ -359,6 +360,7 @@ std::string globalHelp() {
         "  export-mlk-blender-ir        Export MLK Blender IR contact sheets.\n"
         "  export-content-graph         Export a combined MLD/SCT content graph.\n"
         "  export-alx-enemy-events      Export enemy-event CSV as JSON.\n"
+        "  audit-dreamcast-parity       Compare Dreamcast and GameCube parser semantics.\n"
         "  create-gvr                   Create one GVR from PNG.\n"
         "  replace-gvr                  Replace one GVR from PNG.\n"
         "  gvr-to-png                   Decode one GVR to PNG.\n"
@@ -526,6 +528,26 @@ ParseResult parse(std::span<const std::string_view> arguments) {
         if (command == "gvr-to-png") return run(GvrToPngRequest{ *input, *output });
         if (command == "compress-aklz") return run(CompressAklzRequest{ *input, *output });
         return run(DecompressAklzRequest{ *input, *output });
+    }
+    if (command == "audit-dreamcast-parity") {
+        AuditDreamcastParityRequest request{};
+        const auto dreamcastUs = reader.requiredPath("--dreamcast-us");
+        const auto gameCubeUs = reader.requiredPath("--gamecube-us");
+        const auto output = reader.requiredPath("--output");
+        request.dreamcastEuDisc1 = reader.optionalPath("--dreamcast-eu-disc1");
+        request.dreamcastEuDisc2 = reader.optionalPath("--dreamcast-eu-disc2");
+        request.gameCubeEu = reader.optionalPath("--gamecube-eu");
+        const auto euCount = static_cast<unsigned>(request.dreamcastEuDisc1.has_value())
+            + static_cast<unsigned>(request.dreamcastEuDisc2.has_value())
+            + static_cast<unsigned>(request.gameCubeEu.has_value());
+        if (euCount != 0U && euCount != 3U) {
+            reader.setError("the three EU corpus options must be supplied together");
+        }
+        if (dreamcastUs) request.dreamcastUs = *dreamcastUs;
+        if (gameCubeUs) request.gameCubeUs = *gameCubeUs;
+        if (output) request.output = *output;
+        return reader.finish() && dreamcastUs && gameCubeUs && output
+            ? run(request) : error(reader.errorText());
     }
     if (command == "create-gvr" || command == "create-gvr-batch") {
         const auto input = reader.requiredPath("--input");

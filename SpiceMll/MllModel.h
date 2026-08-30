@@ -1,11 +1,13 @@
 #pragma once
 
 #include "../SpiceBin/BinModel.h"
+#include "../SpiceRoot/Binary/Endian.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace spice::mll {
 
@@ -29,6 +31,12 @@ enum class MllPayloadKind {
     MldFile,
     NinjaChunk,
     Pof0,
+    PvrTexture,
+    PvmArchive,
+};
+
+struct MllParseOptions {
+    std::optional<spice::root::Endian> forcedEndian{};
 };
 
 enum class MllMemberCountSource {
@@ -259,6 +267,8 @@ struct MllMember {
 struct MllFile {
     std::string sourcePath{};
     bool sourceWasCompressedAklz{ false };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
+    bool endianWasForced{ false };
     std::uint32_t rawSize{ 0U };
     std::uint32_t decodedSize{ 0U };
     std::uint32_t headerWord0{ 0U };

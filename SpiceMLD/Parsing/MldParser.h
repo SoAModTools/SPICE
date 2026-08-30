@@ -89,6 +89,7 @@ struct ParsedRawEntry {
 
 struct MldParseOptions {
     bool preserveSourceBytes = true;
+    bool parseResources = true;
 };
 
 struct ParsedMldAnimation {

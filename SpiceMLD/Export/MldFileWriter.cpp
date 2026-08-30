@@ -3,6 +3,7 @@
 #include "../Model/MldGroundEditing.h"
 #include "../../Compression/Aklz.h"
 #include "../../SpiceRoot/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianWriter.h"
 #include "../../SpicePvm/SpicePvm.h"
 
 #include <algorithm>
@@ -20,6 +21,7 @@ namespace {
 
 using spice::root::Endian;
 using spice::root::EndianReader;
+using spice::root::EndianSpanWriter;
 
 constexpr std::size_t kHeaderSize = 0x14U;
 constexpr std::size_t kEntrySize = 0x68U;
@@ -57,29 +59,13 @@ void ensureSize(std::vector<std::uint8_t>& bytes, const std::size_t size) {
 void writeU16(std::vector<std::uint8_t>& bytes, const std::size_t offset,
     const std::uint16_t value, const Endian endian) {
     ensureSize(bytes, offset + 2U);
-    if (endian == Endian::Big) {
-        bytes[offset] = static_cast<std::uint8_t>(value >> 8U);
-        bytes[offset + 1U] = static_cast<std::uint8_t>(value);
-    } else {
-        bytes[offset] = static_cast<std::uint8_t>(value);
-        bytes[offset + 1U] = static_cast<std::uint8_t>(value >> 8U);
-    }
+    EndianSpanWriter(bytes, endian).write_u16_at(offset, value);
 }
 
 void writeU32(std::vector<std::uint8_t>& bytes, const std::size_t offset,
     const std::uint32_t value, const Endian endian) {
     ensureSize(bytes, offset + 4U);
-    if (endian == Endian::Big) {
-        bytes[offset] = static_cast<std::uint8_t>(value >> 24U);
-        bytes[offset + 1U] = static_cast<std::uint8_t>(value >> 16U);
-        bytes[offset + 2U] = static_cast<std::uint8_t>(value >> 8U);
-        bytes[offset + 3U] = static_cast<std::uint8_t>(value);
-    } else {
-        bytes[offset] = static_cast<std::uint8_t>(value);
-        bytes[offset + 1U] = static_cast<std::uint8_t>(value >> 8U);
-        bytes[offset + 2U] = static_cast<std::uint8_t>(value >> 16U);
-        bytes[offset + 3U] = static_cast<std::uint8_t>(value >> 24U);
-    }
+    EndianSpanWriter(bytes, endian).write_u32_at(offset, value);
 }
 
 void writeF32(std::vector<std::uint8_t>& bytes, const std::size_t offset,

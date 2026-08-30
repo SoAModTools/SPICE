@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
             || event.level == spice::mix::EventLevel::Error
             ? std::cerr
             : std::cout;
-        stream << event.message << '\n';
+        stream << event.message << std::endl;
     };
 
     const auto result = spice::mix::OperationRunner{}.run(*parsed.request, context);

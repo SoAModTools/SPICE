@@ -536,19 +536,11 @@ void parseMldAnimations(ParseResult& result) {
 using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwnerRef>>;
 
 [[nodiscard]] std::optional<std::uint16_t> readU16AtLE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 2U > bytes.size()) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint16_t>(bytes[offset]) |
-        static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1U]) << 8);
+    return EndianReader(bytes, Endian::Little).try_read_u16(offset);
 }
 
 [[nodiscard]] std::optional<std::uint16_t> readU16AtBE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 2U > bytes.size()) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset]) << 8) |
-        static_cast<std::uint16_t>(bytes[offset + 1U]);
+    return EndianReader(bytes, Endian::Big).try_read_u16(offset);
 }
 
 [[nodiscard]] std::optional<std::int32_t> readI32AtLE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
@@ -1290,27 +1282,30 @@ void appendRawDataBlock(
         appendListIfPresent(file, record.entry.groundAddresses);
         appendListIfPresent(file, record.entry.motionAddresses);
 
-        if (record.entry.objectAddresses) {
+        if (!options.entryListOnly && record.entry.objectAddresses) {
             for (const auto address : record.entry.objectAddresses->values) {
                 appendRawDataBlock(file, payload, address, *endian);
             }
         }
-        if (record.entry.groundAddresses) {
+        if (!options.entryListOnly && record.entry.groundAddresses) {
             for (const auto address : record.entry.groundAddresses->values) {
                 appendRawDataBlock(file, payload, address, *endian);
             }
         }
-        if (record.entry.motionAddresses) {
+        if (!options.entryListOnly && record.entry.motionAddresses) {
             for (const auto address : record.entry.motionAddresses->values) {
                 appendRawDataBlock(file, payload, address, *endian);
             }
         }
-        appendRawDataBlock(file, payload, record.entry.texturesPointer, *endian);
+        if (!options.entryListOnly) {
+            appendRawDataBlock(file, payload, record.entry.texturesPointer, *endian);
+        }
 
         file.entries.push_back(std::move(record));
     }
 
-    if (static_cast<std::size_t>(file.header.textureTableOffset) < payload.size()) {
+    if (!options.entryListOnly &&
+        static_cast<std::size_t>(file.header.textureTableOffset) < payload.size()) {
         file.textureArchive = parseMldTextureArchive(payload, static_cast<std::size_t>(file.header.textureTableOffset), *endian);
     }
 
@@ -1484,6 +1479,7 @@ model::MldFile MldParser::parseBytes(
     ParseOptions sourceOptions{};
     sourceOptions.buildBlenderIntermediateIr = false;
     sourceOptions.emitFxnHistogram = false;
+    sourceOptions.entryListOnly = !options.parseResources;
     file = parseMldFilePayload(payload, sourceOptions);
     file.sourceWasCompressedAklz = spice::compression::aklz::isAklz(mldBytes);
     if (options.preserveSourceBytes) {
@@ -1494,6 +1490,13 @@ model::MldFile MldParser::parseBytes(
     if (file.header.entryCount == 0U || file.entries.empty()) {
         file.parseStatus = model::MldParseStatus::Failed;
         addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Error, "Failed to parse MLD index entries.");
+        return file;
+    }
+
+    if (!options.parseResources) {
+        file.parseStatus = std::any_of(file.parseDiagnostics.begin(), file.parseDiagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.severity != model::MldDiagnostic::Severity::Info;
+        }) ? model::MldParseStatus::Partial : model::MldParseStatus::Complete;
         return file;
     }
 

@@ -1,6 +1,7 @@
 #include "SstParser.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -29,14 +30,10 @@ void addDiagnostic(std::vector<ParseDiagnostic>& diagnostics,
     diagnostics.push_back(ParseDiagnostic{ severity, std::move(message), offset });
 }
 
-bool canReadRange(std::size_t size, std::uint32_t offset, std::uint32_t length) {
-    return offset <= size && length <= size - offset;
-}
-
 std::vector<std::uint8_t> copyRange(std::span<const std::uint8_t> bytes,
     std::uint32_t offset,
     std::uint32_t length) {
-    if (!canReadRange(bytes.size(), offset, length)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, length)) {
         return {};
     }
     return std::vector<std::uint8_t>(bytes.begin() + offset, bytes.begin() + offset + length);
@@ -148,7 +145,7 @@ std::optional<CommandConsumerWindow> type11TrailingConsumerWindow(std::span<cons
 
     window.inBounds = availableUntil >= windowOffset &&
         windowSize <= availableUntil - windowOffset &&
-        canReadRange(bytes.size(), windowOffset, windowSize);
+        spice::root::bounds_contains(bytes.size(), windowOffset, windowSize);
     if (window.inBounds) {
         window.bytes = copyRange(bytes, windowOffset, windowSize);
     }
@@ -166,13 +163,14 @@ Float3 readFloat3(const EndianReader& reader, std::uint32_t offset) {
 
 std::vector<SstType1LightingRow> parseType1LightingRows(std::span<const std::uint8_t> decodedBytes,
     std::uint32_t payloadOffset,
-    std::uint32_t payloadSize) {
+    std::uint32_t payloadSize,
+    Endian endian) {
     std::vector<SstType1LightingRow> rows{};
-    if (!canReadRange(decodedBytes.size(), payloadOffset, payloadSize)) {
+    if (!spice::root::bounds_contains(decodedBytes.size(), payloadOffset, payloadSize)) {
         return rows;
     }
 
-    const EndianReader reader(decodedBytes, Endian::Big);
+    const EndianReader reader(decodedBytes, endian);
     const std::uint32_t maxRows = std::min<std::uint32_t>(kType1LightingRowCount,
         payloadSize / kType1LightingRowStride);
     rows.reserve(maxRows);
@@ -202,6 +200,44 @@ std::vector<SstType1LightingRow> parseType1LightingRows(std::span<const std::uin
     }
 
     return rows;
+}
+
+std::optional<Endian> detectEndian(std::span<const std::uint8_t> bytes, [[maybe_unused]] bool compressed) {
+    struct Candidate { Endian endian; int score; bool valid; };
+    const auto evaluate = [&](Endian endian) {
+        Candidate candidate{ endian, 0, false };
+        const EndianReader reader(bytes, endian);
+        const auto count = reader.try_read_u16(0x04U);
+        if (!count.has_value()) return candidate;
+        const auto tableEnd = spice::root::checked_table_end(0U, *count, kSstTopLevelRecordStride);
+        if (!tableEnd.has_value() || *tableEnd > bytes.size()) return candidate;
+        candidate.valid = true;
+        candidate.score = 2;
+        for (std::uint32_t i = 0; i < *count; ++i) {
+            const auto recordAt = i * kSstTopLevelRecordStride;
+            const auto blockAt = reader.read_u32(recordAt + 0x0CU);
+            const auto commandCount = reader.try_read_u32(blockAt);
+            if (!commandCount.has_value()) {
+                candidate.valid = false;
+                break;
+            }
+            const auto sentinelAt = spice::root::checked_table_end(
+                static_cast<std::size_t>(blockAt) + 4U, *commandCount, kSstCommandRecordStride);
+            if (!sentinelAt.has_value() || !spice::root::bounds_contains(bytes.size(), *sentinelAt, kSstCommandRecordStride)) {
+                candidate.valid = false;
+                break;
+            }
+            candidate.score += 3;
+            if (reader.read_i16(*sentinelAt) < 0) candidate.score += 2;
+        }
+        return candidate;
+    };
+    const auto big = evaluate(Endian::Big);
+    const auto little = evaluate(Endian::Little);
+    if (big.valid != little.valid) return big.valid ? big.endian : little.endian;
+    if (!big.valid) return std::nullopt;
+    if (big.score != little.score) return big.score > little.score ? big.endian : little.endian;
+    return std::nullopt;
 }
 
 std::optional<SstBattleGridTerrainSource> extractBattleGridTerrainSource(
@@ -645,7 +681,9 @@ std::vector<CommandFieldSummary> SstParser::fieldSummariesForType(std::int16_t t
     }
 }
 
-SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string sourcePath) {
+SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    const ParseOptions& options) {
     SstParseResult result{};
     result.sourcePath = std::move(sourcePath);
 
@@ -654,7 +692,17 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
     result.decodedSize = static_cast<std::uint32_t>(
         std::min<std::size_t>(decodedBytes.size(), std::numeric_limits<std::uint32_t>::max()));
 
-    EndianReader reader(decodedBytes, Endian::Big);
+    const auto endian = options.forcedEndian.has_value()
+        ? options.forcedEndian
+        : detectEndian(decodedBytes, result.sourceWasCompressedAklz);
+    if (!endian.has_value()) {
+        addDiagnostic(result.diagnostics, DiagnosticSeverity::Error,
+            "SST byte order is ambiguous or neither endian has structurally valid command blocks");
+        return result;
+    }
+    result.sourceEndian = *endian;
+    result.endianWasForced = options.forcedEndian.has_value();
+    EndianReader reader(decodedBytes, *endian);
     const auto recordCount = reader.try_read_u16(0x04U);
     if (!recordCount.has_value()) {
         addDiagnostic(result.diagnostics, DiagnosticSeverity::Error, "SST is too small for header/count");
@@ -716,7 +764,7 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
 
         block.sentinelOffset = static_cast<std::uint32_t>(sentinelOffset64);
         block.payloadStartOffset = block.sentinelOffset + kSstCommandRecordStride;
-        if (!canReadRange(decodedBytes.size(), block.sentinelOffset, kSstCommandRecordStride)) {
+        if (!spice::root::bounds_contains(decodedBytes.size(), block.sentinelOffset, kSstCommandRecordStride)) {
             addDiagnostic(result.diagnostics,
                 DiagnosticSeverity::Error,
                 "SST command block sentinel is out of bounds",
@@ -741,6 +789,7 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
                 block.recordsOffset + (commandIndex * kSstCommandRecordStride);
             SstCommandRecord command{};
             command.index = commandIndex;
+            command.sourceEndian = *endian;
             command.recordOffset = recordOffset;
             command.type = reader.read_i16(recordOffset + 0x00U);
             command.argument = reader.read_i16(recordOffset + 0x02U);
@@ -751,7 +800,7 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
             command.payloadOffset = payloadCursor;
             command.payloadSize = commandPayloadSize(command.type);
             command.payloadInBounds =
-                canReadRange(decodedBytes.size(), command.payloadOffset, command.payloadSize);
+                spice::root::bounds_contains(decodedBytes.size(), command.payloadOffset, command.payloadSize);
             command.fieldSummaries = fieldSummariesForType(command.type);
             command.modelIndexCandidate = isModelIndexCommandType(command.type);
 
@@ -765,13 +814,14 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
                 command.payloadBytes =
                     copyRange(decodedBytes, command.payloadOffset, command.payloadSize);
                 if (command.modelIndexCandidate && command.payloadBytes.size() >= 2U) {
-                    EndianReader payloadReader(command.payloadBytes, Endian::Big);
+                    EndianReader payloadReader(command.payloadBytes, *endian);
                     command.modelIndex = payloadReader.read_i16(0x00U);
                 }
                 if (command.type == 1) {
                     command.type1LightingRows = parseType1LightingRows(decodedBytes,
                         command.payloadOffset,
-                        command.payloadSize);
+                        command.payloadSize,
+                        *endian);
                 }
             } else {
                 addDiagnostic(result.diagnostics,
@@ -820,7 +870,7 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes, std::string
         } else {
             block.postCommandTailSize = block.nextCommandBlockOffset - block.postCommandTailOffset;
             block.postCommandTailInBounds =
-                canReadRange(decodedBytes.size(), block.postCommandTailOffset, block.postCommandTailSize);
+                spice::root::bounds_contains(decodedBytes.size(), block.postCommandTailOffset, block.postCommandTailSize);
             if (block.postCommandTailInBounds) {
                 block.postCommandTailBytes =
                     copyRange(decodedBytes, block.postCommandTailOffset, block.postCommandTailSize);

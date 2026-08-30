@@ -1,4 +1,7 @@
 #include "BinParser.h"
+#include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <fstream>
@@ -16,19 +19,6 @@ constexpr std::uint32_t kU32Size = sizeof(std::uint32_t);
 void addDiagnostic(BinFile& file, DiagnosticSeverity severity, std::string message, std::uint32_t offset = 0U)
 {
     file.diagnostics.push_back(BinDiagnostic{ severity, std::move(message), offset });
-}
-
-bool canReadRange(const std::size_t size, const std::uint32_t offset, const std::uint32_t length)
-{
-    return offset <= size && length <= size - offset;
-}
-
-std::uint32_t readU32BeUnchecked(std::span<const std::uint8_t> bytes, const std::uint32_t offset)
-{
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
 }
 
 std::string makeHexBytes(std::span<const std::uint8_t> bytes, const std::uint32_t offset, const std::uint32_t maxLength)
@@ -65,6 +55,11 @@ std::string previewU32List(const std::vector<std::uint32_t>& values, const std::
     return out.str();
 }
 
+std::uint32_t probeScore(const BinIndexedTableProbe& probe) {
+    if (!probe.present || !probe.offsetsInBounds) return 0U;
+    return 1U + (probe.offsetsMonotonic ? 2U : 0U) + probe.sampledRecordCount;
+}
+
 } // namespace
 
 bool BinFile::ok() const
@@ -92,15 +87,18 @@ const char* toString(DiagnosticSeverity severity)
     return "unknown";
 }
 
-BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes)
+BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes,
+    spice::root::Endian endian)
 {
     BinIndexedTableProbe probe{};
-    probe.headerInBounds = canReadRange(bytes.size(), 0U, sizeof(std::uint32_t));
+    probe.endian = endian;
+    const spice::root::EndianReader reader(bytes, endian);
+    probe.headerInBounds = spice::root::bounds_contains(bytes.size(), 0U, sizeof(std::uint32_t));
     if (!probe.headerInBounds) {
         return probe;
     }
 
-    probe.count = readU32BeUnchecked(bytes, 0U);
+    probe.count = reader.read_u32(0U);
     if (probe.count == 0U) {
         return probe;
     }
@@ -113,7 +111,7 @@ BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes)
 
     probe.offsetTableEndOffset = static_cast<std::uint32_t>(offsetTableEnd64);
     probe.dataBaseOffset = probe.offsetTableEndOffset;
-    probe.offsetTableInBounds = canReadRange(
+    probe.offsetTableInBounds = spice::root::bounds_contains(
         bytes.size(),
         probe.offsetTableOffset,
         probe.offsetTableEndOffset - probe.offsetTableOffset);
@@ -128,7 +126,7 @@ BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes)
     std::uint32_t previousOffset = 0U;
     for (std::uint32_t i = 0U; i < probe.count; ++i) {
         const auto offsetEntryOffset = probe.offsetTableOffset + i * kU32Size;
-        const auto relativeRecordOffset = readU32BeUnchecked(bytes, offsetEntryOffset);
+        const auto relativeRecordOffset = reader.read_u32(offsetEntryOffset);
         offsets.push_back(relativeRecordOffset);
         if (i != 0U && relativeRecordOffset < previousOffset) {
             probe.offsetsMonotonic = false;
@@ -157,20 +155,20 @@ BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes)
         sample.sampleIndex = i;
         sample.tableOffset = probe.offsetTableOffset + i * kU32Size;
         sample.recordOffset = probe.dataBaseOffset + offsets[i];
-        sample.recordInBounds = canReadRange(bytes.size(), sample.recordOffset, 8U);
+        sample.recordInBounds = spice::root::bounds_contains(bytes.size(), sample.recordOffset, 8U);
         if (sample.recordInBounds) {
-            sample.word0 = readU32BeUnchecked(bytes, sample.recordOffset);
+            sample.word0 = reader.read_u32(sample.recordOffset);
             sample.word0EqualsDataBaseOffset = sample.word0 == probe.dataBaseOffset;
-            sample.word4 = readU32BeUnchecked(bytes, sample.recordOffset + 4U);
+            sample.word4 = reader.read_u32(sample.recordOffset + 4U);
             sample.word4TargetInBounds = sample.word4 < bytes.size();
             sample.bytes16Hex = makeHexBytes(bytes, sample.recordOffset, 16U);
             sample.bytes32Hex = makeHexBytes(bytes, sample.recordOffset, 32U);
-            if (canReadRange(bytes.size(), sample.recordOffset, 0x1cU)) {
-                sample.word8 = readU32BeUnchecked(bytes, sample.recordOffset + 0x08U);
-                sample.word12 = readU32BeUnchecked(bytes, sample.recordOffset + 0x0cU);
-                sample.word16 = readU32BeUnchecked(bytes, sample.recordOffset + 0x10U);
-                sample.word20 = readU32BeUnchecked(bytes, sample.recordOffset + 0x14U);
-                sample.word24 = readU32BeUnchecked(bytes, sample.recordOffset + 0x18U);
+            if (spice::root::bounds_contains(bytes.size(), sample.recordOffset, 0x1cU)) {
+                sample.word8 = reader.read_u32(sample.recordOffset + 0x08U);
+                sample.word12 = reader.read_u32(sample.recordOffset + 0x0cU);
+                sample.word16 = reader.read_u32(sample.recordOffset + 0x10U);
+                sample.word20 = reader.read_u32(sample.recordOffset + 0x14U);
+                sample.word24 = reader.read_u32(sample.recordOffset + 0x18U);
             }
         } else if (sample.recordOffset < bytes.size()) {
             sample.bytes16Hex = makeHexBytes(bytes, sample.recordOffset, 16U);
@@ -182,7 +180,19 @@ BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes)
     return probe;
 }
 
-BinFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
+BinIndexedTableProbe probeIndexedTable(std::span<const std::uint8_t> bytes)
+{
+    const auto big = probeIndexedTable(bytes, spice::root::Endian::Big);
+    const auto little = probeIndexedTable(bytes, spice::root::Endian::Little);
+    const auto bigScore = probeScore(big);
+    const auto littleScore = probeScore(little);
+    if (bigScore == littleScore) return {};
+    return littleScore > bigScore ? little : big;
+}
+
+BinFile parseBytes(std::vector<std::uint8_t> bytes,
+    std::string sourcePath,
+    const BinParseOptions& options)
 {
     BinFile result{};
     result.sourcePath = std::move(sourcePath);
@@ -200,11 +210,42 @@ BinFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
         return result;
     }
 
-    result.indexedTableProbe = probeIndexedTable(result.bytes);
+    if (spice::compression::aklz::isAklz(result.bytes)) {
+        result.sourceWasCompressedAklz = true;
+        const auto decoded = spice::compression::aklz::decompress(result.bytes);
+        if (!decoded.ok()) {
+            addDiagnostic(result, DiagnosticSeverity::Error,
+                "AKLZ decompression failed: " + std::string(spice::compression::aklz::errorToString(decoded.error)));
+            return result;
+        }
+        result.decodedBytes = decoded.bytes;
+    } else {
+        result.decodedBytes = result.bytes;
+    }
+    result.decodedSize = static_cast<std::uint32_t>(result.decodedBytes.size());
+
+    if (options.forcedEndian.has_value()) {
+        result.indexedTableProbe = probeIndexedTable(result.decodedBytes, *options.forcedEndian);
+    } else {
+        const auto big = probeIndexedTable(result.decodedBytes, spice::root::Endian::Big);
+        const auto little = probeIndexedTable(result.decodedBytes, spice::root::Endian::Little);
+        const auto bigScore = probeScore(big);
+        const auto littleScore = probeScore(little);
+        if (bigScore != 0U && bigScore == littleScore) {
+            addDiagnostic(result, DiagnosticSeverity::Warning,
+                "Indexed BIN byte order is ambiguous; supply a forced endian for HRSBin interpretation");
+        } else {
+            result.indexedTableProbe = littleScore > bigScore ? little : big;
+        }
+    }
+    if (result.indexedTableProbe.present && result.indexedTableProbe.offsetsInBounds) {
+        result.sourceEndian = result.indexedTableProbe.endian;
+        result.endianWasForced = options.forcedEndian.has_value();
+    }
     return result;
 }
 
-BinFile parseFile(const std::filesystem::path& path)
+BinFile parseFile(const std::filesystem::path& path, const BinParseOptions& options)
 {
     BinFile result{};
     result.sourcePath = path.string();
@@ -238,7 +279,7 @@ BinFile parseFile(const std::filesystem::path& path)
         }
     }
 
-    return parseBytes(std::move(bytes), result.sourcePath);
+    return parseBytes(std::move(bytes), result.sourcePath, options);
 }
 
 } // namespace spice::bin

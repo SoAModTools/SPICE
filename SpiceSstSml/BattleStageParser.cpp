@@ -76,17 +76,23 @@ bool BattleStageParseResult::ok() const {
 
 BattleStageParseResult BattleStageParser::parsePair(std::span<const std::uint8_t> smlBytes,
     std::span<const std::uint8_t> sstBytes,
-    std::string stem) {
+    std::string stem,
+    const ParseOptions& options) {
     BattleStageParseResult result{};
     result.stem = std::move(stem);
-    result.sml = SmlParser::parse(smlBytes);
-    result.sst = SstParser::parse(sstBytes);
+    result.sml = SmlParser::parse(smlBytes, {}, options);
+    result.sst = SstParser::parse(sstBytes, {}, options);
     result.activeRowRuntimeContext = makeActiveRowRuntimeContext();
     result.recordCountsAgree = result.sml.recordCount == result.sst.recordCount;
     if (!result.recordCountsAgree) {
         addDiagnostic(result.diagnostics,
             DiagnosticSeverity::Error,
             "SML and SST top-level record counts do not agree");
+    }
+    if (result.sml.ok() && result.sst.ok() && result.sml.sourceEndian != result.sst.sourceEndian) {
+        addDiagnostic(result.diagnostics,
+            DiagnosticSeverity::Error,
+            "SML and SST byte orders do not agree");
     }
 
     std::map<std::int16_t, std::uint32_t> histogram;

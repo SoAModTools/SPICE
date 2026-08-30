@@ -1,6 +1,7 @@
 #include "StandaloneMldTextureScan.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 #include "../SpiceGvm/Parsing/GvmParser.h"
 
@@ -39,26 +40,8 @@ std::uint32_t clampSize(std::size_t size) {
         std::min<std::size_t>(size, std::numeric_limits<std::uint32_t>::max()));
 }
 
-bool canReadRange(std::size_t size, std::uint32_t offset, std::uint32_t length) {
-    return offset <= size && length <= size - offset;
-}
-
-std::uint32_t readU32BeUnchecked(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
-}
-
-std::uint32_t readU32LeUnchecked(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    return static_cast<std::uint32_t>(bytes[offset]) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 8U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 3U]) << 24U);
-}
-
 bool matchesTag(std::span<const std::uint8_t> bytes, std::uint32_t offset, std::string_view tag) {
-    if (!canReadRange(bytes.size(), offset, static_cast<std::uint32_t>(tag.size()))) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, static_cast<std::uint32_t>(tag.size()))) {
         return false;
     }
     for (std::uint32_t i = 0U; i < tag.size(); ++i) {
@@ -70,7 +53,7 @@ bool matchesTag(std::span<const std::uint8_t> bytes, std::uint32_t offset, std::
 }
 
 std::string makeSignature(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    if (!canReadRange(bytes.size(), offset, 4U)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, 4U)) {
         return {};
     }
 
@@ -84,16 +67,16 @@ std::string makeSignature(std::span<const std::uint8_t> bytes, std::uint32_t off
 }
 
 std::optional<std::uint32_t> readChunkPayloadSize(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    if (!canReadRange(bytes.size(), offset, 8U)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, 8U)) {
         return std::nullopt;
     }
 
     const auto remaining = static_cast<std::uint32_t>(bytes.size() - offset);
-    const auto le = readU32LeUnchecked(bytes, offset + 4U);
+    const auto le = EndianReader(bytes, Endian::Little).read_u32(offset + 4U);
     if (le >= 8U && le <= remaining - 8U) {
         return le;
     }
-    const auto be = readU32BeUnchecked(bytes, offset + 4U);
+    const auto be = EndianReader(bytes, Endian::Big).read_u32(offset + 4U);
     if (be >= 8U && be <= remaining - 8U) {
         return be;
     }
@@ -383,7 +366,7 @@ std::optional<MldHeaderCandidate> detectMldHeader(std::span<const std::uint8_t> 
 
 std::string readSlotString(std::span<const std::uint8_t> bytes, std::uint32_t offset, std::uint32_t length) {
     std::string value{};
-    if (!canReadRange(bytes.size(), offset, length)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, length)) {
         return value;
     }
     value.reserve(length);
@@ -464,7 +447,7 @@ StandaloneMldTextureFileScan scanFile(
     }
 
     const EndianReader reader(bytes, header->endian);
-    if (!canReadRange(bytes.size(), file.textureTableOffset, sizeof(std::uint32_t))) {
+    if (!spice::root::bounds_contains(bytes.size(), file.textureTableOffset, sizeof(std::uint32_t))) {
         file.diagnostics.push_back("Texture table count is out of bounds.");
         return file;
     }

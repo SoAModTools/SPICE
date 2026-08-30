@@ -1,6 +1,7 @@
 #include "EctParser.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -38,10 +39,6 @@ bool hasErrors(const std::vector<EctDiagnostic>& diagnostics) {
     return std::any_of(diagnostics.begin(), diagnostics.end(), [](const EctDiagnostic& diagnostic) {
         return diagnostic.severity == DiagnosticSeverity::Error;
     });
-}
-
-bool canReadRange(std::size_t size, std::size_t offset, std::size_t length) {
-    return offset <= size && length <= size - offset;
 }
 
 bool isPrintableAscii(std::uint8_t value) {
@@ -173,7 +170,7 @@ std::optional<EctFile> parseOverworld(
 
     const auto indexBytes = static_cast<std::size_t>(entryCount) * kIndexRecordSize;
     const auto indexEnd = kIndexedHeaderSize + indexBytes;
-    if (!canReadRange(bytes.size(), kIndexedHeaderSize, indexBytes)) {
+    if (!spice::root::bounds_contains(bytes.size(), kIndexedHeaderSize, indexBytes)) {
         addDiagnostic(
             diagnostics,
             DiagnosticSeverity::Error,
@@ -214,7 +211,7 @@ std::optional<EctFile> parseOverworld(
                 recordOffset + kIndexTailInRecord);
             continue;
         }
-        if (dataOffset < indexEnd || !canReadRange(bytes.size(), dataOffset, dataSize)) {
+        if (dataOffset < indexEnd || !spice::root::bounds_contains(bytes.size(), dataOffset, dataSize)) {
             addDiagnostic(
                 diagnostics,
                 DiagnosticSeverity::Error,

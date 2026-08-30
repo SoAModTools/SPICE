@@ -2,7 +2,7 @@
 
 ## Current Support
 
-SPICE recognizes the two big-endian STD forms after AKLZ decompression: fixed action-row tables and sentinel-terminated entry tables with separately addressed payloads. It preserves both headers, record keys, callback or type selectors, payload bounds, and opaque bytes. Several entry payload families have promoted sizes and guarded semantic fields, while unknown payloads remain raw spans.
+SPICE recognizes the two STD forms in little-endian raw Dreamcast files and big-endian raw or AKLZ-wrapped GameCube files: fixed action-row tables and sentinel-terminated entry tables with separately addressed payloads. It records source endian, supports a forced-endian research path, and preserves that endian when writing. AKLZ output remains GameCube-only.
 
 Action rows and entry payloads are intentionally separate models. An action row selects a callback family; an entry’s combined opcode/location code selects a payload family. Shared action keys can relate the two at runtime, but they do not make them one serialized table.
 

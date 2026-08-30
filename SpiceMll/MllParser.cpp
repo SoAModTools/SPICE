@@ -3,6 +3,7 @@
 #include "../Compression/Aklz.h"
 #include "../SpiceBin/BinParser.h"
 #include "../SpiceGvm/Parsing/GvmParser.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -32,7 +33,7 @@ constexpr std::uint32_t kMldObjectListSampleLimit = 8U;
 constexpr std::uint32_t kPreTextureTableCountSize = sizeof(std::uint32_t);
 constexpr std::array<std::uint32_t, 3U> kMldObjectListFieldOffsets{ 0x14U, 0x18U, 0x1CU };
 constexpr std::array<std::uint32_t, 6U> kMldCountedListFieldOffsets{ 0x08U, 0x0CU, 0x10U, 0x14U, 0x18U, 0x1CU };
-constexpr std::array<std::string_view, 13U> kInterestingBlockTags{
+constexpr std::array<std::string_view, 16U> kInterestingBlockTags{
     "GOBJ",
     "GRND",
     "POF0",
@@ -46,6 +47,9 @@ constexpr std::array<std::string_view, 13U> kInterestingBlockTags{
     "NMDM",
     "GCIX",
     "GVRT",
+    "GBIX",
+    "PVRT",
+    "PVMH",
 };
 
 void addDiagnostic(std::vector<MllDiagnostic>& diagnostics,
@@ -53,10 +57,6 @@ void addDiagnostic(std::vector<MllDiagnostic>& diagnostics,
     std::string message,
     std::uint32_t offset = 0U) {
     diagnostics.push_back(MllDiagnostic{ severity, std::move(message), offset });
-}
-
-bool canReadRange(std::size_t size, std::uint32_t offset, std::uint32_t length) {
-    return offset <= size && length <= size - offset;
 }
 
 bool endsWithCaseInsensitive(std::string_view text, std::string_view suffix) {
@@ -75,20 +75,13 @@ bool endsWithCaseInsensitive(std::string_view text, std::string_view suffix) {
     return true;
 }
 
-std::uint32_t readU32LeUnchecked(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    return static_cast<std::uint32_t>(bytes[offset]) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 8U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 3U]) << 24U);
-}
-
 std::uint32_t clampSize(std::size_t size) {
     return static_cast<std::uint32_t>(
         std::min<std::size_t>(size, std::numeric_limits<std::uint32_t>::max()));
 }
 
 std::string makeSignature(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    if (!canReadRange(bytes.size(), offset, 4U)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, 4U)) {
         return {};
     }
 
@@ -122,7 +115,7 @@ std::string makeHexBytes(std::span<const std::uint8_t> bytes, std::uint32_t offs
 }
 
 bool matchesTag(std::span<const std::uint8_t> bytes, std::uint32_t offset, std::string_view tag) {
-    if (!canReadRange(bytes.size(), offset, static_cast<std::uint32_t>(tag.size()))) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, static_cast<std::uint32_t>(tag.size()))) {
         return false;
     }
     for (std::uint32_t i = 0U; i < tag.size(); ++i) {
@@ -182,7 +175,7 @@ enum class FixedAsciiShape {
 };
 
 FixedAsciiShape classifyFixedAscii(std::span<const std::uint8_t> bytes, std::uint32_t offset, std::uint32_t length) {
-    if (!canReadRange(bytes.size(), offset, length)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, length)) {
         return FixedAsciiShape::Suspicious;
     }
 
@@ -210,7 +203,7 @@ bool countedU32ListLooksPlausible(
     if (listOffset == 0U || listOffset % sizeof(std::uint32_t) != 0U) {
         return false;
     }
-    if (!canReadRange(payload.size(), listOffset, sizeof(std::uint32_t))) {
+    if (!spice::root::bounds_contains(payload.size(), listOffset, sizeof(std::uint32_t))) {
         return false;
     }
 
@@ -235,16 +228,17 @@ struct CountedListValueReference {
 
 std::vector<CountedListValueReference> collectCountedListValueReferences(
     std::span<const std::uint8_t> payload,
-    const MllEmbeddedMldHeaderProbe& header) {
+    const MllEmbeddedMldHeaderProbe& header,
+    Endian endian) {
     std::vector<CountedListValueReference> references{};
     if (!header.plausible) {
         return references;
     }
 
-    EndianReader reader(payload, Endian::Big);
+    EndianReader reader(payload, endian);
     for (std::uint32_t entryIndex = 0U; entryIndex < header.entryCount; ++entryIndex) {
         const auto entryOffset = header.indexTableOffset + entryIndex * kMldIndexEntryStride;
-        if (!canReadRange(payload.size(), entryOffset, kMldIndexEntryStride)) {
+        if (!spice::root::bounds_contains(payload.size(), entryOffset, kMldIndexEntryStride)) {
             continue;
         }
         for (const auto fieldOffset : kMldCountedListFieldOffsets) {
@@ -290,14 +284,15 @@ bool declaredSizePlausible(std::string_view tag, std::uint32_t remaining, std::u
 
 std::vector<MllEmbeddedBlockProbe> probeEmbeddedBlocks(
     std::span<const std::uint8_t> payload,
-    const MllEmbeddedMldHeaderProbe& header) {
+    const MllEmbeddedMldHeaderProbe& header,
+    Endian endian) {
     std::vector<MllEmbeddedBlockProbe> probes{};
-    const auto references = collectCountedListValueReferences(payload, header);
+    const auto references = collectCountedListValueReferences(payload, header, endian);
     if (payload.size() < 4U) {
         return probes;
     }
 
-    EndianReader reader(payload, Endian::Big);
+    EndianReader reader(payload, endian);
     for (std::uint32_t offset = 0U; offset <= payload.size() - 4U; ++offset) {
         std::string_view matchedTag{};
         for (const auto tag : kInterestingBlockTags) {
@@ -318,9 +313,9 @@ std::vector<MllEmbeddedBlockProbe> probeEmbeddedBlocks(
         probe.atHeaderTextureTableOffset = header.plausible && offset == header.textureTableOffset;
         probe.bytes32Hex = makeHexBytes(payload, offset, 32U);
 
-        if (canReadRange(payload.size(), offset + 4U, sizeof(std::uint32_t))) {
+        if (spice::root::bounds_contains(payload.size(), offset + 4U, sizeof(std::uint32_t))) {
             probe.declaredSizeBe = reader.read_u32(offset + 4U);
-            probe.declaredSizeLe = readU32LeUnchecked(payload, offset + 4U);
+            probe.declaredSizeLe = EndianReader(payload, Endian::Little).read_u32(offset + 4U);
             const auto remaining = static_cast<std::uint32_t>(payload.size() - offset);
             probe.declaredSizeBePlausible =
                 declaredSizePlausible(matchedTag, remaining, probe.declaredSizeBe);
@@ -379,11 +374,11 @@ std::vector<MllEmbeddedGvrTextureProbe> probeEmbeddedGvrTextures(std::span<const
         probe.gcixOffset = offset;
         probe.gvrtOffset = gvrtOffset;
         probe.pairDistance = probe.gvrtOffset - probe.gcixOffset;
-        if (canReadRange(payload.size(), probe.gcixOffset + 4U, sizeof(std::uint32_t))) {
-            probe.gcixPayloadSizeLe = readU32LeUnchecked(payload, probe.gcixOffset + 4U);
+        if (spice::root::bounds_contains(payload.size(), probe.gcixOffset + 4U, sizeof(std::uint32_t))) {
+            probe.gcixPayloadSizeLe = EndianReader(payload, Endian::Little).read_u32(probe.gcixOffset + 4U);
         }
-        if (canReadRange(payload.size(), probe.gvrtOffset + 4U, sizeof(std::uint32_t))) {
-            probe.gvrtPayloadSizeLe = readU32LeUnchecked(payload, probe.gvrtOffset + 4U);
+        if (spice::root::bounds_contains(payload.size(), probe.gvrtOffset + 4U, sizeof(std::uint32_t))) {
+            probe.gvrtPayloadSizeLe = EndianReader(payload, Endian::Little).read_u32(probe.gvrtOffset + 4U);
         }
 
         const auto recordEnd = static_cast<std::uint64_t>(probe.gvrtOffset) + 8U + probe.gvrtPayloadSizeLe;
@@ -477,7 +472,7 @@ std::string trimAsciiSpaces(std::string value) {
 
 std::string readSlotString(std::span<const std::uint8_t> payload, std::uint32_t offset, std::uint32_t length) {
     std::string value{};
-    if (!canReadRange(payload.size(), offset, length)) {
+    if (!spice::root::bounds_contains(payload.size(), offset, length)) {
         return value;
     }
     value.reserve(length);
@@ -592,17 +587,18 @@ std::string extractPrintableStringsNearTextures(
 
 std::vector<std::uint32_t> collectIndexTexturePointers(
     std::span<const std::uint8_t> payload,
-    const MllEmbeddedMldHeaderProbe& header) {
+    const MllEmbeddedMldHeaderProbe& header,
+    Endian endian) {
     std::vector<std::uint32_t> pointers{};
     if (!header.plausible) {
         return pointers;
     }
 
-    EndianReader reader(payload, Endian::Big);
+    EndianReader reader(payload, endian);
     pointers.reserve(header.entryCount);
     for (std::uint32_t entryIndex = 0U; entryIndex < header.entryCount; ++entryIndex) {
         const auto entryOffset = header.indexTableOffset + entryIndex * kMldIndexEntryStride;
-        if (!canReadRange(payload.size(), entryOffset, kMldIndexEntryStride)) {
+        if (!spice::root::bounds_contains(payload.size(), entryOffset, kMldIndexEntryStride)) {
             continue;
         }
         pointers.push_back(reader.read_u32(entryOffset + 0x20U));
@@ -613,7 +609,8 @@ std::vector<std::uint32_t> collectIndexTexturePointers(
 MllTextureTableProbe probeTextureTable(
     std::span<const std::uint8_t> payload,
     const MllEmbeddedMldHeaderProbe& header,
-    const std::vector<MllEmbeddedGvrTextureProbe>& textures) {
+    const std::vector<MllEmbeddedGvrTextureProbe>& textures,
+    Endian endian) {
     MllTextureTableProbe probe{};
     probe.textureCount = static_cast<std::uint32_t>(std::min<std::size_t>(
         textures.size(),
@@ -704,7 +701,7 @@ MllTextureTableProbe probeTextureTable(
             offsetDelta(header.realDataOffset, probe.firstTextureOffset);
     }
 
-    const auto texturePointers = collectIndexTexturePointers(payload, header);
+    const auto texturePointers = collectIndexTexturePointers(payload, header, endian);
     probe.indexTexturePointerCount = static_cast<std::uint32_t>(texturePointers.size());
     std::set<std::uint32_t> uniqueNonZeroTexturePointers{};
     std::vector<std::uint32_t> nonZeroTexturePointers{};
@@ -735,7 +732,8 @@ MllPreTextureTableProbe probePreTextureTable(
     std::span<const std::uint8_t> payload,
     const MllEmbeddedMldHeaderProbe& header,
     const MllTextureTableProbe& textureProbe,
-    const std::vector<MllEmbeddedGvrTextureProbe>& textures) {
+    const std::vector<MllEmbeddedGvrTextureProbe>& textures,
+    Endian endian) {
     MllPreTextureTableProbe probe{};
     if (!header.plausible ||
         !textureProbe.hasTextures ||
@@ -748,14 +746,14 @@ MllPreTextureTableProbe probePreTextureTable(
     probe.tableOffset = header.textureTableOffset;
     probe.tableEndOffset = textureProbe.firstTextureOffset;
     probe.tableSize = probe.tableEndOffset - probe.tableOffset;
-    probe.spanInBounds = canReadRange(payload.size(), probe.tableOffset, probe.tableSize);
+    probe.spanInBounds = spice::root::bounds_contains(payload.size(), probe.tableOffset, probe.tableSize);
     probe.spanAlignedTo20 = probe.tableSize % 0x20U == 0U;
     if (!probe.spanInBounds) {
         return probe;
     }
 
-    EndianReader reader(payload, Endian::Big);
-    if (!canReadRange(payload.size(), probe.tableOffset, kPreTextureTableCountSize)) {
+    EndianReader reader(payload, endian);
+    if (!spice::root::bounds_contains(payload.size(), probe.tableOffset, kPreTextureTableCountSize)) {
         return probe;
     }
     probe.declaredEntryCount = reader.read_u32(probe.tableOffset);
@@ -784,7 +782,7 @@ MllPreTextureTableProbe probePreTextureTable(
 
     for (std::uint32_t entryIndex = 0U; entryIndex < probe.entryCount; ++entryIndex) {
         const auto entryOffset = probe.tableOffset + kPreTextureTableCountSize + entryIndex * probe.entryStride;
-        if (!canReadRange(payload.size(), entryOffset, probe.entryStride)) {
+        if (!spice::root::bounds_contains(payload.size(), entryOffset, probe.entryStride)) {
             break;
         }
 
@@ -846,13 +844,13 @@ MllPreTextureTableProbe probePreTextureTable(
     return probe;
 }
 
-MllEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> payload) {
+MllEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> payload, Endian endian) {
     MllEmbeddedMldHeaderProbe probe{};
     if (payload.size() < 0x14U) {
         return probe;
     }
 
-    EndianReader reader(payload, Endian::Big);
+    EndianReader reader(payload, endian);
     probe.entryCount = reader.read_u32(0x00U);
     probe.indexTableOffset = reader.read_u32(0x04U);
     probe.functionParametersOffset = reader.read_u32(0x08U);
@@ -942,7 +940,7 @@ MllEmbeddedMldObjectListTargetSample probeEmbeddedMldObjectListTarget(
     }
 
     sample.targetOffsetAligned = sample.targetOffset % sizeof(std::uint32_t) == 0U;
-    sample.targetInBounds = canReadRange(payload.size(), sample.targetOffset, sizeof(std::uint32_t));
+    sample.targetInBounds = spice::root::bounds_contains(payload.size(), sample.targetOffset, sizeof(std::uint32_t));
     sample.targetLooksPlausible = sample.targetOffsetAligned && sample.targetInBounds;
     const auto resolveRelative = [&](std::uint32_t base, std::uint32_t value, std::uint32_t& resolvedOffset) {
         const auto resolved = static_cast<std::uint64_t>(base) + value;
@@ -952,7 +950,7 @@ MllEmbeddedMldObjectListTargetSample probeEmbeddedMldObjectListTarget(
         }
         resolvedOffset = static_cast<std::uint32_t>(resolved);
         return resolvedOffset % sizeof(std::uint32_t) == 0U &&
-            canReadRange(payload.size(), resolvedOffset, sizeof(std::uint32_t));
+            spice::root::bounds_contains(payload.size(), resolvedOffset, sizeof(std::uint32_t));
     };
     sample.listBaseTargetLooksPlausible =
         resolveRelative(listOffset, sample.targetOffset, sample.listBaseTargetOffset);
@@ -972,18 +970,19 @@ MllEmbeddedMldObjectListTargetSample probeEmbeddedMldObjectListTarget(
 
 std::vector<MllEmbeddedMldObjectListProbe> probeEmbeddedMldObjectLists(
     std::span<const std::uint8_t> payload,
-    const MllEmbeddedMldHeaderProbe& header) {
+    const MllEmbeddedMldHeaderProbe& header,
+    Endian endian) {
     std::vector<MllEmbeddedMldObjectListProbe> probes{};
     if (!header.plausible) {
         return probes;
     }
 
-    EndianReader reader(payload, Endian::Big);
+    EndianReader reader(payload, endian);
     probes.reserve(static_cast<std::size_t>(header.entryCount) * kMldObjectListFieldOffsets.size());
 
     for (std::uint32_t entryIndex = 0U; entryIndex < header.entryCount; ++entryIndex) {
         const auto entryOffset = header.indexTableOffset + entryIndex * kMldIndexEntryStride;
-        if (!canReadRange(payload.size(), entryOffset, kMldIndexEntryStride)) {
+        if (!spice::root::bounds_contains(payload.size(), entryOffset, kMldIndexEntryStride)) {
             continue;
         }
 
@@ -1004,7 +1003,7 @@ std::vector<MllEmbeddedMldObjectListProbe> probeEmbeddedMldObjectLists(
                 continue;
             }
 
-            probe.listHeaderInBounds = canReadRange(payload.size(), probe.listOffset, sizeof(std::uint32_t));
+            probe.listHeaderInBounds = spice::root::bounds_contains(payload.size(), probe.listOffset, sizeof(std::uint32_t));
             if (!probe.listHeaderInBounds) {
                 probes.push_back(std::move(probe));
                 continue;
@@ -1075,6 +1074,12 @@ MllPayloadKind classifyPayload(std::span<const std::uint8_t> payload,
     if (spice::compression::aklz::isAklz(payload)) {
         return MllPayloadKind::AklzCompressed;
     }
+    if (signature == "PVMH") {
+        return MllPayloadKind::PvmArchive;
+    }
+    if (signature == "PVRT" || signature == "GBIX") {
+        return MllPayloadKind::PvrTexture;
+    }
     const bool memberNameLooksBin = endsWithCaseInsensitive(memberName, ".bin");
     const bool indexedBinLooksPlausible = indexedBinProbeLooksPlausible(indexedBinTableProbe);
     if (indexedBinLooksPlausible && (memberNameLooksBin || !embeddedMldHeader.indexEntryShapePlausible)) {
@@ -1134,6 +1139,26 @@ std::uint16_t inferMemberCountFromFirstMemberOffset(std::uint32_t firstMemberOff
         return 0U;
     }
     return static_cast<std::uint16_t>(count);
+}
+
+std::optional<Endian> detectEndian(std::span<const std::uint8_t> bytes, [[maybe_unused]] bool compressed) {
+    const auto score = [&](Endian endian) {
+        if (bytes.size() < kMllRecordsOffset + kMllRecordStride) return 0;
+        const EndianReader reader(bytes, endian);
+        const auto count = reader.read_u16(0x04U);
+        const auto tableEnd = spice::root::checked_table_end(kMllRecordsOffset, count, kMllRecordStride);
+        int value = reader.read_u32(0U) == 0x0000FFFFU ? 3 : 0;
+        if (count > 0U && tableEnd.has_value() && *tableEnd <= bytes.size()) value += 3;
+        const auto firstPayload = reader.read_u32(kMllRecordsOffset + 0x14U);
+        const auto inferred = inferMemberCountFromFirstMemberOffset(firstPayload, bytes.size());
+        if (inferred > 0U) value += 4;
+        if (inferred == count && inferred > 0U) value += 2;
+        return value;
+    };
+    const auto big = score(Endian::Big);
+    const auto little = score(Endian::Little);
+    if (big == little) return std::nullopt;
+    return big > little ? Endian::Big : Endian::Little;
 }
 
 bool rangeIntersects(std::uint32_t offset,
@@ -1226,6 +1251,10 @@ const char* toString(MllPayloadKind kind) {
         return "ninja-chunk";
     case MllPayloadKind::Pof0:
         return "pof0";
+    case MllPayloadKind::PvrTexture:
+        return "pvr";
+    case MllPayloadKind::PvmArchive:
+        return "pvm";
     }
     return "unknown";
 }
@@ -1254,7 +1283,9 @@ const char* toString(MllTableShape shape) {
     return "unknown";
 }
 
-MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string sourcePath) {
+MllFile MllParser::parse(std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    const MllParseOptions& options) {
     MllFile file{};
     file.sourcePath = std::move(sourcePath);
     file.rawSize = clampSize(bytes.size());
@@ -1275,14 +1306,25 @@ MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string source
         return file;
     }
 
-    EndianReader reader(decodedBytes, Endian::Big);
+    const auto endian = options.forcedEndian.has_value()
+        ? options.forcedEndian
+        : detectEndian(decodedBytes, file.sourceWasCompressedAklz);
+    if (!endian.has_value()) {
+        addDiagnostic(file.diagnostics, DiagnosticSeverity::Error,
+            "MLL byte order is ambiguous or neither endian has a structurally valid member table");
+        classifyTableShape(file);
+        return file;
+    }
+    file.sourceEndian = *endian;
+    file.endianWasForced = options.forcedEndian.has_value();
+    EndianReader reader(decodedBytes, *endian);
     file.headerWord0 = reader.read_u32(0x00U);
     file.countWord = reader.read_u32(0x04U);
     file.signedMemberCountCandidate = reader.read_i16(0x04U);
     file.memberCountCandidate = reader.read_u16(0x04U);
 
     const bool headerCountTableFits = file.memberCountCandidate != 0U &&
-        canReadRange(decodedBytes.size(),
+        spice::root::bounds_contains(decodedBytes.size(),
             kMllRecordsOffset,
             static_cast<std::uint32_t>(file.memberCountCandidate) * kMllRecordStride);
 
@@ -1317,7 +1359,7 @@ MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string source
     file.recordStride = kMllRecordStride;
     file.memberTableEndOffset = kMllRecordsOffset +
         static_cast<std::uint32_t>(file.selectedMemberCount) * kMllRecordStride;
-    file.memberTableInBounds = canReadRange(decodedBytes.size(), file.recordsOffset, file.memberTableEndOffset - file.recordsOffset);
+    file.memberTableInBounds = spice::root::bounds_contains(decodedBytes.size(), file.recordsOffset, file.memberTableEndOffset - file.recordsOffset);
     if (!file.memberTableInBounds) {
         addDiagnostic(file.diagnostics,
             DiagnosticSeverity::Error,
@@ -1342,29 +1384,30 @@ MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string source
             file.firstMemberOffset = member.payloadOffset;
         }
 
-        member.payloadInBounds = canReadRange(decodedBytes.size(), member.payloadOffset, member.payloadSize);
+        member.payloadInBounds = spice::root::bounds_contains(decodedBytes.size(), member.payloadOffset, member.payloadSize);
         member.payloadOverlapsMemberTable = member.payloadInBounds &&
             member.payloadSize != 0U &&
             rangeIntersects(member.payloadOffset, member.payloadSize, file.recordsOffset, file.memberTableEndOffset - file.recordsOffset);
         if (member.payloadInBounds) {
             member.payloadSignature = makeSignature(decodedBytes, member.payloadOffset);
             const auto payload = decodedBytes.subspan(member.payloadOffset, member.payloadSize);
-            member.embeddedMldHeader = probeEmbeddedMldHeader(payload);
+            member.embeddedMldHeader = probeEmbeddedMldHeader(payload, *endian);
             member.embeddedMldObjectListProbes =
-                probeEmbeddedMldObjectLists(payload, member.embeddedMldHeader);
-            member.embeddedBlockProbes = probeEmbeddedBlocks(payload, member.embeddedMldHeader);
+                probeEmbeddedMldObjectLists(payload, member.embeddedMldHeader, *endian);
+            member.embeddedBlockProbes = probeEmbeddedBlocks(payload, member.embeddedMldHeader, *endian);
             member.embeddedGvrTextureProbes = probeEmbeddedGvrTextures(payload);
             member.textureTableProbe =
-                probeTextureTable(payload, member.embeddedMldHeader, member.embeddedGvrTextureProbes);
+                probeTextureTable(payload, member.embeddedMldHeader, member.embeddedGvrTextureProbes, *endian);
             member.preTextureTableProbe =
                 probePreTextureTable(
                     payload,
                     member.embeddedMldHeader,
                     member.textureTableProbe,
-                    member.embeddedGvrTextureProbes);
+                    member.embeddedGvrTextureProbes,
+                    *endian);
             if (endsWithCaseInsensitive(member.name, ".bin") ||
                 !member.embeddedMldHeader.indexEntryShapePlausible) {
-                member.indexedBinTableProbe = spice::bin::probeIndexedTable(payload);
+                member.indexedBinTableProbe = spice::bin::probeIndexedTable(payload, *endian);
             }
             member.payloadKind = classifyPayload(
                 payload,
@@ -1403,8 +1446,8 @@ MllFile MllParser::parse(std::span<const std::uint8_t> bytes, std::string source
     return file;
 }
 
-MllFile MllParser::parseFile(const std::filesystem::path& path) {
-    return parse(readFileBytes(path), path.string());
+MllFile MllParser::parseFile(const std::filesystem::path& path, const MllParseOptions& options) {
+    return parse(readFileBytes(path), path.string(), options);
 }
 
 } // namespace spice::mll

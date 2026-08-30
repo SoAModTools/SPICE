@@ -5,6 +5,7 @@
 #include "../../SpiceMLD/Parsing/MldParser.h"
 #include "../../SpiceSstSml/BattleStageParser.h"
 #include "../../SpiceSstSml/SstCommandCatalog.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <bit>
@@ -177,7 +178,9 @@ std::uint32_t readU32(const std::vector<std::uint8_t>& bytes, const std::size_t 
 }
 
 SstSmlCommandFieldSnapshot projectField(const CommandFieldSummary& field,
-    const std::vector<std::uint8_t>& bytes, const std::uint32_t logicalBaseOffset = 0U) {
+    const std::vector<std::uint8_t>& bytes,
+    spice::root::Endian endian,
+    const std::uint32_t logicalBaseOffset = 0U) {
     SstSmlCommandFieldSnapshot out{};
     out.offset = field.offset;
     out.width = widthName(field.width);
@@ -197,6 +200,7 @@ SstSmlCommandFieldSnapshot projectField(const CommandFieldSummary& field,
     out.valueAvailable = true;
     std::ostringstream value{};
     value << std::setprecision(9);
+    const spice::root::EndianReader reader(bytes, endian);
     switch (field.width) {
     case CommandFieldWidth::I8:
         value << static_cast<int>(static_cast<std::int8_t>(bytes[localOffset]));
@@ -205,18 +209,18 @@ SstSmlCommandFieldSnapshot projectField(const CommandFieldSummary& field,
         value << static_cast<unsigned>(bytes[localOffset]);
         break;
     case CommandFieldWidth::I16:
-        value << static_cast<std::int16_t>(readU16(bytes, localOffset));
+        value << reader.read_i16(localOffset);
         break;
     case CommandFieldWidth::U16:
-        value << readU16(bytes, localOffset);
+        value << reader.read_u16(localOffset);
         break;
     case CommandFieldWidth::U32: {
-        const auto number = readU32(bytes, localOffset);
+        const auto number = reader.read_u32(localOffset);
         value << number << " (0x" << std::uppercase << std::hex << number << ')';
         break;
     }
     case CommandFieldWidth::F32:
-        value << std::bit_cast<float>(readU32(bytes, localOffset));
+        value << reader.read_f32(localOffset);
         break;
     }
     out.value = value.str();
@@ -359,6 +363,12 @@ SstSmlPairOverviewSnapshot SstSmlDocumentSession::overview() const {
     out.sstDecodedSize = impl_->pair.sst.decodedSize;
     out.smlWasAklz = impl_->pair.sml.sourceWasCompressedAklz;
     out.sstWasAklz = impl_->pair.sst.sourceWasCompressedAklz;
+    out.smlEndian = impl_->pair.sml.sourceEndian == spice::root::Endian::Little ? "Little endian" : "Big endian";
+    out.sstEndian = impl_->pair.sst.sourceEndian == spice::root::Endian::Little ? "Little endian" : "Big endian";
+    out.platformContext = impl_->pair.sml.sourceEndian == spice::root::Endian::Little
+        && impl_->pair.sst.sourceEndian == spice::root::Endian::Little ? "Dreamcast"
+        : impl_->pair.sml.sourceEndian == spice::root::Endian::Big
+            && impl_->pair.sst.sourceEndian == spice::root::Endian::Big ? "GameCube" : "Mixed / invalid";
     out.recordCount = impl_->pair.sml.recordCount;
     out.recordCountsAgree = impl_->pair.recordCountsAgree;
     for (const auto& mld : impl_->embeddedMlds) {
@@ -461,7 +471,7 @@ std::optional<SstSmlCommandDetailSnapshot> SstSmlDocumentSession::commandDetail(
     out.onDiskWord12 = command->onDiskWord12;
     out.payloadHex = hexBytes(command->payloadBytes);
     for (const auto& field : command->fieldSummaries) {
-        out.fields.push_back(projectField(field, command->payloadBytes));
+        out.fields.push_back(projectField(field, command->payloadBytes, impl_->pair.sst.sourceEndian));
     }
     for (const auto& window : command->consumerWindows) {
         SstSmlConsumerWindowSnapshot projected{};
@@ -474,7 +484,7 @@ std::optional<SstSmlCommandDetailSnapshot> SstSmlDocumentSession::commandDetail(
         const std::uint32_t logicalBase = window.offset >= command->payloadOffset
             ? window.offset - command->payloadOffset : 0U;
         for (const auto& field : window.fieldSummaries) {
-            projected.fields.push_back(projectField(field, window.bytes, logicalBase));
+            projected.fields.push_back(projectField(field, window.bytes, impl_->pair.sst.sourceEndian, logicalBase));
         }
         out.consumerWindows.push_back(std::move(projected));
     }

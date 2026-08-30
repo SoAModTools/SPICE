@@ -1,4 +1,5 @@
 #include "PvmParser.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <array>
@@ -21,14 +22,14 @@ constexpr std::uint16_t kKnownPvmFlags = 0x011F;
 
 bool hasBytes(const std::span<const std::uint8_t> bytes, const std::size_t offset, const std::size_t count)
 {
-    return offset <= bytes.size() && count <= bytes.size() - offset;
+    return spice::root::bounds_contains(bytes.size(), offset, count);
 }
 
 bool checkedAdd(const std::size_t left, const std::size_t right, std::size_t& result)
 {
-    if (right > std::numeric_limits<std::size_t>::max() - left)
-        return false;
-    result = left + right;
+    const auto checked = spice::root::checked_add(left, right);
+    if (!checked.has_value()) return false;
+    result = *checked;
     return true;
 }
 
@@ -40,16 +41,12 @@ bool isTag(const std::span<const std::uint8_t> bytes, const std::size_t offset, 
 
 std::uint16_t readU16(const std::span<const std::uint8_t> bytes, const std::size_t offset)
 {
-    return static_cast<std::uint16_t>(bytes[offset]) |
-        static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Little).read_u16(offset);
 }
 
 std::uint32_t readU32(const std::span<const std::uint8_t> bytes, const std::size_t offset)
 {
-    return static_cast<std::uint32_t>(bytes[offset]) |
-        (static_cast<std::uint32_t>(bytes[offset + 1]) << 8) |
-        (static_cast<std::uint32_t>(bytes[offset + 2]) << 16) |
-        (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Little).read_u32(offset);
 }
 
 void addDiagnostic(

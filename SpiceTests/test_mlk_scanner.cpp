@@ -3,7 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace {
@@ -61,6 +63,30 @@ std::vector<std::uint8_t> makeMlkWithEmbeddedMldFixture() {
     writeBeU32(bytes, 0x20U, 0x0000007cU);
     writeBeU32(bytes, 0x24U, 0x000000c0U);
     writeBeU32(bytes, 0x28U, 0x000000e0U);
+    return bytes;
+}
+
+std::vector<std::uint8_t> makeMlkWithUnavailablePlatformTailFixture() {
+    std::vector<std::uint8_t> bytes(0x60U, 0U);
+    writeBeU32(bytes, 0x00U, 0x0000ffffU);
+    writeBeU32(bytes, 0x04U, 0x0004ffffU);
+
+    writeBeU32(bytes, 0x08U, 0x11111111U);
+    writeBeU32(bytes, 0x0cU, 0x00000048U);
+    writeBeU32(bytes, 0x10U, 0x00000004U);
+    writeBeU32(bytes, 0x18U, 0x22222222U);
+    writeBeU32(bytes, 0x1cU, 0x00000050U);
+    writeBeU32(bytes, 0x20U, 0x00000004U);
+
+    // A repeated alternate-platform descriptor tail whose payloads are absent.
+    writeBeU32(bytes, 0x28U, 0x11111111U);
+    writeBeU32(bytes, 0x2cU, 0x00001000U);
+    writeBeU32(bytes, 0x30U, 0x00000004U);
+    writeBeU32(bytes, 0x38U, 0x22222222U);
+    writeBeU32(bytes, 0x3cU, 0x00002000U);
+    writeBeU32(bytes, 0x40U, 0x00000004U);
+    bytes[0x48U] = 'P'; bytes[0x49U] = 'O'; bytes[0x4aU] = 'F'; bytes[0x4bU] = '0';
+    bytes[0x50U] = 'N'; bytes[0x51U] = 'J'; bytes[0x52U] = 'C'; bytes[0x53U] = 'M';
     return bytes;
 }
 
@@ -195,4 +221,19 @@ TEST(SpiceMlkScanner, WarnsOnDuplicateRecordKeysButKeepsScanning) {
     EXPECT_TRUE(result.records[1].duplicateKey);
     ASSERT_EQ(result.diagnostics.size(), 1U);
     EXPECT_EQ(result.diagnostics[0].severity, spice::mlk::DiagnosticSeverity::Warning);
+}
+
+TEST(SpiceMlkScanner, RetainsAvailablePrefixWhenPlatformDescriptorTailHasNoPayloads) {
+    const auto result = spice::mlk::MlkScanner::scan(makeMlkWithUnavailablePlatformTailFixture());
+
+    EXPECT_TRUE(result.ok());
+    EXPECT_EQ(result.descriptorRecordCount, 4U);
+    EXPECT_EQ(result.selectedRecordCount, 2U);
+    EXPECT_EQ(result.unavailableTrailingRecordCount, 2U);
+    ASSERT_EQ(result.records.size(), 2U);
+    EXPECT_EQ(result.records[0].key, 0x11111111U);
+    EXPECT_EQ(result.records[1].key, 0x22222222U);
+    EXPECT_TRUE(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.message.find("trailing platform descriptors") != std::string::npos;
+    }));
 }

@@ -46,6 +46,7 @@ private:
         bool success = false;
         bool busy = false;
         QString message{};
+        QStringList details{};
     };
 
     void chooseOpenDocument();

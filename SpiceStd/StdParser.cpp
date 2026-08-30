@@ -2,6 +2,9 @@
 
 #include "../Compression/Aklz.h"
 #include "StdFileWriter.h"
+#include "../SpiceRoot/Binary/Alignment.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianWriter.h"
 
 #include <algorithm>
 #include <fstream>
@@ -12,6 +15,10 @@
 
 namespace spice::stdfile {
 namespace {
+
+using spice::root::Endian;
+using spice::root::EndianReader;
+using spice::root::EndianSpanWriter;
 
 constexpr std::uint32_t kStdHeaderSize = 0x10U;
 constexpr std::uint32_t kActionRowSize = 0x18U;
@@ -50,50 +57,6 @@ std::uint32_t sizeToU32Saturated(const std::size_t size)
         return std::numeric_limits<std::uint32_t>::max();
     }
     return static_cast<std::uint32_t>(size);
-}
-
-bool canReadRange(const std::size_t size, const std::uint32_t offset, const std::uint32_t length)
-{
-    return offset <= size && length <= size - offset;
-}
-
-std::uint16_t readU16BeUnchecked(std::span<const std::uint8_t> bytes, const std::uint32_t offset)
-{
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(bytes[offset]) << 8U) |
-        static_cast<std::uint16_t>(bytes[offset + 1U]));
-}
-
-std::int16_t readS16BeUnchecked(std::span<const std::uint8_t> bytes, const std::uint32_t offset)
-{
-    return static_cast<std::int16_t>(readU16BeUnchecked(bytes, offset));
-}
-
-std::uint32_t readU32BeUnchecked(std::span<const std::uint8_t> bytes, const std::uint32_t offset)
-{
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
-}
-
-void writeU16BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::uint16_t value)
-{
-    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
-    bytes[offset + 1U] = static_cast<std::uint8_t>(value & 0xffU);
-}
-
-void writeS16BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::int16_t value)
-{
-    writeU16BeUnchecked(bytes, offset, static_cast<std::uint16_t>(value));
-}
-
-void writeU32BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::uint32_t value)
-{
-    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
-    bytes[offset + 1U] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
-    bytes[offset + 2U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
-    bytes[offset + 3U] = static_cast<std::uint8_t>(value & 0xffU);
 }
 
 void addUnknownRange(StdFile& file, const std::size_t offset, const std::size_t size, std::string label)
@@ -176,13 +139,13 @@ void buildDecodedSourceRanges(StdFile& file, std::vector<KnownRangeCandidate> kn
     }
 }
 
-bool actionRowEnvelopeMatches(std::span<const std::uint8_t> bytes)
+bool actionRowEnvelopeMatches(std::span<const std::uint8_t> bytes, Endian endian)
 {
-    if (!canReadRange(bytes.size(), 0U, kStdHeaderSize)) {
+    if (!spice::root::bounds_contains(bytes.size(), 0U, kStdHeaderSize)) {
         return false;
     }
 
-    const auto rowCount = readU32BeUnchecked(bytes, 0x08U);
+    const auto rowCount = EndianReader(bytes, endian).read_u32(0x08U);
     if (rowCount > kMaxConservativeRowCount) {
         return false;
     }
@@ -192,31 +155,55 @@ bool actionRowEnvelopeMatches(std::span<const std::uint8_t> bytes)
     return expectedSize == bytes.size();
 }
 
-bool entryTableEnvelopeMatches(std::span<const std::uint8_t> bytes)
+bool entryTableEnvelopeMatches(std::span<const std::uint8_t> bytes, Endian endian)
 {
-    if (!canReadRange(bytes.size(), 0U, kStdHeaderSize)) {
+    if (!spice::root::bounds_contains(bytes.size(), 0U, kStdHeaderSize)) {
         return false;
     }
 
-    return readU16BeUnchecked(bytes, 0x02U) == 4U &&
-        readU32BeUnchecked(bytes, 0x04U) == 0U &&
-        readU32BeUnchecked(bytes, 0x08U) == 0U;
+    const EndianReader reader(bytes, endian);
+    return reader.read_u16(0x02U) == 4U &&
+        reader.read_u32(0x04U) == 0U &&
+        reader.read_u32(0x08U) == 0U;
+}
+
+std::optional<Endian> detectEndian(std::span<const std::uint8_t> bytes, [[maybe_unused]] bool compressed)
+{
+    const auto score = [&](Endian endian) {
+        int value = 0;
+        if (actionRowEnvelopeMatches(bytes, endian)) value += 4;
+        if (entryTableEnvelopeMatches(bytes, endian)) {
+            value += 3;
+            const EndianReader reader(bytes, endian);
+            const auto count = reader.read_u16(0U);
+            const auto tableEnd = spice::root::checked_table_end(kStdHeaderSize, count, kEntryRecordSize);
+            if (tableEnd.has_value() && *tableEnd <= bytes.size()) value += 2;
+            if (count > 0U && tableEnd.has_value() && *tableEnd <= bytes.size() &&
+                reader.read_i16(kStdHeaderSize + (count - 1U) * kEntryRecordSize) < 0) value += 2;
+        }
+        return value;
+    };
+    const auto big = score(Endian::Big);
+    const auto little = score(Endian::Little);
+    if (big == little) return std::nullopt;
+    return big > little ? Endian::Big : Endian::Little;
 }
 
 void parseActionRows(StdFile& file)
 {
     const std::span<const std::uint8_t> bytes(file.decodedBytes);
+    const EndianReader reader(bytes, file.sourceEndian);
     auto& layout = file.actionRows;
     auto& header = layout.header;
 
-    header.commandLow = readU16BeUnchecked(bytes, 0x00U);
-    header.commandHigh = readU16BeUnchecked(bytes, 0x02U);
+    header.commandLow = reader.read_u16(0x00U);
+    header.commandHigh = reader.read_u16(0x02U);
     header.combinedCommandKind =
         (static_cast<std::uint32_t>(header.commandHigh) << 16U) |
         static_cast<std::uint32_t>(header.commandLow);
-    header.loaderContextWord = readU32BeUnchecked(bytes, 0x04U);
-    header.rowCount = readU32BeUnchecked(bytes, 0x08U);
-    header.rowTablePtrWord = readU32BeUnchecked(bytes, 0x0cU);
+    header.loaderContextWord = reader.read_u32(0x04U);
+    header.rowCount = reader.read_u32(0x08U);
+    header.rowTablePtrWord = reader.read_u32(0x0cU);
 
     layout.rows.reserve(header.rowCount);
     for (std::uint32_t index = 0U; index < header.rowCount; ++index) {
@@ -224,15 +211,15 @@ void parseActionRows(StdFile& file)
         StdActionRow row{};
         row.index = index;
         row.decodedOffset = offset;
-        row.actionId = readS16BeUnchecked(bytes, offset);
-        row.rowType = readS16BeUnchecked(bytes, offset + 0x02U);
-        row.callbackIndex = readS16BeUnchecked(bytes, offset + 0x04U);
-        row.motionSlotOrdinal = readS16BeUnchecked(bytes, offset + 0x06U);
-        row.flags = readU32BeUnchecked(bytes, offset + 0x08U);
-        row.secondaryKey = readS16BeUnchecked(bytes, offset + 0x0cU);
-        row.callbackAuxParam = readS16BeUnchecked(bytes, offset + 0x0eU);
-        row.selectionTransitionScalarBits = readU32BeUnchecked(bytes, offset + 0x10U);
-        row.motionProgressScalarBits = readU32BeUnchecked(bytes, offset + 0x14U);
+        row.actionId = reader.read_i16(offset);
+        row.rowType = reader.read_i16(offset + 0x02U);
+        row.callbackIndex = reader.read_i16(offset + 0x04U);
+        row.motionSlotOrdinal = reader.read_i16(offset + 0x06U);
+        row.flags = reader.read_u32(offset + 0x08U);
+        row.secondaryKey = reader.read_i16(offset + 0x0cU);
+        row.callbackAuxParam = reader.read_i16(offset + 0x0eU);
+        row.selectionTransitionScalarBits = reader.read_u32(offset + 0x10U);
+        row.motionProgressScalarBits = reader.read_u32(offset + 0x14U);
         if (row.rowType == 3) {
             addDiagnostic(
                 file,
@@ -252,14 +239,15 @@ void parseActionRows(StdFile& file)
 void parseEntryTable(StdFile& file)
 {
     const std::span<const std::uint8_t> bytes(file.decodedBytes);
+    const EndianReader reader(bytes, file.sourceEndian);
     auto& layout = file.entryTable;
     auto& header = layout.header;
 
-    header.recordCountIncludingSentinel = readU16BeUnchecked(bytes, 0x00U);
-    header.kind = readU16BeUnchecked(bytes, 0x02U);
-    header.reserved0 = readU32BeUnchecked(bytes, 0x04U);
-    header.reserved1 = readU32BeUnchecked(bytes, 0x08U);
-    header.decodedSpanMinusHeader = readU32BeUnchecked(bytes, 0x0cU);
+    header.recordCountIncludingSentinel = reader.read_u16(0x00U);
+    header.kind = reader.read_u16(0x02U);
+    header.reserved0 = reader.read_u32(0x04U);
+    header.reserved1 = reader.read_u32(0x08U);
+    header.decodedSpanMinusHeader = reader.read_u32(0x0cU);
     layout.sourceRecordCountIncludingSentinel = header.recordCountIncludingSentinel;
 
     const auto decodedSpan = bytes.size() >= kStdHeaderSize ? bytes.size() - kStdHeaderSize : 0U;
@@ -295,15 +283,16 @@ void parseEntryTable(StdFile& file)
         record.index = index;
         record.tableOffset = offset;
         record.sourceTableOffset = offset;
-        record.locationCode = readS16BeUnchecked(bytes, offset);
-        record.opcode = readS16BeUnchecked(bytes, offset + 0x02U);
+        record.sourceEndian = file.sourceEndian;
+        record.locationCode = reader.read_i16(offset);
+        record.opcode = reader.read_i16(offset + 0x02U);
         record.combinedType =
             (static_cast<std::uint32_t>(static_cast<std::uint16_t>(record.opcode)) << 16U) |
             static_cast<std::uint32_t>(static_cast<std::uint16_t>(record.locationCode));
-        record.field2 = readU32BeUnchecked(bytes, offset + 0x04U);
-        record.payloadSize = readU32BeUnchecked(bytes, offset + 0x08U);
+        record.field2 = reader.read_u32(offset + 0x04U);
+        record.payloadSize = reader.read_u32(offset + 0x08U);
         record.sourcePayloadSize = record.payloadSize;
-        record.payloadOffsetRel = readU32BeUnchecked(bytes, offset + 0x0cU);
+        record.payloadOffsetRel = reader.read_u32(offset + 0x0cU);
         record.sourcePayloadOffsetRel = record.payloadOffsetRel;
         record.isSentinel = record.locationCode < 0;
 
@@ -409,20 +398,20 @@ void parseDecodedLayout(StdFile& file)
     }
 
     file.decodedSize = static_cast<std::uint32_t>(bytes.size());
-    if (!canReadRange(bytes.size(), 0U, kStdHeaderSize)) {
+    if (!spice::root::bounds_contains(bytes.size(), 0U, kStdHeaderSize)) {
         addDiagnostic(file, StdDiagnosticSeverity::Error, "STD decoded payload is too small for a 0x10-byte header");
         file.parseStatus = StdParseStatus::Failed;
         return;
     }
 
-    if (actionRowEnvelopeMatches(bytes)) {
+    if (actionRowEnvelopeMatches(bytes, file.sourceEndian)) {
         file.layoutKind = StdLayoutKind::ActionRows;
         parseActionRows(file);
         finalizeKnownLayoutStatus(file);
         return;
     }
 
-    if (entryTableEnvelopeMatches(bytes)) {
+    if (entryTableEnvelopeMatches(bytes, file.sourceEndian)) {
         file.layoutKind = StdLayoutKind::EntryTable;
         parseEntryTable(file);
         finalizeKnownLayoutStatus(file);
@@ -563,20 +552,21 @@ std::optional<StdActionViewPayload> readActionViewPayload(const StdEntryRecord& 
 
     const std::span<const std::uint8_t> bytes(record.payloadBytes);
     StdActionViewPayload payload{};
-    payload.primaryActionKey = readS16BeUnchecked(bytes, 0x00U);
-    payload.routeSecondaryKey = readS16BeUnchecked(bytes, 0x02U);
-    payload.directSecondaryKey = readS16BeUnchecked(bytes, 0x04U);
-    payload.lowFlags = readU16BeUnchecked(bytes, 0x06U);
-    payload.reserved08 = readU32BeUnchecked(bytes, 0x08U);
-    payload.reserved0c = readU32BeUnchecked(bytes, 0x0cU);
-    payload.actionViewFlags = readU32BeUnchecked(bytes, 0x10U);
-    payload.modeLocalAngleOrOffsetBits = readU32BeUnchecked(bytes, 0x14U);
-    payload.startFrame = readS16BeUnchecked(bytes, 0x18U);
-    payload.reserved1a = readU16BeUnchecked(bytes, 0x1aU);
-    payload.endFrame = readS16BeUnchecked(bytes, 0x1cU);
-    payload.holdFrameCount = readS16BeUnchecked(bytes, 0x1eU);
-    payload.stepFrameCount = readS16BeUnchecked(bytes, 0x20U);
-    payload.requestedMode = readS16BeUnchecked(bytes, 0x22U);
+    const EndianReader reader(bytes, record.sourceEndian);
+    payload.primaryActionKey = reader.read_i16(0x00U);
+    payload.routeSecondaryKey = reader.read_i16(0x02U);
+    payload.directSecondaryKey = reader.read_i16(0x04U);
+    payload.lowFlags = reader.read_u16(0x06U);
+    payload.reserved08 = reader.read_u32(0x08U);
+    payload.reserved0c = reader.read_u32(0x0cU);
+    payload.actionViewFlags = reader.read_u32(0x10U);
+    payload.modeLocalAngleOrOffsetBits = reader.read_u32(0x14U);
+    payload.startFrame = reader.read_i16(0x18U);
+    payload.reserved1a = reader.read_u16(0x1aU);
+    payload.endFrame = reader.read_i16(0x1cU);
+    payload.holdFrameCount = reader.read_i16(0x1eU);
+    payload.stepFrameCount = reader.read_i16(0x20U);
+    payload.requestedMode = reader.read_i16(0x22U);
     return payload;
 }
 
@@ -590,24 +580,27 @@ bool writeActionViewPayload(StdEntryRecord& record, const StdActionViewPayload& 
     }
 
     const std::span<std::uint8_t> bytes(record.payloadBytes);
-    writeS16BeUnchecked(bytes, 0x00U, payload.primaryActionKey);
-    writeS16BeUnchecked(bytes, 0x02U, payload.routeSecondaryKey);
-    writeS16BeUnchecked(bytes, 0x04U, payload.directSecondaryKey);
-    writeU16BeUnchecked(bytes, 0x06U, payload.lowFlags);
-    writeU32BeUnchecked(bytes, 0x08U, payload.reserved08);
-    writeU32BeUnchecked(bytes, 0x0cU, payload.reserved0c);
-    writeU32BeUnchecked(bytes, 0x10U, payload.actionViewFlags);
-    writeU32BeUnchecked(bytes, 0x14U, payload.modeLocalAngleOrOffsetBits);
-    writeS16BeUnchecked(bytes, 0x18U, payload.startFrame);
-    writeU16BeUnchecked(bytes, 0x1aU, payload.reserved1a);
-    writeS16BeUnchecked(bytes, 0x1cU, payload.endFrame);
-    writeS16BeUnchecked(bytes, 0x1eU, payload.holdFrameCount);
-    writeS16BeUnchecked(bytes, 0x20U, payload.stepFrameCount);
-    writeS16BeUnchecked(bytes, 0x22U, payload.requestedMode);
+    EndianSpanWriter writer(bytes, record.sourceEndian);
+    writer.write_i16_at(0x00U, payload.primaryActionKey);
+    writer.write_i16_at(0x02U, payload.routeSecondaryKey);
+    writer.write_i16_at(0x04U, payload.directSecondaryKey);
+    writer.write_u16_at(0x06U, payload.lowFlags);
+    writer.write_u32_at(0x08U, payload.reserved08);
+    writer.write_u32_at(0x0cU, payload.reserved0c);
+    writer.write_u32_at(0x10U, payload.actionViewFlags);
+    writer.write_u32_at(0x14U, payload.modeLocalAngleOrOffsetBits);
+    writer.write_i16_at(0x18U, payload.startFrame);
+    writer.write_u16_at(0x1aU, payload.reserved1a);
+    writer.write_i16_at(0x1cU, payload.endFrame);
+    writer.write_i16_at(0x1eU, payload.holdFrameCount);
+    writer.write_i16_at(0x20U, payload.stepFrameCount);
+    writer.write_i16_at(0x22U, payload.requestedMode);
     return true;
 }
 
-StdFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
+StdFile parseBytes(std::vector<std::uint8_t> bytes,
+    std::string sourcePath,
+    const StdParseOptions& options)
 {
     StdFile file{};
     file.sourcePath = std::move(sourcePath);
@@ -639,16 +632,27 @@ StdFile parseBytes(std::vector<std::uint8_t> bytes, std::string sourcePath)
         file.decodedAvailable = true;
     }
 
+    const auto endian = options.forcedEndian.has_value()
+        ? options.forcedEndian
+        : detectEndian(file.decodedBytes, file.sourceEncoding == StdSourceEncoding::Aklz);
+    if (!endian.has_value()) {
+        addDiagnostic(file, StdDiagnosticSeverity::Error,
+            "STD byte order is ambiguous or the decoded payload matches neither known layout");
+        file.parseStatus = StdParseStatus::Failed;
+        return file;
+    }
+    file.sourceEndian = *endian;
+    file.endianWasForced = options.forcedEndian.has_value();
     parseDecodedLayout(file);
     return file;
 }
 
-StdFile parseFile(const std::filesystem::path& path)
+StdFile parseFile(const std::filesystem::path& path, const StdParseOptions& options)
 {
     bool readOk = false;
     auto bytes = readAllBytes(path, readOk);
     if (readOk) {
-        return parseBytes(std::move(bytes), path.string());
+        return parseBytes(std::move(bytes), path.string(), options);
     }
 
     StdFile file{};
@@ -661,6 +665,12 @@ StdFile parseFile(const std::filesystem::path& path)
 StdExportResult exportBytes(const StdFile& file, StdExportMode mode)
 {
     StdExportResult result{};
+    if ((mode == StdExportMode::ReencodeAklz ||
+            (mode == StdExportMode::ReencodeSourceKind && file.sourceEncoding == StdSourceEncoding::Aklz)) &&
+        file.sourceEndian == spice::root::Endian::Little) {
+        result.error = "AKLZ output is not supported for little-endian Dreamcast STD files";
+        return result;
+    }
     switch (mode) {
     case StdExportMode::OriginalSourceBytes:
         result.bytes = file.rawBytes;

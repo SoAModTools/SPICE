@@ -28,12 +28,16 @@ MlkFile makeFile(const MlkScanResult& scan) {
     MlkFile file{};
     file.sourcePath = scan.sourcePath;
     file.sourceWasCompressedAklz = scan.sourceWasCompressedAklz;
+    file.sourceEndian = scan.sourceEndian;
+    file.endianWasForced = scan.endianWasForced;
     file.rawSize = scan.rawSize;
     file.decodedSize = scan.decodedSize;
     file.headerWords = scan.headerWords;
     file.runtimeRecordCount = scan.signedRecordCountCandidate;
     file.rawRecordCountCandidate = scan.recordCountCandidate;
+    file.descriptorRecordCount = scan.descriptorRecordCount;
     file.selectedRecordCount = scan.selectedRecordCount;
+    file.unavailableTrailingRecordCount = scan.unavailableTrailingRecordCount;
     file.recordCountSource = scan.recordCountSource;
     file.recordsOffset = scan.recordsOffset;
     file.recordStride = scan.recordStride;
@@ -44,7 +48,8 @@ MlkFile makeFile(const MlkScanResult& scan) {
     file.recordTableInBounds = scan.recordTableInBounds;
     file.diagnostics = scan.diagnostics;
     file.tableShape = classifyMlkTableShape(scan);
-    file.supported = file.tableShape == MlkTableShape::Normal && file.ok();
+    file.supported = (file.tableShape == MlkTableShape::Normal ||
+        file.tableShape == MlkTableShape::TrailingUnavailablePayloads) && file.ok();
 
     file.records.reserve(scan.records.size());
     for (const auto& record : scan.records) {
@@ -62,6 +67,9 @@ bool MlkFile::ok() const {
 }
 
 MlkTableShape classifyMlkTableShape(const MlkScanResult& scan) {
+    if (scan.unavailableTrailingRecordCount > 0U) {
+        return MlkTableShape::TrailingUnavailablePayloads;
+    }
     const auto hasError = std::any_of(scan.diagnostics.begin(), scan.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.severity == DiagnosticSeverity::Error;
     });
@@ -79,13 +87,15 @@ MlkTableShape classifyMlkTableShape(const MlkScanResult& scan) {
     return MlkTableShape::Normal;
 }
 
-MlkFile MlkParser::parse(std::span<const std::uint8_t> bytes, std::string sourcePath) {
-    const auto scan = MlkScanner::scan(bytes, std::move(sourcePath));
+MlkFile MlkParser::parse(std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    const MlkParseOptions& options) {
+    const auto scan = MlkScanner::scan(bytes, std::move(sourcePath), options);
     return makeFile(scan);
 }
 
-MlkFile MlkParser::parseFile(const std::filesystem::path& path) {
-    return makeFile(MlkScanner::scanFile(path));
+MlkFile MlkParser::parseFile(const std::filesystem::path& path, const MlkParseOptions& options) {
+    return makeFile(MlkScanner::scanFile(path, options));
 }
 
 } // namespace spice::mlk

@@ -2,7 +2,7 @@
 
 ## Current Support
 
-SPICE parses raw or AKLZ-wrapped BIN data and can identify the big-endian indexed UI-layout family used by several battle and field interfaces. That model exposes the top-level offset table, layout records, element rectangles, fixed-data source rectangles, tint values, and raw unknown bytes. The same probe can be used for loose files and BIN members extracted from MLL containers.
+SPICE parses raw or AKLZ-wrapped BIN data and can identify big- or little-endian indexed HRS/UI-layout tables used by several battle and field interfaces. The selected endian is recorded for confirmed indexed files, and callers may force it during corpus research. The same probe can be used for loose files and BIN members extracted from MLL containers.
 
 The indexed family is deliberately not applied to every `.bin` file. Known UI resources can share a purpose without sharing a binary structure, and nonmatching payloads remain preserved rather than forced into the indexed model.
 

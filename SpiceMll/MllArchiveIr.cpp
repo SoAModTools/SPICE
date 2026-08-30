@@ -1,5 +1,7 @@
 #include "MllArchiveIr.h"
 
+#include "../SpiceRoot/Binary/Alignment.h"
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -8,10 +10,6 @@ namespace {
 
 constexpr std::uint32_t kMllNameLength = 0x14U;
 
-[[nodiscard]] bool canReadRange(const std::size_t size, const std::uint32_t offset, const std::uint32_t length) {
-    return offset <= size && length <= size - offset;
-}
-
 [[nodiscard]] MllMemberRecordIr buildRecordIr(const MllMember& member, std::span<const std::uint8_t> decodedBytes) {
     MllMemberRecordIr record{};
     record.recordOffset = member.recordOffset;
@@ -19,7 +17,7 @@ constexpr std::uint32_t kMllNameLength = 0x14U;
     record.payloadSize = member.payloadSize;
     record.rawWord1c = member.rawWord1c;
 
-    if (canReadRange(decodedBytes.size(), member.recordOffset, kMllNameLength)) {
+    if (spice::root::bounds_contains(decodedBytes.size(), member.recordOffset, kMllNameLength)) {
         std::copy_n(decodedBytes.begin() + static_cast<std::ptrdiff_t>(member.recordOffset),
             record.rawName.size(),
             record.rawName.begin());
@@ -54,7 +52,7 @@ std::span<const std::uint8_t> MllArchiveIr::payloadBytes(const std::size_t membe
         throw std::out_of_range("MLL archive IR payload member index is out of range");
     }
     const auto& payload = members[memberIndex].payload;
-    if (!payload.inBounds || !canReadRange(decodedBytes.size(), payload.offset, payload.size)) {
+    if (!payload.inBounds || !spice::root::bounds_contains(decodedBytes.size(), payload.offset, payload.size)) {
         throw std::out_of_range("MLL archive IR payload span is out of bounds");
     }
     return std::span<const std::uint8_t>(decodedBytes).subspan(payload.offset, payload.size);

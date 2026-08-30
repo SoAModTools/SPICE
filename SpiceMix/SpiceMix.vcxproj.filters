@@ -12,6 +12,7 @@
     <ClCompile Include="Documents\MldDocumentSession.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Documents\PvrDocumentSession.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Documents\PvrDocumentSupport.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Operations\DreamcastParityAudit.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Operations\OperationExecution.cpp"><Filter>Source Files</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -27,6 +28,7 @@
     <ClInclude Include="Documents\PvrDocumentSupport.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Operations\AklzAlxOperations.inl"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Operations\GvrOperations.inl"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Operations\DreamcastParityAudit.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Operations\MldOperations.inl"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Operations\MlkStdContentGraphOperations.inl"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Operations\OperationExecution.h"><Filter>Header Files</Filter></ClInclude>

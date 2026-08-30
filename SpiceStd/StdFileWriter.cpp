@@ -1,6 +1,8 @@
 #include "StdFileWriter.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
+#include "../SpiceRoot/Binary/EndianWriter.h"
 
 #include <algorithm>
 #include <limits>
@@ -10,6 +12,8 @@
 
 namespace spice::stdfile {
 namespace {
+
+using spice::root::EndianSpanWriter;
 
 constexpr std::uint32_t kStdHeaderSize = 0x10U;
 constexpr std::uint32_t kActionRowSize = 0x18U;
@@ -39,30 +43,6 @@ std::uint32_t sizeToU32Saturated(const std::size_t size)
         return std::numeric_limits<std::uint32_t>::max();
     }
     return static_cast<std::uint32_t>(size);
-}
-
-bool canReadRange(const std::size_t size, const std::size_t offset, const std::size_t length)
-{
-    return offset <= size && length <= size - offset;
-}
-
-void writeU16BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::uint16_t value)
-{
-    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
-    bytes[offset + 1U] = static_cast<std::uint8_t>(value & 0xffU);
-}
-
-void writeS16BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::int16_t value)
-{
-    writeU16BeUnchecked(bytes, offset, static_cast<std::uint16_t>(value));
-}
-
-void writeU32BeUnchecked(std::span<std::uint8_t> bytes, const std::uint32_t offset, const std::uint32_t value)
-{
-    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
-    bytes[offset + 1U] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
-    bytes[offset + 2U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
-    bytes[offset + 3U] = static_cast<std::uint8_t>(value & 0xffU);
 }
 
 void addLayout(
@@ -96,25 +76,26 @@ std::vector<std::uint8_t> serializeActionRows(const StdFile& file, StdWriteResul
 
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(decodedSize64), 0U);
     const std::span<std::uint8_t> out(bytes);
+    EndianSpanWriter writer(out, file.sourceEndian);
     const auto& header = file.actionRows.header;
-    writeU16BeUnchecked(out, 0x00U, header.commandLow);
-    writeU16BeUnchecked(out, 0x02U, header.commandHigh);
-    writeU32BeUnchecked(out, 0x04U, header.loaderContextWord);
-    writeU32BeUnchecked(out, 0x08U, static_cast<std::uint32_t>(rowCount));
-    writeU32BeUnchecked(out, 0x0cU, header.rowTablePtrWord);
+    writer.write_u16_at(0x00U, header.commandLow);
+    writer.write_u16_at(0x02U, header.commandHigh);
+    writer.write_u32_at(0x04U, header.loaderContextWord);
+    writer.write_u32_at(0x08U, static_cast<std::uint32_t>(rowCount));
+    writer.write_u32_at(0x0cU, header.rowTablePtrWord);
 
     for (std::size_t i = 0U; i < rowCount; ++i) {
         const auto& row = file.actionRows.rows[i];
         const auto offset = static_cast<std::uint32_t>(kStdHeaderSize + i * kActionRowSize);
-        writeS16BeUnchecked(out, offset + 0x00U, row.actionId);
-        writeS16BeUnchecked(out, offset + 0x02U, row.rowType);
-        writeS16BeUnchecked(out, offset + 0x04U, row.callbackIndex);
-        writeS16BeUnchecked(out, offset + 0x06U, row.motionSlotOrdinal);
-        writeU32BeUnchecked(out, offset + 0x08U, row.flags);
-        writeS16BeUnchecked(out, offset + 0x0cU, row.secondaryKey);
-        writeS16BeUnchecked(out, offset + 0x0eU, row.callbackAuxParam);
-        writeU32BeUnchecked(out, offset + 0x10U, row.selectionTransitionScalarBits);
-        writeU32BeUnchecked(out, offset + 0x14U, row.motionProgressScalarBits);
+        writer.write_i16_at(offset + 0x00U, row.actionId);
+        writer.write_i16_at(offset + 0x02U, row.rowType);
+        writer.write_i16_at(offset + 0x04U, row.callbackIndex);
+        writer.write_i16_at(offset + 0x06U, row.motionSlotOrdinal);
+        writer.write_u32_at(offset + 0x08U, row.flags);
+        writer.write_i16_at(offset + 0x0cU, row.secondaryKey);
+        writer.write_i16_at(offset + 0x0eU, row.callbackAuxParam);
+        writer.write_u32_at(offset + 0x10U, row.selectionTransitionScalarBits);
+        writer.write_u32_at(offset + 0x14U, row.motionProgressScalarBits);
     }
 
     addLayout(result, "action-rows-header", 0U, 0U, kStdHeaderSize, kStdHeaderSize);
@@ -168,7 +149,7 @@ std::vector<std::uint8_t> serializeEntryTable(const StdFile& file, StdWriteResul
         return {};
     }
 
-    if (!canReadRange(file.decodedBytes.size(), 0U, kStdHeaderSize)) {
+    if (!spice::root::bounds_contains(file.decodedBytes.size(), 0U, kStdHeaderSize)) {
         addDiagnostic(result, StdDiagnosticSeverity::Error, "Entry-table STD output is too small for a 0x10-byte header");
         return {};
     }
@@ -202,7 +183,7 @@ std::vector<std::uint8_t> serializeEntryTable(const StdFile& file, StdWriteResul
 
     const auto tableSize = recordCount * kEntryRecordSize;
     const auto tableEnd = static_cast<std::size_t>(kStdHeaderSize) + tableSize;
-    if (!canReadRange(file.decodedBytes.size(), kStdHeaderSize, tableSize)) {
+    if (!spice::root::bounds_contains(file.decodedBytes.size(), kStdHeaderSize, tableSize)) {
         addDiagnostic(result, StdDiagnosticSeverity::Error, "Entry record table extends beyond decoded file size", kStdHeaderSize);
         return {};
     }
@@ -256,20 +237,21 @@ std::vector<std::uint8_t> serializeEntryTable(const StdFile& file, StdWriteResul
 
     std::vector<std::uint8_t> bytes = file.decodedBytes;
     const std::span<std::uint8_t> out(bytes);
-    writeU16BeUnchecked(out, 0x00U, static_cast<std::uint16_t>(recordCount));
-    writeU16BeUnchecked(out, 0x02U, layout.header.kind);
-    writeU32BeUnchecked(out, 0x04U, layout.header.reserved0);
-    writeU32BeUnchecked(out, 0x08U, layout.header.reserved1);
-    writeU32BeUnchecked(out, 0x0cU, layout.header.decodedSpanMinusHeader);
+    EndianSpanWriter writer(out, file.sourceEndian);
+    writer.write_u16_at(0x00U, static_cast<std::uint16_t>(recordCount));
+    writer.write_u16_at(0x02U, layout.header.kind);
+    writer.write_u32_at(0x04U, layout.header.reserved0);
+    writer.write_u32_at(0x08U, layout.header.reserved1);
+    writer.write_u32_at(0x0cU, layout.header.decodedSpanMinusHeader);
 
     for (std::size_t i = 0U; i < recordCount; ++i) {
         const auto& record = layout.records[i];
         const auto offset = static_cast<std::uint32_t>(kStdHeaderSize + i * kEntryRecordSize);
-        writeS16BeUnchecked(out, offset + 0x00U, record.locationCode);
-        writeS16BeUnchecked(out, offset + 0x02U, record.opcode);
-        writeU32BeUnchecked(out, offset + 0x04U, record.field2);
-        writeU32BeUnchecked(out, offset + 0x08U, record.payloadSize);
-        writeU32BeUnchecked(out, offset + 0x0cU, record.payloadOffsetRel);
+        writer.write_i16_at(offset + 0x00U, record.locationCode);
+        writer.write_i16_at(offset + 0x02U, record.opcode);
+        writer.write_u32_at(offset + 0x04U, record.field2);
+        writer.write_u32_at(offset + 0x08U, record.payloadSize);
+        writer.write_u32_at(offset + 0x0cU, record.payloadOffsetRel);
         if (!record.isSentinel && !record.payloadBytes.empty()) {
             std::copy(
                 record.payloadBytes.begin(),
@@ -337,6 +319,11 @@ StdWriteResult StdFileWriter::write(const StdFile& file, const StdWriteOptions& 
     }
 
     const auto outputEncoding = options.sourceEncoding.value_or(file.sourceEncoding);
+    if (outputEncoding == StdSourceEncoding::Aklz && file.sourceEndian == spice::root::Endian::Little) {
+        addDiagnostic(result, StdDiagnosticSeverity::Error,
+            "AKLZ output is not supported for little-endian Dreamcast STD files");
+        return result;
+    }
     const auto preservesSourceEncoding = !options.sourceEncoding.has_value() || outputEncoding == file.sourceEncoding;
     if (options.preserveExactSourceWhenUnchanged &&
         preservesSourceEncoding &&

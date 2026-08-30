@@ -1,4 +1,5 @@
 #include "PvmEncoder.h"
+#include "../../SpiceRoot/Binary/EndianWriter.h"
 
 #include "../Parsing/PvmParser.h"
 
@@ -22,16 +23,12 @@ void addError(PvmEncodeResult& result, const std::size_t offset, std::string mes
 
 void appendU16(std::vector<std::uint8_t>& out, const std::uint16_t value)
 {
-    out.push_back(static_cast<std::uint8_t>(value & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>(value >> 8U));
+    spice::root::append_u16(out, value, spice::root::Endian::Little);
 }
 
 void appendU32(std::vector<std::uint8_t>& out, const std::uint32_t value)
 {
-    out.push_back(static_cast<std::uint8_t>(value & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xFFU));
-    out.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xFFU));
+    spice::root::append_u32(out, value, spice::root::Endian::Little);
 }
 
 std::size_t entrySize(const std::uint16_t flags)

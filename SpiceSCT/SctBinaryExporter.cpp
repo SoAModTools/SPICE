@@ -4,7 +4,9 @@
 #include "SctOpcodeMetadata.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
+#include "../SpiceRoot/Binary/EndianWriter.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -38,20 +40,10 @@ Endian resolveEndian(const SctFile& file, SctExportEndianPolicy policy) {
 }
 
 void writeU32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value, Endian endian) {
-    if (offset + 4u > bytes.size()) {
-        bytes.resize(offset + 4u);
-    }
-    if (endian == Endian::Big) {
-        bytes[offset + 0u] = static_cast<std::uint8_t>((value >> 24u) & 0xffu);
-        bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 16u) & 0xffu);
-        bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 8u) & 0xffu);
-        bytes[offset + 3u] = static_cast<std::uint8_t>(value & 0xffu);
-    } else {
-        bytes[offset + 0u] = static_cast<std::uint8_t>(value & 0xffu);
-        bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xffu);
-        bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 16u) & 0xffu);
-        bytes[offset + 3u] = static_cast<std::uint8_t>((value >> 24u) & 0xffu);
-    }
+    const auto end = spice::root::checked_add(offset, sizeof(value));
+    if (!end) throw std::overflow_error("SCT write offset exceeds the addressable range");
+    if (*end > bytes.size()) bytes.resize(*end);
+    spice::root::EndianSpanWriter(bytes, endian).write_u32_at(offset, value);
 }
 
 std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset, Endian endian) {
@@ -59,9 +51,7 @@ std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset, E
 }
 
 void appendU32(std::vector<std::uint8_t>& bytes, std::uint32_t value, Endian endian) {
-    const auto offset = bytes.size();
-    bytes.resize(offset + 4u);
-    writeU32(bytes, offset, value, endian);
+    spice::root::append_u32(bytes, value, endian);
 }
 
 std::vector<const SctInstruction*> sortedInstructions(const SctSection& section) {

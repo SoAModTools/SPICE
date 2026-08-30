@@ -2,7 +2,7 @@
 
 ## Current Support
 
-SPICE reads raw or AKLZ-wrapped SML/SST stage pairs, validates their shared record count, and exposes the SML embedded-resource table and SST command-block table. Embedded SML payloads are bounded and passed to the MLD project, while SST command payloads are split using the known type-to-size mapping. Sentinels, raw record words, alignment, and post-command tail bytes are retained.
+SPICE reads little-endian raw Dreamcast and big-endian raw or AKLZ-wrapped GameCube SML/SST stage pairs. Byte order is selected from structural candidates or can be forced for corpus research; paired members must agree. Embedded SML payloads are bounded and passed to the MLD project, while SST command payloads are split using the known type-to-size mapping. Sentinels, raw record words, alignment, and post-command tail bytes are retained. Embedded texture evidence recognizes both `GCIX`/`GVRT` and `GBIX`/`PVRT`/`PVMH` signatures.
 
 The current model also identifies the first block’s 9x9 battle-grid source when enough tail data is present. Known command types can be summarized semantically without requiring the parser to reproduce their runtime objects.
 
@@ -14,7 +14,7 @@ SpiceRack provides a read-only paired SST/SML workbench. Opening either member r
 - command payload fields, lighting rows, consumer windows, raw payload bytes, and local-slot links;
 - the currently identified 9x9 battle-grid source and the research-backed runtime row layout.
 
-Field evidence is displayed explicitly as Gekko-derived, Gekko-and-corpus, corpus-stable, code-supported but unobserved, or provisional. The workbench consumes the binary parser IR directly and does not require an annotation repository.
+Field evidence is displayed explicitly as Gekko-derived, Gekko-and-corpus, corpus-stable, code-supported but unobserved, or provisional. These labels remain GameCube-derived until Dreamcast corpus comparison corroborates the runtime meaning. The workbench consumes the binary parser IR directly and does not require an annotation repository.
 
 ## Known Limitations
 

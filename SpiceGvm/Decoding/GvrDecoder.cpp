@@ -1,5 +1,7 @@
 #include "GvrDecoder.h"
 
+#include "../../SpiceRoot/Binary/EndianReader.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -30,7 +32,7 @@ struct Rgba {
 }
 
 [[nodiscard]] std::uint16_t readBe16(const std::vector<std::uint8_t>& bytes, const std::size_t offset) {
-    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8U) | bytes[offset + 1U]);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Big).read_u16(offset);
 }
 
 [[nodiscard]] Rgba decodeRgb565(const std::uint16_t px) {

@@ -31,6 +31,9 @@ struct SstSmlPairOverviewSnapshot {
     std::uint32_t sstDecodedSize = 0;
     bool smlWasAklz = false;
     bool sstWasAklz = false;
+    std::string smlEndian{};
+    std::string sstEndian{};
+    std::string platformContext{};
     std::uint32_t recordCount = 0;
     bool recordCountsAgree = false;
     std::size_t embeddedMldParsedCount = 0;

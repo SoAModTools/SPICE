@@ -1,6 +1,8 @@
 #include "MllBinaryExporter.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
+#include "../SpiceRoot/Binary/EndianWriter.h"
 
 #include <algorithm>
 #include <limits>
@@ -16,20 +18,6 @@ constexpr std::uint32_t kMllCountLowWord = 0xffffU;
 constexpr std::uint32_t kMllRecordsOffset = 0x08U;
 constexpr std::uint32_t kMllRecordStride = 0x20U;
 constexpr std::uint32_t kMllRawWord1cSentinel = 0xffffffffU;
-
-[[nodiscard]] bool canReadRange(const std::size_t size, const std::uint32_t offset, const std::uint32_t length) {
-    return offset <= size && length <= size - offset;
-}
-
-void writeU32Be(std::vector<std::uint8_t>& bytes, const std::size_t offset, const std::uint32_t value) {
-    if (offset > bytes.size() || 4U > bytes.size() - offset) {
-        throw std::runtime_error("MLL export failed: write offset is out of bounds");
-    }
-    bytes[offset + 0U] = static_cast<std::uint8_t>((value >> 24U) & 0xffU);
-    bytes[offset + 1U] = static_cast<std::uint8_t>((value >> 16U) & 0xffU);
-    bytes[offset + 2U] = static_cast<std::uint8_t>((value >> 8U) & 0xffU);
-    bytes[offset + 3U] = static_cast<std::uint8_t>(value & 0xffU);
-}
 
 [[nodiscard]] std::uint32_t checkedU32Size(const std::size_t size, const char* what) {
     if (size > std::numeric_limits<std::uint32_t>::max()) {
@@ -51,8 +39,10 @@ void validateSupportedSource(const MllFile& file, std::span<const std::uint8_t> 
     if (file.headerWord0 != kMllHeaderWord0) {
         throw std::runtime_error("MLL export failed: unsupported MLL header word");
     }
-    if ((file.countWord & 0xffffU) != kMllCountLowWord ||
-        (file.countWord >> 16U) != file.selectedMemberCount) {
+    const bool countWordValid = file.sourceEndian == spice::root::Endian::Big
+        ? (file.countWord & 0xffffU) == kMllCountLowWord && (file.countWord >> 16U) == file.selectedMemberCount
+        : (file.countWord >> 16U) == kMllCountLowWord && (file.countWord & 0xffffU) == file.selectedMemberCount;
+    if (!countWordValid) {
         throw std::runtime_error("MLL export failed: unsupported MLL count word");
     }
     if (file.memberCountSource != MllMemberCountSource::HeaderU16At04 ||
@@ -62,14 +52,14 @@ void validateSupportedSource(const MllFile& file, std::span<const std::uint8_t> 
         file.members.empty()) {
         throw std::runtime_error("MLL export failed: unsupported MLL table metadata");
     }
-    if (!canReadRange(originalDecodedBytes.size(), file.recordsOffset, file.memberTableEndOffset - file.recordsOffset)) {
+    if (!spice::root::bounds_contains(originalDecodedBytes.size(), file.recordsOffset, file.memberTableEndOffset - file.recordsOffset)) {
         throw std::runtime_error("MLL export failed: member table is out of bounds");
     }
 
     std::uint32_t expectedPayloadOffset = file.memberTableEndOffset;
     for (const auto& member : file.members) {
         if (!member.payloadInBounds ||
-            !canReadRange(originalDecodedBytes.size(), member.payloadOffset, member.payloadSize)) {
+            !spice::root::bounds_contains(originalDecodedBytes.size(), member.payloadOffset, member.payloadSize)) {
             throw std::runtime_error("MLL export failed: member payload span is invalid");
         }
         if (member.payloadOverlapsMemberTable) {
@@ -158,20 +148,24 @@ std::vector<std::uint8_t> MllBinaryExporter::exportDecoded(
     out.insert(out.end(),
         originalDecodedBytes.begin(),
         originalDecodedBytes.begin() + static_cast<std::ptrdiff_t>(file.memberTableEndOffset));
+    spice::root::EndianSpanWriter writer(out, file.sourceEndian);
 
     std::uint32_t payloadCursor = file.memberTableEndOffset;
     for (std::size_t i = 0; i < file.members.size(); ++i) {
         const auto& member = file.members[i];
         const auto payloadSize = checkedU32Size(payloads[i].size(), "member payload");
-        writeU32Be(out, static_cast<std::size_t>(member.recordOffset) + 0x14U, payloadCursor);
-        writeU32Be(out, static_cast<std::size_t>(member.recordOffset) + 0x18U, payloadSize);
-        writeU32Be(out, static_cast<std::size_t>(member.recordOffset) + 0x1CU, member.rawWord1c);
+        writer.write_u32_at(static_cast<std::size_t>(member.recordOffset) + 0x14U, payloadCursor);
+        writer.write_u32_at(static_cast<std::size_t>(member.recordOffset) + 0x18U, payloadSize);
+        writer.write_u32_at(static_cast<std::size_t>(member.recordOffset) + 0x1CU, member.rawWord1c);
         out.insert(out.end(), payloads[i].begin(), payloads[i].end());
         payloadCursor = checkedU32Size(out.size(), "rebuilt decoded size");
     }
 
     if (!options.compressAklz) {
         return out;
+    }
+    if (file.sourceEndian == spice::root::Endian::Little) {
+        throw std::runtime_error("MLL export failed: AKLZ output is not supported for little-endian Dreamcast archives");
     }
 
     auto compressed = spice::compression::aklz::compress(out);

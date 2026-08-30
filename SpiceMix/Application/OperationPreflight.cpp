@@ -95,6 +95,18 @@ std::optional<std::string> validate(const OperationRequest& request) {
         [&](const spice::mix::ExportAlxEnemyEventsRequest& value) -> std::optional<std::string> {
             return pathIsFile(value.input) ? std::nullopt : std::optional("input CSV not found: " + value.input.string());
         },
+        [&](const spice::mix::AuditDreamcastParityRequest& value) -> std::optional<std::string> {
+            if (!pathIsDirectory(value.dreamcastUs)) return "Dreamcast US corpus directory not found: " + value.dreamcastUs.string();
+            if (!pathIsDirectory(value.gameCubeUs)) return "GameCube US corpus directory not found: " + value.gameCubeUs.string();
+            const auto euCount = static_cast<unsigned>(value.dreamcastEuDisc1.has_value())
+                + static_cast<unsigned>(value.dreamcastEuDisc2.has_value())
+                + static_cast<unsigned>(value.gameCubeEu.has_value());
+            if (euCount != 0U && euCount != 3U) return "Dreamcast EU disc 1, Dreamcast EU disc 2, and GameCube EU roots must be supplied together";
+            if (value.dreamcastEuDisc1.has_value() && !pathIsDirectory(*value.dreamcastEuDisc1)) return "Dreamcast EU disc 1 corpus directory not found: " + value.dreamcastEuDisc1->string();
+            if (value.dreamcastEuDisc2.has_value() && !pathIsDirectory(*value.dreamcastEuDisc2)) return "Dreamcast EU disc 2 corpus directory not found: " + value.dreamcastEuDisc2->string();
+            if (value.gameCubeEu.has_value() && !pathIsDirectory(*value.gameCubeEu)) return "GameCube EU corpus directory not found: " + value.gameCubeEu->string();
+            return std::nullopt;
+        },
         [&](const spice::mix::CreateGvrRequest& value) -> std::optional<std::string> {
             return pathIsFile(value.input) ? std::nullopt : std::optional("input PNG not found: " + value.input.string());
         },

@@ -303,7 +303,12 @@ void SpiceRackMainWindow::openDocument(const std::filesystem::path& path,
         [this, completed = std::move(completed), showErrors](DocumentOpenOutcome outcome) mutable {
             if (!outcome.success && showErrors) {
                 if (outcome.busy) QMessageBox::information(this, "SpiceRack", outcome.message);
-                else QMessageBox::critical(this, "SpiceRack", outcome.message);
+                else {
+                    QMessageBox error(QMessageBox::Critical, "SpiceRack", outcome.message,
+                        QMessageBox::Ok, this);
+                    if (!outcome.details.isEmpty()) error.setDetailedText(outcome.details.join('\n'));
+                    error.exec();
+                }
             }
             if (completed) completed(outcome.success);
         });
@@ -381,10 +386,13 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
                 self->addWorkbench(new SstSmlWorkbench(state->sstSml.session, self));
                 outcome.success = true;
             } else {
-                const auto message = extension == ".mld" ? state->mld.result.message
-                    : extension == ".gvr" ? state->gvr.result.message
-                    : extension == ".pvr" ? state->pvr.result.message : state->sstSml.result.message;
-                outcome.message = QString::fromStdString(message);
+                const auto& result = extension == ".mld" ? state->mld.result
+                    : extension == ".gvr" ? state->gvr.result
+                    : extension == ".pvr" ? state->pvr.result : state->sstSml.result;
+                outcome.message = QString::fromStdString(result.message);
+                for (const auto& diagnostic : result.diagnostics) {
+                    outcome.details.push_back(QString::fromStdString(diagnostic));
+                }
             }
             if (outcome.success) outcome.message = "Opened document.";
             if (*completion) (*completion)(std::move(outcome));
@@ -462,8 +470,10 @@ void SpiceRackMainWindow::openNextDroppedDocument() {
         if (outcome.success) {
             ++droppedDocumentSuccesses_;
         } else {
-            droppedDocumentIssues_.push_back(QString("%1: %2")
-                .arg(QString::fromStdWString(path.filename().wstring()), outcome.message));
+            QString issue = QString("%1: %2")
+                .arg(QString::fromStdWString(path.filename().wstring()), outcome.message);
+            if (!outcome.details.isEmpty()) issue += "\n  " + outcome.details.join("\n  ");
+            droppedDocumentIssues_.push_back(std::move(issue));
         }
         QTimer::singleShot(0, this, [this]() { openNextDroppedDocument(); });
     });

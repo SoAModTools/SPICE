@@ -1,8 +1,11 @@
 #pragma once
 
+#include "../SpiceRoot/Binary/Endian.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <optional>
 
 namespace spice::bin {
 
@@ -38,6 +41,7 @@ struct BinIndexedRecordSample {
 
 struct BinIndexedTableProbe {
     bool present{ false };
+    spice::root::Endian endian{ spice::root::Endian::Big };
     bool headerInBounds{ false };
     std::uint32_t count{ 0U };
     std::uint32_t offsetTableOffset{ 0x04U };
@@ -56,7 +60,12 @@ struct BinIndexedTableProbe {
 struct BinFile {
     std::string sourcePath{};
     std::uint32_t rawSize{ 0U };
+    std::uint32_t decodedSize{ 0U };
+    bool sourceWasCompressedAklz{ false };
+    std::optional<spice::root::Endian> sourceEndian{};
+    bool endianWasForced{ false };
     std::vector<std::uint8_t> bytes{};
+    std::vector<std::uint8_t> decodedBytes{};
     BinIndexedTableProbe indexedTableProbe{};
     std::vector<BinDiagnostic> diagnostics{};
 

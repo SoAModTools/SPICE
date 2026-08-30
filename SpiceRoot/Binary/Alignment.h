@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <limits>
 
 namespace spice::root {
 
@@ -18,6 +19,32 @@ namespace spice::root {
     return offset <= size && length <= size - offset;
 }
 
+[[nodiscard]] inline constexpr std::optional<std::size_t> checked_add(
+    std::size_t left,
+    std::size_t right) {
+    if (right > std::numeric_limits<std::size_t>::max() - left) {
+        return std::nullopt;
+    }
+    return left + right;
+}
+
+[[nodiscard]] inline constexpr std::optional<std::size_t> checked_multiply(
+    std::size_t left,
+    std::size_t right) {
+    if (left != 0U && right > std::numeric_limits<std::size_t>::max() / left) {
+        return std::nullopt;
+    }
+    return left * right;
+}
+
+[[nodiscard]] inline constexpr std::optional<std::size_t> checked_table_end(
+    std::size_t offset,
+    std::size_t count,
+    std::size_t stride) {
+    const auto byteCount = checked_multiply(count, stride);
+    return byteCount.has_value() ? checked_add(offset, *byteCount) : std::nullopt;
+}
+
 [[nodiscard]] inline constexpr std::optional<std::size_t> add_relative_offset(
     std::size_t base,
     std::int32_t relative,
@@ -30,4 +57,3 @@ namespace spice::root {
 }
 
 } // namespace spice::root
-

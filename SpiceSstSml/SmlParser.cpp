@@ -1,6 +1,7 @@
 #include "SmlParser.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -24,14 +25,10 @@ void addDiagnostic(std::vector<ParseDiagnostic>& diagnostics,
     diagnostics.push_back(ParseDiagnostic{ severity, std::move(message), offset });
 }
 
-bool canReadRange(std::size_t size, std::uint32_t offset, std::uint32_t length) {
-    return offset <= size && length <= size - offset;
-}
-
 std::vector<std::uint8_t> copyRange(std::span<const std::uint8_t> bytes,
     std::uint32_t offset,
     std::uint32_t length) {
-    if (!canReadRange(bytes.size(), offset, length)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, length)) {
         return {};
     }
     return std::vector<std::uint8_t>(bytes.begin() + offset, bytes.begin() + offset + length);
@@ -51,7 +48,7 @@ bool containsTag(std::span<const std::uint8_t> bytes, std::string_view tag) {
     return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
 }
 
-SmlEmbeddedMldSummary summarizeEmbeddedMld(std::span<const std::uint8_t> bytes) {
+SmlEmbeddedMldSummary summarizeEmbeddedMld(std::span<const std::uint8_t> bytes, Endian endian) {
     SmlEmbeddedMldSummary summary{};
     summary.parseAttempted = true;
     summary.hasNjcm = containsTag(bytes, "NJCM");
@@ -59,8 +56,11 @@ SmlEmbeddedMldSummary summarizeEmbeddedMld(std::span<const std::uint8_t> bytes) 
     summary.hasNmdm = containsTag(bytes, "NMDM");
     summary.hasGcix = containsTag(bytes, "GCIX");
     summary.hasGvrt = containsTag(bytes, "GVRT");
+    summary.hasGbix = containsTag(bytes, "GBIX");
+    summary.hasPvrt = containsTag(bytes, "PVRT");
+    summary.hasPvmh = containsTag(bytes, "PVMH");
 
-    EndianReader reader(bytes, Endian::Big);
+    EndianReader reader(bytes, endian);
     const auto entryCount = reader.try_read_u32(0x00U);
     const auto indexTableOffset = reader.try_read_u32(0x04U);
     const auto textureTableOffset = reader.try_read_u32(0x10U);
@@ -72,7 +72,7 @@ SmlEmbeddedMldSummary summarizeEmbeddedMld(std::span<const std::uint8_t> bytes) 
     }
     if (textureTableOffset.has_value()) {
         summary.textureTableOffset = *textureTableOffset;
-        if (canReadRange(bytes.size(), *textureTableOffset, 4U)) {
+        if (spice::root::bounds_contains(bytes.size(), *textureTableOffset, 4U)) {
             summary.textureArchiveCount = reader.read_u32(*textureTableOffset);
         }
     }
@@ -89,6 +89,48 @@ SmlEmbeddedMldSummary summarizeEmbeddedMld(std::span<const std::uint8_t> bytes) 
     }
 
     return summary;
+}
+
+std::optional<Endian> detectEndian(std::span<const std::uint8_t> bytes, [[maybe_unused]] bool compressed) {
+    struct Candidate { Endian endian; int score; bool valid; };
+    const auto evaluate = [&](Endian endian) {
+        Candidate candidate{ endian, 0, false };
+        const EndianReader reader(bytes, endian);
+        const auto count = reader.try_read_u16(0x04U);
+        if (!count.has_value()) {
+            return candidate;
+        }
+        const auto tableEnd = spice::root::checked_table_end(kSmlRecordsOffset, *count, kSmlRecordStride);
+        if (!tableEnd.has_value() || *tableEnd > bytes.size()) {
+            return candidate;
+        }
+        candidate.valid = true;
+        candidate.score = 2;
+        for (std::uint32_t i = 0; i < *count; ++i) {
+            const auto at = kSmlRecordsOffset + i * kSmlRecordStride;
+            const auto offset = reader.read_u32(at + 4U);
+            const auto size = reader.read_u32(at + 8U);
+            if (spice::root::bounds_contains(bytes.size(), offset, size)) {
+                candidate.score += 3;
+                if (offset >= *tableEnd) {
+                    ++candidate.score;
+                }
+            } else {
+                // A malformed payload span should remain available to the
+                // parser's diagnostics and research exports. The in-bounds
+                // record table is sufficient to keep this endian candidate;
+                // merely score the candidate below one with valid payloads.
+                candidate.score -= 2;
+            }
+        }
+        return candidate;
+    };
+    const auto big = evaluate(Endian::Big);
+    const auto little = evaluate(Endian::Little);
+    if (big.valid != little.valid) return big.valid ? big.endian : little.endian;
+    if (!big.valid) return std::nullopt;
+    if (big.score != little.score) return big.score > little.score ? big.endian : little.endian;
+    return std::nullopt;
 }
 
 std::span<const std::uint8_t> decodeIfNeeded(std::span<const std::uint8_t> input,
@@ -120,7 +162,9 @@ bool SmlParseResult::ok() const {
     });
 }
 
-SmlParseResult SmlParser::parse(std::span<const std::uint8_t> bytes, std::string sourcePath) {
+SmlParseResult SmlParser::parse(std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    const ParseOptions& options) {
     SmlParseResult result{};
     result.sourcePath = std::move(sourcePath);
 
@@ -129,7 +173,17 @@ SmlParseResult SmlParser::parse(std::span<const std::uint8_t> bytes, std::string
     result.decodedSize = static_cast<std::uint32_t>(
         std::min<std::size_t>(decodedBytes.size(), std::numeric_limits<std::uint32_t>::max()));
 
-    EndianReader reader(decodedBytes, Endian::Big);
+    const auto endian = options.forcedEndian.has_value()
+        ? options.forcedEndian
+        : detectEndian(decodedBytes, result.sourceWasCompressedAklz);
+    if (!endian.has_value()) {
+        addDiagnostic(result.diagnostics, DiagnosticSeverity::Error,
+            "SML byte order is ambiguous or neither endian has a structurally valid record table");
+        return result;
+    }
+    result.sourceEndian = *endian;
+    result.endianWasForced = options.forcedEndian.has_value();
+    EndianReader reader(decodedBytes, *endian);
     const auto header0 = reader.try_read_u32(0x00U);
     const auto recordCountWord = reader.try_read_u32(0x04U);
     const auto count = reader.try_read_u16(0x04U);
@@ -164,11 +218,11 @@ SmlParseResult SmlParser::parse(std::span<const std::uint8_t> bytes, std::string
         record.embeddedMldSize = reader.read_u32(recordOffset + 0x08U);
         record.rawWord12 = reader.read_u32(recordOffset + 0x0CU);
         record.embeddedMldInBounds =
-            canReadRange(decodedBytes.size(), record.embeddedMldOffset, record.embeddedMldSize);
+            spice::root::bounds_contains(decodedBytes.size(), record.embeddedMldOffset, record.embeddedMldSize);
         if (record.embeddedMldInBounds) {
             record.embeddedMldBytes =
                 copyRange(decodedBytes, record.embeddedMldOffset, record.embeddedMldSize);
-            record.embeddedMldSummary = summarizeEmbeddedMld(record.embeddedMldBytes);
+            record.embeddedMldSummary = summarizeEmbeddedMld(record.embeddedMldBytes, *endian);
         } else {
             addDiagnostic(result.diagnostics,
                 DiagnosticSeverity::Error,

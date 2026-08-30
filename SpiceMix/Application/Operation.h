@@ -176,6 +176,15 @@ struct ExportAlxEnemyEventsRequest {
     std::filesystem::path output{};
 };
 
+struct AuditDreamcastParityRequest {
+    std::filesystem::path dreamcastUs{};
+    std::filesystem::path gameCubeUs{};
+    std::optional<std::filesystem::path> dreamcastEuDisc1{};
+    std::optional<std::filesystem::path> dreamcastEuDisc2{};
+    std::optional<std::filesystem::path> gameCubeEu{};
+    std::filesystem::path output{};
+};
+
 struct CreateGvrRequest {
     std::filesystem::path input{};
     std::filesystem::path output{};
@@ -244,6 +253,7 @@ using OperationRequest = std::variant<
     ExportMlkBlenderIrRequest,
     ExportContentGraphRequest,
     ExportAlxEnemyEventsRequest,
+    AuditDreamcastParityRequest,
     CreateGvrRequest,
     ReplaceGvrRequest,
     GvrToPngRequest,

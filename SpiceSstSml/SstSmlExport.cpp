@@ -1,4 +1,5 @@
 #include "SstSmlExport.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <bit>
@@ -128,32 +129,19 @@ std::optional<std::uint8_t> readU8(std::span<const std::uint8_t> bytes, std::siz
     return bytes[offset];
 }
 
-std::optional<std::int16_t> readI16(std::span<const std::uint8_t> bytes, std::size_t offset) {
-    if (!canRead(bytes, offset, 2U)) {
-        return std::nullopt;
-    }
-    const auto raw = static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(bytes[offset]) << 8U) |
-        static_cast<std::uint16_t>(bytes[offset + 1U]));
-    return static_cast<std::int16_t>(raw);
+std::optional<std::int16_t> readI16(std::span<const std::uint8_t> bytes, std::size_t offset,
+    spice::root::Endian endian) {
+    return spice::root::EndianReader(bytes, endian).try_read_i16(offset);
 }
 
-std::optional<std::uint32_t> readU32(std::span<const std::uint8_t> bytes, std::size_t offset) {
-    if (!canRead(bytes, offset, 4U)) {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
+std::optional<std::uint32_t> readU32(std::span<const std::uint8_t> bytes, std::size_t offset,
+    spice::root::Endian endian) {
+    return spice::root::EndianReader(bytes, endian).try_read_u32(offset);
 }
 
-std::optional<float> readF32(std::span<const std::uint8_t> bytes, std::size_t offset) {
-    const auto raw = readU32(bytes, offset);
-    if (!raw.has_value()) {
-        return std::nullopt;
-    }
-    return std::bit_cast<float>(*raw);
+std::optional<float> readF32(std::span<const std::uint8_t> bytes, std::size_t offset,
+    spice::root::Endian endian) {
+    return spice::root::EndianReader(bytes, endian).try_read_f32(offset);
 }
 
 void writeOptionalI16(std::ostream& out, std::optional<std::int16_t> value) {
@@ -328,31 +316,31 @@ void writeType0Summary(std::ostream& out, const SstCommandRecord& command, const
     const auto payload = std::span<const std::uint8_t>(command.payloadBytes.data(), command.payloadBytes.size());
     out << "{\n"
         << indent << "  \"lookupResourceIndex\":";
-    writeOptionalI16(out, readI16(payload, 0x16U));
+    writeOptionalI16(out, readI16(payload, 0x16U, command.sourceEndian));
     out << ",\n" << indent << "  \"battleObjectClassSelector\":";
-    writeOptionalI16(out, readI16(payload, 0x18U));
+    writeOptionalI16(out, readI16(payload, 0x18U, command.sourceEndian));
     out << ",\n" << indent << "  \"transformPosition\":{\"x\":";
-    writeOptionalF32(out, readF32(payload, 0x1CU));
+    writeOptionalF32(out, readF32(payload, 0x1CU, command.sourceEndian));
     out << ",\"y\":";
-    writeOptionalF32(out, readF32(payload, 0x20U));
+    writeOptionalF32(out, readF32(payload, 0x20U, command.sourceEndian));
     out << ",\"z\":";
-    writeOptionalF32(out, readF32(payload, 0x24U));
+    writeOptionalF32(out, readF32(payload, 0x24U, command.sourceEndian));
     out << "},\n" << indent << "  \"rotationRaw\":{\"x\":";
-    writeOptionalU32(out, readU32(payload, 0x28U));
+    writeOptionalU32(out, readU32(payload, 0x28U, command.sourceEndian));
     out << ",\"y\":";
-    writeOptionalU32(out, readU32(payload, 0x2CU));
+    writeOptionalU32(out, readU32(payload, 0x2CU, command.sourceEndian));
     out << ",\"z\":";
-    writeOptionalU32(out, readU32(payload, 0x30U));
+    writeOptionalU32(out, readU32(payload, 0x30U, command.sourceEndian));
     out << "},\n" << indent << "  \"scale\":{\"x\":";
-    writeOptionalF32(out, readF32(payload, 0x34U));
+    writeOptionalF32(out, readF32(payload, 0x34U, command.sourceEndian));
     out << ",\"y\":";
-    writeOptionalF32(out, readF32(payload, 0x38U));
+    writeOptionalF32(out, readF32(payload, 0x38U, command.sourceEndian));
     out << ",\"z\":";
-    writeOptionalF32(out, readF32(payload, 0x3CU));
+    writeOptionalF32(out, readF32(payload, 0x3CU, command.sourceEndian));
     out << "},\n" << indent << "  \"renderActionByte\":";
     writeOptionalU8(out, readU8(payload, 0x44U));
     out << ",\n" << indent << "  \"renderActionWordRaw\":";
-    writeOptionalU32(out, readU32(payload, 0x44U));
+    writeOptionalU32(out, readU32(payload, 0x44U, command.sourceEndian));
     out << "\n" << indent << "}";
 }
 

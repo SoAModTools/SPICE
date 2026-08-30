@@ -3,6 +3,7 @@
 
 #include "../../Compression/Aklz.h"
 #include "../../SpiceRoot/Binary/EndianReader.h"
+#include "../../SpiceRoot/Binary/EndianWriter.h"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +19,7 @@ namespace {
 
 using spice::root::Endian;
 using spice::root::EndianReader;
+using spice::root::EndianSpanWriter;
 
 constexpr std::size_t kMldHeaderSize = 0x14U;
 constexpr std::size_t kEntrySize = 0x68U;
@@ -50,30 +52,14 @@ void writeU16(std::vector<std::uint8_t>& out, const std::size_t offset, const st
     if (offset > out.size() || 2U > out.size() - offset) {
         return;
     }
-    if (endian == Endian::Big) {
-        out[offset + 0U] = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-        out[offset + 1U] = static_cast<std::uint8_t>(value & 0xFFU);
-    } else {
-        out[offset + 0U] = static_cast<std::uint8_t>(value & 0xFFU);
-        out[offset + 1U] = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-    }
+    EndianSpanWriter(out, endian).write_u16_at(offset, value);
 }
 
 void writeU32(std::vector<std::uint8_t>& out, const std::size_t offset, const std::uint32_t value, const Endian endian) {
     if (offset > out.size() || 4U > out.size() - offset) {
         return;
     }
-    if (endian == Endian::Big) {
-        out[offset + 0U] = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
-        out[offset + 1U] = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
-        out[offset + 2U] = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-        out[offset + 3U] = static_cast<std::uint8_t>(value & 0xFFU);
-    } else {
-        out[offset + 0U] = static_cast<std::uint8_t>(value & 0xFFU);
-        out[offset + 1U] = static_cast<std::uint8_t>((value >> 8U) & 0xFFU);
-        out[offset + 2U] = static_cast<std::uint8_t>((value >> 16U) & 0xFFU);
-        out[offset + 3U] = static_cast<std::uint8_t>((value >> 24U) & 0xFFU);
-    }
+    EndianSpanWriter(out, endian).write_u32_at(offset, value);
 }
 
 void writeF32(std::vector<std::uint8_t>& out, const std::size_t offset, const float value, const Endian endian) {

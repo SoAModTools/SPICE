@@ -11,7 +11,8 @@ namespace spice::sstsml {
 class SstParser {
 public:
     [[nodiscard]] static SstParseResult parse(std::span<const std::uint8_t> bytes,
-        std::string sourcePath = {});
+        std::string sourcePath = {},
+        const ParseOptions& options = {});
 
     [[nodiscard]] static std::uint32_t commandPayloadSize(std::int16_t type);
     [[nodiscard]] static bool isKnownCommandType(std::int16_t type);

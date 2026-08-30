@@ -15,6 +15,51 @@
 
 namespace spice::root {
 
+class EndianSpanWriter {
+public:
+    EndianSpanWriter(std::span<std::uint8_t> data, Endian endian)
+        : data_(data), endian_(endian) {}
+
+    [[nodiscard]] bool can_write(std::size_t offset, std::size_t length) const {
+        return bounds_contains(data_.size(), offset, length);
+    }
+
+    void write_u8_at(std::size_t offset, std::uint8_t value) { write_at(offset, value); }
+    void write_i8_at(std::size_t offset, std::int8_t value) { write_u8_at(offset, static_cast<std::uint8_t>(value)); }
+    void write_u16_at(std::size_t offset, std::uint16_t value) { write_at(offset, needs_swap(endian_) ? byteswap(value) : value); }
+    void write_i16_at(std::size_t offset, std::int16_t value) { write_u16_at(offset, static_cast<std::uint16_t>(value)); }
+    void write_u32_at(std::size_t offset, std::uint32_t value) { write_at(offset, needs_swap(endian_) ? byteswap(value) : value); }
+    void write_i32_at(std::size_t offset, std::int32_t value) { write_u32_at(offset, static_cast<std::uint32_t>(value)); }
+    void write_f32_at(std::size_t offset, float value) { write_u32_at(offset, std::bit_cast<std::uint32_t>(value)); }
+    void write_fourcc_at(std::size_t offset, const FourCC& value) {
+        if (!can_write(offset, 4U)) {
+            throw std::out_of_range("write beyond end of buffer");
+        }
+        std::copy(value.bytes().begin(), value.bytes().end(), data_.begin() + static_cast<std::ptrdiff_t>(offset));
+    }
+    void write_bytes_at(std::size_t offset, std::span<const std::uint8_t> bytes) {
+        if (!can_write(offset, bytes.size())) {
+            throw std::out_of_range("write beyond end of buffer");
+        }
+        std::copy(bytes.begin(), bytes.end(), data_.begin() + static_cast<std::ptrdiff_t>(offset));
+    }
+
+    [[nodiscard]] Endian endian() const { return endian_; }
+    [[nodiscard]] std::span<std::uint8_t> bytes() const { return data_; }
+
+private:
+    template <class T>
+    void write_at(std::size_t offset, T value) {
+        if (!can_write(offset, sizeof(T))) {
+            throw std::out_of_range("write beyond end of buffer");
+        }
+        std::memcpy(data_.data() + offset, &value, sizeof(T));
+    }
+
+    std::span<std::uint8_t> data_;
+    Endian endian_;
+};
+
 class EndianWriter {
 public:
     explicit EndianWriter(Endian endian) : endian_(endian) {}
@@ -76,5 +121,17 @@ private:
     Endian endian_;
     std::vector<std::uint8_t> data_;
 };
+
+inline void append_u16(std::vector<std::uint8_t>& data, std::uint16_t value, Endian endian) {
+    const auto offset = data.size();
+    data.resize(offset + sizeof(value));
+    EndianSpanWriter(data, endian).write_u16_at(offset, value);
+}
+
+inline void append_u32(std::vector<std::uint8_t>& data, std::uint32_t value, Endian endian) {
+    const auto offset = data.size();
+    data.resize(offset + sizeof(value));
+    EndianSpanWriter(data, endian).write_u32_at(offset, value);
+}
 
 } // namespace spice::root

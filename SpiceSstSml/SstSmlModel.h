@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../SpiceRoot/Binary/Endian.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <array>
@@ -9,6 +11,10 @@
 #include <vector>
 
 namespace spice::sstsml {
+
+struct ParseOptions {
+    std::optional<spice::root::Endian> forcedEndian{};
+};
 
 enum class DiagnosticSeverity {
     Info,
@@ -96,6 +102,9 @@ struct SmlEmbeddedMldSummary {
     bool hasNmdm{ false };
     bool hasGcix{ false };
     bool hasGvrt{ false };
+    bool hasGbix{ false };
+    bool hasPvrt{ false };
+    bool hasPvmh{ false };
 };
 
 struct SmlRecord {
@@ -113,6 +122,8 @@ struct SmlRecord {
 struct SmlParseResult {
     std::string sourcePath{};
     bool sourceWasCompressedAklz{ false };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
+    bool endianWasForced{ false };
     std::uint32_t decodedSize{ 0U };
     std::uint32_t rawHeader0{ 0U };
     std::uint32_t rawRecordCountWord{ 0U };
@@ -159,6 +170,7 @@ struct SstType1LightingRow {
 
 struct SstCommandRecord {
     std::size_t index{ 0U };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
     std::uint32_t recordOffset{ 0U };
     std::int16_t type{ 0 };
     std::int16_t argument{ 0 };
@@ -208,6 +220,8 @@ struct SstCommandBlock {
 struct SstParseResult {
     std::string sourcePath{};
     bool sourceWasCompressedAklz{ false };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
+    bool endianWasForced{ false };
     std::uint32_t decodedSize{ 0U };
     std::uint16_t recordCount{ 0U };
     std::vector<SstTopLevelRecord> topLevelRecords{};

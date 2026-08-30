@@ -11,7 +11,8 @@ namespace spice::sstsml {
 class SmlParser {
 public:
     [[nodiscard]] static SmlParseResult parse(std::span<const std::uint8_t> bytes,
-        std::string sourcePath = {});
+        std::string sourcePath = {},
+        const ParseOptions& options = {});
 };
 
 } // namespace spice::sstsml

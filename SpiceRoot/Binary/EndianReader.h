@@ -91,6 +91,21 @@ public:
         return bounds_contains(data_.size(), offset, length);
     }
 
+    [[nodiscard]] std::optional<std::span<const std::uint8_t>> try_subspan(
+        std::size_t offset,
+        std::size_t length) const {
+        if (!can_read(offset, length)) {
+            return std::nullopt;
+        }
+        return data_.subspan(offset, length);
+    }
+
+    [[nodiscard]] std::span<const std::uint8_t> subspan(
+        std::size_t offset,
+        std::size_t length) const {
+        return require(try_subspan(offset, length));
+    }
+
     [[nodiscard]] Endian endian() const { return endian_; }
     [[nodiscard]] std::size_t size() const { return data_.size(); }
     [[nodiscard]] std::span<const std::uint8_t> bytes() const { return data_; }
@@ -119,4 +134,3 @@ private:
 };
 
 } // namespace spice::root
-

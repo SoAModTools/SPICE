@@ -116,13 +116,16 @@ struct SstSmlWorkbench::Impl {
             "<p><b>SML:</b> %2<br><b>SST:</b> %3</p>"
             "<p>SML source/decoded: %4 / %5 bytes (%6)<br>"
             "SST source/decoded: %7 / %8 bytes (%9)</p>"
-            "<p>Paired records: %10 &nbsp; Count agreement: %11<br>"
-            "Embedded MLD parsed: %12 &nbsp; Failed: %13</p>"
-            "<p><b>Command histogram:</b> %14</p>")
+            "<p><b>Platform context:</b> %10<br>SML byte order: %11 &nbsp; SST byte order: %12</p>"
+            "<p>Paired records: %13 &nbsp; Count agreement: %14<br>"
+            "Embedded MLD parsed: %15 &nbsp; Failed: %16</p>"
+            "<p><b>Command histogram:</b> %17</p>")
             .arg(QString::fromStdString(value.stem).toHtmlEscaped(),
                 qpath(value.smlPath).toHtmlEscaped(), qpath(value.sstPath).toHtmlEscaped())
             .arg(value.smlSourceSize).arg(value.smlDecodedSize).arg(value.smlWasAklz ? "AKLZ" : "Raw")
             .arg(value.sstSourceSize).arg(value.sstDecodedSize).arg(value.sstWasAklz ? "AKLZ" : "Raw")
+            .arg(QString::fromStdString(value.platformContext), QString::fromStdString(value.smlEndian),
+                QString::fromStdString(value.sstEndian))
             .arg(value.recordCount).arg(value.recordCountsAgree ? "Yes" : "No")
             .arg(value.embeddedMldParsedCount).arg(value.embeddedMldFailedCount)
             .arg(histogram.isEmpty() ? "None" : histogram.join("; ")));

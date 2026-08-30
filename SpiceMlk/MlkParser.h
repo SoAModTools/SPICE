@@ -28,12 +28,16 @@ struct MlkRecord {
 struct MlkFile {
     std::string sourcePath{};
     bool sourceWasCompressedAklz{ false };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
+    bool endianWasForced{ false };
     std::uint32_t rawSize{ 0U };
     std::uint32_t decodedSize{ 0U };
     std::array<std::uint32_t, 4> headerWords{};
     std::int16_t runtimeRecordCount{ 0 };
     std::uint16_t rawRecordCountCandidate{ 0U };
+    std::uint16_t descriptorRecordCount{ 0U };
     std::uint16_t selectedRecordCount{ 0U };
+    std::uint16_t unavailableTrailingRecordCount{ 0U };
     MlkRecordCountSource recordCountSource{ MlkRecordCountSource::Unresolved };
     MlkTableShape tableShape{ MlkTableShape::Normal };
     std::uint32_t recordsOffset{ 0x08U };
@@ -53,9 +57,11 @@ struct MlkFile {
 class MlkParser {
 public:
     [[nodiscard]] static MlkFile parse(std::span<const std::uint8_t> bytes,
-        std::string sourcePath = {});
+        std::string sourcePath = {},
+        const MlkParseOptions& options = {});
 
-    [[nodiscard]] static MlkFile parseFile(const std::filesystem::path& path);
+    [[nodiscard]] static MlkFile parseFile(const std::filesystem::path& path,
+        const MlkParseOptions& options = {});
 };
 
 [[nodiscard]] MlkTableShape classifyMlkTableShape(const MlkScanResult& scan);

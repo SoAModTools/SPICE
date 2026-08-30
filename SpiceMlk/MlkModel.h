@@ -1,12 +1,19 @@
 #pragma once
 
+#include "../SpiceRoot/Binary/Endian.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace spice::mlk {
+
+struct MlkParseOptions {
+    std::optional<spice::root::Endian> forcedEndian{};
+};
 
 enum class DiagnosticSeverity {
     Info,
@@ -38,6 +45,7 @@ enum class MlkRecordCountSource {
 enum class MlkTableShape {
     Normal,
     FirstPayloadCountCandidate,
+    TrailingUnavailablePayloads,
     MalformedRecordSpans,
 };
 
@@ -68,12 +76,16 @@ struct MlkRecordProbe {
 struct MlkScanResult {
     std::string sourcePath{};
     bool sourceWasCompressedAklz{ false };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
+    bool endianWasForced{ false };
     std::uint32_t rawSize{ 0U };
     std::uint32_t decodedSize{ 0U };
     std::array<std::uint32_t, 4> headerWords{};
     std::int16_t signedRecordCountCandidate{ 0 };
     std::uint16_t recordCountCandidate{ 0U };
+    std::uint16_t descriptorRecordCount{ 0U };
     std::uint16_t selectedRecordCount{ 0U };
+    std::uint16_t unavailableTrailingRecordCount{ 0U };
     MlkRecordCountSource recordCountSource{ MlkRecordCountSource::Unresolved };
     std::uint32_t recordsOffset{ 0x08U };
     std::uint32_t recordStride{ 0x10U };

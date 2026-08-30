@@ -2,7 +2,7 @@
 
 ## Current Support
 
-SPICE reads raw or AKLZ-wrapped MLL containers, exposes the big-endian header and named `0x20`-byte member table, and preserves every member payload. Known tightly packed containers can be rebuilt while retaining names, header words, record metadata, and unchanged payload bytes. Member offsets can be recalculated when an explicitly replaced payload changes size.
+SPICE reads little-endian raw Dreamcast and big-endian raw or AKLZ-wrapped GameCube MLL containers, exposes the named `0x20`-byte member table, and preserves every member payload. Known tightly packed containers are rebuilt in their source endian. Dreamcast routing recognizes PVR/PVM signatures alongside MLD and indexed BIN members; arbitrary cross-endian archive conversion is intentionally rejected.
 
 Lightweight probes identify likely MLD, indexed BIN, Ninja, `POF0`, compressed, empty, and unknown members. Full interpretation is delegated to the project that owns the detected inner format, keeping the MLL model limited to container responsibilities.
 

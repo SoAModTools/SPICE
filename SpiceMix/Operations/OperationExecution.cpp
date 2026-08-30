@@ -14,6 +14,7 @@
 #include "../../Sa3Dport/Testing/Slice9TestApi.h"
 #include "../AlxEnemyEventExport.h"
 #include "OperationExecution.h"
+#include "DreamcastParityAudit.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1008,6 +1009,9 @@ int executeOperationRequest(
             spice::alx::exportEnemyEventsCsvToJson(value.input, value.output);
             finishSingleFile(context, value.output);
             return 0;
+        },
+        [&](const spice::mix::AuditDreamcastParityRequest& value) {
+            return spice::mix::detail::executeDreamcastParityAudit(value, context);
         },
         [&](const spice::mix::CreateGvrRequest& value) {
             emit(context, spice::mix::EventLevel::Progress,

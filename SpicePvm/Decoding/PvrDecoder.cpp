@@ -1,4 +1,5 @@
 #include "PvrDecoder.h"
+#include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <array>
@@ -20,17 +21,17 @@ struct PhysicalLevel {
 
 bool checkedAdd(const std::size_t left, const std::size_t right, std::size_t& result)
 {
-    if (right > std::numeric_limits<std::size_t>::max() - left)
-        return false;
-    result = left + right;
+    const auto checked = spice::root::checked_add(left, right);
+    if (!checked.has_value()) return false;
+    result = *checked;
     return true;
 }
 
 bool checkedMul(const std::size_t left, const std::size_t right, std::size_t& result)
 {
-    if (left != 0 && right > std::numeric_limits<std::size_t>::max() / left)
-        return false;
-    result = left * right;
+    const auto checked = spice::root::checked_multiply(left, right);
+    if (!checked.has_value()) return false;
+    result = *checked;
     return true;
 }
 
@@ -111,8 +112,7 @@ std::array<std::uint8_t, 4> decodeColor(const std::uint16_t value, const PixelFo
 
 std::uint16_t readU16(const std::vector<std::uint8_t>& bytes, const std::size_t offset)
 {
-    return static_cast<std::uint16_t>(bytes[offset]) |
-        static_cast<std::uint16_t>(static_cast<std::uint16_t>(bytes[offset + 1]) << 8);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Little).read_u16(offset);
 }
 
 void writePixel(model::RgbaImage& image, const std::uint32_t x, const std::uint32_t y,

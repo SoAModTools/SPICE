@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../SpiceRoot/Binary/Endian.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -114,6 +116,7 @@ struct StdEntryRecord {
     std::uint32_t payloadEndRel{ 0U };
     bool payloadInBounds{ false };
     std::vector<std::uint8_t> payloadBytes{};
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
 };
 
 struct StdEntryTableLayout {
@@ -154,6 +157,8 @@ struct StdFile {
     std::string sourcePath{};
     StdParseStatus parseStatus{ StdParseStatus::Empty };
     StdSourceEncoding sourceEncoding{ StdSourceEncoding::Plain };
+    spice::root::Endian sourceEndian{ spice::root::Endian::Big };
+    bool endianWasForced{ false };
     std::uint32_t rawSize{ 0U };
     std::uint32_t decodedSize{ 0U };
     bool decodedAvailable{ false };

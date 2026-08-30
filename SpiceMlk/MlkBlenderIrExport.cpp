@@ -735,6 +735,8 @@ std::string formatAnnotationJson(
     out << "],\n";
     out << "    \"headerRecordCountCandidate\": " << scan.recordCountCandidate << ",\n";
     out << "    \"selectedRecordCount\": " << scan.selectedRecordCount << ",\n";
+    out << "    \"descriptorRecordCount\": " << scan.descriptorRecordCount << ",\n";
+    out << "    \"unavailableTrailingRecordCount\": " << scan.unavailableTrailingRecordCount << ",\n";
     out << "    \"recordCountSource\": ";
     writeJsonString(out, toString(scan.recordCountSource));
     out << ",\n";

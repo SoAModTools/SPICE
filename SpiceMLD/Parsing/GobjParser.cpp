@@ -68,13 +68,7 @@ struct GobjVertexLayout {
 }
 
 [[nodiscard]] std::uint32_t readTag(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 4U > bytes.size()) {
-        return 0U;
-    }
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
+    return spice::root::EndianReader(bytes, spice::root::Endian::Big).try_read_u32(offset).value_or(0U);
 }
 
 [[nodiscard]] std::optional<std::uint32_t> addRelativeTarget(
@@ -92,12 +86,7 @@ struct GobjVertexLayout {
 }
 
 [[nodiscard]] std::optional<std::uint16_t> readU16BE(std::span<const std::uint8_t> bytes, const std::size_t offset) {
-    if (offset + 2U > bytes.size()) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint16_t>(
-        (static_cast<std::uint16_t>(bytes[offset]) << 8U) |
-        static_cast<std::uint16_t>(bytes[offset + 1U]));
+    return spice::root::EndianReader(bytes, spice::root::Endian::Big).try_read_u16(offset);
 }
 
 [[nodiscard]] std::optional<GobjAttachLayout> readGobjAttachLayout(

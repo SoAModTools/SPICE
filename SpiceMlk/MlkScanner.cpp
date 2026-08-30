@@ -1,6 +1,7 @@
 #include "MlkScanner.h"
 
 #include "../Compression/Aklz.h"
+#include "../SpiceRoot/Binary/Alignment.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -18,15 +19,13 @@ using spice::root::EndianReader;
 constexpr std::uint32_t kMlkRecordsOffset = 0x08U;
 constexpr std::uint32_t kMlkRecordStride = 0x10U;
 
+std::uint16_t inferCountFromFirstPayloadOffset(std::uint32_t firstPayloadOffset);
+
 void addDiagnostic(std::vector<MlkDiagnostic>& diagnostics,
     DiagnosticSeverity severity,
     std::string message,
     std::uint32_t offset = 0U) {
     diagnostics.push_back(MlkDiagnostic{ severity, std::move(message), offset });
-}
-
-bool canReadRange(std::size_t size, std::uint32_t offset, std::uint32_t length) {
-    return offset <= size && length <= size - offset;
 }
 
 bool rangesOverlap(std::uint32_t leftOffset,
@@ -42,7 +41,7 @@ bool rangesOverlap(std::uint32_t leftOffset,
 }
 
 std::string makeSignature(std::span<const std::uint8_t> bytes, std::uint32_t offset) {
-    if (!canReadRange(bytes.size(), offset, 4U)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, 4U)) {
         return {};
     }
 
@@ -59,13 +58,13 @@ std::string makeSignature(std::span<const std::uint8_t> bytes, std::uint32_t off
     return signature;
 }
 
-MlkEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> payload) {
+MlkEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> payload, Endian endian) {
     MlkEmbeddedMldHeaderProbe probe{};
     if (payload.size() < 0x14U) {
         return probe;
     }
 
-    EndianReader reader(payload, Endian::Big);
+    EndianReader reader(payload, endian);
     probe.entryCount = reader.read_u32(0x00U);
     probe.indexTableOffset = reader.read_u32(0x04U);
     probe.functionParametersOffset = reader.read_u32(0x08U);
@@ -93,6 +92,27 @@ MlkEmbeddedMldHeaderProbe probeEmbeddedMldHeader(std::span<const std::uint8_t> p
     return probe;
 }
 
+std::optional<Endian> detectEndian(std::span<const std::uint8_t> bytes, [[maybe_unused]] bool compressed) {
+    const auto score = [&](Endian endian) {
+        if (bytes.size() < kMlkRecordsOffset + kMlkRecordStride) return 0;
+        const EndianReader reader(bytes, endian);
+        const auto count = reader.read_i16(0x04U);
+        if (count < 0) return 0;
+        const auto tableEnd = spice::root::checked_table_end(kMlkRecordsOffset,
+            static_cast<std::uint16_t>(count), kMlkRecordStride);
+        int value = tableEnd.has_value() && *tableEnd <= bytes.size() ? 2 : 0;
+        const auto firstPayload = reader.read_u32(kMlkRecordsOffset + 4U);
+        const auto inferred = inferCountFromFirstPayloadOffset(firstPayload);
+        if (inferred > 0U && firstPayload <= bytes.size()) value += 4;
+        if (inferred == static_cast<std::uint16_t>(count) && inferred > 0U) value += 2;
+        return value;
+    };
+    const auto big = score(Endian::Big);
+    const auto little = score(Endian::Little);
+    if (big == little) return std::nullopt;
+    return big > little ? Endian::Big : Endian::Little;
+}
+
 MlkPayloadKind classifyPayload(std::span<const std::uint8_t> bytes,
     std::uint32_t offset,
     std::uint32_t length,
@@ -101,7 +121,7 @@ MlkPayloadKind classifyPayload(std::span<const std::uint8_t> bytes,
     if (length == 0U) {
         return MlkPayloadKind::Empty;
     }
-    if (!canReadRange(bytes.size(), offset, length)) {
+    if (!spice::root::bounds_contains(bytes.size(), offset, length)) {
         return MlkPayloadKind::Unknown;
     }
 
@@ -242,13 +262,17 @@ const char* toString(MlkTableShape shape) {
         return "normal";
     case MlkTableShape::FirstPayloadCountCandidate:
         return "first-payload-count-candidate";
+    case MlkTableShape::TrailingUnavailablePayloads:
+        return "trailing-unavailable-payloads";
     case MlkTableShape::MalformedRecordSpans:
         return "malformed-record-spans";
     }
     return "unknown";
 }
 
-MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string sourcePath) {
+MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    const MlkParseOptions& options) {
     MlkScanResult result{};
     result.sourcePath = std::move(sourcePath);
     result.rawSize = static_cast<std::uint32_t>(
@@ -259,7 +283,17 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
     result.decodedSize = static_cast<std::uint32_t>(
         std::min<std::size_t>(decodedBytes.size(), std::numeric_limits<std::uint32_t>::max()));
 
-    EndianReader reader(decodedBytes, Endian::Big);
+    const auto endian = options.forcedEndian.has_value()
+        ? options.forcedEndian
+        : detectEndian(decodedBytes, result.sourceWasCompressedAklz);
+    if (!endian.has_value()) {
+        addDiagnostic(result.diagnostics, DiagnosticSeverity::Error,
+            "MLK byte order is ambiguous or neither endian has a structurally valid record table");
+        return result;
+    }
+    result.sourceEndian = *endian;
+    result.endianWasForced = options.forcedEndian.has_value();
+    EndianReader reader(decodedBytes, *endian);
     for (std::size_t i = 0; i < result.headerWords.size(); ++i) {
         const auto word = reader.try_read_u32(i * sizeof(std::uint32_t));
         result.headerWords[i] = word.value_or(0U);
@@ -325,14 +359,43 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
         }
     }
 
+    // One observed split-package family stores this 16-bit descriptor count in
+    // the opposite byte order from the rest of the table. Accept that mixed
+    // field only when it exactly matches the descriptor boundary established by
+    // the first payload offset; otherwise the normal structural rules win.
+    if (result.recordCountSource == MlkRecordCountSource::HeaderU16At04 &&
+        result.recordCountInferredFromFirstPayloadOffset > 0U &&
+        result.recordCountInferredFromFirstPayloadOffset < result.selectedRecordCount) {
+        const Endian oppositeEndian = *endian == Endian::Big ? Endian::Little : Endian::Big;
+        const EndianReader oppositeReader(decodedBytes, oppositeEndian);
+        const auto oppositeCount = oppositeReader.try_read_u16(0x04U);
+        const auto inferredTableEnd = spice::root::checked_table_end(
+            kMlkRecordsOffset,
+            result.recordCountInferredFromFirstPayloadOffset,
+            kMlkRecordStride);
+        if (oppositeCount.has_value() &&
+            *oppositeCount == result.recordCountInferredFromFirstPayloadOffset &&
+            inferredTableEnd.has_value() &&
+            *inferredTableEnd == result.firstPayloadOffset) {
+            result.selectedRecordCount = result.recordCountInferredFromFirstPayloadOffset;
+            result.recordCountSource = MlkRecordCountSource::FirstPayloadOffset;
+            selectedTableEnd = *inferredTableEnd;
+            addDiagnostic(result.diagnostics,
+                DiagnosticSeverity::Warning,
+                "MLK descriptor count uses the opposite byte order and agrees with the first payload boundary",
+                0x04U);
+        }
+    }
+
+    result.descriptorRecordCount = result.selectedRecordCount;
     result.recordTableEndOffset = selectedTableEnd <= std::numeric_limits<std::uint32_t>::max()
         ? static_cast<std::uint32_t>(selectedTableEnd)
         : std::numeric_limits<std::uint32_t>::max();
     result.recordTableInBounds = selectedTableEnd <= decodedBytes.size();
 
-    result.records.reserve(result.selectedRecordCount);
+    result.records.reserve(result.descriptorRecordCount);
     std::set<std::uint32_t> seenKeys;
-    for (std::uint32_t i = 0U; i < result.selectedRecordCount; ++i) {
+    for (std::uint32_t i = 0U; i < result.descriptorRecordCount; ++i) {
         const std::uint32_t recordOffset = kMlkRecordsOffset + (i * kMlkRecordStride);
         MlkRecordProbe record{};
         record.index = i;
@@ -342,7 +405,7 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
         record.payloadSize = reader.read_u32(recordOffset + 0x08U);
         record.rawWord12 = reader.read_u32(recordOffset + 0x0CU);
         record.duplicateKey = !seenKeys.insert(record.key).second;
-        record.payloadInBounds = canReadRange(decodedBytes.size(), record.payloadOffset, record.payloadSize);
+        record.payloadInBounds = spice::root::bounds_contains(decodedBytes.size(), record.payloadOffset, record.payloadSize);
         record.payloadOverlapsRecordTable = rangesOverlap(record.payloadOffset,
             record.payloadSize,
             kMlkRecordsOffset,
@@ -360,18 +423,13 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
             record.payloadSignature = makeSignature(decodedBytes, record.payloadOffset);
             const auto payload =
                 decodedBytes.subspan(record.payloadOffset, record.payloadSize);
-            record.embeddedMldHeader = probeEmbeddedMldHeader(payload);
+            record.embeddedMldHeader = probeEmbeddedMldHeader(payload, *endian);
             record.payloadKind =
                 classifyPayload(decodedBytes,
                     record.payloadOffset,
                     record.payloadSize,
                     record.payloadSignature,
                     record.embeddedMldHeader);
-        } else {
-            addDiagnostic(result.diagnostics,
-                DiagnosticSeverity::Error,
-                "MLK record payload span is out of bounds",
-                record.recordOffset + 0x04U);
         }
 
         if (record.duplicateKey) {
@@ -390,12 +448,57 @@ MlkScanResult MlkScanner::scan(std::span<const std::uint8_t> bytes, std::string 
         result.records.push_back(std::move(record));
     }
 
+    const auto firstUnavailable = std::find_if(result.records.begin(), result.records.end(), [](const auto& record) {
+        return !record.payloadInBounds;
+    });
+    if (firstUnavailable != result.records.end()) {
+        const auto availableCount = static_cast<std::size_t>(std::distance(result.records.begin(), firstUnavailable));
+        const bool unavailableTail = availableCount > 0U && std::all_of(firstUnavailable, result.records.end(), [](const auto& record) {
+            return !record.payloadInBounds;
+        });
+        const Endian otherEndian = *endian == Endian::Big ? Endian::Little : Endian::Big;
+        const EndianReader otherReader(decodedBytes, otherEndian);
+        bool repeatedPlatformTail = unavailableTail && result.records.size() == availableCount * 2U;
+        if (repeatedPlatformTail) {
+            for (std::size_t i = 0U; i < availableCount; ++i) {
+                const auto tailOffset = result.records[availableCount + i].recordOffset;
+                const auto tailKey = otherReader.read_u32(tailOffset);
+                if (result.records[availableCount + i].key != result.records[i].key &&
+                    tailKey != result.records[i].key) {
+                    repeatedPlatformTail = false;
+                    break;
+                }
+            }
+        }
+        const auto oppositeCount = otherReader.try_read_u16(0x04U);
+        const bool mixedEndianCountSubset = unavailableTail &&
+            result.recordCountSource == MlkRecordCountSource::FirstPayloadOffset &&
+            oppositeCount.has_value() && *oppositeCount == result.descriptorRecordCount;
+        if (repeatedPlatformTail || mixedEndianCountSubset) {
+            result.selectedRecordCount = static_cast<std::uint16_t>(availableCount);
+            result.unavailableTrailingRecordCount = static_cast<std::uint16_t>(
+                result.descriptorRecordCount - result.selectedRecordCount);
+            result.records.resize(availableCount);
+            addDiagnostic(result.diagnostics, DiagnosticSeverity::Warning,
+                "MLK contains " + std::to_string(result.unavailableTrailingRecordCount) +
+                    " trailing platform descriptors whose payloads are not present; parsed the contiguous available prefix");
+        } else {
+            for (const auto& record : result.records) {
+                if (!record.payloadInBounds) {
+                    addDiagnostic(result.diagnostics, DiagnosticSeverity::Error,
+                        "MLK record payload span is out of bounds",
+                        record.recordOffset + 0x04U);
+                }
+            }
+        }
+    }
+
     return result;
 }
 
-MlkScanResult MlkScanner::scanFile(const std::filesystem::path& path) {
+MlkScanResult MlkScanner::scanFile(const std::filesystem::path& path, const MlkParseOptions& options) {
     const auto bytes = readFileBytes(path);
-    return scan(bytes, path.string());
+    return scan(bytes, path.string(), options);
 }
 
 } // namespace spice::mlk
