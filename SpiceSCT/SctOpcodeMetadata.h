@@ -51,6 +51,7 @@ struct SctOpcodeSemanticMetadata {
     SctOpcodeControlRole controlRole = SctOpcodeControlRole::None;
     SctOpcodeResourceRole resourceRole = SctOpcodeResourceRole::None;
     std::array<std::string_view, 8> parameterRoles{};
+    std::string_view notes = {};
 };
 
 inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPatterns{{
@@ -372,6 +373,12 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
         meta.confidence = SctSemanticConfidence::Partial;
         meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
         meta.parameterRoles = {"scriptNameOffset"};
+        break;
+    case 114:
+        meta.mnemonic = "ChangeGroundVariant";
+        meta.confidence = SctSemanticConfidence::Partial;
+        meta.parameterRoles = { "tblId", "variant" };
+        meta.notes = "Finds a ground entry using tblId and sets the active ground from the ground address list. -1 disables the ground.";
         break;
     case 210:
         meta.mnemonic = "WarpCurrentAreaByString";
