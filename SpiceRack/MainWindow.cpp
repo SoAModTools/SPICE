@@ -52,7 +52,7 @@ QString normalizedPathKey(const std::filesystem::path& path) {
 bool supportedDocumentPath(const std::filesystem::path& path) {
     const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
     return extension == ".mld" || extension == ".gvr" || extension == ".pvr"
-        || extension == ".sml" || extension == ".sst";
+        || extension == ".sml" || extension == ".sst" || extension == ".ect";
 }
 
 QString logicalDocumentKey(const std::filesystem::path& path) {
@@ -131,7 +131,7 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     auto* aboutAction = helpMenu->addAction("&About SpiceRack");
     connect(aboutAction, &QAction::triggered, this, [this]() {
         QMessageBox::about(this, "About SpiceRack",
-            "SpiceRack is the visual frontend for inspecting MLD and paired SST/SML files "
+            "SpiceRack is the visual frontend for inspecting MLD, ECT, and paired SST/SML files "
             "and editing GVR and PVR textures.\n\n"
             "Document operations are provided by the shared, non-Qt SpiceMix layer.");
     });
@@ -143,7 +143,7 @@ SpiceRackMainWindow::SpiceRackMainWindow(QWidget* parent)
     connect(tabs_, &QTabWidget::tabCloseRequested, this, [this](const int index) { closeTab(index); });
     connect(tabs_, &QTabWidget::currentChanged, this, [this]() { refreshDocumentActions(); });
     auto* welcome = new QLabel(
-        "<h2>SpiceRack</h2><p>Open an MLD, paired SST/SML, GVR, or PVR document, "
+        "<h2>SpiceRack</h2><p>Open an MLD, ECT, paired SST/SML, GVR, or PVR document, "
         "or create a new texture from a PNG.</p>"
         "<p>MLD texture changes are staged until <b>Save As</b>; the original MLD is never overwritten.</p>", tabs_);
     welcome->setAlignment(Qt::AlignCenter);
@@ -237,13 +237,15 @@ bool SpiceRackMainWindow::runSmokeChecks() {
         QUrl::fromLocalFile("C:/RACK-DROP/ONE.mld"),
         QUrl::fromLocalFile("C:/rack-drop/s006.SML"),
         QUrl::fromLocalFile("C:/rack-drop/S006.sst"),
+        QUrl::fromLocalFile("C:/rack-drop/a099a.ECT"),
         QUrl::fromLocalFile("C:/rack-drop/replacement.png"),
         QUrl("https://example.invalid/remote.pvr") });
     const auto classified = classifyDocumentDrop(&dropMime);
-    const bool dropRouting = classified.paths.size() == 3
+    const bool dropRouting = classified.paths.size() == 4
         && classified.issues.size() == 2
         && supportedDocumentPath("upper.PVR")
         && supportedDocumentPath("stage.SML")
+        && supportedDocumentPath("encounters.ECT")
         && !supportedDocumentPath("replacement.png")
         && !centralWidget()->property("documentDropActive").toBool();
     auto* workbench = currentWorkbench();
@@ -254,8 +256,8 @@ bool SpiceRackMainWindow::runSmokeChecks() {
 
 void SpiceRackMainWindow::chooseOpenDocument() {
     const auto path = QFileDialog::getOpenFileName(this, "Open SPICE document", {},
-        "Supported files (*.mld *.sml *.sst *.gvr *.pvr);;MLD files (*.mld);;SST/SML pairs (*.sml *.sst);;"
-        "GVR files (*.gvr);;PVR files (*.pvr);;All files (*)");
+        "Supported files (*.mld *.ect *.sml *.sst *.gvr *.pvr);;MLD files (*.mld);;ECT files (*.ect);;"
+        "SST/SML pairs (*.sml *.sst);;GVR files (*.gvr);;PVR files (*.pvr);;All files (*)");
     if (!path.isEmpty()) openDocument(fspath(path));
 }
 
@@ -350,8 +352,8 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
     }
     const auto extension = QString::fromStdWString(path.extension().wstring()).toLower();
     if (extension != ".mld" && extension != ".gvr" && extension != ".pvr"
-        && extension != ".sml" && extension != ".sst") {
-        if (completed) completed({ .message = "This workbench opens .mld, paired .sml/.sst, .gvr, and .pvr files." });
+        && extension != ".sml" && extension != ".sst" && extension != ".ect") {
+        if (completed) completed({ .message = "This workbench opens .mld, .ect, paired .sml/.sst, .gvr, and .pvr files." });
         return;
     }
     struct OpenState {
@@ -359,6 +361,7 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
         spice::mix::GvrDocumentSession::OpenResult gvr{};
         spice::mix::PvrDocumentSession::OpenResult pvr{};
         spice::mix::SstSmlDocumentSession::OpenResult sstSml{};
+        spice::mix::EctDocumentSession::OpenResult ect{};
     };
     auto state = std::make_shared<OpenState>();
     auto completion = std::make_shared<std::function<void(DocumentOpenOutcome)>>(std::move(completed));
@@ -368,6 +371,7 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
             if (extension == ".mld") state->mld = spice::mix::MldDocumentSession::open(path, context);
             else if (extension == ".gvr") state->gvr = spice::mix::GvrDocumentSession::open(path, context);
             else if (extension == ".pvr") state->pvr = spice::mix::PvrDocumentSession::open(path, context);
+            else if (extension == ".ect") state->ect = spice::mix::EctDocumentSession::open(path, context);
             else state->sstSml = spice::mix::SstSmlDocumentSession::open(path, context);
         }, [self, extension, state, completion]() mutable {
             if (!self) return;
@@ -385,10 +389,14 @@ void SpiceRackMainWindow::openDocumentDetailed(const std::filesystem::path& path
                 && state->sstSml.result.ok() && state->sstSml.session) {
                 self->addWorkbench(new SstSmlWorkbench(state->sstSml.session, self));
                 outcome.success = true;
+            } else if (extension == ".ect" && state->ect.result.ok() && state->ect.session) {
+                self->addWorkbench(new EctWorkbench(state->ect.session, self));
+                outcome.success = true;
             } else {
                 const auto& result = extension == ".mld" ? state->mld.result
                     : extension == ".gvr" ? state->gvr.result
-                    : extension == ".pvr" ? state->pvr.result : state->sstSml.result;
+                    : extension == ".pvr" ? state->pvr.result
+                    : extension == ".ect" ? state->ect.result : state->sstSml.result;
                 outcome.message = QString::fromStdString(result.message);
                 for (const auto& diagnostic : result.diagnostics) {
                     outcome.details.push_back(QString::fromStdString(diagnostic));

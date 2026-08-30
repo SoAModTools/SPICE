@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TaskController.h"
+#include "../SpiceMix/Documents/EctDocumentSession.h"
 #include "../SpiceMix/Documents/GvrDocumentSession.h"
 #include "../SpiceMix/Documents/MldDocumentSession.h"
 #include "../SpiceMix/Documents/PvrDocumentSession.h"
@@ -94,6 +95,24 @@ public:
     explicit SstSmlWorkbench(std::shared_ptr<spice::mix::SstSmlDocumentSession> session,
         QWidget* parent = nullptr);
     ~SstSmlWorkbench() override;
+
+    [[nodiscard]] QString displayName() const override;
+    [[nodiscard]] bool dirty() const override { return false; }
+    [[nodiscard]] std::vector<std::filesystem::path> sourcePaths() const override;
+    [[nodiscard]] bool canSaveAs() const override { return false; }
+    [[nodiscard]] bool runSmokeChecks() override;
+    void requestSaveAs(std::function<void(bool)> completed = {}) override;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+class EctWorkbench final : public DocumentWorkbench {
+public:
+    explicit EctWorkbench(std::shared_ptr<spice::mix::EctDocumentSession> session,
+        QWidget* parent = nullptr);
+    ~EctWorkbench() override;
 
     [[nodiscard]] QString displayName() const override;
     [[nodiscard]] bool dirty() const override { return false; }

@@ -5,6 +5,7 @@
     <ClCompile Include="main.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="MainWindow.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="DocumentWorkbenches.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="EctWorkbench.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="MldEntryInspector.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="SstSmlWorkbench.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="TextureViewport.cpp"><Filter>Source Files</Filter></ClCompile>

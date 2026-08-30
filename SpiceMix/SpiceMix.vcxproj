@@ -126,6 +126,7 @@
     <ClCompile Include="Application\OperationPreflight.cpp" />
     <ClCompile Include="Application\OperationRunner.cpp" />
     <ClCompile Include="Documents\GvrDocumentSession.cpp" />
+    <ClCompile Include="Documents\EctDocumentSession.cpp" />
     <ClCompile Include="Documents\MldInspectionSupport.cpp" />
     <ClCompile Include="Documents\MldDocumentSession.cpp" />
     <ClCompile Include="Documents\PvrDocumentSession.cpp" />
@@ -142,6 +143,7 @@
     <ClInclude Include="Documents\DocumentSupport.h" />
     <ClInclude Include="Documents\DocumentTypes.h" />
     <ClInclude Include="Documents\GvrDocumentSession.h" />
+    <ClInclude Include="Documents\EctDocumentSession.h" />
     <ClInclude Include="Documents\MldInspectionSupport.h" />
     <ClInclude Include="Documents\MldDocumentSession.h" />
     <ClInclude Include="Documents\PvrDocumentSession.h" />

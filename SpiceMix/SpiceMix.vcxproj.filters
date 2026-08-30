@@ -9,6 +9,7 @@
     <ClCompile Include="Application\OperationPreflight.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Application\OperationRunner.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Documents\GvrDocumentSession.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="Documents\EctDocumentSession.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Documents\MldDocumentSession.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Documents\PvrDocumentSession.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="Documents\PvrDocumentSupport.cpp"><Filter>Source Files</Filter></ClCompile>
@@ -23,6 +24,7 @@
     <ClInclude Include="Documents\DocumentSupport.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Documents\DocumentTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Documents\GvrDocumentSession.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Documents\EctDocumentSession.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Documents\MldDocumentSession.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Documents\PvrDocumentSession.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Documents\PvrDocumentSupport.h"><Filter>Header Files</Filter></ClInclude>
