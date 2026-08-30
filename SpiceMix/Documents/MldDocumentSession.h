@@ -44,6 +44,29 @@ struct MldEntrySnapshot {
     std::uint32_t texturesPointer = 0;
 };
 
+struct MldU32ListSnapshot {
+    std::uint32_t pointer = 0;
+    bool valid = false;
+    std::vector<std::uint32_t> values{};
+};
+
+struct MldStringListSnapshot {
+    std::uint32_t pointer = 0;
+    bool valid = false;
+    std::vector<std::string> values{};
+};
+
+struct MldEntryDetailSnapshot {
+    MldEntrySnapshot summary{};
+    MldU32ListSnapshot groundLinks{};
+    MldU32ListSnapshot paramList2{};
+    MldU32ListSnapshot functionParameters{};
+    MldU32ListSnapshot objectAddresses{};
+    MldU32ListSnapshot groundAddresses{};
+    MldU32ListSnapshot motionAddresses{};
+    MldStringListSnapshot textureNames{};
+};
+
 struct MldTextureSnapshot {
     std::size_t index = 0;
     std::string name{};
@@ -78,6 +101,7 @@ public:
 
     [[nodiscard]] MldOverviewSnapshot overview() const;
     [[nodiscard]] std::vector<MldEntrySnapshot> entries() const;
+    [[nodiscard]] std::vector<MldEntryDetailSnapshot> entryDetails() const;
     [[nodiscard]] std::vector<MldTextureSnapshot> textures() const;
     [[nodiscard]] std::vector<DocumentDiagnostic> diagnostics() const;
     [[nodiscard]] std::optional<RgbaImageSnapshot> texturePreview(std::size_t index) const;

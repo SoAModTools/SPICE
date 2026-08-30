@@ -194,6 +194,8 @@ public:
 
     [[nodiscard]] std::optional<MldOverviewSnapshot> embeddedMldOverview(std::size_t recordIndex) const;
     [[nodiscard]] std::vector<MldEntrySnapshot> embeddedMldEntries(std::size_t recordIndex) const;
+    [[nodiscard]] std::vector<MldEntryDetailSnapshot> embeddedMldEntryDetails(
+        std::size_t recordIndex) const;
     [[nodiscard]] std::vector<MldTextureSnapshot> embeddedMldTextures(std::size_t recordIndex) const;
     [[nodiscard]] std::vector<DocumentDiagnostic> embeddedMldDiagnostics(std::size_t recordIndex) const;
     [[nodiscard]] std::optional<RgbaImageSnapshot> embeddedMldTexturePreview(

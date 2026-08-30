@@ -1,4 +1,5 @@
 #include "DocumentWorkbenches.h"
+#include "MldEntryInspector.h"
 #include "TextureViewport.h"
 
 #include <QtCore/QPointer>
@@ -253,7 +254,7 @@ struct MldWorkbench::Impl {
     RackTaskController* tasks = nullptr;
     QTabWidget* pages = nullptr;
     QLabel* overview = nullptr;
-    QTableWidget* entryTable = nullptr;
+    MldEntryInspector* entryInspector = nullptr;
     QTableWidget* textureTable = nullptr;
     TextureViewport* viewport = nullptr;
     QLabel* textureDetails = nullptr;
@@ -282,21 +283,7 @@ struct MldWorkbench::Impl {
     }
 
     void refreshEntries() {
-        const auto entries = session->entries();
-        entryTable->setRowCount(static_cast<int>(entries.size()));
-        for (int row = 0; row < static_cast<int>(entries.size()); ++row) {
-            const auto& item = entries[static_cast<std::size_t>(row)];
-            const QString values[] = {
-                QString::number(item.tableIndex), QString::number(item.entryId), QString::number(item.tableId),
-                QString::fromStdString(item.functionName),
-                QString("%1, %2, %3").arg(item.positionX).arg(item.positionY).arg(item.positionZ),
-                QString("%1, %2, %3").arg(item.rotationX).arg(item.rotationY).arg(item.rotationZ),
-                QString("%1, %2, %3").arg(item.scaleX).arg(item.scaleY).arg(item.scaleZ),
-                QString::number(item.objectCount), QString::number(item.groundCount), QString::number(item.motionCount),
-                QString("0x%1").arg(item.texturesPointer, 0, 16),
-            };
-            for (int column = 0; column < 11; ++column) entryTable->setItem(row, column, new QTableWidgetItem(values[column]));
-        }
+        entryInspector->setEntries(session->entryDetails());
     }
 
     void refreshTextures() {
@@ -491,14 +478,9 @@ MldWorkbench::MldWorkbench(std::shared_ptr<spice::mix::MldDocumentSession> sessi
 
     auto* entryPage = new QWidget(impl_->pages);
     auto* entryLayout = new QVBoxLayout(entryPage);
-    impl_->entryTable = new QTableWidget(entryPage);
-    impl_->entryTable->setColumnCount(11);
-    impl_->entryTable->setHorizontalHeaderLabels({ "Index", "Entry ID", "Table ID", "Function", "Position",
-        "Rotation", "Scale", "Objects", "Ground", "Motions", "Textures Ptr" });
-    impl_->entryTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    impl_->entryTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    impl_->entryTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    entryLayout->addWidget(impl_->entryTable);
+    entryLayout->setContentsMargins(0, 0, 0, 0);
+    impl_->entryInspector = new MldEntryInspector(entryPage);
+    entryLayout->addWidget(impl_->entryInspector);
     impl_->pages->addTab(entryPage, "Entries");
 
     auto* texturePage = new QWidget(impl_->pages);
@@ -772,7 +754,11 @@ bool MldWorkbench::runSmokeChecks() {
                 ? impl_->encoding.group->isHidden() && !impl_->pvrEncoding.group->isHidden()
                 : impl_->encoding.group->isHidden() && impl_->pvrEncoding.group->isHidden();
     }
+    const bool dirtyBeforeEntryChecks = dirty();
+    const bool entriesReady = impl_->entryInspector && impl_->entryInspector->runSmokeChecks()
+        && dirty() == dirtyBeforeEntryChecks;
     return impl_->viewport
+        && entriesReady
         && exportsPageReady
         && encodingControlsReady
         && impl_->viewport->hasFileDropHandler()

@@ -88,6 +88,10 @@ std::vector<MldEntrySnapshot> MldDocumentSession::entries() const {
     return documents::projectMldEntries(impl_->file);
 }
 
+std::vector<MldEntryDetailSnapshot> MldDocumentSession::entryDetails() const {
+    return documents::projectMldEntryDetails(impl_->file);
+}
+
 std::vector<MldTextureSnapshot> MldDocumentSession::textures() const {
     return documents::projectMldTextures(impl_->file, impl_->dirtyTextures);
 }

@@ -11,6 +11,8 @@ namespace spice::mix::documents {
 [[nodiscard]] MldOverviewSnapshot projectMldOverview(const spice::mld::model::MldFile& file,
     const std::filesystem::path& sourcePath = {}, bool dirty = false);
 [[nodiscard]] std::vector<MldEntrySnapshot> projectMldEntries(const spice::mld::model::MldFile& file);
+[[nodiscard]] std::vector<MldEntryDetailSnapshot> projectMldEntryDetails(
+    const spice::mld::model::MldFile& file);
 [[nodiscard]] std::vector<MldTextureSnapshot> projectMldTextures(const spice::mld::model::MldFile& file,
     const std::vector<bool>& dirtyTextures = {});
 [[nodiscard]] std::vector<DocumentDiagnostic> projectMldDiagnostics(const spice::mld::model::MldFile& file);

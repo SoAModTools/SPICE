@@ -1,5 +1,6 @@
 #include "DocumentWorkbenches.h"
 
+#include "MldEntryInspector.h"
 #include "TextureViewport.h"
 
 #include <QtCore/QStringList>
@@ -85,7 +86,7 @@ struct SstSmlWorkbench::Impl {
     QTableWidget* records = nullptr;
     QTabWidget* embeddedPages = nullptr;
     QLabel* embeddedOverview = nullptr;
-    QTableWidget* embeddedEntries = nullptr;
+    MldEntryInspector* embeddedEntryInspector = nullptr;
     QTableWidget* embeddedTextures = nullptr;
     QLabel* embeddedTextureMetadata = nullptr;
     TextureViewport* embeddedTextureViewport = nullptr;
@@ -149,7 +150,7 @@ struct SstSmlWorkbench::Impl {
         const auto values = session->records();
         if (row < 0 || static_cast<std::size_t>(row) >= values.size()) {
             embeddedOverview->setText("No paired record selected.");
-            embeddedEntries->setRowCount(0);
+            embeddedEntryInspector->setEntries({});
             embeddedTextures->setRowCount(0);
             embeddedTextureViewport->setImage(std::nullopt, "No embedded MLD selected");
             commands->setRowCount(0);
@@ -173,21 +174,7 @@ struct SstSmlWorkbench::Impl {
                 .arg(index).arg(record.embeddedMldInBounds ? "Yes" : "No"));
         }
 
-        const auto entries = session->embeddedMldEntries(index);
-        embeddedEntries->setRowCount(static_cast<int>(entries.size()));
-        for (int entryRow = 0; entryRow < embeddedEntries->rowCount(); ++entryRow) {
-            const auto& entry = entries[static_cast<std::size_t>(entryRow)];
-            embeddedEntries->setItem(entryRow, 0, item(QString::number(entry.tableIndex)));
-            embeddedEntries->setItem(entryRow, 1, item(QString::number(entry.entryId)));
-            embeddedEntries->setItem(entryRow, 2, item(QString::number(entry.tableId)));
-            embeddedEntries->setItem(entryRow, 3, item(QString::fromStdString(entry.functionName)));
-            embeddedEntries->setItem(entryRow, 4, item(QString("(%1, %2, %3)").arg(entry.positionX).arg(entry.positionY).arg(entry.positionZ)));
-            embeddedEntries->setItem(entryRow, 5, item(QString("(%1, %2, %3)").arg(entry.rotationX).arg(entry.rotationY).arg(entry.rotationZ)));
-            embeddedEntries->setItem(entryRow, 6, item(QString("(%1, %2, %3)").arg(entry.scaleX).arg(entry.scaleY).arg(entry.scaleZ)));
-            embeddedEntries->setItem(entryRow, 7, item(QString::number(entry.objectCount)));
-            embeddedEntries->setItem(entryRow, 8, item(QString::number(entry.groundCount)));
-            embeddedEntries->setItem(entryRow, 9, item(QString::number(entry.motionCount)));
-        }
+        embeddedEntryInspector->setEntries(session->embeddedMldEntryDetails(index));
 
         const auto textures = session->embeddedMldTextures(index);
         embeddedTextures->setRowCount(static_cast<int>(textures.size()));
@@ -437,9 +424,9 @@ SstSmlWorkbench::SstSmlWorkbench(std::shared_ptr<spice::mix::SstSmlDocumentSessi
     embeddedOverviewLayout->addStretch(1);
     impl_->embeddedPages->addTab(embeddedOverviewPage, "Overview");
 
-    impl_->embeddedEntries = new QTableWidget(impl_->embeddedPages);
-    configureTable(impl_->embeddedEntries, { "Index", "Entry ID", "Table ID", "Function", "Position", "Raw rotation", "Scale", "Objects", "Ground", "Motions" });
-    impl_->embeddedPages->addTab(impl_->embeddedEntries, "Entries");
+    impl_->embeddedEntryInspector = new MldEntryInspector(impl_->embeddedPages);
+    impl_->embeddedEntryInspector->setObjectName("embeddedMldEntryInspector");
+    impl_->embeddedPages->addTab(impl_->embeddedEntryInspector, "Entries");
 
     auto* texturePage = new QWidget(impl_->embeddedPages);
     auto* textureLayout = new QVBoxLayout(texturePage);
@@ -564,7 +551,9 @@ bool SstSmlWorkbench::runSmokeChecks() {
     const bool commandSync = impl_->records->currentRow() < 0
         || impl_->commands->rowCount() == static_cast<int>(impl_->session->commands(
             static_cast<std::size_t>(impl_->records->currentRow())).size());
-    return objectName() == "sstSmlWorkbench" && pagesOk && recordSync && commandSync
+    const bool entriesReady = impl_->embeddedEntryInspector
+        && impl_->embeddedEntryInspector->runSmokeChecks();
+    return objectName() == "sstSmlWorkbench" && pagesOk && recordSync && commandSync && entriesReady
         && !dirty() && !canSaveAs()
         && !impl_->embeddedTextureViewport->hasFileDropHandler()
         && impl_->embeddedTextureViewport->samplingMode() == TextureViewport::SamplingMode::Nearest

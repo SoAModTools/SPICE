@@ -1,6 +1,9 @@
 #include "MldInspectionSupport.h"
 
+#include "../../SpiceMLD/Parsing/MldParser.h"
 #include "../../SpiceRoot/Binary/Endian.h"
+
+#include <algorithm>
 
 namespace spice::mix::documents {
 namespace {
@@ -38,6 +41,36 @@ DocumentDiagnostic convertDiagnostic(const spice::mld::model::MldDiagnostic& dia
     return { .level = level, .message = diagnostic.message, .sourceOffset = diagnostic.sourceOffset };
 }
 
+MldEntrySnapshot projectEntry(const spice::mld::model::IndexEntry& entry) {
+    return MldEntrySnapshot{
+        .tableIndex = entry.tableIndex,
+        .entryId = entry.entryId,
+        .tableId = entry.tblId,
+        .functionName = entry.fxnName,
+        .positionX = entry.transform.position.x,
+        .positionY = entry.transform.position.y,
+        .positionZ = entry.transform.position.z,
+        .rotationX = entry.transform.rotationRaw.x,
+        .rotationY = entry.transform.rotationRaw.y,
+        .rotationZ = entry.transform.rotationRaw.z,
+        .scaleX = entry.transform.scale.x,
+        .scaleY = entry.transform.scale.y,
+        .scaleZ = entry.transform.scale.z,
+        .objectCount = entry.objectCount,
+        .groundCount = entry.groundCount,
+        .motionCount = entry.motionCount,
+        .texturesPointer = entry.texturesPointer,
+    };
+}
+
+MldU32ListSnapshot projectList(const std::shared_ptr<spice::mld::model::U32List>& list,
+    const std::uint32_t rawPointer) {
+    if (!list) {
+        return { .pointer = rawPointer, .valid = rawPointer == 0U };
+    }
+    return { .pointer = rawPointer, .valid = list->valid, .values = list->values };
+}
+
 } // namespace
 
 MldOverviewSnapshot projectMldOverview(const spice::mld::model::MldFile& file,
@@ -61,25 +94,39 @@ std::vector<MldEntrySnapshot> projectMldEntries(const spice::mld::model::MldFile
     std::vector<MldEntrySnapshot> out{};
     out.reserve(file.entries.size());
     for (const auto& record : file.entries) {
-        const auto& entry = record.entry;
-        out.push_back(MldEntrySnapshot{
-            .tableIndex = entry.tableIndex,
-            .entryId = entry.entryId,
-            .tableId = entry.tblId,
-            .functionName = entry.fxnName,
-            .positionX = entry.transform.position.x,
-            .positionY = entry.transform.position.y,
-            .positionZ = entry.transform.position.z,
-            .rotationX = entry.transform.rotationRaw.x,
-            .rotationY = entry.transform.rotationRaw.y,
-            .rotationZ = entry.transform.rotationRaw.z,
-            .scaleX = entry.transform.scale.x,
-            .scaleY = entry.transform.scale.y,
-            .scaleZ = entry.transform.scale.z,
-            .objectCount = entry.objectCount,
-            .groundCount = entry.groundCount,
-            .motionCount = entry.motionCount,
-            .texturesPointer = entry.texturesPointer,
+        out.push_back(projectEntry(record.entry));
+    }
+    return out;
+}
+
+std::vector<MldEntryDetailSnapshot> projectMldEntryDetails(const spice::mld::model::MldFile& file) {
+    spice::mld::parsing::ParseOptions options{};
+    options.entryListOnly = true;
+    options.buildBlenderIntermediateIr = false;
+    const auto compatibility = spice::mld::parsing::MldParser{}.project(file, options);
+
+    std::vector<MldEntryDetailSnapshot> out{};
+    out.reserve(file.entries.size());
+    for (const auto& record : file.entries) {
+        const auto projected = std::find_if(compatibility.entryList.begin(), compatibility.entryList.end(),
+            [&record](const auto& candidate) { return candidate.tableIndex == record.entry.tableIndex; });
+        MldStringListSnapshot textureNames{
+            .pointer = record.entry.texturesPointer,
+            .valid = record.entry.texturesPointer == 0U,
+        };
+        if (projected != compatibility.entryList.end()) {
+            textureNames.values = projected->textureNames;
+            textureNames.valid = record.entry.texturesPointer == 0U || !projected->textureNames.empty();
+        }
+        out.push_back({
+            .summary = projectEntry(record.entry),
+            .groundLinks = projectList(record.entry.groundLinks, record.groundLinksPointer),
+            .paramList2 = projectList(record.entry.paramList2, record.paramList2Pointer),
+            .functionParameters = projectList(record.entry.functionParameters, record.functionParametersPointer),
+            .objectAddresses = projectList(record.entry.objectAddresses, record.objectAddressesPointer),
+            .groundAddresses = projectList(record.entry.groundAddresses, record.groundAddressesPointer),
+            .motionAddresses = projectList(record.entry.motionAddresses, record.motionAddressesPointer),
+            .textureNames = std::move(textureNames),
         });
     }
     return out;

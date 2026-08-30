@@ -564,6 +564,12 @@ std::vector<MldEntrySnapshot> SstSmlDocumentSession::embeddedMldEntries(const st
     return documents::projectMldEntries(*impl_->embeddedMlds[recordIndex]);
 }
 
+std::vector<MldEntryDetailSnapshot> SstSmlDocumentSession::embeddedMldEntryDetails(
+    const std::size_t recordIndex) const {
+    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex].has_value()) return {};
+    return documents::projectMldEntryDetails(*impl_->embeddedMlds[recordIndex]);
+}
+
 std::vector<MldTextureSnapshot> SstSmlDocumentSession::embeddedMldTextures(const std::size_t recordIndex) const {
     if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex].has_value()) return {};
     return documents::projectMldTextures(*impl_->embeddedMlds[recordIndex]);

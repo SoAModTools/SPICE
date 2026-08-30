@@ -39,6 +39,7 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MainWindow.cpp" />
     <ClCompile Include="DocumentWorkbenches.cpp" />
+    <ClCompile Include="MldEntryInspector.cpp" />
     <ClCompile Include="SstSmlWorkbench.cpp" />
     <ClCompile Include="TextureViewport.cpp" />
     <ClCompile Include="TaskController.cpp" />
@@ -46,6 +47,7 @@
   <ItemGroup>
     <ClInclude Include="DocumentWorkbenches.h" />
     <ClInclude Include="MainWindow.h" />
+    <ClInclude Include="MldEntryInspector.h" />
     <ClInclude Include="TextureViewport.h" />
     <ClInclude Include="TaskController.h" />
   </ItemGroup>
