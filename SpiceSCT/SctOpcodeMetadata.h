@@ -2,7 +2,10 @@
 #include "SctModel.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string_view>
 
 namespace spice::sct {
@@ -25,6 +28,27 @@ enum class SctFooterParamKind {
     None,
     String,
     SctString,
+};
+
+enum class SctPlatform {
+    GameCube,
+    Dreamcast,
+};
+
+enum class SctOpcodeAvailability {
+    Available,
+    UnavailableInvalidStub,
+    Unknown,
+};
+
+enum class SctBinaryShapeConfidence {
+    Unknown,
+    Confirmed,
+};
+
+enum class SctOpcodeParameterEncoding {
+    RawWord,
+    ScptExpression,
 };
 
 struct SctFooterParamMetadata {
@@ -54,7 +78,31 @@ struct SctOpcodeSemanticMetadata {
     std::string_view notes = {};
 };
 
-inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPatterns{{
+struct SctFooterReferenceRule {
+    std::uint32_t parameterIndex = 0;
+    SctFooterParamKind kind = SctFooterParamKind::None;
+    bool signedRelative = false;
+};
+
+struct SctOpcodeRepeatedGroup {
+    std::uint32_t firstParameter = 0;
+    std::uint32_t lastParameter = 0;
+    std::uint32_t iterationCountParameter = 0;
+};
+
+struct SctOpcodeSchema {
+    std::uint16_t opcode = 0;
+    SctOpcodeParamPattern parameters{};
+    SctBinaryShapeConfidence binaryShapeConfidence = SctBinaryShapeConfidence::Unknown;
+    SctOpcodeSemanticMetadata semantic{};
+    std::array<SctFooterReferenceRule, 2> footerReferences{};
+    std::uint8_t footerReferenceCount = 0;
+    SctOpcodeAvailability gameCubeAvailability = SctOpcodeAvailability::Unknown;
+    SctOpcodeAvailability dreamcastAvailability = SctOpcodeAvailability::Unknown;
+};
+
+namespace detail {
+inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds{{
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, -1, 1, -1}, // opcode 0
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 1
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 2
@@ -308,7 +356,7 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 250
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 251
     SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 252
-    SctOpcodeParamPattern{2, 0x3ull, -1, -1, -1, -1, -1}, // opcode 253
+    SctOpcodeParamPattern{3, 0x7ull, -1, -1, -1, -1, -1}, // opcode 253
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 254
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 255
     SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 256
@@ -323,7 +371,7 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, -1, -1, -1}, // opcode 265
 }};
 
-[[nodiscard]] inline SctOpcodeSemanticMetadata sctOpcodeMetadata(std::uint16_t opcode) {
+[[nodiscard]] constexpr SctOpcodeSemanticMetadata makeOpcodeSemanticMetadata(std::uint16_t opcode) {
     SctOpcodeSemanticMetadata meta{};
     meta.opcode = opcode;
 
@@ -411,7 +459,7 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
     return meta;
 }
 
-[[nodiscard]] inline SctFooterParamMetadata sctFooterParamMetadata(std::uint16_t opcode, std::uint32_t parameterIndex) {
+[[nodiscard]] constexpr SctFooterParamMetadata makeFooterParamMetadata(std::uint16_t opcode, std::uint32_t parameterIndex) {
     switch (opcode) {
     case 23:
         if (parameterIndex == 0u) return {SctFooterParamKind::String, true};
@@ -454,6 +502,155 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kSalsaOpcodeParamPattern
         break;
     default:
         break;
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr bool isSharedInvalidOpcode(std::uint16_t opcode) noexcept {
+    switch (opcode) {
+    case 1:
+    case 2:
+    case 4:
+    case 8:
+    case 13:
+    case 14:
+    case 182:
+    case 189:
+    case 200:
+        return true;
+    default:
+        return false;
+    }
+}
+
+[[nodiscard]] constexpr std::array<SctOpcodeSchema, 266> makeOpcodeSchemas() {
+    std::array<SctOpcodeSchema, 266> schemas{};
+    for (std::size_t opcode = 0; opcode < schemas.size(); ++opcode) {
+        auto& schema = schemas[opcode];
+        schema.opcode = static_cast<std::uint16_t>(opcode);
+        schema.parameters = kOpcodeParamPatternSeeds[opcode];
+        schema.binaryShapeConfidence = SctBinaryShapeConfidence::Confirmed;
+        schema.semantic = makeOpcodeSemanticMetadata(schema.opcode);
+        schema.gameCubeAvailability = isSharedInvalidOpcode(schema.opcode)
+            ? SctOpcodeAvailability::UnavailableInvalidStub
+            : SctOpcodeAvailability::Available;
+        schema.dreamcastAvailability = schema.gameCubeAvailability;
+        if (schema.opcode == 265u) {
+            schema.dreamcastAvailability = SctOpcodeAvailability::UnavailableInvalidStub;
+        }
+
+        for (std::uint32_t parameterIndex = 0; parameterIndex < schema.parameters.paramCount; ++parameterIndex) {
+            const auto footer = makeFooterParamMetadata(schema.opcode, parameterIndex);
+            if (footer.kind == SctFooterParamKind::None) {
+                continue;
+            }
+            schema.footerReferences[schema.footerReferenceCount++] = {
+                parameterIndex,
+                footer.kind,
+                footer.signedRelative,
+            };
+        }
+    }
+    return schemas;
+}
+
+inline constexpr auto kOpcodeSchemas = makeOpcodeSchemas();
+
+[[nodiscard]] constexpr std::array<SctOpcodeParamPattern, 266> makeLegacyParamPatterns() {
+    std::array<SctOpcodeParamPattern, 266> patterns{};
+    for (std::size_t opcode = 0; opcode < patterns.size(); ++opcode) {
+        patterns[opcode] = kOpcodeSchemas[opcode].parameters;
+    }
+    return patterns;
+}
+} // namespace detail
+
+[[deprecated("Use sctOpcodeSchemas or findSctOpcodeSchema")]]
+inline constexpr auto kSalsaOpcodeParamPatterns = detail::makeLegacyParamPatterns();
+
+[[nodiscard]] constexpr std::span<const SctOpcodeSchema> sctOpcodeSchemas() noexcept {
+    return detail::kOpcodeSchemas;
+}
+
+[[nodiscard]] constexpr const SctOpcodeSchema* findSctOpcodeSchema(std::uint16_t opcode) noexcept {
+    return opcode < detail::kOpcodeSchemas.size() ? &detail::kOpcodeSchemas[opcode] : nullptr;
+}
+
+[[nodiscard]] constexpr SctOpcodeAvailability sctOpcodeAvailability(
+    const SctOpcodeSchema& schema,
+    SctPlatform platform) noexcept {
+    switch (platform) {
+    case SctPlatform::GameCube:
+        return schema.gameCubeAvailability;
+    case SctPlatform::Dreamcast:
+        return schema.dreamcastAvailability;
+    }
+    return SctOpcodeAvailability::Unknown;
+}
+
+[[nodiscard]] constexpr std::optional<SctOpcodeRepeatedGroup> sctOpcodeRepeatedGroup(
+    const SctOpcodeSchema& schema) noexcept {
+    const auto& parameters = schema.parameters;
+    if (parameters.loopStartParam < 0 || parameters.loopEndParam < parameters.loopStartParam
+        || parameters.iterationCountParam < 0) {
+        return std::nullopt;
+    }
+    return SctOpcodeRepeatedGroup{
+        static_cast<std::uint32_t>(parameters.loopStartParam),
+        static_cast<std::uint32_t>(parameters.loopEndParam),
+        static_cast<std::uint32_t>(parameters.iterationCountParam),
+    };
+}
+
+[[nodiscard]] constexpr std::uint32_t sctOpcodeBaseParameterIndex(
+    const SctOpcodeSchema& schema,
+    std::uint32_t parameterIndex) noexcept {
+    const auto repeated = sctOpcodeRepeatedGroup(schema);
+    if (!repeated.has_value() || parameterIndex < schema.parameters.paramCount) {
+        return parameterIndex;
+    }
+    const auto width = repeated->lastParameter - repeated->firstParameter + 1u;
+    return repeated->firstParameter + ((parameterIndex - schema.parameters.paramCount) % width);
+}
+
+[[nodiscard]] constexpr SctOpcodeParameterEncoding sctOpcodeParameterEncoding(
+    const SctOpcodeSchema& schema,
+    std::uint32_t parameterIndex) noexcept {
+    const auto baseParameterIndex = sctOpcodeBaseParameterIndex(schema, parameterIndex);
+    return baseParameterIndex < 64u && ((schema.parameters.scptAnalyzeMask >> baseParameterIndex) & 1ull) != 0ull
+        ? SctOpcodeParameterEncoding::ScptExpression
+        : SctOpcodeParameterEncoding::RawWord;
+}
+
+[[nodiscard]] constexpr SctFooterParamMetadata sctOpcodeFooterReference(
+    const SctOpcodeSchema& schema,
+    std::uint32_t parameterIndex) noexcept {
+    const auto baseParameterIndex = sctOpcodeBaseParameterIndex(schema, parameterIndex);
+    for (std::size_t i = 0; i < schema.footerReferenceCount; ++i) {
+        const auto& reference = schema.footerReferences[i];
+        if (reference.parameterIndex == baseParameterIndex) {
+            return {reference.kind, reference.signedRelative};
+        }
+    }
+    return {};
+}
+
+[[deprecated("Use findSctOpcodeSchema and SctOpcodeSchema::semantic")]]
+[[nodiscard]] constexpr SctOpcodeSemanticMetadata sctOpcodeMetadata(std::uint16_t opcode) noexcept {
+    if (const auto* schema = findSctOpcodeSchema(opcode); schema != nullptr) {
+        return schema->semantic;
+    }
+    SctOpcodeSemanticMetadata metadata{};
+    metadata.opcode = opcode;
+    return metadata;
+}
+
+[[deprecated("Use findSctOpcodeSchema and sctOpcodeFooterReference")]]
+[[nodiscard]] constexpr SctFooterParamMetadata sctFooterParamMetadata(
+    std::uint16_t opcode,
+    std::uint32_t parameterIndex) noexcept {
+    if (const auto* schema = findSctOpcodeSchema(opcode); schema != nullptr) {
+        return sctOpcodeFooterReference(*schema, parameterIndex);
     }
     return {};
 }

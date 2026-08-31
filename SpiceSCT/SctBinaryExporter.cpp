@@ -269,7 +269,11 @@ void patchControlFlowWords(
         return;
     }
 
-    const auto& pattern = kSalsaOpcodeParamPatterns[instruction.opcode];
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) {
+        return;
+    }
+    const auto& pattern = schema->parameters;
     if (pattern.switchJumpParam < 0 || pattern.loopStartParam < 0 || pattern.loopEndParam < pattern.loopStartParam) {
         return;
     }
@@ -303,9 +307,13 @@ void patchFooterReferenceWords(
     const std::unordered_map<std::uint32_t, std::uint32_t>& offsetMap,
     std::vector<std::uint32_t>& words) {
     const auto opcodeIndex = opcodeWordIndex(instruction, words);
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) {
+        return;
+    }
     std::size_t operandWordOffset = 0;
     for (const auto& parameter : instruction.parameters) {
-        const auto metadata = sctFooterParamMetadata(instruction.opcode, parameter.index);
+        const auto metadata = sctOpcodeFooterReference(*schema, parameter.index);
         if (metadata.kind != SctFooterParamKind::None && !parameter.rawWords.empty()) {
             const auto wordIndex = opcodeIndex + 1u + operandWordOffset;
             if (wordIndex >= words.size()) {

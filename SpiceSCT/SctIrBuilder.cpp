@@ -24,7 +24,10 @@ SctSectionKind inferSectionKind(const SctSection& section) {
 }
 
 SctParameter makeFallbackParameter(const SctInstruction& instruction, std::size_t operandIndex) {
-    const auto metadata = sctOpcodeMetadata(instruction.opcode);
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    SctOpcodeSemanticMetadata unknownMetadata{};
+    unknownMetadata.opcode = instruction.opcode;
+    const auto& metadata = schema != nullptr ? schema->semantic : unknownMetadata;
     SctParameter parameter{};
     parameter.index = static_cast<std::uint32_t>(operandIndex);
     if (operandIndex < metadata.parameterRoles.size()) {
@@ -69,7 +72,11 @@ SctEdgeType semanticEdgeType(const SctOpcodeSemanticMetadata& metadata) {
 }
 
 void addInstructionSemanticEdges(SctSection& section, const SctInstruction& instruction) {
-    const auto metadata = sctOpcodeMetadata(instruction.opcode);
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) {
+        return;
+    }
+    const auto& metadata = schema->semantic;
     const auto type = semanticEdgeType(metadata);
     if (type == SctEdgeType::Fallthrough) {
         return;
@@ -174,7 +181,10 @@ SctParseResult SctIrBuilder::build(const SctParseResult& parseResult) const {
         }
 
         for (auto& instruction : section.instructions) {
-            const auto metadata = sctOpcodeMetadata(instruction.opcode);
+            const auto* schema = findSctOpcodeSchema(instruction.opcode);
+            SctOpcodeSemanticMetadata unknownMetadata{};
+            unknownMetadata.opcode = instruction.opcode;
+            const auto& metadata = schema != nullptr ? schema->semantic : unknownMetadata;
             if (instruction.mnemonic.empty()) {
                 instruction.mnemonic = metadata.mnemonic.empty() ? fallbackMnemonic(instruction.opcode) : std::string(metadata.mnemonic);
             }

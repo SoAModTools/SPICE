@@ -687,7 +687,11 @@ void addInstructionSemanticEdges(
     const SctInstruction& instruction,
     std::uint32_t sourceSectionStart,
     const std::vector<SectionRow>& rows) {
-    const auto metadata = sctOpcodeMetadata(instruction.opcode);
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) {
+        return;
+    }
+    const auto& metadata = schema->semantic;
     if (metadata.controlRole == SctOpcodeControlRole::CallSubscript) {
         SctEdge edge{};
         edge.type = SctEdgeType::CallSubscript;
@@ -782,8 +786,12 @@ void addInstructionSemanticEdges(
     std::vector<FooterReferenceCandidate> candidates{};
     for (const auto& [payloadOffset, global] : globalInstructions) {
         const auto& instruction = global.decoded.inst;
+        const auto* schema = findSctOpcodeSchema(instruction.opcode);
+        if (schema == nullptr) {
+            continue;
+        }
         for (const auto& parameter : instruction.parameters) {
-            const auto metadata = sctFooterParamMetadata(instruction.opcode, parameter.index);
+            const auto metadata = sctOpcodeFooterReference(*schema, parameter.index);
             if (metadata.kind == SctFooterParamKind::None) {
                 continue;
             }
@@ -1089,27 +1097,24 @@ void populateFooterEntriesAndGroups(
     decoded.inst.endian = chosenEndian == baseEndian ? SctInstructionEndian::Native : SctInstructionEndian::Swapped;
     const auto opcode = currentOpcode;
     decoded.inst.opcode = opcode;
-    const auto opcodeMetadata = sctOpcodeMetadata(opcode);
+    const auto* opcodeSchema = findSctOpcodeSchema(opcode);
+    SctOpcodeSemanticMetadata unknownOpcodeMetadata{};
+    unknownOpcodeMetadata.opcode = opcode;
+    const auto& opcodeMetadata = opcodeSchema != nullptr ? opcodeSchema->semantic : unknownOpcodeMetadata;
     decoded.inst.mnemonic = opcodeMetadata.mnemonic.empty() ? fallbackMnemonic(opcode) : std::string(opcodeMetadata.mnemonic);
     decoded.inst.semanticConfidence = opcodeMetadata.confidence;
     decoded.inst.decodeOk = opcode <= kMaxOpcodeProbe;
     decoded.inst.sizeBytes = (actualOpcodeOffset - offset) + 4u;
 
-    if (opcode < kSalsaOpcodeParamPatterns.size()) {
-        const auto& paramPattern = kSalsaOpcodeParamPatterns[opcode];
+    if (opcodeSchema != nullptr) {
+        const auto& paramPattern = opcodeSchema->parameters;
         std::uint32_t totalParamSlots = paramPattern.paramCount;
         std::uint32_t consumedOperandWords = 0;
         std::uint32_t iterations = 0;
         bool loopBreakReached = false;
 
         auto consumeParamSlot = [&](std::uint32_t paramIndex) -> bool {
-            std::uint32_t baseParamIndex = paramIndex;
-            if (paramPattern.loopStartParam >= 0 && paramPattern.loopEndParam >= paramPattern.loopStartParam
-                && paramIndex >= paramPattern.paramCount) {
-                const auto loopStart = static_cast<std::uint32_t>(paramPattern.loopStartParam);
-                const auto loopWidth = static_cast<std::uint32_t>(paramPattern.loopEndParam - paramPattern.loopStartParam + 1);
-                baseParamIndex = loopStart + ((paramIndex - paramPattern.paramCount) % loopWidth);
-            }
+            const auto baseParamIndex = sctOpcodeBaseParameterIndex(*opcodeSchema, paramIndex);
 
             const auto paramWordOffset = actualOpcodeOffset + 4u + (consumedOperandWords * 4u);
             if (paramWordOffset + 4u > sectionBytes.size()) {
@@ -1117,7 +1122,8 @@ void populateFooterEntriesAndGroups(
                 return false;
             }
 
-            const bool isScptParam = baseParamIndex < 64u && ((paramPattern.scptAnalyzeMask >> baseParamIndex) & 1ull) != 0ull;
+            const bool isScptParam = sctOpcodeParameterEncoding(*opcodeSchema, paramIndex)
+                == SctOpcodeParameterEncoding::ScptExpression;
             std::uint32_t wordsForParam = 1;
             SctInstruction::ScptParameterValueRecord scptRecord{};
             if (isScptParam) {
@@ -1153,7 +1159,7 @@ void populateFooterEntriesAndGroups(
                 || opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsScript)) {
                 parameter.valueKind = SctParameterValueKind::ResourceRef;
             }
-            if (!isScptParam && sctFooterParamMetadata(opcode, baseParamIndex).kind != SctFooterParamKind::None) {
+            if (!isScptParam && sctOpcodeFooterReference(*opcodeSchema, paramIndex).kind != SctFooterParamKind::None) {
                 parameter.valueKind = SctParameterValueKind::StringRef;
                 if (parameter.role.empty()) {
                     parameter.role = "footerStringRef";

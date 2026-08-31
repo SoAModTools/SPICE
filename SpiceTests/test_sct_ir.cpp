@@ -233,19 +233,19 @@ spice::sct::SctParseResult makeSingleInstructionParseResult(
 
 TEST(SctIr, MetadataNamesKnownControlAndResourceOpcodes)
 {
-    const auto jump = spice::sct::sctOpcodeMetadata(10);
-    EXPECT_EQ("Jump", jump.mnemonic);
-    EXPECT_EQ(spice::sct::SctSemanticConfidence::Known, jump.confidence);
-    EXPECT_EQ(spice::sct::SctOpcodeControlRole::Jump, jump.controlRole);
+    const auto* jump = spice::sct::findSctOpcodeSchema(10);
+    ASSERT_NE(nullptr, jump);
+    EXPECT_EQ("Jump", jump->semantic.mnemonic);
+    EXPECT_EQ(spice::sct::SctSemanticConfidence::Known, jump->semantic.confidence);
+    EXPECT_EQ(spice::sct::SctOpcodeControlRole::Jump, jump->semantic.controlRole);
 
-    const auto loadMld = spice::sct::sctOpcodeMetadata(23);
-    EXPECT_EQ("LoadMld", loadMld.mnemonic);
-    EXPECT_EQ(spice::sct::SctSemanticConfidence::Partial, loadMld.confidence);
-    EXPECT_EQ(spice::sct::SctOpcodeResourceRole::LoadsMld, loadMld.resourceRole);
+    const auto* loadMld = spice::sct::findSctOpcodeSchema(23);
+    ASSERT_NE(nullptr, loadMld);
+    EXPECT_EQ("LoadMldFile", loadMld->semantic.mnemonic);
+    EXPECT_EQ(spice::sct::SctSemanticConfidence::Partial, loadMld->semantic.confidence);
+    EXPECT_EQ(spice::sct::SctOpcodeResourceRole::LoadsMld, loadMld->semantic.resourceRole);
 
-    const auto unknown = spice::sct::sctOpcodeMetadata(999);
-    EXPECT_TRUE(unknown.mnemonic.empty());
-    EXPECT_EQ(spice::sct::SctSemanticConfidence::Unknown, unknown.confidence);
+    EXPECT_EQ(nullptr, spice::sct::findSctOpcodeSchema(999));
 }
 
 TEST(SctIr, BuilderEnrichesLegacyParseResults)
@@ -266,9 +266,9 @@ TEST(SctIr, BuilderEnrichesLegacyParseResults)
     EXPECT_EQ("offset", section.instructions[0].parameters.front().role);
     EXPECT_EQ(spice::sct::SctParameterValueKind::Link, section.instructions[0].parameters.front().valueKind);
 
-    EXPECT_EQ("LoadMld", section.instructions[1].mnemonic);
+    EXPECT_EQ("LoadMldFile", section.instructions[1].mnemonic);
     ASSERT_EQ(1u, section.instructions[1].parameters.size());
-    EXPECT_EQ("mldRef", section.instructions[1].parameters.front().role);
+    EXPECT_EQ("mldPathOffset", section.instructions[1].parameters.front().role);
     EXPECT_EQ(spice::sct::SctParameterValueKind::ResourceRef, section.instructions[1].parameters.front().valueKind);
 
     EXPECT_TRUE(hasEdge(section, spice::sct::SctEdgeType::Jump));
@@ -288,11 +288,12 @@ TEST(SctIr, JsonExporterEmitsSharedSchemaAndSemanticFields)
     EXPECT_NE(std::string::npos, json.find("\"reason\":\"unreached\""));
 }
 
-TEST(SctIr, SemanticComparerUsesSalsaParamPatternsForKnownOpcodeParameters)
+TEST(SctIr, SemanticComparerUsesOpcodeSchemaForKnownOpcodeParameters)
 {
     std::size_t checkedOpcodes = 0;
-    for (std::uint16_t opcode = 0; opcode < spice::sct::kSalsaOpcodeParamPatterns.size(); ++opcode) {
-        const auto& pattern = spice::sct::kSalsaOpcodeParamPatterns[opcode];
+    for (const auto& schema : spice::sct::sctOpcodeSchemas()) {
+        const auto opcode = schema.opcode;
+        const auto& pattern = schema.parameters;
         auto lhsParameters = parametersForPattern(opcode, pattern);
         if (lhsParameters.empty()) {
             continue;

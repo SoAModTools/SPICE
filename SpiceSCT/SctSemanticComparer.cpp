@@ -141,7 +141,8 @@ std::vector<std::string> normalizedParameters(
     std::vector<std::string> result{};
     appendInstructionMetadataTokens(result, instruction);
 
-    if (instruction.opcode >= kSalsaOpcodeParamPatterns.size()) {
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) {
         result.reserve(result.size() + instruction.operands.size());
         for (const auto operand : instruction.operands) {
             result.push_back("operand:" + std::to_string(operand));
@@ -149,7 +150,7 @@ std::vector<std::string> normalizedParameters(
         return result;
     }
 
-    const auto& pattern = kSalsaOpcodeParamPatterns[instruction.opcode];
+    const auto& pattern = schema->parameters;
     const auto parameters = instruction.parameters.empty() ? fallbackParameters(instruction) : instruction.parameters;
     result.reserve(result.size() + parameters.size() + (instruction.scheduled.present ? 1u : 0u));
     if (instruction.scheduled.present) {
