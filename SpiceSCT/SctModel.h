@@ -66,7 +66,7 @@ enum class SctEdgeType {
     ReferencesString,
 };
 
-struct SctSectionId {
+struct SctParsedSectionIdentity {
     std::uint32_t index = 0;
     std::string name;
 };
@@ -336,7 +336,7 @@ struct SectionHeuristicEvidence {
 };
 
 struct SctSection {
-    SctSectionId id;
+    SctParsedSectionIdentity id;
     std::uint32_t startOffset = 0;
     std::uint32_t endOffset = 0;
     SctSectionKind kind = SctSectionKind::Unknown;

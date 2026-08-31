@@ -47,6 +47,15 @@
     <ClInclude Include="SctSemanticComparer.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctDocument.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctDocumentImporter.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctDocumentValidator.h">
+      <Filter>Model</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
@@ -68,6 +77,12 @@
       <Filter>Export</Filter>
     </ClCompile>
     <ClCompile Include="SctSemanticComparer.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentImporter.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentValidator.cpp">
       <Filter>Model</Filter>
     </ClCompile>
   </ItemGroup>
