@@ -32,6 +32,12 @@
     <ClInclude Include="SctOpcodeMetadata.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctOpcodeCatalogNames.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="SctOpcodeParameterRoles.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
     <ClInclude Include="SctScptDecodeHelpers.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -48,6 +54,15 @@
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="SctDocument.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctDocumentBuilder.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctDocumentIndex.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctInstructionFactory.h">
       <Filter>Model</Filter>
     </ClInclude>
     <ClInclude Include="SctDocumentImporter.h">
@@ -83,6 +98,15 @@
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctDocumentImporter.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentBuilder.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentIndex.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctInstructionFactory.cpp">
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctDocumentValidator.cpp">

@@ -11,12 +11,14 @@ namespace spice::sct {
 
 enum class SctSourceByteOrder { BigEndian, LittleEndian, Unknown };
 enum class SctSourceWrapper { None, Aklz };
+enum class SctSourceCoverageKind { SemanticEntity, DerivedLayout, OpaqueAttachment };
 
 struct SctEntityProvenance {
     SctDocumentEntityId entity;
     std::uint32_t decodedPayloadOffset = 0;
     std::uint32_t byteSize = 0;
     std::optional<std::uint32_t> physicalSectionIndex;
+    SctSourceCoverageKind coverageKind = SctSourceCoverageKind::SemanticEntity;
 };
 
 struct SctSourceObservations {

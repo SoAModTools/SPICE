@@ -1,6 +1,9 @@
 #pragma once
+#include "SctOpcodeCatalogNames.h"
+#include "SctOpcodeParameterRoles.h"
 #include "SctModel.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +54,73 @@ enum class SctOpcodeParameterEncoding {
     ScptExpression,
 };
 
+enum class SctOpcodeParameterStorage {
+    Word32,
+    ScptWordSequence,
+};
+
+enum class SctOpcodeScalarType {
+    Unknown,
+    UnsignedInteger,
+    SignedInteger,
+    NumericExpression,
+    VariableReference,
+    RepetitionCount,
+    RelativeOffset,
+};
+
+enum class SctOpcodeReferenceKind {
+    None,
+    Instruction,
+    FooterString,
+    FooterSctString,
+};
+
+enum class SctOpcodeDefaultKind {
+    Required,
+    DerivedRepeatedGroupCount,
+    DerivedInstructionByteLength,
+    ProvisionalZero,
+    ConfirmedEncodedWord,
+};
+
+enum class SctOpcodeDocumentRole {
+    Instruction,
+    FoldedModifier,
+};
+
+enum class SctOpcodeContractConfidence {
+    Unknown,
+    Provisional,
+    Confirmed,
+};
+
+struct SctOpcodeParameterSchema {
+    std::uint32_t schemaIndex = 0;
+    std::string_view role = {};
+    SctOpcodeParameterEncoding encoding = SctOpcodeParameterEncoding::RawWord;
+    SctOpcodeParameterStorage storage = SctOpcodeParameterStorage::Word32;
+    SctOpcodeScalarType scalarType = SctOpcodeScalarType::Unknown;
+    SctOpcodeReferenceKind referenceKind = SctOpcodeReferenceKind::None;
+    std::uint32_t allowedBitMask = 0xffffffffu;
+    std::uint32_t requiredBitValue = 0u;
+    std::int64_t minimumValue = 0;
+    std::int64_t maximumValue = 0;
+    bool hasConfirmedRange = false;
+    std::int64_t observedMinimumValue = 0;
+    std::int64_t observedMaximumValue = 0;
+    bool hasObservedRange = false;
+    std::uint32_t sentinelEncodedWord = 0;
+    bool hasConfirmedSentinel = false;
+    bool belongsToRepeatedGroup = false;
+    SctOpcodeDefaultKind defaultKind = SctOpcodeDefaultKind::Required;
+    std::uint32_t defaultEncodedWord = 0;
+    SctOpcodeContractConfidence binaryConfidence = SctOpcodeContractConfidence::Unknown;
+    SctOpcodeContractConfidence semanticConfidence = SctOpcodeContractConfidence::Unknown;
+    SctOpcodeContractConfidence defaultConfidence = SctOpcodeContractConfidence::Unknown;
+    SctOpcodeContractConfidence sentinelConfidence = SctOpcodeContractConfidence::Unknown;
+};
+
 struct SctFooterParamMetadata {
     SctFooterParamKind kind = SctFooterParamKind::None;
     bool signedRelative = false;
@@ -74,7 +144,7 @@ struct SctOpcodeSemanticMetadata {
     SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
     SctOpcodeControlRole controlRole = SctOpcodeControlRole::None;
     SctOpcodeResourceRole resourceRole = SctOpcodeResourceRole::None;
-    std::array<std::string_view, 8> parameterRoles{};
+    std::array<std::string_view, 32> parameterRoles{};
     std::string_view notes = {};
 };
 
@@ -99,6 +169,9 @@ struct SctOpcodeSchema {
     std::uint8_t footerReferenceCount = 0;
     SctOpcodeAvailability gameCubeAvailability = SctOpcodeAvailability::Unknown;
     SctOpcodeAvailability dreamcastAvailability = SctOpcodeAvailability::Unknown;
+    SctOpcodeDocumentRole documentRole = SctOpcodeDocumentRole::Instruction;
+    std::array<SctOpcodeParameterSchema, 32> parameterCatalog{};
+    std::uint8_t parameterCatalogCount = 0;
 };
 
 namespace detail {
@@ -374,6 +447,13 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
 [[nodiscard]] constexpr SctOpcodeSemanticMetadata makeOpcodeSemanticMetadata(std::uint16_t opcode) {
     SctOpcodeSemanticMetadata meta{};
     meta.opcode = opcode;
+    meta.mnemonic = kOpcodeCatalogNames[opcode];
+    meta.confidence = SctSemanticConfidence::Unknown;
+    for (const auto& seed : kOpcodeParameterRoleSeeds) {
+        if (seed.opcode == opcode && seed.parameterIndex < meta.parameterRoles.size()) {
+            meta.parameterRoles[seed.parameterIndex] = seed.role;
+        }
+    }
 
     switch (opcode) {
     case 0:
@@ -451,8 +531,6 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
         meta.parameterRoles = {"displayedValueExpr", "labelStringOffset"};
         break;
     default:
-        meta.mnemonic = {};
-        meta.confidence = SctSemanticConfidence::Unknown;
         break;
     }
 
@@ -523,6 +601,103 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     }
 }
 
+[[nodiscard]] constexpr bool isControlReferenceParameter(
+    const SctOpcodeSchema& schema, std::uint32_t parameterIndex) noexcept {
+    if (schema.semantic.controlRole == SctOpcodeControlRole::CallSubscript && parameterIndex == 0u) {
+        return true;
+    }
+    return static_cast<int>(parameterIndex) == schema.parameters.jumpParam
+        || static_cast<int>(parameterIndex) == schema.parameters.switchJumpParam;
+}
+
+[[nodiscard]] constexpr SctFooterParamMetadata footerReferenceForBaseParameter(
+    const SctOpcodeSchema& schema, std::uint32_t parameterIndex) noexcept {
+    for (std::size_t i = 0; i < schema.footerReferenceCount; ++i) {
+        if (schema.footerReferences[i].parameterIndex == parameterIndex) {
+            return {schema.footerReferences[i].kind, schema.footerReferences[i].signedRelative};
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] constexpr SctOpcodeParameterSchema makeParameterCatalogEntry(
+    const SctOpcodeSchema& schema, std::uint32_t parameterIndex) noexcept {
+    SctOpcodeParameterSchema parameter{};
+    parameter.schemaIndex = parameterIndex;
+    if (parameterIndex < schema.semantic.parameterRoles.size()) {
+        parameter.role = schema.semantic.parameterRoles[parameterIndex];
+    }
+    const bool expression = parameterIndex < 64u
+        && ((schema.parameters.scptAnalyzeMask >> parameterIndex) & 1ull) != 0ull;
+    parameter.encoding = expression ? SctOpcodeParameterEncoding::ScptExpression
+                                    : SctOpcodeParameterEncoding::RawWord;
+    parameter.storage = expression ? SctOpcodeParameterStorage::ScptWordSequence
+                                   : SctOpcodeParameterStorage::Word32;
+    parameter.scalarType = expression ? SctOpcodeScalarType::NumericExpression
+                                     : SctOpcodeScalarType::Unknown;
+    parameter.binaryConfidence = SctOpcodeContractConfidence::Confirmed;
+    parameter.semanticConfidence = parameter.role.empty()
+        ? SctOpcodeContractConfidence::Unknown : SctOpcodeContractConfidence::Confirmed;
+
+    const bool repeated = schema.parameters.loopStartParam >= 0
+        && schema.parameters.loopEndParam >= schema.parameters.loopStartParam;
+    parameter.belongsToRepeatedGroup = repeated
+        && parameterIndex >= static_cast<std::uint32_t>(schema.parameters.loopStartParam)
+        && parameterIndex <= static_cast<std::uint32_t>(schema.parameters.loopEndParam);
+
+    if (parameterIndex == 0u && (schema.opcode == 5u || schema.opcode == 6u || schema.opcode == 7u)) {
+        parameter.scalarType = SctOpcodeScalarType::VariableReference;
+        parameter.allowedBitMask = schema.opcode == 5u ? 0x1000ffffu
+            : schema.opcode == 6u ? 0x5000ffffu : 0x4000ffffu;
+        parameter.requiredBitValue = schema.opcode == 5u ? 0x10000000u
+            : schema.opcode == 6u ? 0x50000000u : 0x40000000u;
+        parameter.minimumValue = 0;
+        parameter.maximumValue = 0xffff;
+        parameter.hasConfirmedRange = true;
+        parameter.defaultKind = SctOpcodeDefaultKind::Required;
+        parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
+        return parameter;
+    }
+
+    if (schema.opcode == 129u && parameterIndex == 1u) {
+        parameter.scalarType = SctOpcodeScalarType::UnsignedInteger;
+        parameter.defaultKind = SctOpcodeDefaultKind::DerivedInstructionByteLength;
+        parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
+        return parameter;
+    }
+    if (repeated && schema.parameters.iterationCountParam >= 0
+        && parameterIndex == static_cast<std::uint32_t>(schema.parameters.iterationCountParam)) {
+        parameter.scalarType = SctOpcodeScalarType::RepetitionCount;
+        parameter.defaultKind = SctOpcodeDefaultKind::DerivedRepeatedGroupCount;
+        parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
+        return parameter;
+    }
+    if (isControlReferenceParameter(schema, parameterIndex)) {
+        parameter.scalarType = SctOpcodeScalarType::RelativeOffset;
+        parameter.referenceKind = SctOpcodeReferenceKind::Instruction;
+        parameter.defaultKind = SctOpcodeDefaultKind::Required;
+        parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
+        return parameter;
+    }
+    const auto footer = footerReferenceForBaseParameter(schema, parameterIndex);
+    if (footer.kind != SctFooterParamKind::None) {
+        parameter.scalarType = SctOpcodeScalarType::RelativeOffset;
+        parameter.referenceKind = footer.kind == SctFooterParamKind::String
+            ? SctOpcodeReferenceKind::FooterString : SctOpcodeReferenceKind::FooterSctString;
+        parameter.defaultKind = SctOpcodeDefaultKind::Required;
+        parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
+        return parameter;
+    }
+
+    // Zero is a safe structural seed for the known binary shape, but absent a
+    // confirmed handler-specific default it remains authoring evidence rather
+    // than a claimed legal-domain fact.
+    parameter.defaultKind = SctOpcodeDefaultKind::ProvisionalZero;
+    parameter.defaultEncodedWord = 0;
+    parameter.defaultConfidence = SctOpcodeContractConfidence::Provisional;
+    return parameter;
+}
+
 [[nodiscard]] constexpr std::array<SctOpcodeSchema, 266> makeOpcodeSchemas() {
     std::array<SctOpcodeSchema, 266> schemas{};
     for (std::size_t opcode = 0; opcode < schemas.size(); ++opcode) {
@@ -535,6 +710,9 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
             ? SctOpcodeAvailability::UnavailableInvalidStub
             : SctOpcodeAvailability::Available;
         schema.dreamcastAvailability = schema.gameCubeAvailability;
+        if (schema.opcode == 13u || schema.opcode == 129u) {
+            schema.documentRole = SctOpcodeDocumentRole::FoldedModifier;
+        }
         if (schema.opcode == 265u) {
             schema.dreamcastAvailability = SctOpcodeAvailability::UnavailableInvalidStub;
         }
@@ -549,6 +727,14 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
                 footer.kind,
                 footer.signedRelative,
             };
+        }
+        const auto catalogCount = schema.parameters.loopEndParam >= 0
+            ? std::max<std::uint32_t>(schema.parameters.paramCount,
+                static_cast<std::uint32_t>(schema.parameters.loopEndParam) + 1u)
+            : static_cast<std::uint32_t>(schema.parameters.paramCount);
+        schema.parameterCatalogCount = static_cast<std::uint8_t>(catalogCount);
+        for (std::uint32_t parameterIndex = 0; parameterIndex < catalogCount; ++parameterIndex) {
+            schema.parameterCatalog[parameterIndex] = makeParameterCatalogEntry(schema, parameterIndex);
         }
     }
     return schemas;
@@ -620,6 +806,14 @@ inline constexpr auto kSalsaOpcodeParamPatterns = detail::makeLegacyParamPattern
     return baseParameterIndex < 64u && ((schema.parameters.scptAnalyzeMask >> baseParameterIndex) & 1ull) != 0ull
         ? SctOpcodeParameterEncoding::ScptExpression
         : SctOpcodeParameterEncoding::RawWord;
+}
+
+[[nodiscard]] constexpr const SctOpcodeParameterSchema* sctOpcodeParameterSchema(
+    const SctOpcodeSchema& schema,
+    std::uint32_t parameterIndex) noexcept {
+    const auto baseParameterIndex = sctOpcodeBaseParameterIndex(schema, parameterIndex);
+    return baseParameterIndex < schema.parameterCatalogCount
+        ? &schema.parameterCatalog[baseParameterIndex] : nullptr;
 }
 
 [[nodiscard]] constexpr SctFooterParamMetadata sctOpcodeFooterReference(

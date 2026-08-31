@@ -313,6 +313,10 @@ struct InternalBuildResult {
 InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentExportOptions& options,
     const SctDocumentImportReceipt* receipt) {
     InternalBuildResult result;
+    switch (options.opaquePolicy) {
+    case SctOpaquePreservationPolicy::RequirePreservation:
+        break;
+    }
     const auto validation = SctDocumentValidator::validate(
         document, SctDocumentValidationOptions{options.targetPlatform}, receipt);
     result.diagnostics = validation.diagnostics;

@@ -52,7 +52,7 @@ SctDocument makeReferenceDocument() {
     SctDocumentInstruction target;
     target.id = targetId;
     target.opcode = 12;
-    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}, {}});
+    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}});
     return document;
 }
 }
@@ -373,7 +373,7 @@ TEST(SctDocumentValidator, RejectsInvalidNamesRepeatedGroupsAndExpressionArity) 
     expression.root = SctCanonicalExpressionNode{SctCanonicalExpressionNodeKind::ArithmeticOperator, 0x14, {}, {}};
     instruction.fixedParameters.push_back({0, expression});
     instruction.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{1}}}});
-    document.sections.push_back({sectionId, std::string(17, 'X'), SctScriptSectionContent{{instruction}}, {}});
+    document.sections.push_back({sectionId, std::string(17, 'X'), SctScriptSectionContent{{instruction}}});
     const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
     EXPECT_FALSE(validation.validForLayout);
     EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
@@ -390,8 +390,8 @@ TEST(SctDocumentValidator, RejectsInvalidNamesRepeatedGroupsAndExpressionArity) 
 TEST(SctDocumentValidator, RejectsZeroDuplicateOutOfAllocatorIdsAndBrokenAttachments) {
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
-    document.sections.push_back({sectionId, "A", SctLabelSectionContent{}, {}});
-    document.sections.push_back({sectionId, "B", SctLabelSectionContent{}, {}});
+    document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
+    document.sections.push_back({sectionId, "B", SctLabelSectionContent{}});
     document.strings.push_back({SctStringId{}, SctEditableText{"bad"}});
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({attachmentId, {1}, SctInstructionId{99},

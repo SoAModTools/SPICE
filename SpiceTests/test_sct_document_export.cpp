@@ -49,7 +49,7 @@ SctDocument makeJumpDocument() {
     SctDocumentInstruction target;
     target.id = targetId;
     target.opcode = 12;
-    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}, {}});
+    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}});
     return document;
 }
 
@@ -131,9 +131,9 @@ TEST(SctDocumentExporter, EncodesForwardBranchAndBackwardCallRelocations) {
     call.id = callId;
     call.opcode = 11;
     call.fixedParameters = {{0, SctInstructionReference{targetId}}};
-    document.sections.push_back({branchSection, "BRANCH", SctScriptSectionContent{{branch}}, {}});
-    document.sections.push_back({targetSection, "TARGET", SctScriptSectionContent{{target}}, {}});
-    document.sections.push_back({callSection, "CALL", SctScriptSectionContent{{call}}, {}});
+    document.sections.push_back({branchSection, "BRANCH", SctScriptSectionContent{{branch}}});
+    document.sections.push_back({targetSection, "TARGET", SctScriptSectionContent{{target}}});
+    document.sections.push_back({callSection, "CALL", SctScriptSectionContent{{call}}});
 
     const auto exported = SctDocumentExporter::exportDocument(document, rawOptions());
     ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
@@ -188,9 +188,9 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
     SctDocumentInstruction target;
     target.id = targetId;
     target.opcode = 12;
-    document.sections.push_back({switchSection, "SWITCH", SctScriptSectionContent{{sw}}, {}});
-    document.sections.push_back({footerSection, "FOOTER", SctScriptSectionContent{{footerLoad, signedFooterLoad}}, {}});
-    document.sections.push_back({targetSection, "TARGET", SctScriptSectionContent{{targetLead, target}}, {}});
+    document.sections.push_back({switchSection, "SWITCH", SctScriptSectionContent{{sw}}});
+    document.sections.push_back({footerSection, "FOOTER", SctScriptSectionContent{{footerLoad, signedFooterLoad}}});
+    document.sections.push_back({targetSection, "TARGET", SctScriptSectionContent{{targetLead, target}}});
     document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctEditableText{"entry"}});
 
     const auto exported = SctDocumentExporter::exportDocument(document, rawOptions());
@@ -230,7 +230,7 @@ TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejects
     const auto headerId = document.allocateOpaqueAttachmentId();
     const auto paddingId = document.allocateOpaqueAttachmentId();
     const auto contentId = document.allocateOpaqueAttachmentId();
-    document.sections.push_back({sectionId, "A", SctLabelSectionContent{}, {paddingId, contentId}});
+    document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
     document.opaqueAttachments.push_back({headerId, {1, 2, 3, 4, 5, 6, 7, 8}, SctDocumentAnchor{},
         SctOpaquePlacement::FixedOffset, 0, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Header});
     document.opaqueAttachments.push_back({paddingId, std::vector<std::uint8_t>(15, 0), sectionId,
@@ -269,7 +269,7 @@ TEST(SctDocumentExporter, PlacesSupportedRelativeOpaqueAttachmentsAndReportsRelo
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
     const auto attachmentId = document.allocateOpaqueAttachmentId();
-    document.sections.push_back({sectionId, "LABEL", SctLabelSectionContent{}, {attachmentId}});
+    document.sections.push_back({sectionId, "LABEL", SctLabelSectionContent{}});
     document.opaqueAttachments.push_back({attachmentId, {0xde, 0xad}, sectionId,
         SctOpaquePlacement::Before, std::nullopt, 1, SctOpaqueRelocationSupport::Relocatable,
         SctOpaqueReason::Preamble});

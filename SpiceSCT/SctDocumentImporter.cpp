@@ -192,15 +192,14 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
 }
 
 SctOpaqueAttachmentId addAttachment(SctDocument& document, SctDocumentImportResult& result, SctOpaqueAnchor anchor,
-    std::uint32_t absoluteOffset, std::vector<std::uint8_t> bytes, SctOpaqueReason reason,
-    SctDocumentSection* section = nullptr) {
+    std::uint32_t absoluteOffset, std::vector<std::uint8_t> bytes, SctOpaqueReason reason) {
     if (bytes.empty()) return {};
     const auto id = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({id, std::move(bytes), std::move(anchor),
         SctOpaquePlacement::FixedOffset, absoluteOffset, 1, SctOpaqueRelocationSupport::FixedOnly, reason});
-    if (section) section->opaqueAttachments.push_back(id);
     result.receipt.provenance.push_back({SctDocumentEntityId{id}, absoluteOffset,
-        static_cast<std::uint32_t>(document.opaqueAttachments.back().bytes.size()), std::nullopt});
+        static_cast<std::uint32_t>(document.opaqueAttachments.back().bytes.size()), std::nullopt,
+        SctSourceCoverageKind::OpaqueAttachment});
     return id;
 }
 
@@ -296,7 +295,6 @@ SctDocumentImportResult SctDocumentImporter::import(
 
     result.receipt.provenance.push_back({{}, 8, 4, std::nullopt});
     std::vector<std::string> sectionNames;
-    std::vector<SctOpaqueAttachmentId> indexPaddingAttachments(parsed.file.sections.size());
     sectionNames.reserve(parsed.file.sections.size());
     for (std::size_t sectionIndex = 0; sectionIndex < parsed.file.sections.size(); ++sectionIndex) {
         const auto rowOffset = static_cast<std::uint32_t>(12 + sectionIndex * 20);
@@ -309,9 +307,24 @@ SctDocumentImportResult SctDocumentImporter::import(
             result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset + 4,
                 static_cast<std::uint32_t>(sectionNames.back().size()), static_cast<std::uint32_t>(sectionIndex)});
         }
-        indexPaddingAttachments[sectionIndex] = addAttachment(document, result, sectionIds[sectionIndex],
-            rowOffset + 4 + static_cast<std::uint32_t>(sectionNames.back().size()),
-            std::vector<std::uint8_t>(zero, nameBegin + 16), SctOpaqueReason::Padding);
+        const auto fieldEnd = nameBegin + 16;
+        const auto unusual = std::find_if(zero, fieldEnd, [](std::uint8_t value) { return value != 0; });
+        if (unusual == fieldEnd) {
+            result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]},
+                rowOffset + 4 + static_cast<std::uint32_t>(sectionNames.back().size()),
+                static_cast<std::uint32_t>(fieldEnd - zero), static_cast<std::uint32_t>(sectionIndex),
+                SctSourceCoverageKind::DerivedLayout});
+        } else {
+            if (unusual != zero) {
+                result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]},
+                    rowOffset + 4 + static_cast<std::uint32_t>(sectionNames.back().size()),
+                    static_cast<std::uint32_t>(unusual - zero), static_cast<std::uint32_t>(sectionIndex),
+                    SctSourceCoverageKind::DerivedLayout});
+            }
+            addAttachment(document, result, sectionIds[sectionIndex],
+                rowOffset + 4 + static_cast<std::uint32_t>(unusual - nameBegin),
+                std::vector<std::uint8_t>(unusual, fieldEnd), SctOpaqueReason::Padding);
+        }
     }
     addAttachment(document, result, SctDocumentAnchor{}, 0,
         std::vector<std::uint8_t>(bytes.begin(), bytes.begin() + 8), SctOpaqueReason::Header);
@@ -330,9 +343,6 @@ SctDocumentImportResult SctDocumentImporter::import(
         SctDocumentSection targetSection;
         targetSection.id = sectionIds[sectionIndex];
         targetSection.nameBytes = sectionNames[sectionIndex];
-        if (indexPaddingAttachments[sectionIndex]) {
-            targetSection.opaqueAttachments.push_back(indexPaddingAttachments[sectionIndex]);
-        }
         ClaimLedger ledger{std::vector<std::uint8_t>(sourceSection.endOffset - sourceSection.startOffset)};
 
         if (sourceSection.stringEntry) {
@@ -416,11 +426,22 @@ SctDocumentImportResult SctDocumentImporter::import(
             if (ledger.claims[pos]) { ++pos; continue; }
             const auto begin = pos;
             while (pos < ledger.claims.size() && !ledger.claims[pos]) ++pos;
+            const bool derivedStringPadding = std::holds_alternative<SctStringSectionContent>(targetSection.content)
+                && std::all_of(bytes.begin() + sourceSection.startOffset + begin,
+                    bytes.begin() + sourceSection.startOffset + pos,
+                    [](std::uint8_t value) { return value == 0; });
+            if (derivedStringPadding) {
+                result.receipt.provenance.push_back({SctDocumentEntityId{targetSection.id},
+                    sourceSection.startOffset + static_cast<std::uint32_t>(begin),
+                    static_cast<std::uint32_t>(pos - begin), static_cast<std::uint32_t>(sectionIndex),
+                    SctSourceCoverageKind::DerivedLayout});
+                continue;
+            }
             addAttachment(document, result, targetSection.id,
                 sourceSection.startOffset + static_cast<std::uint32_t>(begin),
                 std::vector<std::uint8_t>(bytes.begin() + sourceSection.startOffset + begin,
                     bytes.begin() + sourceSection.startOffset + pos),
-                SctOpaqueReason::Gap, &targetSection);
+                SctOpaqueReason::Gap);
         }
         document.sections.push_back(std::move(targetSection));
     }
@@ -459,6 +480,16 @@ SctDocumentImportResult SctDocumentImporter::import(
             if (ledger.claims[pos]) { ++pos; continue; }
             const auto begin = pos;
             while (pos < ledger.claims.size() && !ledger.claims[pos]) ++pos;
+            const bool derivedFooterPadding = std::all_of(
+                bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + pos,
+                [](std::uint8_t value) { return value == 0; });
+            if (derivedFooterPadding) {
+                result.receipt.provenance.push_back({{},
+                    footerAbsolute + static_cast<std::uint32_t>(begin),
+                    static_cast<std::uint32_t>(pos - begin), std::nullopt,
+                    SctSourceCoverageKind::DerivedLayout});
+                continue;
+            }
             addAttachment(document, result, SctDocumentAnchor{}, footerAbsolute + static_cast<std::uint32_t>(begin),
                 std::vector<std::uint8_t>(bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + pos),
                 SctOpaqueReason::Gap);

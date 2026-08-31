@@ -43,10 +43,7 @@ using SctInstructionLayoutRecord = SctEntityLayoutRecord<SctInstructionId>;
 using SctStringLayoutRecord = SctEntityLayoutRecord<SctStringId>;
 using SctFooterEntryLayoutRecord = SctEntityLayoutRecord<SctFooterEntryId>;
 
-struct SctParameterLocation {
-    std::uint32_t schemaIndex = 0;
-    std::optional<std::uint32_t> repeatedGroupOrdinal;
-};
+using SctParameterLocation = SctParameterAddress;
 
 enum class SctRelocationFormula { InstructionEndMinusWord, OperandWordRelative };
 using SctRelocationTarget = std::variant<SctInstructionId, SctFooterEntryId>;

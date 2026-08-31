@@ -68,6 +68,7 @@ enum class SctDiagnosticCode {
     RelocationOutOfRange,
     OpaquePlacementUnsatisfied,
     CompressionFailed,
+    ProvisionalAuthoringDefault,
 };
 
 struct SctDocumentDiagnostic {
@@ -75,7 +76,22 @@ struct SctDocumentDiagnostic {
     SctDiagnosticCode code = SctDiagnosticCode::InvalidContent;
     std::optional<SctDocumentEntityId> entity;
     std::string message;
+    struct ParameterAddress {
+        std::uint32_t schemaIndex = 0;
+        std::optional<std::uint32_t> repeatedGroupOrdinal;
+        auto operator<=>(const ParameterAddress&) const = default;
+    };
+    struct TextByteRange {
+        std::uint32_t offset = 0;
+        std::uint32_t size = 0;
+        auto operator<=>(const TextByteRange&) const = default;
+    };
+    std::optional<ParameterAddress> parameter;
+    std::vector<std::uint32_t> expressionChildPath;
+    std::optional<TextByteRange> textRange;
 };
+
+using SctParameterAddress = SctDocumentDiagnostic::ParameterAddress;
 
 enum class SctExpressionTermination { InlineValue, StopCode };
 enum class SctCanonicalExpressionNodeKind {
@@ -150,10 +166,9 @@ struct SctDocumentSection {
     SctSectionId id;
     std::string nameBytes;
     SctDocumentSectionContent content;
-    std::vector<SctOpaqueAttachmentId> opaqueAttachments;
 };
 
-struct SctDocumentAnchor {};
+struct SctDocumentAnchor { auto operator<=>(const SctDocumentAnchor&) const = default; };
 using SctOpaqueAnchor = std::variant<SctDocumentAnchor, SctSectionId, SctInstructionId,
     SctStringId, SctFooterEntryId>;
 enum class SctOpaquePlacement { Before, After, FixedOffset };
@@ -191,6 +206,18 @@ public:
     [[nodiscard]] std::uint64_t nextOpaqueAttachmentIdValue() const noexcept { return nextOpaqueAttachmentId_; }
 
 private:
+    friend class SctDocumentBuilder;
+
+    void restoreAllocatorState(std::uint64_t nextSectionId, std::uint64_t nextInstructionId,
+        std::uint64_t nextStringId, std::uint64_t nextFooterEntryId,
+        std::uint64_t nextOpaqueAttachmentId) noexcept {
+        nextSectionId_ = nextSectionId;
+        nextInstructionId_ = nextInstructionId;
+        nextStringId_ = nextStringId;
+        nextFooterEntryId_ = nextFooterEntryId;
+        nextOpaqueAttachmentId_ = nextOpaqueAttachmentId;
+    }
+
     std::uint64_t nextSectionId_ = 1;
     std::uint64_t nextInstructionId_ = 1;
     std::uint64_t nextStringId_ = 1;

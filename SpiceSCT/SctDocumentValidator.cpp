@@ -8,8 +8,13 @@ namespace spice::sct {
 namespace {
 
 void error(SctValidationResult& result, SctDiagnosticCode code, std::string message,
-    std::optional<SctDocumentEntityId> entity = std::nullopt) {
-    result.diagnostics.push_back({SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)});
+    std::optional<SctDocumentEntityId> entity = std::nullopt,
+    std::optional<SctParameterAddress> parameter = std::nullopt,
+    std::vector<std::uint32_t> expressionPath = {}) {
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)};
+    diagnostic.parameter = parameter;
+    diagnostic.expressionChildPath = std::move(expressionPath);
+    result.diagnostics.push_back(std::move(diagnostic));
 }
 
 template <typename Id>
@@ -32,28 +37,29 @@ bool recordId(SctValidationResult& result, Id id, std::unordered_set<std::uint64
 }
 
 bool validExpressionNode(const SctCanonicalExpressionNode& node, SctValidationResult& result,
-    SctDocumentEntityId entity) {
+    SctDocumentEntityId entity, std::optional<SctParameterAddress> parameter,
+    const std::vector<std::uint32_t>& path) {
     bool valid = true;
     const bool binary = node.kind == SctCanonicalExpressionNodeKind::CompareOperator
         || node.kind == SctCanonicalExpressionNodeKind::ArithmeticOperator
         || node.kind == SctCanonicalExpressionNodeKind::AssignmentOperator;
     if (binary && node.children.size() != 2) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "A typed SCPT operator must have exactly two children.", entity);
+            "A typed SCPT operator must have exactly two children.", entity, parameter, path);
         valid = false;
     }
     if (!binary && !node.children.empty()) {
-        error(result, SctDiagnosticCode::ExpressionInvalid, "A typed SCPT leaf cannot have children.", entity);
+        error(result, SctDiagnosticCode::ExpressionInvalid, "A typed SCPT leaf cannot have children.", entity, parameter, path);
         valid = false;
     }
     if (node.kind == SctCanonicalExpressionNodeKind::FloatLiteral && node.payloadWords.size() != 1) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "A float literal must preserve exactly one payload word.", entity);
+            "A float literal must preserve exactly one payload word.", entity, parameter, path);
         valid = false;
     }
     if (node.kind != SctCanonicalExpressionNodeKind::FloatLiteral && !node.payloadWords.empty()) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "Only a typed SCPT float literal may contain a payload word.", entity);
+            "Only a typed SCPT float literal may contain a payload word.", entity, parameter, path);
         valid = false;
     }
     const auto prefix = node.encodingCode & 0xff000000u;
@@ -81,30 +87,34 @@ bool validExpressionNode(const SctCanonicalExpressionNode& node, SctValidationRe
     }
     if (!encodingMatches) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "Typed SCPT node kind does not match its exact encoding code.", entity);
+            "Typed SCPT node kind does not match its exact encoding code.", entity, parameter, path);
         valid = false;
     }
-    for (const auto& child : node.children) validExpressionNode(child, result, entity);
+    for (std::size_t childIndex = 0; childIndex < node.children.size(); ++childIndex) {
+        auto childPath = path;
+        childPath.push_back(static_cast<std::uint32_t>(childIndex));
+        validExpressionNode(node.children[childIndex], result, entity, parameter, childPath);
+    }
     return valid;
 }
 
 void validateExpression(const SctCanonicalExpression& expression, SctValidationResult& result,
-    SctDocumentEntityId entity) {
+    SctDocumentEntityId entity, std::optional<SctParameterAddress> parameter = std::nullopt) {
     if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
         if (opaque->words.empty()) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "An opaque SCPT fallback must contain the preserved encoded words.", entity);
+                "An opaque SCPT fallback must contain the preserved encoded words.", entity, parameter);
         }
     } else {
         const auto& root = std::get<SctCanonicalExpressionNode>(expression.root);
-        validExpressionNode(root, result, entity);
+        validExpressionNode(root, result, entity, parameter, {});
         const bool inlineValue = root.kind == SctCanonicalExpressionNodeKind::NoLoopValue;
         const bool explicitStop = root.kind == SctCanonicalExpressionNodeKind::Stop;
         if ((inlineValue && expression.termination != SctExpressionTermination::InlineValue)
             || (!inlineValue && expression.termination != SctExpressionTermination::StopCode)
             || (explicitStop && expression.termination != SctExpressionTermination::StopCode)) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "Typed SCPT expression termination is incompatible with its root encoding.", entity);
+                "Typed SCPT expression termination is incompatible with its root encoding.", entity, parameter);
         }
     }
 }
@@ -170,12 +180,6 @@ SctValidationResult SctDocumentValidator::validate(
         document.nextOpaqueAttachmentIdValue(), "Opaque attachment");
 
     for (const auto& section : document.sections) {
-        for (const auto id : section.opaqueAttachments) {
-            if (!id || !attachmentIds.contains(id.value())) {
-                error(result, SctDiagnosticCode::UnresolvedReference,
-                    "Section references a missing opaque attachment.", SctDocumentEntityId{section.id});
-            }
-        }
         const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
         if (!script) continue;
         for (const auto& instruction : script->instructions) {
@@ -188,6 +192,10 @@ SctValidationResult SctDocumentValidator::validate(
             if (sctOpcodeAvailability(*schema, options.targetPlatform) != SctOpcodeAvailability::Available) {
                 error(result, SctDiagnosticCode::OpcodeUnavailable,
                     "Instruction opcode is unavailable on the requested target platform.", entity);
+            }
+            if (schema->documentRole == SctOpcodeDocumentRole::FoldedModifier) {
+                error(result, SctDiagnosticCode::InvalidContent,
+                    "Folded modifier opcode cannot be stored as a canonical instruction entity.", entity);
             }
             if (instruction.scheduledExpression) validateExpression(*instruction.scheduledExpression, result, entity);
             const auto repeated = sctOpcodeRepeatedGroup(*schema);
@@ -231,40 +239,54 @@ SctValidationResult SctDocumentValidator::validate(
                     }
                 }
             }
-            const auto validateValue = [&](const SctDocumentParameter& parameter) {
+            const auto validateValue = [&](const SctDocumentParameter& parameter,
+                std::optional<std::uint32_t> repeatedGroupOrdinal) {
+                const SctParameterAddress address{parameter.schemaIndex, repeatedGroupOrdinal};
                 const auto expectedEncoding = sctOpcodeParameterEncoding(*schema, parameter.schemaIndex);
+                const auto* parameterSchema = sctOpcodeParameterSchema(*schema, parameter.schemaIndex);
                 if (const auto* expression = std::get_if<SctCanonicalExpression>(&parameter.value)) {
                     if (expectedEncoding != SctOpcodeParameterEncoding::ScptExpression) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
-                            "Typed SCPT expression is assigned to a raw-word schema parameter.", entity);
+                            "Typed SCPT expression is assigned to a raw-word schema parameter.", entity, address);
                     }
-                    validateExpression(*expression, result, entity);
-                } else if (std::holds_alternative<SctEncodedWordValue>(parameter.value)) {
+                    validateExpression(*expression, result, entity, address);
+                } else if (const auto* scalar = std::get_if<SctEncodedWordValue>(&parameter.value)) {
                     if (expectedEncoding != SctOpcodeParameterEncoding::RawWord) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
-                            "Encoded scalar word is assigned to an SCPT-expression schema parameter.", entity);
+                            "Encoded scalar word is assigned to an SCPT-expression schema parameter.", entity, address);
+                    }
+                    if (parameterSchema != nullptr && parameterSchema->referenceKind != SctOpcodeReferenceKind::None) {
+                        error(result, SctDiagnosticCode::ParameterMismatch,
+                            "Encoded scalar word is assigned where the schema requires a typed reference.", entity, address);
+                    }
+                    if (parameterSchema != nullptr
+                        && ((scalar->value & ~parameterSchema->allowedBitMask) != 0u
+                            || (scalar->value & parameterSchema->requiredBitValue)
+                                != parameterSchema->requiredBitValue)) {
+                        error(result, SctDiagnosticCode::ParameterMismatch,
+                            "Encoded scalar word violates the parameter bit contract.", entity, address);
                     }
                 } else if (const auto* reference = std::get_if<SctInstructionReference>(&parameter.value)) {
                     if (!reference->target || !instructionIds.contains(reference->target.value())) {
                         error(result, SctDiagnosticCode::UnresolvedReference,
-                            "Instruction parameter references a missing instruction.", entity);
+                            "Instruction parameter references a missing instruction.", entity, address);
                     }
                     const bool isControlTarget = static_cast<int>(parameter.schemaIndex) == schema->parameters.jumpParam
                         || static_cast<int>(parameter.schemaIndex) == schema->parameters.switchJumpParam
                         || (schema->semantic.controlRole == SctOpcodeControlRole::CallSubscript && parameter.schemaIndex == 0);
                     if (!isControlTarget) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
-                            "Instruction reference is assigned outside the opcode's control-target parameter.", entity);
+                            "Instruction reference is assigned outside the opcode's control-target parameter.", entity, address);
                     }
                 } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&parameter.value)) {
                     if (!reference->target || !footerIds.contains(reference->target.value())) {
                         error(result, SctDiagnosticCode::UnresolvedReference,
-                            "Instruction parameter references a missing footer entry.", entity);
+                            "Instruction parameter references a missing footer entry.", entity, address);
                     }
                     const auto rule = sctOpcodeFooterReference(*schema, parameter.schemaIndex);
                     if (rule.kind == SctFooterParamKind::None) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
-                            "Footer reference is assigned to a parameter without a footer-reference rule.", entity);
+                            "Footer reference is assigned to a parameter without a footer-reference rule.", entity, address);
                     } else {
                         const auto found = std::find_if(document.footerEntries.begin(), document.footerEntries.end(),
                             [&](const auto& entry) { return entry.id == reference->target; });
@@ -272,17 +294,18 @@ SctValidationResult SctDocumentValidator::validate(
                             && ((rule.kind == SctFooterParamKind::String && found->kind != SctDocumentFooterEntryKind::String)
                                 || (rule.kind == SctFooterParamKind::SctString && found->kind != SctDocumentFooterEntryKind::SctString))) {
                             error(result, SctDiagnosticCode::ParameterMismatch,
-                                "Footer reference kind is incompatible with the opcode schema.", entity);
+                                "Footer reference kind is incompatible with the opcode schema.", entity, address);
                         }
                     }
                 } else if (const auto* opaque = std::get_if<SctOpaqueParameterValue>(&parameter.value)) {
                     if (opaque->words.empty()) error(result, SctDiagnosticCode::ParameterMismatch,
-                        "Opaque parameter fallback must preserve at least one word.", entity);
+                        "Opaque parameter fallback must preserve at least one word.", entity, address);
                 }
             };
-            for (const auto& parameter : instruction.fixedParameters) validateValue(parameter);
-            for (const auto& group : instruction.repeatedParameterGroups)
-                for (const auto& parameter : group.parameters) validateValue(parameter);
+            for (const auto& parameter : instruction.fixedParameters) validateValue(parameter, std::nullopt);
+            for (std::size_t groupOrdinal = 0; groupOrdinal < instruction.repeatedParameterGroups.size(); ++groupOrdinal)
+                for (const auto& parameter : instruction.repeatedParameterGroups[groupOrdinal].parameters)
+                    validateValue(parameter, static_cast<std::uint32_t>(groupOrdinal));
         }
     }
 

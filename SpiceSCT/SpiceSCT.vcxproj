@@ -106,8 +106,13 @@
     <ClInclude Include="SctParser.h" />
     <ClInclude Include="SctParseProbe.h" />
     <ClInclude Include="SctOpcodeMetadata.h" />
+    <ClInclude Include="SctOpcodeCatalogNames.h" />
+    <ClInclude Include="SctOpcodeParameterRoles.h" />
     <ClInclude Include="SctScptDecodeHelpers.h" />
     <ClInclude Include="SctDocument.h" />
+    <ClInclude Include="SctDocumentBuilder.h" />
+    <ClInclude Include="SctDocumentIndex.h" />
+    <ClInclude Include="SctInstructionFactory.h" />
     <ClInclude Include="SctDocumentImporter.h" />
     <ClInclude Include="SctDocumentValidator.h" />
     <ClInclude Include="SctDocumentExporter.h" />
@@ -121,6 +126,9 @@
     <ClCompile Include="SctParseProbe.cpp" />
     <ClCompile Include="SctScptDecodeHelpers.cpp" />
     <ClCompile Include="SctDocumentImporter.cpp" />
+    <ClCompile Include="SctDocumentBuilder.cpp" />
+    <ClCompile Include="SctDocumentIndex.cpp" />
+    <ClCompile Include="SctInstructionFactory.cpp" />
     <ClCompile Include="SctDocumentValidator.cpp" />
     <ClCompile Include="SctDocumentExporter.cpp" />
   </ItemGroup>
