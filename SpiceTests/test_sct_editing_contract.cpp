@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -30,7 +31,7 @@ SctParseResult makeLabelParse(std::string name, std::vector<std::uint8_t> unusua
 }
 
 SctDocumentExportOptions rawGameCubeOptions() {
-    return {SctPlatform::GameCube, SctDocumentOutputByteOrder::BigEndian,
+    return SctDocumentExportOptions{SctPlatform::GameCube, SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper::Raw, SctOpaquePreservationPolicy::RequirePreservation};
 }
 
@@ -82,6 +83,14 @@ std::vector<SctInstructionParameterOverride> requiredOverrides(
         }
     }
     return result;
+}
+
+void acceptProvisionalSuggestions(SctInstructionDraft& draft) {
+    for (auto& parameter : draft.parameters) {
+        if (!parameter.value.has_value() && parameter.suggestedValue.has_value()) {
+            parameter.value = parameter.suggestedValue;
+        }
+    }
 }
 } // namespace
 
@@ -174,10 +183,16 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     const auto jumpId = document.allocateInstructionId();
     const auto targetId = document.allocateInstructionId();
     const auto attachmentId = document.allocateOpaqueAttachmentId();
+    const auto stringId = document.allocateStringId();
+    const auto footerId = document.allocateFooterEntryId();
     SctDocumentInstruction jump{jumpId, 10};
     jump.fixedParameters.push_back({0, SctInstructionReference{targetId}});
     SctDocumentInstruction target{targetId, 12};
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}});
+    const auto stringSectionId = document.allocateSectionId();
+    document.strings.push_back({stringId, SctEditableText{"text"}});
+    document.sections.push_back({stringSectionId, "STRING", SctStringSectionContent{stringId}});
+    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctEditableText{"footer"}});
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, sectionId,
         SctOpaquePlacement::FixedOffset, 100u, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
 
@@ -187,10 +202,50 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     EXPECT_EQ(first.attachmentsFor(sectionId).size(), 1u);
     EXPECT_EQ(first.outboundReferences(jumpId).size(), 1u);
     EXPECT_EQ(first.inboundReferences(SctDocumentReferenceTarget{targetId}).size(), 1u);
+    ASSERT_EQ(first.sectionOrdinal(sectionId), 0u);
+    ASSERT_TRUE(first.instructionLocation(targetId).has_value());
+    EXPECT_EQ(first.instructionLocation(targetId)->sectionId, sectionId);
+    EXPECT_EQ(first.instructionLocation(targetId)->instructionOrdinal, 1u);
+    EXPECT_EQ(first.owningSection(targetId), &document.sections.front());
+    EXPECT_EQ(first.opaqueAttachmentOrdinal(attachmentId), 0u);
+    ASSERT_TRUE(first.stringLocation(stringId).has_value());
+    EXPECT_EQ(first.stringLocation(stringId)->stringOrdinal, 0u);
+    EXPECT_EQ(first.stringLocation(stringId)->sectionId, stringSectionId);
+    EXPECT_EQ(first.stringLocation(stringId)->sectionOrdinal, 1u);
+    EXPECT_EQ(first.footerEntryOrdinal(footerId), 0u);
 
-    std::get<SctScriptSectionContent>(document.sections.front().content).instructions.front().fixedParameters.clear();
+    const auto movedSectionId = document.allocateSectionId();
+    auto& originalInstructions = std::get<SctScriptSectionContent>(document.sections.front().content).instructions;
+    SctDocumentInstruction movedTarget = originalInstructions.back();
+    originalInstructions.pop_back();
+    document.sections.push_back({movedSectionId, "MOVED", SctScriptSectionContent{{movedTarget}}});
     const auto rebuilt = SctDocumentIndex::build(document);
-    EXPECT_TRUE(rebuilt.outboundReferences(jumpId).empty());
+    ASSERT_TRUE(rebuilt.instructionLocation(targetId).has_value());
+    EXPECT_EQ(rebuilt.instructionLocation(targetId)->sectionId, movedSectionId);
+    EXPECT_EQ(rebuilt.instructionLocation(targetId)->sectionOrdinal, 2u);
+    EXPECT_EQ(rebuilt.owningSection(targetId), &document.sections[2]);
+    EXPECT_EQ(rebuilt.outboundReferences(jumpId).size(), 1u);
+}
+
+static_assert(!std::is_default_constructible_v<SctDocumentExportOptions>);
+
+TEST(SctExpressionFactory, RejectsLossyVariableAndOpaqueOperatorConstruction) {
+    const auto oversized = SctExpressionFactory::variable(
+        SctExpressionVariableKind::Integer, 0x01000000u);
+    EXPECT_FALSE(oversized.expression.has_value());
+    EXPECT_TRUE(std::any_of(oversized.diagnostics.begin(), oversized.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == SctDiagnosticCode::ExpressionInvalid;
+    }));
+
+    SctCanonicalExpression opaque{SctOpaqueExpression{{0x50000001u, 0x1du}},
+        SctExpressionTermination::StopCode};
+    const auto rejected = SctExpressionFactory::binaryOperator(
+        SctExpressionBinaryOperator::Add, opaque, SctExpressionFactory::decimalLiteral(1));
+    EXPECT_FALSE(rejected.expression.has_value());
+
+    const auto variable = SctExpressionFactory::variable(SctExpressionVariableKind::Integer, 0x00ffffffu);
+    ASSERT_TRUE(variable.expression.has_value());
+    EXPECT_EQ(std::get<SctCanonicalExpressionNode>(variable.expression->root).encodingCode, 0x50ffffffu);
 }
 
 TEST(SctDocumentValidator, ReportsParameterGroupAndExpressionChildLocations) {
@@ -207,7 +262,7 @@ TEST(SctDocumentValidator, ReportsParameterGroupAndExpressionChildLocations) {
     instruction.fixedParameters.push_back({1, SctExpressionFactory::decimalLiteral(0)});
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{instruction}}});
 
-    const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
+    const auto validation = SctDocumentValidator::validateDocument(document);
     const auto found = std::find_if(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::ExpressionInvalid && diagnostic.parameter.has_value();
     });
@@ -237,55 +292,45 @@ TEST(SctOpcodeAuthoringCatalog, CoversEveryOpcodeShapeWithoutInventingLegalDomai
     }
 }
 
-TEST(SctInstructionFactory, ConstructsEveryAvailableOpcodeAndKeepsPlatformExplicit) {
-    for (const auto platform : {SctPlatform::GameCube, SctPlatform::Dreamcast}) {
-        for (const auto& schema : sctOpcodeSchemas()) {
-            SctDocument document;
-            const auto targetId = document.allocateInstructionId();
-            const auto stringFooter = document.allocateFooterEntryId();
-            const auto sctStringFooter = document.allocateFooterEntryId();
-            SctInstructionFactoryRequest request;
-            request.opcode = schema.opcode;
-            request.targetPlatform = platform;
-            if (sctOpcodeRepeatedGroup(schema)) request.repeatedGroupCount = 1;
-            request.parameterOverrides = requiredOverrides(schema, targetId, stringFooter, sctStringFooter);
-            const auto created = SctInstructionFactory::create(document, request);
-            if (sctOpcodeAvailability(schema, platform) == SctOpcodeAvailability::Available
-                && schema.documentRole == SctOpcodeDocumentRole::Instruction) {
-                ASSERT_TRUE(created.instruction.has_value()) << schema.opcode;
-                EXPECT_NE(created.instruction->id, targetId) << schema.opcode;
-                EXPECT_TRUE(std::all_of(created.diagnostics.begin(), created.diagnostics.end(), [](const auto& diagnostic) {
-                    return diagnostic.severity != SctDiagnosticSeverity::Error;
-                })) << schema.opcode;
-                const auto sectionId = document.allocateSectionId();
-                document.footerEntries.push_back({stringFooter, SctDocumentFooterEntryKind::String,
-                    SctEditableText{"file"}});
-                document.footerEntries.push_back({sctStringFooter, SctDocumentFooterEntryKind::SctString,
-                    SctEditableText{"text"}});
-                document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{
-                    {*created.instruction, SctDocumentInstruction{targetId, 12}}}});
-                EXPECT_TRUE(SctDocumentValidator::validate(document, {platform}).validForLayout) << schema.opcode;
-            } else if (sctOpcodeAvailability(schema, platform) != SctOpcodeAvailability::Available) {
-                EXPECT_FALSE(created.instruction.has_value()) << schema.opcode;
-                EXPECT_TRUE(std::any_of(created.diagnostics.begin(), created.diagnostics.end(), [](const auto& diagnostic) {
-                    return diagnostic.code == SctDiagnosticCode::OpcodeUnavailable;
-                })) << schema.opcode;
-            } else {
-                EXPECT_FALSE(created.instruction.has_value()) << schema.opcode;
-                EXPECT_TRUE(std::any_of(created.diagnostics.begin(), created.diagnostics.end(), [](const auto& diagnostic) {
-                    return diagnostic.code == SctDiagnosticCode::EncodingUnsupported;
-                })) << schema.opcode;
-            }
+TEST(SctInstructionFactory, CreatesNeutralDraftsWithExplicitAvailabilityForEveryOpcode) {
+    for (const auto& schema : sctOpcodeSchemas()) {
+        SctInstructionFactoryRequest request;
+        request.opcode = schema.opcode;
+        if (sctOpcodeRepeatedGroup(schema)) request.repeatedGroupCount = 1;
+        const auto draft = SctInstructionFactory::createDraft(request);
+        const bool availableAnywhere = sctOpcodeAvailability(schema, SctPlatform::GameCube)
+                == SctOpcodeAvailability::Available
+            || sctOpcodeAvailability(schema, SctPlatform::Dreamcast)
+                == SctOpcodeAvailability::Available;
+        if (availableAnywhere && schema.documentRole == SctOpcodeDocumentRole::Instruction) {
+            ASSERT_TRUE(draft.draft.has_value()) << schema.opcode;
+            EXPECT_EQ(draft.draft->availability.gameCube,
+                sctOpcodeAvailability(schema, SctPlatform::GameCube)) << schema.opcode;
+            EXPECT_EQ(draft.draft->availability.dreamcast,
+                sctOpcodeAvailability(schema, SctPlatform::Dreamcast)) << schema.opcode;
+        } else {
+            EXPECT_FALSE(draft.draft.has_value()) << schema.opcode;
+            EXPECT_TRUE(std::any_of(draft.diagnostics.begin(), draft.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.code == SctDiagnosticCode::OpcodeUnavailable
+                    || diagnostic.code == SctDiagnosticCode::EncodingUnsupported;
+            })) << schema.opcode;
         }
     }
+
+    SctInstructionFactoryRequest gameCubeOnly;
+    gameCubeOnly.opcode = 265;
+    const auto opcode265 = SctInstructionFactory::createDraft(gameCubeOnly);
+    ASSERT_TRUE(opcode265.draft.has_value());
+    EXPECT_EQ(opcode265.draft->availability.gameCube, SctOpcodeAvailability::Available);
+    EXPECT_EQ(opcode265.draft->availability.dreamcast,
+        SctOpcodeAvailability::UnavailableInvalidStub);
 }
 
 TEST(SctInstructionFactory, RepresentsScheduledOpcode129AsAnInstructionModifier) {
-    SctDocument document;
     SctInstructionFactoryRequest modifierRequest;
     modifierRequest.opcode = 129;
-    const auto modifier = SctInstructionFactory::create(document, modifierRequest);
-    EXPECT_FALSE(modifier.instruction.has_value());
+    const auto modifier = SctInstructionFactory::createDraft(modifierRequest);
+    EXPECT_FALSE(modifier.draft.has_value());
     EXPECT_TRUE(std::any_of(modifier.diagnostics.begin(), modifier.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::EncodingUnsupported;
     }));
@@ -293,11 +338,14 @@ TEST(SctInstructionFactory, RepresentsScheduledOpcode129AsAnInstructionModifier)
     SctInstructionFactoryRequest instructionRequest;
     instructionRequest.opcode = 12;
     instructionRequest.scheduledExpression = SctExpressionFactory::decimalLiteral(3);
-    const auto created = SctInstructionFactory::create(document, instructionRequest);
+    auto draft = SctInstructionFactory::createDraft(instructionRequest);
+    ASSERT_TRUE(draft.draft.has_value());
+    SctDocument document;
+    const auto created = SctInstructionFactory::materialize(document, *draft.draft);
     ASSERT_TRUE(created.instruction.has_value());
     const auto sectionId = document.allocateSectionId();
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{*created.instruction}}});
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
 
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
@@ -307,6 +355,29 @@ TEST(SctInstructionFactory, RepresentsScheduledOpcode129AsAnInstructionModifier)
     ASSERT_EQ(parsed.file.sections.front().instructions.size(), 1u);
     EXPECT_EQ(parsed.file.sections.front().instructions.front().opcode, 12u);
     EXPECT_TRUE(parsed.file.sections.front().instructions.front().scheduled.present);
+}
+
+TEST(SctInstructionFactory, RejectsInvalidDraftExpressionsWithoutAssigningEntityIdentity) {
+    SctCanonicalExpression invalidExpression;
+    invalidExpression.root = SctCanonicalExpressionNode{
+        SctCanonicalExpressionNodeKind::ArithmeticOperator, 0x0eu, {}, {}};
+
+    SctInstructionFactoryRequest request;
+    request.opcode = 12;
+    request.scheduledExpression = invalidExpression;
+    const auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+
+    SctDocument document;
+    const auto nextIdBeforeFailure = document.nextInstructionIdValue();
+    const auto materialized = SctInstructionFactory::materialize(document, *draft.draft);
+    EXPECT_FALSE(materialized.instruction.has_value());
+    EXPECT_EQ(document.nextInstructionIdValue(), nextIdBeforeFailure);
+    EXPECT_TRUE(std::any_of(materialized.diagnostics.begin(), materialized.diagnostics.end(),
+        [](const auto& diagnostic) {
+            return diagnostic.code == SctDiagnosticCode::ExpressionInvalid
+                && !diagnostic.entity.has_value();
+        }));
 }
 
 TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimports) {
@@ -321,17 +392,26 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     const auto& schema = *findSctOpcodeSchema(3);
     SctInstructionFactoryRequest request;
     request.opcode = 3;
-    request.targetPlatform = SctPlatform::GameCube;
     request.repeatedGroupCount = 2;
     request.parameterOverrides = requiredOverrides(schema, targetId, stringFooter, sctStringFooter);
     request.parameterOverrides.push_back({{3, 1u}, SctInstructionReference{targetId}});
-    const auto created = SctInstructionFactory::create(document, request);
-    ASSERT_TRUE(created.instruction.has_value());
-    EXPECT_FALSE(created.provisionalDefaults.empty());
-
     SctDocumentInstruction target{targetId, 12};
-    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{*created.instruction, target}}});
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{target}}});
+    auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    EXPECT_TRUE(std::any_of(draft.draft->parameters.begin(), draft.draft->parameters.end(), [](const auto& parameter) {
+        return parameter.suggestedValue.has_value() && !parameter.value.has_value();
+    }));
+    const auto nextIdBeforeFailure = document.nextInstructionIdValue();
+    const auto unresolved = SctInstructionFactory::materialize(document, *draft.draft);
+    EXPECT_FALSE(unresolved.instruction.has_value());
+    EXPECT_EQ(document.nextInstructionIdValue(), nextIdBeforeFailure);
+    acceptProvisionalSuggestions(*draft.draft);
+    const auto created = SctInstructionFactory::materialize(document, *draft.draft);
+    ASSERT_TRUE(created.instruction.has_value());
+    auto& instructions = std::get<SctScriptSectionContent>(document.sections.front().content).instructions;
+    instructions.insert(instructions.begin(), *created.instruction);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     const auto parsed = SctParser{}.parse(exported.bytes, "factory.sct");
@@ -361,7 +441,7 @@ TEST(SctDocumentEditing, StructuralAndTextEditsExportWithoutChangingStableIdenti
     std::get<SctInstructionReference>(jumpIt->fixedParameters.front().value).target = insertedId;
     std::erase_if(script, [&](const auto& instruction) { return instruction.id == oldTargetId; });
 
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     const auto reparsed = SctParser{}.parse(exported.bytes, "edited.sct");
@@ -403,18 +483,25 @@ TEST(SctDocumentEditing, TypedExpressionEditsExportAndReimport) {
     const auto sectionId = document.allocateSectionId();
     SctInstructionFactoryRequest request;
     request.opcode = 100;
-    const auto created = SctInstructionFactory::create(document, request);
+    auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    acceptProvisionalSuggestions(*draft.draft);
+    const auto created = SctInstructionFactory::materialize(document, *draft.draft);
     ASSERT_TRUE(created.instruction.has_value());
     document.sections.push_back({sectionId, "EXPRESSIONS", SctScriptSectionContent{{*created.instruction}}});
 
     auto& instruction = std::get<SctScriptSectionContent>(document.sections.front().content).instructions.front();
-    instruction.fixedParameters[0].value = SctExpressionFactory::binaryOperator(
+    const auto variable = SctExpressionFactory::variable(SctExpressionVariableKind::Integer, 8);
+    ASSERT_TRUE(variable.expression.has_value());
+    const auto builtOperation = SctExpressionFactory::binaryOperator(
         SctExpressionBinaryOperator::Add,
-        SctExpressionFactory::variable(SctExpressionVariableKind::Integer, 8),
+        *variable.expression,
         SctExpressionFactory::decimalLiteral(12, 128));
+    ASSERT_TRUE(builtOperation.expression.has_value());
+    instruction.fixedParameters[0].value = *builtOperation.expression;
     instruction.fixedParameters[1].value = SctExpressionFactory::floatLiteral(1.5f);
 
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     const auto reparsed = SctParser{}.parse(exported.bytes, "expression_edits.sct");
@@ -447,7 +534,10 @@ TEST(SctDocumentEditing, RepeatedGroupsCanBeAddedRemovedAndReordered) {
     SctInstructionFactoryRequest request;
     request.opcode = 119;
     request.repeatedGroupCount = 1;
-    const auto created = SctInstructionFactory::create(document, request);
+    auto draft = SctInstructionFactory::createDraft(request);
+    ASSERT_TRUE(draft.draft.has_value());
+    acceptProvisionalSuggestions(*draft.draft);
+    const auto created = SctInstructionFactory::materialize(document, *draft.draft);
     ASSERT_TRUE(created.instruction.has_value());
     document.sections.push_back({sectionId, "REPEATED", SctScriptSectionContent{{*created.instruction}}});
 
@@ -458,7 +548,7 @@ TEST(SctDocumentEditing, RepeatedGroupsCanBeAddedRemovedAndReordered) {
     instruction.repeatedParameterGroups.erase(instruction.repeatedParameterGroups.begin() + 1);
     instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::decimalLiteral(30)}}});
 
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     const auto reparsed = SctParser{}.parse(exported.bytes, "repeated_edits.sct");
@@ -513,7 +603,7 @@ TEST(SctDocumentEditing, MovesTargetsAcrossSectionsAndRetargetsSwitchAndCallRefe
     const auto currentIndex = SctDocumentIndex::build(document);
     EXPECT_EQ(currentIndex.inboundReferences(SctDocumentReferenceTarget{firstTargetId}).size(), 1u);
     EXPECT_EQ(currentIndex.inboundReferences(SctDocumentReferenceTarget{secondTargetId}).size(), 2u);
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     ASSERT_TRUE(exported.layout.has_value());
@@ -569,7 +659,7 @@ TEST(SctDocumentEditing, ReferencedFooterTextCanGrowAndReimport) {
     document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctEditableText{"a"}});
     std::get<SctEditableText>(document.footerEntries.front().value).bytes = "a much longer footer resource name.mld";
 
-    ASSERT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     ASSERT_TRUE(exported.layout.has_value());
@@ -608,7 +698,7 @@ TEST(SctDocumentValidator, LocatesNestedExpressionErrorsInsideRepeatedGroups) {
         SctCanonicalExpression{std::move(root), SctExpressionTermination::StopCode}}}});
     document.sections.push_back({sectionId, "INVALID", SctScriptSectionContent{{instruction}}});
 
-    const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
+    const auto validation = SctDocumentValidator::validateDocument(document);
     const auto found = std::find_if(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::ExpressionInvalid
             && diagnostic.parameter.has_value()
@@ -667,8 +757,8 @@ TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocument
     auto invalid = document;
     invalid.sections.front().nameBytes = std::string(17, 'X');
     invalid.sections.front().id = {};
-    const auto validationA = SctDocumentValidator::validate(invalid, {SctPlatform::GameCube}, &receipt);
-    const auto validationB = SctDocumentValidator::validate(invalid, {SctPlatform::GameCube}, &receipt);
+    const auto validationA = SctDocumentValidator::validateDocument(invalid);
+    const auto validationB = SctDocumentValidator::validateDocument(invalid);
     ASSERT_EQ(validationA.diagnostics.size(), validationB.diagnostics.size());
     for (std::size_t i = 0; i < validationA.diagnostics.size(); ++i) {
         EXPECT_EQ(validationA.diagnostics[i].code, validationB.diagnostics[i].code);

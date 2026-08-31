@@ -8,21 +8,24 @@
 
 namespace spice::sct {
 
-struct SctValidationResult {
-    bool validForLayout = false;
+struct SctDocumentValidationResult {
+    bool validDocument = false;
+    std::vector<SctDocumentDiagnostic> diagnostics;
+};
+
+struct SctTargetValidationResult {
+    bool validForTarget = false;
     std::vector<SctDocumentDiagnostic> diagnostics;
     std::vector<SctOpaqueAttachmentId> unresolvedOpaqueAttachments;
 };
 
-struct SctDocumentValidationOptions {
-    SctPlatform targetPlatform = SctPlatform::GameCube;
-};
-
 class SctDocumentValidator {
 public:
-    [[nodiscard]] static SctValidationResult validate(
+    [[nodiscard]] static SctDocumentValidationResult validateDocument(
+        const SctDocument& document);
+    [[nodiscard]] static SctTargetValidationResult validateForTarget(
         const SctDocument& document,
-        const SctDocumentValidationOptions& options,
+        SctPlatform targetPlatform,
         const SctDocumentImportReceipt* receipt = nullptr);
 };
 

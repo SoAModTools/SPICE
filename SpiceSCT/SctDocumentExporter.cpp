@@ -317,8 +317,8 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     case SctOpaquePreservationPolicy::RequirePreservation:
         break;
     }
-    const auto validation = SctDocumentValidator::validate(
-        document, SctDocumentValidationOptions{options.targetPlatform}, receipt);
+    const auto validation = SctDocumentValidator::validateForTarget(
+        document, options.targetPlatform, receipt);
     result.diagnostics = validation.diagnostics;
     if (hasErrors(result.diagnostics)) return result;
 

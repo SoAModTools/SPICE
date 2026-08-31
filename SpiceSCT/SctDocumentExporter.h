@@ -14,7 +14,14 @@ enum class SctDocumentOutputWrapper { Raw, Aklz };
 enum class SctOpaquePreservationPolicy { RequirePreservation };
 
 struct SctDocumentExportOptions {
-    SctPlatform targetPlatform = SctPlatform::GameCube;
+    explicit SctDocumentExportOptions(
+        SctPlatform target,
+        SctDocumentOutputByteOrder outputByteOrder = SctDocumentOutputByteOrder::BigEndian,
+        SctDocumentOutputWrapper outputWrapper = SctDocumentOutputWrapper::Raw,
+        SctOpaquePreservationPolicy preservationPolicy = SctOpaquePreservationPolicy::RequirePreservation) noexcept
+        : targetPlatform(target), byteOrder(outputByteOrder), wrapper(outputWrapper), opaquePolicy(preservationPolicy) {}
+
+    SctPlatform targetPlatform;
     SctDocumentOutputByteOrder byteOrder = SctDocumentOutputByteOrder::BigEndian;
     SctDocumentOutputWrapper wrapper = SctDocumentOutputWrapper::Raw;
     SctOpaquePreservationPolicy opaquePolicy = SctOpaquePreservationPolicy::RequirePreservation;

@@ -7,7 +7,7 @@
 namespace spice::sct {
 namespace {
 
-void error(SctValidationResult& result, SctDiagnosticCode code, std::string message,
+void error(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
     std::optional<SctDocumentEntityId> entity = std::nullopt,
     std::optional<SctParameterAddress> parameter = std::nullopt,
     std::vector<std::uint32_t> expressionPath = {}) {
@@ -18,7 +18,7 @@ void error(SctValidationResult& result, SctDiagnosticCode code, std::string mess
 }
 
 template <typename Id>
-bool recordId(SctValidationResult& result, Id id, std::unordered_set<std::uint64_t>& seen,
+bool recordId(SctDocumentValidationResult& result, Id id, std::unordered_set<std::uint64_t>& seen,
     std::uint64_t nextValue, const char* label) {
     if (!id) {
         error(result, SctDiagnosticCode::InvalidId, std::string(label) + " ID is zero.", SctDocumentEntityId{id});
@@ -36,7 +36,7 @@ bool recordId(SctValidationResult& result, Id id, std::unordered_set<std::uint64
     return true;
 }
 
-bool validExpressionNode(const SctCanonicalExpressionNode& node, SctValidationResult& result,
+bool validExpressionNode(const SctCanonicalExpressionNode& node, SctDocumentValidationResult& result,
     SctDocumentEntityId entity, std::optional<SctParameterAddress> parameter,
     const std::vector<std::uint32_t>& path) {
     bool valid = true;
@@ -98,7 +98,7 @@ bool validExpressionNode(const SctCanonicalExpressionNode& node, SctValidationRe
     return valid;
 }
 
-void validateExpression(const SctCanonicalExpression& expression, SctValidationResult& result,
+void validateExpression(const SctCanonicalExpression& expression, SctDocumentValidationResult& result,
     SctDocumentEntityId entity, std::optional<SctParameterAddress> parameter = std::nullopt) {
     if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
         if (opaque->words.empty()) {
@@ -121,7 +121,7 @@ void validateExpression(const SctCanonicalExpression& expression, SctValidationR
 
 bool powerOfTwo(std::uint32_t value) { return value && (value & (value - 1)) == 0; }
 
-void validateText(const SctTextValue& value, SctValidationResult& result, SctDocumentEntityId entity) {
+void validateText(const SctTextValue& value, SctDocumentValidationResult& result, SctDocumentEntityId entity) {
     if (const auto* text = std::get_if<SctEditableText>(&value)) {
         if (text->bytes.find('\0') != std::string::npos) {
             error(result, SctDiagnosticCode::InvalidContent,
@@ -135,11 +135,8 @@ void validateText(const SctTextValue& value, SctValidationResult& result, SctDoc
 
 } // namespace
 
-SctValidationResult SctDocumentValidator::validate(
-    const SctDocument& document,
-    const SctDocumentValidationOptions& options,
-    const SctDocumentImportReceipt* receipt) {
-    SctValidationResult result;
+SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocument& document) {
+    SctDocumentValidationResult result;
     std::unordered_set<std::uint64_t> sectionIds, instructionIds, stringIds, footerIds, attachmentIds;
     std::unordered_map<std::uint64_t, std::size_t> stringSectionUses;
     for (const auto& string : document.strings) {
@@ -189,9 +186,10 @@ SctValidationResult SctDocumentValidator::validate(
                 error(result, SctDiagnosticCode::ParameterMismatch, "Instruction opcode has no schema row.", entity);
                 continue;
             }
-            if (sctOpcodeAvailability(*schema, options.targetPlatform) != SctOpcodeAvailability::Available) {
+            if (sctOpcodeAvailability(*schema, SctPlatform::GameCube) != SctOpcodeAvailability::Available
+                && sctOpcodeAvailability(*schema, SctPlatform::Dreamcast) != SctOpcodeAvailability::Available) {
                 error(result, SctDiagnosticCode::OpcodeUnavailable,
-                    "Instruction opcode is unavailable on the requested target platform.", entity);
+                    "Instruction opcode is unavailable on every supported platform.", entity);
             }
             if (schema->documentRole == SctOpcodeDocumentRole::FoldedModifier) {
                 error(result, SctDiagnosticCode::InvalidContent,
@@ -337,20 +335,54 @@ SctValidationResult SctDocumentValidator::validate(
         }, attachment.anchor);
         if (!anchorExists) error(result, SctDiagnosticCode::AttachmentInvalid,
             "Opaque attachment anchor does not resolve to a document entity.", entity);
+    }
+
+    result.validDocument = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.severity == SctDiagnosticSeverity::Error; });
+    return result;
+}
+
+SctTargetValidationResult SctDocumentValidator::validateForTarget(
+    const SctDocument& document,
+    SctPlatform targetPlatform,
+    const SctDocumentImportReceipt* receipt) {
+    SctTargetValidationResult result;
+    auto structural = validateDocument(document);
+    result.diagnostics = std::move(structural.diagnostics);
+
+    const auto addTargetError = [&](SctDiagnosticCode code, std::string message,
+        std::optional<SctDocumentEntityId> entity = std::nullopt) {
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)});
+    };
+
+    for (const auto& section : document.sections) {
+        const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
+        if (script == nullptr) continue;
+        for (const auto& instruction : script->instructions) {
+            const auto* schema = findSctOpcodeSchema(instruction.opcode);
+            if (schema != nullptr
+                && sctOpcodeAvailability(*schema, targetPlatform) != SctOpcodeAvailability::Available) {
+                addTargetError(SctDiagnosticCode::OpcodeUnavailable,
+                    "Instruction opcode is unavailable on the requested target platform.",
+                    SctDocumentEntityId{instruction.id});
+            }
+        }
+    }
+
+    for (const auto& attachment : document.opaqueAttachments) {
         if (attachment.relocation == SctOpaqueRelocationSupport::FixedOnly) {
             result.unresolvedOpaqueAttachments.push_back(attachment.id);
         }
     }
-
     if (!document.opaqueAttachments.empty()
         && (receipt == nullptr
             || !receipt->declaredSourcePlatform.has_value()
-            || *receipt->declaredSourcePlatform != options.targetPlatform)) {
-        error(result, SctDiagnosticCode::OpaquePlatformUnverified,
+            || *receipt->declaredSourcePlatform != targetPlatform)) {
+        addTargetError(SctDiagnosticCode::OpaquePlatformUnverified,
             "Strict use of opaque attachments requires a matching caller-declared source platform.");
     }
 
-    result.validForLayout = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
+    result.validForTarget = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
         [](const auto& diagnostic) { return diagnostic.severity == SctDiagnosticSeverity::Error; });
     return result;
 }

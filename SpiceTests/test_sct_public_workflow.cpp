@@ -9,7 +9,7 @@ namespace {
 using namespace spice::sct;
 
 SctDocumentExportOptions gameCubeOptions() {
-    return {SctPlatform::GameCube, SctDocumentOutputByteOrder::BigEndian,
+    return SctDocumentExportOptions{SctPlatform::GameCube, SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper::Raw, SctOpaquePreservationPolicy::RequirePreservation};
 }
 } // namespace
@@ -22,8 +22,10 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     const auto sectionId = seedBuilder.allocateSectionId();
     SctInstructionFactoryRequest returnRequest;
     returnRequest.opcode = 12;
-    returnRequest.targetPlatform = SctPlatform::GameCube;
-    const auto initialReturn = SctInstructionFactory::create(seedBuilder.document(), returnRequest);
+    const auto returnDraft = SctInstructionFactory::createDraft(returnRequest);
+    ASSERT_TRUE(returnDraft.draft.has_value());
+    const auto initialReturn = SctInstructionFactory::materialize(
+        seedBuilder.document(), *returnDraft.draft);
     ASSERT_TRUE(initialReturn.instruction.has_value());
     seedBuilder.document().sections.push_back(
         {sectionId, "SCRIPT", SctScriptSectionContent{{*initialReturn.instruction}}});
@@ -45,8 +47,9 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     candidate.sections.front().nameBytes = "EDITED";
     SctInstructionFactoryRequest insertedInstructionRequest;
     insertedInstructionRequest.opcode = 15;
-    insertedInstructionRequest.targetPlatform = SctPlatform::GameCube;
-    const auto insertedInstruction = SctInstructionFactory::create(candidate, insertedInstructionRequest);
+    const auto insertedDraft = SctInstructionFactory::createDraft(insertedInstructionRequest);
+    ASSERT_TRUE(insertedDraft.draft.has_value());
+    const auto insertedInstruction = SctInstructionFactory::materialize(candidate, *insertedDraft.draft);
     ASSERT_TRUE(insertedInstruction.instruction.has_value());
     const auto appendedId = insertedInstruction.instruction->id;
     auto& candidateInstructions = std::get<SctScriptSectionContent>(candidate.sections.front().content).instructions;
@@ -54,9 +57,12 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
 
     const auto afterEdit = SctDocumentIndex::build(candidate);
     EXPECT_NE(afterEdit.find(appendedId), nullptr);
-    const auto validation = SctDocumentValidator::validate(
-        candidate, {SctPlatform::GameCube}, &imported.receipt);
-    ASSERT_TRUE(validation.validForLayout);
+    ASSERT_TRUE(afterEdit.instructionLocation(appendedId).has_value());
+    const auto structuralValidation = SctDocumentValidator::validateDocument(candidate);
+    ASSERT_TRUE(structuralValidation.validDocument);
+    const auto targetValidation = SctDocumentValidator::validateForTarget(
+        candidate, SctPlatform::GameCube, &imported.receipt);
+    ASSERT_TRUE(targetValidation.validForTarget);
     const auto exported = SctDocumentExporter::exportDocument(
         candidate, gameCubeOptions(), &imported.receipt);
     ASSERT_TRUE(exported.success);

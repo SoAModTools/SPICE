@@ -185,11 +185,11 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     EXPECT_EQ(std::get<SctFooterEntryReference>(instructions[2].fixedParameters[0].value).target,
         imported.document->footerEntries[0].id);
     EXPECT_EQ(imported.document->footerEntries[0].kind, SctDocumentFooterEntryKind::String);
-    const auto validation = SctDocumentValidator::validate(
-        *imported.document, {SctPlatform::GameCube}, &imported.receipt);
+    const auto validation = SctDocumentValidator::validateForTarget(
+        *imported.document, SctPlatform::GameCube, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
-    EXPECT_TRUE(validation.validForLayout) << messages;
+    EXPECT_TRUE(validation.validForTarget) << messages;
 }
 
 TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections) {
@@ -245,11 +245,11 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
         instructions[3].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[2].fixedParameters[0].value).target, instructions[0].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[4].fixedParameters[0].value).target, instructions[0].id);
-    const auto validation = SctDocumentValidator::validate(
-        *imported.document, {SctPlatform::GameCube}, &imported.receipt);
+    const auto validation = SctDocumentValidator::validateForTarget(
+        *imported.document, SctPlatform::GameCube, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
-    EXPECT_TRUE(validation.validForLayout) << messages;
+    EXPECT_TRUE(validation.validForTarget) << messages;
 }
 
 TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
@@ -290,8 +290,8 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
     ASSERT_EQ(canonical.repeatedParameterGroups.size(), 1u);
     ASSERT_EQ(canonical.repeatedParameterGroups[0].parameters.size(), 1u);
     EXPECT_EQ(canonical.repeatedParameterGroups[0].parameters[0].schemaIndex, 2u);
-    EXPECT_TRUE(SctDocumentValidator::validate(
-        *imported.document, {SctPlatform::GameCube}, &imported.receipt).validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validateForTarget(
+        *imported.document, SctPlatform::GameCube, &imported.receipt).validForTarget);
 }
 
 TEST(SctDocumentImporter, ReturnsPartialDocumentWithOpaqueFallbackForContradictoryEvidence) {
@@ -334,15 +334,41 @@ TEST(SctDocumentImporter, FailedParseDoesNotProduceDocument) {
 TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingTheContract) {
     const auto imported = SctDocumentImporter::import(makeOpcode265Parse(), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto gameCube = SctDocumentValidator::validate(
-        *imported.document, {SctPlatform::GameCube}, &imported.receipt);
-    const auto dreamcast = SctDocumentValidator::validate(
-        *imported.document, {SctPlatform::Dreamcast}, &imported.receipt);
-    EXPECT_TRUE(gameCube.validForLayout);
-    EXPECT_FALSE(dreamcast.validForLayout);
+    const auto structural = SctDocumentValidator::validateDocument(*imported.document);
+    const auto gameCube = SctDocumentValidator::validateForTarget(
+        *imported.document, SctPlatform::GameCube, &imported.receipt);
+    const auto dreamcast = SctDocumentValidator::validateForTarget(
+        *imported.document, SctPlatform::Dreamcast, &imported.receipt);
+    EXPECT_TRUE(structural.validDocument);
+    EXPECT_TRUE(gameCube.validForTarget);
+    EXPECT_FALSE(dreamcast.validForTarget);
     EXPECT_TRUE(std::any_of(dreamcast.diagnostics.begin(), dreamcast.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::OpcodeUnavailable;
     }));
+}
+
+TEST(SctDocumentValidator, NeutralValidationRejectsUniversallyInvalidAndFoldedOpcodes) {
+    SctDocument document;
+    const auto sectionId = document.allocateSectionId();
+    const auto invalidId = document.allocateInstructionId();
+    const auto modifierId = document.allocateInstructionId();
+    document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{
+        SctDocumentInstruction{invalidId, 13},
+        SctDocumentInstruction{modifierId, 129},
+    }}});
+
+    const auto validation = SctDocumentValidator::validateDocument(document);
+    EXPECT_FALSE(validation.validDocument);
+    EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(),
+        [&](const auto& diagnostic) {
+            return diagnostic.code == SctDiagnosticCode::OpcodeUnavailable
+                && diagnostic.entity == SctDocumentEntityId{invalidId};
+        }));
+    EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(),
+        [&](const auto& diagnostic) {
+            return diagnostic.code == SctDiagnosticCode::InvalidContent
+                && diagnostic.entity == SctDocumentEntityId{modifierId};
+        }));
 }
 
 TEST(SctDocumentValidator, KeepsIdentityStableAcrossReorderingAndCatchesDeletedTargets) {
@@ -353,10 +379,10 @@ TEST(SctDocumentValidator, KeepsIdentityStableAcrossReorderingAndCatchesDeletedT
     std::reverse(instructions.begin(), instructions.end());
     EXPECT_EQ(instructions[0].id, targetId);
     EXPECT_EQ(instructions[1].id, jumpId);
-    EXPECT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     instructions.erase(instructions.begin());
-    const auto invalid = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
-    EXPECT_FALSE(invalid.validForLayout);
+    const auto invalid = SctDocumentValidator::validateDocument(document);
+    EXPECT_FALSE(invalid.validDocument);
     EXPECT_TRUE(std::any_of(invalid.diagnostics.begin(), invalid.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::UnresolvedReference;
     }));
@@ -374,8 +400,8 @@ TEST(SctDocumentValidator, RejectsInvalidNamesRepeatedGroupsAndExpressionArity) 
     instruction.fixedParameters.push_back({0, expression});
     instruction.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{1}}}});
     document.sections.push_back({sectionId, std::string(17, 'X'), SctScriptSectionContent{{instruction}}});
-    const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
-    EXPECT_FALSE(validation.validForLayout);
+    const auto validation = SctDocumentValidator::validateDocument(document);
+    EXPECT_FALSE(validation.validDocument);
     EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::InvalidName;
     }));
@@ -397,8 +423,8 @@ TEST(SctDocumentValidator, RejectsZeroDuplicateOutOfAllocatorIdsAndBrokenAttachm
     document.opaqueAttachments.push_back({attachmentId, {1}, SctInstructionId{99},
         SctOpaquePlacement::FixedOffset, std::nullopt, 3, SctOpaqueRelocationSupport::FixedOnly,
         SctOpaqueReason::ContradictoryEvidence});
-    const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
-    EXPECT_FALSE(validation.validForLayout);
+    const auto validation = SctDocumentValidator::validateDocument(document);
+    EXPECT_FALSE(validation.validDocument);
     const auto hasCode = [&](SctDiagnosticCode code) {
         return std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(),
             [&](const auto& diagnostic) { return diagnostic.code == code; });

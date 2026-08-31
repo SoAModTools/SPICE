@@ -19,7 +19,7 @@ SctCanonicalExpression noLoop(std::uint32_t value = 0x7fffffffu) {
 SctDocumentExportOptions rawOptions(
     SctDocumentOutputByteOrder byteOrder = SctDocumentOutputByteOrder::BigEndian,
     SctPlatform platform = SctPlatform::GameCube) {
-    return {platform, byteOrder, SctDocumentOutputWrapper::Raw,
+    return SctDocumentExportOptions{platform, byteOrder, SctDocumentOutputWrapper::Raw,
         SctOpaquePreservationPolicy::RequirePreservation};
 }
 
@@ -63,19 +63,25 @@ std::string diagnosticMessages(const std::vector<SctDocumentDiagnostic>& diagnos
 
 TEST(SctDocumentValidationContext, DoesNotInferPlatformFromByteOrderAndRequiresReceiptOnlyForOpaqueData) {
     auto document = makeJumpDocument();
-    EXPECT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::Dreamcast}).validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+    EXPECT_TRUE(SctDocumentValidator::validateForTarget(
+        document, SctPlatform::Dreamcast).validForTarget);
 
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, SctDocumentAnchor{},
         SctOpaquePlacement::FixedOffset, 0, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Header});
-    EXPECT_FALSE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+    EXPECT_FALSE(SctDocumentValidator::validateForTarget(
+        document, SctPlatform::GameCube).validForTarget);
 
     SctDocumentImportReceipt receipt;
     receipt.source.byteOrder = SctSourceByteOrder::LittleEndian;
     receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    EXPECT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}, &receipt).validForLayout);
-    const auto mismatch = SctDocumentValidator::validate(document, {SctPlatform::Dreamcast}, &receipt);
-    EXPECT_FALSE(mismatch.validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validateForTarget(
+        document, SctPlatform::GameCube, &receipt).validForTarget);
+    const auto mismatch = SctDocumentValidator::validateForTarget(
+        document, SctPlatform::Dreamcast, &receipt);
+    EXPECT_FALSE(mismatch.validForTarget);
     EXPECT_TRUE(std::any_of(mismatch.diagnostics.begin(), mismatch.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::OpaquePlatformUnverified;
     }));
