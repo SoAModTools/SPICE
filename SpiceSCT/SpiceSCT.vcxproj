@@ -110,6 +110,7 @@
     <ClInclude Include="SctDocument.h" />
     <ClInclude Include="SctDocumentImporter.h" />
     <ClInclude Include="SctDocumentValidator.h" />
+    <ClInclude Include="SctDocumentExporter.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp" />
@@ -121,6 +122,7 @@
     <ClCompile Include="SctScptDecodeHelpers.cpp" />
     <ClCompile Include="SctDocumentImporter.cpp" />
     <ClCompile Include="SctDocumentValidator.cpp" />
+    <ClCompile Include="SctDocumentExporter.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Compression\Compression.vcxproj">

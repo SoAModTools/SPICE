@@ -2,6 +2,7 @@
 
 #include "SctDocument.h"
 #include "SctModel.h"
+#include "SctOpcodeMetadata.h"
 
 #include <optional>
 #include <vector>
@@ -23,16 +24,27 @@ struct SctSourceObservations {
     SctSourceWrapper wrapper = SctSourceWrapper::None;
 };
 
+struct SctDocumentImportOptions {
+    std::optional<SctPlatform> declaredSourcePlatform;
+};
+
+struct SctDocumentImportReceipt {
+    SctSourceObservations source;
+    std::optional<SctPlatform> declaredSourcePlatform;
+    std::vector<SctEntityProvenance> provenance;
+};
+
 struct SctDocumentImportResult {
     std::optional<SctDocument> document;
     std::vector<SctDocumentDiagnostic> diagnostics;
-    std::vector<SctEntityProvenance> provenance;
-    SctSourceObservations source;
+    SctDocumentImportReceipt receipt;
 };
 
 class SctDocumentImporter {
 public:
-    [[nodiscard]] static SctDocumentImportResult import(const SctParseResult& parsed);
+    [[nodiscard]] static SctDocumentImportResult import(
+        const SctParseResult& parsed,
+        const SctDocumentImportOptions& options = {});
 };
 
 } // namespace spice::sct

@@ -56,6 +56,9 @@
     <ClInclude Include="SctDocumentValidator.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctDocumentExporter.h">
+      <Filter>Export</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
@@ -84,6 +87,9 @@
     </ClCompile>
     <ClCompile Include="SctDocumentValidator.cpp">
       <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentExporter.cpp">
+      <Filter>Export</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

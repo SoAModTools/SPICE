@@ -11,3 +11,4 @@
 #include "SctDocument.h"
 #include "SctDocumentImporter.h"
 #include "SctDocumentValidator.h"
+#include "SctDocumentExporter.h"

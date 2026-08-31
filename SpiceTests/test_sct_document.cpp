@@ -29,6 +29,7 @@ SctParseResult makeOpcode265Parse() {
     expression.index = 0;
     expression.rawWords = {0x0000002au};
     expression.expression = SctExpression{};
+    expression.expression->hitStopCode = true;
     expression.expression->ast = SctScptAstNode{SctScptAstNodeKind::RawValue, {}, {}, {0x0000002au}, {}};
     SctParameter footer;
     footer.index = 1;
@@ -72,8 +73,8 @@ TEST(SctDocumentModel, AllocatesSeparatedMonotonicIdentityDomains) {
 
 TEST(SctDocumentImporter, IsDeterministicAndClaimsEveryDecodedPayloadByte) {
     const auto parsed = makeOpcode265Parse();
-    const auto first = SctDocumentImporter::import(parsed);
-    const auto second = SctDocumentImporter::import(parsed);
+    const auto first = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
+    const auto second = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(first.document.has_value());
     ASSERT_TRUE(second.document.has_value());
     ASSERT_EQ(first.document->sections.size(), 1u);
@@ -83,10 +84,12 @@ TEST(SctDocumentImporter, IsDeterministicAndClaimsEveryDecodedPayloadByte) {
     ASSERT_EQ(secondScript.instructions.size(), 1u);
     EXPECT_EQ(first.document->sections[0].id, second.document->sections[0].id);
     EXPECT_EQ(firstScript.instructions[0].id, secondScript.instructions[0].id);
-    EXPECT_EQ(first.source.byteOrder, SctSourceByteOrder::BigEndian);
+    EXPECT_EQ(first.receipt.source.byteOrder, SctSourceByteOrder::BigEndian);
+    ASSERT_TRUE(first.receipt.declaredSourcePlatform.has_value());
+    EXPECT_EQ(*first.receipt.declaredSourcePlatform, SctPlatform::GameCube);
 
     std::vector<unsigned> coverage(parsed.file.originalPayloadBytes.size(), 0);
-    for (const auto& provenance : first.provenance) {
+    for (const auto& provenance : first.receipt.provenance) {
         ASSERT_LE(static_cast<std::size_t>(provenance.decodedPayloadOffset) + provenance.byteSize, coverage.size());
         for (std::size_t i = provenance.decodedPayloadOffset;
              i < provenance.decodedPayloadOffset + provenance.byteSize; ++i) ++coverage[i];
@@ -94,13 +97,22 @@ TEST(SctDocumentImporter, IsDeterministicAndClaimsEveryDecodedPayloadByte) {
     EXPECT_TRUE(std::all_of(coverage.begin(), coverage.end(), [](unsigned claims) { return claims == 1; }));
 }
 
+TEST(SctDocumentImporter, RecordsEncodingObservationsWithoutInferringAPlatform) {
+    auto parsed = makeOpcode265Parse();
+    parsed.file.detectedEndian = "little";
+    const auto imported = SctDocumentImporter::import(parsed);
+    ASSERT_TRUE(imported.document.has_value());
+    EXPECT_EQ(imported.receipt.source.byteOrder, SctSourceByteOrder::LittleEndian);
+    EXPECT_FALSE(imported.receipt.declaredSourcePlatform.has_value());
+}
+
 TEST(SctDocumentImporter, PreservesDuplicatePhysicalNamesWithoutMergingRows) {
     SctParseResult parsed;
     parsed.parseOk = true;
     parsed.file.originalPayloadBytes.resize(52, 0);
     const std::string name = "SAME";
-    std::copy(name.begin(), name.end(), parsed.file.originalPayloadBytes.begin() + 12);
-    std::copy(name.begin(), name.end(), parsed.file.originalPayloadBytes.begin() + 32);
+    std::copy(name.begin(), name.end(), parsed.file.originalPayloadBytes.begin() + 16);
+    std::copy(name.begin(), name.end(), parsed.file.originalPayloadBytes.begin() + 36);
     for (std::uint32_t i = 0; i < 2; ++i) {
         SctSection section;
         section.id.index = i;
@@ -113,6 +125,7 @@ TEST(SctDocumentImporter, PreservesDuplicatePhysicalNamesWithoutMergingRows) {
     const auto imported = SctDocumentImporter::import(parsed);
     ASSERT_TRUE(imported.document.has_value());
     ASSERT_EQ(imported.document->sections.size(), 2u);
+    EXPECT_EQ(imported.document->sections[0].nameBytes, "SAME");
     EXPECT_EQ(imported.document->sections[0].nameBytes, imported.document->sections[1].nameBytes);
     EXPECT_NE(imported.document->sections[0].id, imported.document->sections[1].id);
 }
@@ -162,7 +175,7 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     footer.entries.push_back(std::move(entry));
     parsed.file.footer = std::move(footer);
 
-    const auto imported = SctDocumentImporter::import(parsed);
+    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 3u);
@@ -171,7 +184,9 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     ASSERT_TRUE(std::holds_alternative<SctFooterEntryReference>(instructions[2].fixedParameters[0].value));
     EXPECT_EQ(std::get<SctFooterEntryReference>(instructions[2].fixedParameters[0].value).target,
         imported.document->footerEntries[0].id);
-    const auto validation = SctDocumentValidator::validate(*imported.document, SctPlatform::GameCube);
+    EXPECT_EQ(imported.document->footerEntries[0].kind, SctDocumentFooterEntryKind::String);
+    const auto validation = SctDocumentValidator::validate(
+        *imported.document, {SctPlatform::GameCube}, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForLayout) << messages;
@@ -190,6 +205,7 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
         parameter.index = index;
         parameter.rawWords = {1};
         parameter.expression = SctExpression{};
+        parameter.expression->hitStopCode = true;
         parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::RawValue, {}, {}, {1}, {}};
         return parameter;
     };
@@ -220,7 +236,7 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
     section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known, {}, {}, 44, 0, 10});
     parsed.file.sections.push_back(std::move(section));
 
-    const auto imported = SctDocumentImporter::import(parsed);
+    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 5u);
@@ -229,7 +245,8 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
         instructions[3].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[2].fixedParameters[0].value).target, instructions[0].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[4].fixedParameters[0].value).target, instructions[0].id);
-    const auto validation = SctDocumentValidator::validate(*imported.document, SctPlatform::GameCube);
+    const auto validation = SctDocumentValidator::validate(
+        *imported.document, {SctPlatform::GameCube}, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForLayout) << messages;
@@ -255,6 +272,7 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
         parameter.index = index;
         parameter.rawWords = {word};
         parameter.expression = SctExpression{};
+        parameter.expression->hitStopCode = true;
         parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::RawValue, {}, {}, {word}, {}};
         return parameter;
     };
@@ -265,14 +283,15 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
     section.instructions.push_back(std::move(instruction));
     parsed.file.sections.push_back(std::move(section));
 
-    const auto imported = SctDocumentImporter::import(parsed);
+    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
     const auto& canonical = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions[0];
     ASSERT_EQ(canonical.fixedParameters.size(), 1u);
     ASSERT_EQ(canonical.repeatedParameterGroups.size(), 1u);
     ASSERT_EQ(canonical.repeatedParameterGroups[0].parameters.size(), 1u);
     EXPECT_EQ(canonical.repeatedParameterGroups[0].parameters[0].schemaIndex, 2u);
-    EXPECT_TRUE(SctDocumentValidator::validate(*imported.document, SctPlatform::GameCube).validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validate(
+        *imported.document, {SctPlatform::GameCube}, &imported.receipt).validForLayout);
 }
 
 TEST(SctDocumentImporter, ReturnsPartialDocumentWithOpaqueFallbackForContradictoryEvidence) {
@@ -313,10 +332,12 @@ TEST(SctDocumentImporter, FailedParseDoesNotProduceDocument) {
 }
 
 TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingTheContract) {
-    const auto imported = SctDocumentImporter::import(makeOpcode265Parse());
+    const auto imported = SctDocumentImporter::import(makeOpcode265Parse(), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto gameCube = SctDocumentValidator::validate(*imported.document, SctPlatform::GameCube);
-    const auto dreamcast = SctDocumentValidator::validate(*imported.document, SctPlatform::Dreamcast);
+    const auto gameCube = SctDocumentValidator::validate(
+        *imported.document, {SctPlatform::GameCube}, &imported.receipt);
+    const auto dreamcast = SctDocumentValidator::validate(
+        *imported.document, {SctPlatform::Dreamcast}, &imported.receipt);
     EXPECT_TRUE(gameCube.validForLayout);
     EXPECT_FALSE(dreamcast.validForLayout);
     EXPECT_TRUE(std::any_of(dreamcast.diagnostics.begin(), dreamcast.diagnostics.end(), [](const auto& diagnostic) {
@@ -332,9 +353,9 @@ TEST(SctDocumentValidator, KeepsIdentityStableAcrossReorderingAndCatchesDeletedT
     std::reverse(instructions.begin(), instructions.end());
     EXPECT_EQ(instructions[0].id, targetId);
     EXPECT_EQ(instructions[1].id, jumpId);
-    EXPECT_TRUE(SctDocumentValidator::validate(document, SctPlatform::GameCube).validForLayout);
+    EXPECT_TRUE(SctDocumentValidator::validate(document, {SctPlatform::GameCube}).validForLayout);
     instructions.erase(instructions.begin());
-    const auto invalid = SctDocumentValidator::validate(document, SctPlatform::GameCube);
+    const auto invalid = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
     EXPECT_FALSE(invalid.validForLayout);
     EXPECT_TRUE(std::any_of(invalid.diagnostics.begin(), invalid.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::UnresolvedReference;
@@ -353,7 +374,7 @@ TEST(SctDocumentValidator, RejectsInvalidNamesRepeatedGroupsAndExpressionArity) 
     instruction.fixedParameters.push_back({0, expression});
     instruction.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{1}}}});
     document.sections.push_back({sectionId, std::string(17, 'X'), SctScriptSectionContent{{instruction}}, {}});
-    const auto validation = SctDocumentValidator::validate(document, SctPlatform::GameCube);
+    const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
     EXPECT_FALSE(validation.validForLayout);
     EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::InvalidName;
@@ -376,7 +397,7 @@ TEST(SctDocumentValidator, RejectsZeroDuplicateOutOfAllocatorIdsAndBrokenAttachm
     document.opaqueAttachments.push_back({attachmentId, {1}, SctInstructionId{99},
         SctOpaquePlacement::FixedOffset, std::nullopt, 3, SctOpaqueRelocationSupport::FixedOnly,
         SctOpaqueReason::ContradictoryEvidence});
-    const auto validation = SctDocumentValidator::validate(document, SctPlatform::GameCube);
+    const auto validation = SctDocumentValidator::validate(document, {SctPlatform::GameCube});
     EXPECT_FALSE(validation.validForLayout);
     const auto hasCode = [&](SctDiagnosticCode code) {
         return std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(),

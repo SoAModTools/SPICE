@@ -1,6 +1,7 @@
 #include "SctDocumentValidator.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace spice::sct {
@@ -41,13 +42,46 @@ bool validExpressionNode(const SctCanonicalExpressionNode& node, SctValidationRe
             "A typed SCPT operator must have exactly two children.", entity);
         valid = false;
     }
-    if (!binary && node.kind == SctCanonicalExpressionNodeKind::Stop && !node.children.empty()) {
-        error(result, SctDiagnosticCode::ExpressionInvalid, "A stop node cannot have children.", entity);
+    if (!binary && !node.children.empty()) {
+        error(result, SctDiagnosticCode::ExpressionInvalid, "A typed SCPT leaf cannot have children.", entity);
         valid = false;
     }
     if (node.kind == SctCanonicalExpressionNodeKind::FloatLiteral && node.payloadWords.size() != 1) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
             "A float literal must preserve exactly one payload word.", entity);
+        valid = false;
+    }
+    if (node.kind != SctCanonicalExpressionNodeKind::FloatLiteral && !node.payloadWords.empty()) {
+        error(result, SctDiagnosticCode::ExpressionInvalid,
+            "Only a typed SCPT float literal may contain a payload word.", entity);
+        valid = false;
+    }
+    const auto prefix = node.encodingCode & 0xff000000u;
+    const auto compare = node.encodingCode <= 0x0au || node.encodingCode == 0x10u || node.encodingCode == 0x11u;
+    const auto arithmetic = (node.encodingCode >= 0x0bu && node.encodingCode <= 0x0fu)
+        || (node.encodingCode >= 0x12u && node.encodingCode <= 0x16u);
+    bool encodingMatches = true;
+    switch (node.kind) {
+    case SctCanonicalExpressionNodeKind::NoLoopValue:
+        encodingMatches = node.encodingCode == 0x7f7fffffu || node.encodingCode == 0x00800000u
+            || node.encodingCode == 0x7fffffffu;
+        break;
+    case SctCanonicalExpressionNodeKind::FloatLiteral: encodingMatches = prefix == 0x04000000u; break;
+    case SctCanonicalExpressionNodeKind::DecimalLiteral: encodingMatches = prefix == 0x08000000u; break;
+    case SctCanonicalExpressionNodeKind::IntVariable:
+    case SctCanonicalExpressionNodeKind::SecondaryValue: encodingMatches = prefix == 0x50000000u; break;
+    case SctCanonicalExpressionNodeKind::FloatVariable: encodingMatches = prefix == 0x40000000u; break;
+    case SctCanonicalExpressionNodeKind::BitVariable: encodingMatches = prefix == 0x20000000u; break;
+    case SctCanonicalExpressionNodeKind::ByteVariable: encodingMatches = prefix == 0x10000000u; break;
+    case SctCanonicalExpressionNodeKind::CompareOperator: encodingMatches = compare && node.encodingCode != 0x0au; break;
+    case SctCanonicalExpressionNodeKind::AssignmentOperator: encodingMatches = node.encodingCode == 0x0au; break;
+    case SctCanonicalExpressionNodeKind::ArithmeticOperator: encodingMatches = arithmetic; break;
+    case SctCanonicalExpressionNodeKind::Stop: encodingMatches = node.encodingCode == 0x1du; break;
+    case SctCanonicalExpressionNodeKind::RawValue: break;
+    }
+    if (!encodingMatches) {
+        error(result, SctDiagnosticCode::ExpressionInvalid,
+            "Typed SCPT node kind does not match its exact encoding code.", entity);
         valid = false;
     }
     for (const auto& child : node.children) validExpressionNode(child, result, entity);
@@ -62,7 +96,16 @@ void validateExpression(const SctCanonicalExpression& expression, SctValidationR
                 "An opaque SCPT fallback must contain the preserved encoded words.", entity);
         }
     } else {
-        validExpressionNode(std::get<SctCanonicalExpressionNode>(expression.root), result, entity);
+        const auto& root = std::get<SctCanonicalExpressionNode>(expression.root);
+        validExpressionNode(root, result, entity);
+        const bool inlineValue = root.kind == SctCanonicalExpressionNodeKind::NoLoopValue;
+        const bool explicitStop = root.kind == SctCanonicalExpressionNodeKind::Stop;
+        if ((inlineValue && expression.termination != SctExpressionTermination::InlineValue)
+            || (!inlineValue && expression.termination != SctExpressionTermination::StopCode)
+            || (explicitStop && expression.termination != SctExpressionTermination::StopCode)) {
+            error(result, SctDiagnosticCode::ExpressionInvalid,
+                "Typed SCPT expression termination is incompatible with its root encoding.", entity);
+        }
     }
 }
 
@@ -82,9 +125,13 @@ void validateText(const SctTextValue& value, SctValidationResult& result, SctDoc
 
 } // namespace
 
-SctValidationResult SctDocumentValidator::validate(const SctDocument& document, SctPlatform platform) {
+SctValidationResult SctDocumentValidator::validate(
+    const SctDocument& document,
+    const SctDocumentValidationOptions& options,
+    const SctDocumentImportReceipt* receipt) {
     SctValidationResult result;
     std::unordered_set<std::uint64_t> sectionIds, instructionIds, stringIds, footerIds, attachmentIds;
+    std::unordered_map<std::uint64_t, std::size_t> stringSectionUses;
     for (const auto& string : document.strings) {
         recordId(result, string.id, stringIds, document.nextStringIdValue(), "String");
         validateText(string.value, result, SctDocumentEntityId{string.id});
@@ -105,10 +152,18 @@ SctValidationResult SctDocumentValidator::validate(const SctDocument& document, 
                 error(result, SctDiagnosticCode::UnresolvedReference,
                     "String section references a missing string entity.", SctDocumentEntityId{section.id});
             }
+            ++stringSectionUses[strings->stringId.value()];
         }
         if (const auto* script = std::get_if<SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) recordId(result, instruction.id, instructionIds,
                 document.nextInstructionIdValue(), "Instruction");
+        }
+    }
+    for (const auto& string : document.strings) {
+        if (stringSectionUses[string.id.value()] != 1u) {
+            error(result, SctDiagnosticCode::InvalidContent,
+                "Each document string must belong to exactly one physical string section.",
+                SctDocumentEntityId{string.id});
         }
     }
     for (const auto& attachment : document.opaqueAttachments) recordId(result, attachment.id, attachmentIds,
@@ -130,7 +185,7 @@ SctValidationResult SctDocumentValidator::validate(const SctDocument& document, 
                 error(result, SctDiagnosticCode::ParameterMismatch, "Instruction opcode has no schema row.", entity);
                 continue;
             }
-            if (sctOpcodeAvailability(*schema, platform) != SctOpcodeAvailability::Available) {
+            if (sctOpcodeAvailability(*schema, options.targetPlatform) != SctOpcodeAvailability::Available) {
                 error(result, SctDiagnosticCode::OpcodeUnavailable,
                     "Instruction opcode is unavailable on the requested target platform.", entity);
             }
@@ -214,8 +269,8 @@ SctValidationResult SctDocumentValidator::validate(const SctDocument& document, 
                         const auto found = std::find_if(document.footerEntries.begin(), document.footerEntries.end(),
                             [&](const auto& entry) { return entry.id == reference->target; });
                         if (found != document.footerEntries.end()
-                            && ((rule.kind == SctFooterParamKind::String && found->kind != SctFooterEntryKind::String)
-                                || (rule.kind == SctFooterParamKind::SctString && found->kind != SctFooterEntryKind::SctString))) {
+                            && ((rule.kind == SctFooterParamKind::String && found->kind != SctDocumentFooterEntryKind::String)
+                                || (rule.kind == SctFooterParamKind::SctString && found->kind != SctDocumentFooterEntryKind::SctString))) {
                             error(result, SctDiagnosticCode::ParameterMismatch,
                                 "Footer reference kind is incompatible with the opcode schema.", entity);
                         }
@@ -262,6 +317,14 @@ SctValidationResult SctDocumentValidator::validate(const SctDocument& document, 
         if (attachment.relocation == SctOpaqueRelocationSupport::FixedOnly) {
             result.unresolvedOpaqueAttachments.push_back(attachment.id);
         }
+    }
+
+    if (!document.opaqueAttachments.empty()
+        && (receipt == nullptr
+            || !receipt->declaredSourcePlatform.has_value()
+            || *receipt->declaredSourcePlatform != options.targetPlatform)) {
+        error(result, SctDiagnosticCode::OpaquePlatformUnverified,
+            "Strict use of opaque attachments requires a matching caller-declared source platform.");
     }
 
     result.validForLayout = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),

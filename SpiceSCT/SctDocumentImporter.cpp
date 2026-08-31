@@ -199,18 +199,21 @@ SctOpaqueAttachmentId addAttachment(SctDocument& document, SctDocumentImportResu
     document.opaqueAttachments.push_back({id, std::move(bytes), std::move(anchor),
         SctOpaquePlacement::FixedOffset, absoluteOffset, 1, SctOpaqueRelocationSupport::FixedOnly, reason});
     if (section) section->opaqueAttachments.push_back(id);
-    result.provenance.push_back({SctDocumentEntityId{id}, absoluteOffset,
+    result.receipt.provenance.push_back({SctDocumentEntityId{id}, absoluteOffset,
         static_cast<std::uint32_t>(document.opaqueAttachments.back().bytes.size()), std::nullopt});
     return id;
 }
 
 } // namespace
 
-SctDocumentImportResult SctDocumentImporter::import(const SctParseResult& parsed) {
+SctDocumentImportResult SctDocumentImporter::import(
+    const SctParseResult& parsed,
+    const SctDocumentImportOptions& options) {
     SctDocumentImportResult result;
-    result.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
+    result.receipt.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
         : parsed.file.detectedEndian == "little" ? SctSourceByteOrder::LittleEndian : SctSourceByteOrder::Unknown;
-    result.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
+    result.receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
+    result.receipt.declaredSourcePlatform = options.declaredSourcePlatform;
     if (!parsed.parseOk) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::ParseFailed,
             "A canonical document cannot be imported from a failed parse.");
@@ -291,24 +294,24 @@ SctDocumentImportResult SctDocumentImporter::import(const SctParseResult& parsed
         }
     }
 
-    result.provenance.push_back({{}, 8, 4, std::nullopt});
+    result.receipt.provenance.push_back({{}, 8, 4, std::nullopt});
     std::vector<std::string> sectionNames;
     std::vector<SctOpaqueAttachmentId> indexPaddingAttachments(parsed.file.sections.size());
     sectionNames.reserve(parsed.file.sections.size());
     for (std::size_t sectionIndex = 0; sectionIndex < parsed.file.sections.size(); ++sectionIndex) {
         const auto rowOffset = static_cast<std::uint32_t>(12 + sectionIndex * 20);
-        const auto nameBegin = bytes.begin() + rowOffset;
+        result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset,
+            4, static_cast<std::uint32_t>(sectionIndex)});
+        const auto nameBegin = bytes.begin() + rowOffset + 4;
         const auto zero = std::find(nameBegin, nameBegin + 16, 0);
         sectionNames.emplace_back(nameBegin, zero);
         if (!sectionNames.back().empty()) {
-            result.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset,
+            result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset + 4,
                 static_cast<std::uint32_t>(sectionNames.back().size()), static_cast<std::uint32_t>(sectionIndex)});
         }
         indexPaddingAttachments[sectionIndex] = addAttachment(document, result, sectionIds[sectionIndex],
-            rowOffset + static_cast<std::uint32_t>(sectionNames.back().size()),
+            rowOffset + 4 + static_cast<std::uint32_t>(sectionNames.back().size()),
             std::vector<std::uint8_t>(zero, nameBegin + 16), SctOpaqueReason::Padding);
-        result.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset + 16,
-            4, static_cast<std::uint32_t>(sectionIndex)});
     }
     addAttachment(document, result, SctDocumentAnchor{}, 0,
         std::vector<std::uint8_t>(bytes.begin(), bytes.begin() + 8), SctOpaqueReason::Header);
@@ -347,7 +350,7 @@ SctDocumentImportResult SctDocumentImporter::import(const SctParseResult& parsed
             } else {
                 document.strings.push_back(std::move(string));
                 targetSection.content = SctStringSectionContent{stringId};
-                result.provenance.push_back({SctDocumentEntityId{stringId},
+                result.receipt.provenance.push_back({SctDocumentEntityId{stringId},
                     sourceSection.startOffset + entry.textStartOffset,
                     static_cast<std::uint32_t>(entry.rawTextBytes.size()), static_cast<std::uint32_t>(sectionIndex)});
             }
@@ -401,7 +404,7 @@ SctDocumentImportResult SctDocumentImporter::import(const SctParseResult& parsed
                         "Encoded repetition count disagrees with the imported group count.", SctDocumentEntityId{converted.id});
                 }
                 script.instructions.push_back(std::move(converted));
-                result.provenance.push_back({SctDocumentEntityId{idIt->second},
+                result.receipt.provenance.push_back({SctDocumentEntityId{idIt->second},
                     sourceSection.startOffset + instruction.offset, instruction.sizeBytes, static_cast<std::uint32_t>(sectionIndex)});
             }
             targetSection.content = std::move(script);
@@ -434,14 +437,17 @@ SctDocumentImportResult SctDocumentImporter::import(const SctParseResult& parsed
                 continue;
             }
             const auto id = idIt->second;
-            SctDocumentFooterEntry converted{id, entry.kind, SctOpaqueText{entry.rawBytes}};
+            const auto kind = entry.kind == SctFooterEntryKind::SctString
+                ? SctDocumentFooterEntryKind::SctString
+                : SctDocumentFooterEntryKind::String;
+            SctDocumentFooterEntry converted{id, kind, SctOpaqueText{entry.rawBytes}};
             if (const auto text = editableText(entry.rawBytes)) converted.value = *text;
             else addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
                 "Footer bytes were retained as opaque because single-byte termination was ambiguous.", SctDocumentEntityId{id});
             const auto local = entry.payloadOffset - footer->payloadStartOffset;
             if (ledger.claim(local, entry.rawBytes.size())) {
                 document.footerEntries.push_back(std::move(converted));
-                result.provenance.push_back({SctDocumentEntityId{id}, dataStart + entry.payloadOffset,
+                result.receipt.provenance.push_back({SctDocumentEntityId{id}, dataStart + entry.payloadOffset,
                     static_cast<std::uint32_t>(entry.rawBytes.size()), std::nullopt});
             } else {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::OverlappingSourceClaims,
@@ -460,7 +466,7 @@ SctDocumentImportResult SctDocumentImporter::import(const SctParseResult& parsed
     }
 
     std::vector<std::uint8_t> totalCoverage(bytes.size(), 0);
-    for (const auto& provenance : result.provenance) {
+    for (const auto& provenance : result.receipt.provenance) {
         const auto begin = static_cast<std::size_t>(provenance.decodedPayloadOffset);
         const auto size = static_cast<std::size_t>(provenance.byteSize);
         if (begin > totalCoverage.size() || size > totalCoverage.size() - begin) {

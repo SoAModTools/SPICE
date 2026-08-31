@@ -1,7 +1,5 @@
 #pragma once
 
-#include "SctOpcodeMetadata.h"
-
 #include <compare>
 #include <cstdint>
 #include <functional>
@@ -64,6 +62,12 @@ enum class SctDiagnosticCode {
     ParameterMismatch,
     ExpressionInvalid,
     AttachmentInvalid,
+    OpaquePlatformUnverified,
+    LayoutOverflow,
+    EncodingUnsupported,
+    RelocationOutOfRange,
+    OpaquePlacementUnsatisfied,
+    CompressionFailed,
 };
 
 struct SctDocumentDiagnostic {
@@ -127,9 +131,11 @@ struct SctDocumentString {
     SctTextValue value;
 };
 
+enum class SctDocumentFooterEntryKind { String, SctString };
+
 struct SctDocumentFooterEntry {
     SctFooterEntryId id;
-    SctFooterEntryKind kind = SctFooterEntryKind::String;
+    SctDocumentFooterEntryKind kind = SctDocumentFooterEntryKind::String;
     SctTextValue value;
 };
 
