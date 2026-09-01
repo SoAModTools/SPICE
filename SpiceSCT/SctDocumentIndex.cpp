@@ -7,6 +7,8 @@ void collectReference(const SctDocumentInstruction& instruction, const SctDocume
     std::optional<std::uint32_t> groupOrdinal, std::vector<SctDocumentReferenceRecord>& references) {
     if (const auto* target = std::get_if<SctInstructionReference>(&parameter.value)) {
         references.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal}, target->target});
+    } else if (const auto* target = std::get_if<SctStringReference>(&parameter.value)) {
+        references.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal}, target->target});
     } else if (const auto* target = std::get_if<SctFooterEntryReference>(&parameter.value)) {
         references.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal}, target->target});
     }

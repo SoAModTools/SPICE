@@ -31,8 +31,13 @@ SctParseResult makeLabelParse(std::string name, std::vector<std::uint8_t> unusua
 }
 
 SctDocumentExportOptions rawGameCubeOptions() {
-    return SctDocumentExportOptions{SctPlatform::GameCube, SctDocumentOutputByteOrder::BigEndian,
+    return SctDocumentExportOptions{SctPlatform::GameCube, SctTextProfile::GameCubeUs,
+        SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper::Raw, SctOpaquePreservationPolicy::RequirePreservation};
+}
+
+SctMessage message(std::string text) {
+    return {std::nullopt, SctFormattedText{{SctTextChunk{std::move(text)}}}};
 }
 
 void appendBe32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
@@ -69,11 +74,17 @@ std::vector<SctInstructionParameterOverride> requiredOverrides(
         case SctOpcodeReferenceKind::Instruction:
             result.push_back({address, SctInstructionReference{target}});
             break;
-        case SctOpcodeReferenceKind::FooterString:
-            result.push_back({address, SctFooterEntryReference{stringFooter}});
-            break;
-        case SctOpcodeReferenceKind::FooterSctString:
-            result.push_back({address, SctFooterEntryReference{sctStringFooter}});
+        case SctOpcodeReferenceKind::Text:
+            if (!parameter.textReference.has_value()) {
+                ADD_FAILURE() << "Text parameter is missing its text-reference rule.";
+                break;
+            }
+            if (parameter.textReference->storage == SctTextStorage::Footer) {
+                const auto footer = parameter.textReference->kind == SctTextKind::SctString
+                    ? sctStringFooter
+                    : stringFooter;
+                result.push_back({address, SctFooterEntryReference{footer}});
+            }
             break;
         case SctOpcodeReferenceKind::None:
             if (parameter.defaultKind == SctOpcodeDefaultKind::Required) {
@@ -153,9 +164,9 @@ TEST(SctDocumentBuilder, ReconstitutesSparseIdsAndRejectsInvalidIdentityState) {
     instruction.id = SctInstructionId{42};
     instruction.opcode = 12;
     external.sections.push_back({SctSectionId{7}, "SCRIPT", SctScriptSectionContent{{instruction}}});
-    external.strings.push_back({SctStringId{3}, SctEditableText{"text"}});
+    external.strings.push_back({SctStringId{3}, message("text")});
     external.sections.push_back({SctSectionId{20}, "STRING", SctStringSectionContent{SctStringId{3}}});
-    external.footerEntries.push_back({SctFooterEntryId{9}, SctDocumentFooterEntryKind::String, SctEditableText{"footer"}});
+    external.footerEntries.push_back({SctFooterEntryId{9}, SctDocumentFooterEntryKind::String, SctPlainText{"footer"}});
     external.opaqueAttachments.push_back({SctOpaqueAttachmentId{11}, {0xaa}, SctSectionId{7},
         SctOpaquePlacement::FixedOffset, 200u, 1, SctOpaqueRelocationSupport::FixedOnly,
         SctOpaqueReason::UnknownEncoding});
@@ -190,9 +201,9 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     SctDocumentInstruction target{targetId, 12};
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}});
     const auto stringSectionId = document.allocateSectionId();
-    document.strings.push_back({stringId, SctEditableText{"text"}});
+    document.strings.push_back({stringId, message("text")});
     document.sections.push_back({stringSectionId, "STRING", SctStringSectionContent{stringId}});
-    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctEditableText{"footer"}});
+    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"footer"}});
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, sectionId,
         SctOpaquePlacement::FixedOffset, 100u, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
 
@@ -304,6 +315,7 @@ TEST(SctInstructionFactory, CreatesNeutralDraftsWithExplicitAvailabilityForEvery
                 == SctOpcodeAvailability::Available;
         if (availableAnywhere && schema.documentRole == SctOpcodeDocumentRole::Instruction) {
             ASSERT_TRUE(draft.draft.has_value()) << schema.opcode;
+            EXPECT_FALSE(draft.draft->skipRefresh) << schema.opcode;
             EXPECT_EQ(draft.draft->availability.gameCube,
                 sctOpcodeAvailability(schema, SctPlatform::GameCube)) << schema.opcode;
             EXPECT_EQ(draft.draft->availability.dreamcast,
@@ -386,8 +398,8 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     const auto targetId = document.allocateInstructionId();
     const auto stringFooter = document.allocateFooterEntryId();
     const auto sctStringFooter = document.allocateFooterEntryId();
-    document.footerEntries.push_back({stringFooter, SctDocumentFooterEntryKind::String, SctEditableText{"file.mld"}});
-    document.footerEntries.push_back({sctStringFooter, SctDocumentFooterEntryKind::SctString, SctEditableText{"message"}});
+    document.footerEntries.push_back({stringFooter, SctDocumentFooterEntryKind::String, SctPlainText{"file.mld"}});
+    document.footerEntries.push_back({sctStringFooter, SctDocumentFooterEntryKind::SctString, message("message")});
 
     const auto& schema = *findSctOpcodeSchema(3);
     SctInstructionFactoryRequest request;
@@ -416,7 +428,8 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     ASSERT_TRUE(exported.success);
     const auto parsed = SctParser{}.parse(exported.bytes, "factory.sct");
     ASSERT_TRUE(parsed.parseOk);
-    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
+    const auto imported = SctDocumentImporter::import(
+        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
     ASSERT_TRUE(imported.document.has_value());
 }
 
@@ -460,21 +473,25 @@ TEST(SctDocumentEditing, StructuralAndTextEditsExportWithoutChangingStableIdenti
 TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText) {
     const auto parsed = parseEditableStringFixture("short");
     ASSERT_TRUE(parsed.parseOk);
-    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
+    const auto imported = SctDocumentImporter::import(
+        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
     ASSERT_TRUE(imported.document.has_value());
     ASSERT_EQ(imported.document->strings.size(), 1u);
     auto document = *imported.document;
-    std::get<SctEditableText>(document.strings.front().value).bytes = "a substantially longer string";
+    std::get<SctTextChunk>(std::get<SctMessage>(document.strings.front().value).body.elements.front()).utf8 =
+        "a substantially longer string";
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &imported.receipt);
     ASSERT_TRUE(exported.success);
     const auto reparsed = SctParser{}.parse(exported.bytes, "edited_string.sct");
     ASSERT_TRUE(reparsed.parseOk);
     ASSERT_EQ(reparsed.file.sections.size(), 1u);
     EXPECT_EQ(reparsed.file.sections.front().kind, SctSectionKind::String);
-    const auto reimported = SctDocumentImporter::import(reparsed, {{SctPlatform::GameCube}});
+    const auto reimported = SctDocumentImporter::import(
+        reparsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
     ASSERT_TRUE(reimported.document.has_value());
     ASSERT_EQ(reimported.document->strings.size(), 1u);
-    EXPECT_EQ(std::get<SctEditableText>(reimported.document->strings.front().value).bytes,
+    EXPECT_EQ(std::get<SctTextChunk>(std::get<SctMessage>(
+        reimported.document->strings.front().value).body.elements.front()).utf8,
         "a substantially longer string");
 }
 
@@ -656,8 +673,9 @@ TEST(SctDocumentEditing, ReferencedFooterTextCanGrowAndReimport) {
     SctDocumentInstruction load{loadId, 23};
     load.fixedParameters.push_back({0, SctFooterEntryReference{footerId}});
     document.sections.push_back({sectionId, "FOOTER", SctScriptSectionContent{{load, {returnId, 12}}}});
-    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctEditableText{"a"}});
-    std::get<SctEditableText>(document.footerEntries.front().value).bytes = "a much longer footer resource name.mld";
+    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"a"}});
+    std::get<SctPlainText>(document.footerEntries.front().value).utf8 =
+        "a much longer footer resource name.mld";
 
     ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
@@ -667,10 +685,11 @@ TEST(SctDocumentEditing, ReferencedFooterTextCanGrowAndReimport) {
     EXPECT_EQ(exported.layout->footerEntries.front().span.size, 39u);
     const auto reparsed = SctParser{}.parse(exported.bytes, "footer_edit.sct");
     ASSERT_TRUE(reparsed.parseOk);
-    const auto reimported = SctDocumentImporter::import(reparsed, {{SctPlatform::GameCube}});
+    const auto reimported = SctDocumentImporter::import(
+        reparsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
     ASSERT_TRUE(reimported.document.has_value());
     ASSERT_EQ(reimported.document->footerEntries.size(), 1u);
-    EXPECT_EQ(std::get<SctEditableText>(reimported.document->footerEntries.front().value).bytes,
+    EXPECT_EQ(std::get<SctPlainText>(reimported.document->footerEntries.front().value).utf8,
         "a much longer footer resource name.mld");
     const auto& importedInstructions = std::get<SctScriptSectionContent>(
         reimported.document->sections.front().content).instructions;

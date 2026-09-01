@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SctDocumentValidator.h"
+#include "SctHeaderContract.h"
 
 #include <cstdint>
 #include <optional>
@@ -16,15 +17,20 @@ enum class SctOpaquePreservationPolicy { RequirePreservation };
 struct SctDocumentExportOptions {
     explicit SctDocumentExportOptions(
         SctPlatform target,
+        SctTextProfile targetTextProfile,
         SctDocumentOutputByteOrder outputByteOrder = SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper outputWrapper = SctDocumentOutputWrapper::Raw,
-        SctOpaquePreservationPolicy preservationPolicy = SctOpaquePreservationPolicy::RequirePreservation) noexcept
-        : targetPlatform(target), byteOrder(outputByteOrder), wrapper(outputWrapper), opaquePolicy(preservationPolicy) {}
+        SctOpaquePreservationPolicy preservationPolicy = SctOpaquePreservationPolicy::RequirePreservation,
+        SctHeaderExportOptions headerOptions = {}) noexcept
+        : targetPlatform(target), textProfile(targetTextProfile), byteOrder(outputByteOrder), wrapper(outputWrapper),
+          opaquePolicy(preservationPolicy), header(headerOptions) {}
 
     SctPlatform targetPlatform;
+    SctTextProfile textProfile;
     SctDocumentOutputByteOrder byteOrder = SctDocumentOutputByteOrder::BigEndian;
     SctDocumentOutputWrapper wrapper = SctDocumentOutputWrapper::Raw;
     SctOpaquePreservationPolicy opaquePolicy = SctOpaquePreservationPolicy::RequirePreservation;
+    SctHeaderExportOptions header;
 };
 
 struct SctDocumentByteSpan {
@@ -53,7 +59,7 @@ using SctFooterEntryLayoutRecord = SctEntityLayoutRecord<SctFooterEntryId>;
 using SctParameterLocation = SctParameterAddress;
 
 enum class SctRelocationFormula { InstructionEndMinusWord, OperandWordRelative };
-using SctRelocationTarget = std::variant<SctInstructionId, SctFooterEntryId>;
+using SctRelocationTarget = std::variant<SctInstructionId, SctStringId, SctFooterEntryId>;
 
 struct SctRelocationRecord {
     SctInstructionId sourceInstruction;
@@ -74,6 +80,7 @@ struct SctOpaquePlacementRecord {
 
 struct SctPreservationReport {
     std::vector<SctOpaquePlacementRecord> attachments;
+    std::optional<SctHeaderMaterializationRecord> header;
 };
 
 struct SctDocumentLayout {

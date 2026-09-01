@@ -11,7 +11,7 @@
 
 namespace spice::sct {
 
-using SctDocumentReferenceTarget = std::variant<SctInstructionId, SctFooterEntryId>;
+using SctDocumentReferenceTarget = std::variant<SctInstructionId, SctStringId, SctFooterEntryId>;
 
 struct SctDocumentReferenceRecord {
     SctInstructionId sourceInstruction;

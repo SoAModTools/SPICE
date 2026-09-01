@@ -1,17 +1,20 @@
 #pragma once
 
 #include "SctDocument.h"
+#include "SctHeaderContract.h"
 #include "SctModel.h"
 #include "SctOpcodeMetadata.h"
 
+#include <array>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace spice::sct {
 
 enum class SctSourceByteOrder { BigEndian, LittleEndian, Unknown };
 enum class SctSourceWrapper { None, Aklz };
-enum class SctSourceCoverageKind { SemanticEntity, DerivedLayout, OpaqueAttachment };
+enum class SctSourceCoverageKind { SemanticEntity, DerivedLayout, OpaqueAttachment, SourceObservation };
 
 struct SctEntityProvenance {
     SctDocumentEntityId entity;
@@ -24,16 +27,31 @@ struct SctEntityProvenance {
 struct SctSourceObservations {
     SctSourceByteOrder byteOrder = SctSourceByteOrder::Unknown;
     SctSourceWrapper wrapper = SctSourceWrapper::None;
+    struct Header {
+        std::array<std::uint8_t, 8> rawBytes{};
+        SctHeaderValues values;
+        bool available = false;
+    } header;
 };
 
 struct SctDocumentImportOptions {
     std::optional<SctPlatform> declaredSourcePlatform;
+    std::optional<SctTextProfile> sourceTextProfile;
+};
+
+struct SctTextImportObservation {
+    SctDocumentEntityId entity;
+    std::optional<SctTextProfile> profile;
+    bool semantic = false;
+    std::string reason;
 };
 
 struct SctDocumentImportReceipt {
     SctSourceObservations source;
     std::optional<SctPlatform> declaredSourcePlatform;
+    std::optional<SctTextProfile> sourceTextProfile;
     std::vector<SctEntityProvenance> provenance;
+    std::vector<SctTextImportObservation> text;
 };
 
 struct SctDocumentImportResult {

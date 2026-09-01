@@ -70,6 +70,43 @@ std::vector<std::uint8_t> makeOpcode253Fixture(FixtureEndian endian)
     return result;
 }
 
+std::vector<std::uint8_t> makeOpcode9RawSequenceFixture(FixtureEndian endian)
+{
+    std::vector<std::uint8_t> section{};
+    appendU32(section, 9u, endian);
+    appendU32(section, 0x04000000u, endian);
+    appendU32(section, 0x3f800000u, endian);
+    appendU32(section, 0x1du, endian);
+    appendU32(section, 12u, endian);
+
+    std::vector<std::uint8_t> result(kHeaderSize + kIndexEntrySize, 0u);
+    writeU32(result, 8u, 1u, endian);
+    writeName(result, kHeaderSize + kIndexNameOffset, "M00001");
+    result.insert(result.end(), section.begin(), section.end());
+    return result;
+}
+
+void expectOpcode9RawSequence(FixtureEndian endian)
+{
+    const auto parsed = spice::sct::SctParser{}.parse(makeOpcode9RawSequenceFixture(endian), "opcode9.sct");
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(1u, parsed.file.sections.size());
+    ASSERT_EQ(spice::sct::SctSectionKind::Script, parsed.file.sections.front().kind);
+    const auto& instructions = parsed.file.sections.front().instructions;
+    ASSERT_EQ(2u, instructions.size());
+    ASSERT_EQ(9u, instructions[0].opcode);
+    EXPECT_EQ(16u, instructions[0].sizeBytes);
+    ASSERT_EQ(1u, instructions[0].parameters.size());
+    EXPECT_EQ(spice::sct::SctParameterValueKind::Raw, instructions[0].parameters[0].valueKind);
+    EXPECT_FALSE(instructions[0].parameters[0].expression.has_value());
+    EXPECT_TRUE(instructions[0].scptParameterValueRecords.empty());
+    EXPECT_TRUE(instructions[0].scptAnalyzeOperandIndexes.empty());
+    EXPECT_EQ((std::vector<std::uint32_t>{0x04000000u, 0x3f800000u, 0x1du}),
+        instructions[0].parameters[0].rawWords);
+    EXPECT_EQ(12u, instructions[1].opcode);
+    EXPECT_EQ(16u, instructions[1].offset);
+}
+
 void expectOpcode253RoundTrip(FixtureEndian endian, std::string_view expectedEndian)
 {
     const auto original = spice::sct::SctParser{}.parse(makeOpcode253Fixture(endian), "opcode253.sct");
@@ -150,10 +187,12 @@ TEST(SctOpcodeSchema, CoversContiguousOpcodeRangeWithValidContracts)
         if (parameters.internalLoopBreakParam >= 0) {
             EXPECT_LE(parameters.internalLoopBreakParam, static_cast<std::int8_t>(highestPatternIndex));
         }
-        ASSERT_LE(schema.footerReferenceCount, schema.footerReferences.size());
-        for (std::size_t footerIndex = 0; footerIndex < schema.footerReferenceCount; ++footerIndex) {
-            EXPECT_LT(schema.footerReferences[footerIndex].parameterIndex, parameters.paramCount);
-            EXPECT_NE(spice::sct::SctFooterParamKind::None, schema.footerReferences[footerIndex].kind);
+        ASSERT_LE(schema.textReferenceCount, schema.textReferences.size());
+        for (std::size_t textIndex = 0; textIndex < schema.textReferenceCount; ++textIndex) {
+            const auto& reference = schema.textReferences[textIndex];
+            EXPECT_LT(reference.parameterIndex, parameters.paramCount);
+            EXPECT_NE(0u, reference.targetAlignment);
+            EXPECT_EQ(0u, reference.targetAlignment & (reference.targetAlignment - 1u));
         }
     }
     EXPECT_EQ(nullptr, spice::sct::findSctOpcodeSchema(266u));
@@ -180,9 +219,13 @@ TEST(SctOpcodeSchema, RecordsPlatformAvailabilityWithoutChangingBinaryContracts)
         spice::sct::sctOpcodeParameterEncoding(*opcode265, 0u));
     EXPECT_EQ(spice::sct::SctOpcodeParameterEncoding::RawWord,
         spice::sct::sctOpcodeParameterEncoding(*opcode265, 1u));
-    const auto footer = spice::sct::sctOpcodeFooterReference(*opcode265, 1u);
-    EXPECT_EQ(spice::sct::SctFooterParamKind::SctString, footer.kind);
-    EXPECT_TRUE(footer.signedRelative);
+    const auto text = spice::sct::sctOpcodeTextReference(*opcode265, 1u);
+    ASSERT_TRUE(text.has_value());
+    EXPECT_EQ(spice::sct::SctTextKind::SctString, text->kind);
+    EXPECT_EQ(spice::sct::SctTextStorage::IndexedSection, text->storage);
+    EXPECT_TRUE(text->signedRelative);
+    EXPECT_EQ(4u, text->targetAlignment);
+    EXPECT_EQ(0xfffffffcu, text->encodedValueMask);
     EXPECT_EQ("GeneratedReputationListDialog", opcode265->semantic.mnemonic);
     EXPECT_EQ(spice::sct::SctSemanticConfidence::Partial, opcode265->semantic.confidence);
 }
@@ -195,7 +238,7 @@ TEST(SctOpcodeSchema, ProtectsResearchBackedParameterShapes)
         std::uint64_t scptMask;
     };
     constexpr std::array expected{
-        ExpectedShape{9u, 1u, 0x1u},
+        ExpectedShape{9u, 1u, 0x0u},
         ExpectedShape{100u, 2u, 0x3u},
         ExpectedShape{114u, 2u, 0x3u},
         ExpectedShape{119u, 2u, 0x5u},
@@ -228,6 +271,96 @@ TEST(SctOpcodeSchema, ProtectsResearchBackedParameterShapes)
     EXPECT_EQ(0u, opcode153->parameters.internalLoopBreakValue);
 }
 
+TEST(SctOpcodeSchema, SeparatesTextSemanticsFromPhysicalStorage)
+{
+    struct ExpectedReference {
+        std::uint16_t opcode;
+        std::uint32_t parameter;
+        spice::sct::SctTextKind kind;
+        spice::sct::SctTextStorage storage;
+    };
+    constexpr std::array expected{
+        ExpectedReference{23u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{24u, 0u, spice::sct::SctTextKind::SctString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{25u, 1u, spice::sct::SctTextKind::SctString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{43u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{54u, 1u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{69u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{110u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{113u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{144u, 0u, spice::sct::SctTextKind::SctString, spice::sct::SctTextStorage::IndexedSection},
+        ExpectedReference{155u, 1u, spice::sct::SctTextKind::SctString, spice::sct::SctTextStorage::IndexedSection},
+        ExpectedReference{210u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{214u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{215u, 1u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{248u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{250u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{257u, 0u, spice::sct::SctTextKind::PlainString, spice::sct::SctTextStorage::Footer},
+        ExpectedReference{265u, 1u, spice::sct::SctTextKind::SctString, spice::sct::SctTextStorage::IndexedSection},
+    };
+
+    std::size_t actualCount = 0;
+    for (const auto& schema : spice::sct::sctOpcodeSchemas()) {
+        actualCount += schema.textReferenceCount;
+    }
+    ASSERT_EQ(expected.size(), actualCount);
+    for (const auto& item : expected) {
+        const auto* schema = spice::sct::findSctOpcodeSchema(item.opcode);
+        ASSERT_NE(nullptr, schema);
+        const auto rule = spice::sct::sctOpcodeTextReference(*schema, item.parameter);
+        ASSERT_TRUE(rule.has_value()) << item.opcode;
+        EXPECT_EQ(item.kind, rule->kind) << item.opcode;
+        EXPECT_EQ(item.storage, rule->storage) << item.opcode;
+    }
+}
+
+TEST(SctOpcodeSchema, RecordsCorrectedRawAndProvisionalContracts)
+{
+    const auto* opcode9 = spice::sct::findSctOpcodeSchema(9u);
+    ASSERT_NE(nullptr, opcode9);
+    ASSERT_EQ(1u, opcode9->parameterCatalogCount);
+    EXPECT_EQ(spice::sct::SctOpcodeParameterEncoding::RawWordsUntilSentinel,
+        opcode9->parameterCatalog[0].encoding);
+    EXPECT_TRUE(opcode9->parameterCatalog[0].hasConfirmedSentinel);
+    EXPECT_EQ(0x1du, opcode9->parameterCatalog[0].sentinelEncodedWord);
+
+    const auto* opcode3 = spice::sct::findSctOpcodeSchema(3u);
+    ASSERT_NE(nullptr, opcode3);
+    ASSERT_GT(opcode3->parameterCatalogCount, 2u);
+    EXPECT_EQ(spice::sct::SctOpcodeScalarType::SignedInteger, opcode3->parameterCatalog[2].scalarType);
+    EXPECT_TRUE(opcode3->parameterCatalog[2].hasConfirmedSentinel);
+    EXPECT_EQ(0xffffffffu, opcode3->parameterCatalog[2].sentinelEncodedWord);
+
+    for (const auto opcode : {131u, 132u}) {
+        const auto* schema = spice::sct::findSctOpcodeSchema(opcode);
+        ASSERT_NE(nullptr, schema);
+        const auto countIndex = static_cast<std::size_t>(schema->parameters.iterationCountParam);
+        ASSERT_LT(countIndex, schema->parameterCatalogCount);
+        EXPECT_EQ(0xffffu, schema->parameterCatalog[countIndex].allowedBitMask);
+        EXPECT_EQ(spice::sct::SctOpcodeContractConfidence::Provisional,
+            schema->parameterCatalog[countIndex].bitContractConfidence);
+    }
+
+    for (const auto& schema : spice::sct::sctOpcodeSchemas()) {
+        EXPECT_NE(spice::sct::SctOpcodeNaturalRefreshBehavior::Unknown, schema.naturalRefreshBehavior);
+        EXPECT_EQ(spice::sct::SctOpcodeContractConfidence::Provisional, schema.naturalRefreshConfidence);
+    }
+
+    for (const auto opcode : {0u, 3u, 10u, 11u}) {
+        const auto* schema = spice::sct::findSctOpcodeSchema(opcode);
+        ASSERT_NE(nullptr, schema);
+        const auto parameterIndex = opcode == 3u
+            ? static_cast<std::uint32_t>(schema->parameters.switchJumpParam)
+            : opcode == 11u ? 0u : static_cast<std::uint32_t>(schema->parameters.jumpParam);
+        const auto* parameter = spice::sct::sctOpcodeParameterSchema(*schema, parameterIndex);
+        ASSERT_NE(nullptr, parameter);
+        EXPECT_EQ(spice::sct::SctOpcodeReferenceKind::Instruction, parameter->referenceKind);
+        EXPECT_TRUE(parameter->relativeReferenceSigned);
+        EXPECT_EQ(4u, parameter->referenceTargetAlignment);
+        EXPECT_EQ(0xfffffffcu, parameter->referenceEncodedValueMask);
+    }
+}
+
 TEST(SctOpcodeSchema, Opcode253ConsumesThreeScptParametersBigEndian)
 {
     expectOpcode253RoundTrip(FixtureEndian::Big, "big");
@@ -236,4 +369,14 @@ TEST(SctOpcodeSchema, Opcode253ConsumesThreeScptParametersBigEndian)
 TEST(SctOpcodeSchema, Opcode253ConsumesThreeScptParametersLittleEndian)
 {
     expectOpcode253RoundTrip(FixtureEndian::Little, "little");
+}
+
+TEST(SctOpcodeSchema, Opcode9ConsumesRawWordsThroughExactSentinelBigEndian)
+{
+    expectOpcode9RawSequence(FixtureEndian::Big);
+}
+
+TEST(SctOpcodeSchema, Opcode9ConsumesRawWordsThroughExactSentinelLittleEndian)
+{
+    expectOpcode9RawSequence(FixtureEndian::Little);
 }

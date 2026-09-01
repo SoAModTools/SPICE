@@ -1,6 +1,7 @@
 #include "SctDocumentExporter.h"
 
 #include "SctOpcodeMetadata.h"
+#include "SctTextCodec.h"
 
 #include "../Compression/Aklz.h"
 
@@ -90,13 +91,21 @@ std::vector<std::uint32_t> encodeExpressionWords(const SctCanonicalExpression& e
     return words;
 }
 
-std::vector<std::uint8_t> encodeText(const SctTextValue& value) {
-    if (const auto* editable = std::get_if<SctEditableText>(&value)) {
-        std::vector<std::uint8_t> bytes(editable->bytes.begin(), editable->bytes.end());
-        bytes.push_back(0);
-        return bytes;
+std::vector<std::uint8_t> encodeHeaderValues(const SctHeaderValues& values,
+    SctDocumentOutputByteOrder byteOrder) {
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(8u);
+    const std::uint16_t fields[]{values.sourceYear, values.sourceMonth, values.sourceDay, values.fourthValue};
+    for (const auto field : fields) {
+        if (byteOrder == SctDocumentOutputByteOrder::BigEndian) {
+            bytes.push_back(static_cast<std::uint8_t>(field >> 8));
+            bytes.push_back(static_cast<std::uint8_t>(field & 0xffu));
+        } else {
+            bytes.push_back(static_cast<std::uint8_t>(field & 0xffu));
+            bytes.push_back(static_cast<std::uint8_t>(field >> 8));
+        }
     }
-    return std::get<SctOpaqueText>(value).bytes;
+    return bytes;
 }
 
 template <typename Id>
@@ -199,6 +208,8 @@ struct PendingRelocation {
     SctRelocationTarget target;
     SctRelocationFormula formula = SctRelocationFormula::OperandWordRelative;
     bool signedValue = true;
+    std::uint32_t targetAlignment = 1;
+    std::uint32_t encodedValueMask = 0xffffffffu;
     std::uint32_t wordOffsetWithinInstruction = 0;
 };
 
@@ -238,21 +249,49 @@ EncodedInstruction encodeInstruction(const SctDocumentInstruction& instruction,
         } else if (const auto* expression = std::get_if<SctCanonicalExpression>(&parameter.value)) {
             const auto expressionWords = encodeExpressionWords(*expression);
             words.insert(words.end(), expressionWords.begin(), expressionWords.end());
+        } else if (const auto* sequence = std::get_if<SctTerminatedWordSequenceValue>(&parameter.value)) {
+            words.insert(words.end(), sequence->words.begin(), sequence->words.end());
         } else if (const auto* reference = std::get_if<SctInstructionReference>(&parameter.value)) {
             words.push_back(0);
-            SctRelocationFormula formula = SctRelocationFormula::OperandWordRelative;
-            if (schema.semantic.controlRole == SctOpcodeControlRole::Branch
-                || schema.semantic.controlRole == SctOpcodeControlRole::Jump
-                || schema.semantic.controlRole == SctOpcodeControlRole::CallSubscript) {
-                formula = SctRelocationFormula::InstructionEndMinusWord;
-            }
+            const auto* parameterSchema = sctOpcodeParameterSchema(schema, parameter.schemaIndex);
+            const auto formula = parameterSchema != nullptr
+                && parameterSchema->relativeReferenceBase == SctRelativeReferenceBase::InstructionEndMinusWord
+                ? SctRelocationFormula::InstructionEndMinusWord
+                : SctRelocationFormula::OperandWordRelative;
             result.relocations.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal},
-                reference->target, formula, true, wordIndex * 4u});
+                reference->target, formula,
+                parameterSchema == nullptr || parameterSchema->relativeReferenceSigned,
+                parameterSchema == nullptr ? 4u : parameterSchema->referenceTargetAlignment,
+                parameterSchema == nullptr ? 0xfffffffcu : parameterSchema->referenceEncodedValueMask,
+                wordIndex * 4u});
+        } else if (const auto* reference = std::get_if<SctStringReference>(&parameter.value)) {
+            words.push_back(0);
+            const auto rule = sctOpcodeTextReference(schema, parameter.schemaIndex);
+            if (!rule.has_value() || rule->storage != SctTextStorage::IndexedSection) {
+                addDiagnostic(diagnostics, SctDiagnosticCode::EncodingUnsupported,
+                    "Indexed string reference has no matching opcode schema rule.", SctDocumentEntityId{instruction.id});
+                return;
+            }
+            const auto formula = rule->relativeBase == SctRelativeReferenceBase::InstructionEndMinusWord
+                ? SctRelocationFormula::InstructionEndMinusWord
+                : SctRelocationFormula::OperandWordRelative;
+            result.relocations.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal},
+                reference->target, formula, rule->signedRelative, rule->targetAlignment,
+                rule->encodedValueMask, wordIndex * 4u});
         } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&parameter.value)) {
             words.push_back(0);
-            const auto rule = sctOpcodeFooterReference(schema, parameter.schemaIndex);
+            const auto rule = sctOpcodeTextReference(schema, parameter.schemaIndex);
+            if (!rule.has_value() || rule->storage != SctTextStorage::Footer) {
+                addDiagnostic(diagnostics, SctDiagnosticCode::EncodingUnsupported,
+                    "Footer reference has no matching opcode schema rule.", SctDocumentEntityId{instruction.id});
+                return;
+            }
+            const auto formula = rule->relativeBase == SctRelativeReferenceBase::InstructionEndMinusWord
+                ? SctRelocationFormula::InstructionEndMinusWord
+                : SctRelocationFormula::OperandWordRelative;
             result.relocations.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal},
-                reference->target, SctRelocationFormula::OperandWordRelative, rule.signedRelative, wordIndex * 4u});
+                reference->target, formula, rule->signedRelative, rule->targetAlignment,
+                rule->encodedValueMask, wordIndex * 4u});
         } else {
             const auto& opaque = std::get<SctOpaqueParameterValue>(parameter.value);
             words.insert(words.end(), opaque.words.begin(), opaque.words.end());
@@ -318,7 +357,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         break;
     }
     const auto validation = SctDocumentValidator::validateForTarget(
-        document, options.targetPlatform, receipt);
+        document, options.targetPlatform, options.textProfile, receipt);
     result.diagnostics = validation.diagnostics;
     if (hasErrors(result.diagnostics)) return result;
 
@@ -332,6 +371,32 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     const auto dataStart = static_cast<std::uint32_t>(dataStart64);
     PayloadCanvas canvas(result.diagnostics);
     if (!canvas.ensure(dataStart)) return result;
+
+    std::vector<std::uint8_t> headerBytes;
+    SctHeaderMaterializationRecord headerRecord;
+    if (options.header.mode == SctHeaderExportMode::ExplicitValues) {
+        headerRecord = {SctHeaderMaterializationStatus::ExplicitValues, options.header.explicitValues};
+        headerBytes = encodeHeaderValues(options.header.explicitValues, options.byteOrder);
+    } else if (receipt != nullptr && receipt->source.header.available) {
+        headerRecord.values = receipt->source.header.values;
+        const bool sameByteOrder = (options.byteOrder == SctDocumentOutputByteOrder::BigEndian
+                && receipt->source.byteOrder == SctSourceByteOrder::BigEndian)
+            || (options.byteOrder == SctDocumentOutputByteOrder::LittleEndian
+                && receipt->source.byteOrder == SctSourceByteOrder::LittleEndian);
+        if (sameByteOrder) {
+            headerRecord.status = SctHeaderMaterializationStatus::PreservedSourceBytes;
+            headerBytes.assign(receipt->source.header.rawBytes.begin(), receipt->source.header.rawBytes.end());
+        } else {
+            headerRecord.status = SctHeaderMaterializationStatus::ReencodedSourceValues;
+            headerBytes = encodeHeaderValues(receipt->source.header.values, options.byteOrder);
+        }
+    } else {
+        headerRecord = {SctHeaderMaterializationStatus::CanonicalDefault, kCanonicalSctHeaderValues};
+        headerBytes = encodeHeaderValues(kCanonicalSctHeaderValues, options.byteOrder);
+    }
+    if (!canvas.claim(0u, headerBytes, SctDiagnosticCode::OpaquePlacementUnsatisfied,
+        "The materialized SCT header overlaps another fixed span.")) return result;
+    result.preservation.header = headerRecord;
 
     std::unordered_map<std::uint64_t, SctOpaquePlacementRecord> opaquePlacements;
     for (const auto& attachment : document.opaqueAttachments) {
@@ -354,8 +419,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     }
     if (hasErrors(result.diagnostics)) return result;
 
-    if (!canvas.claimUnclaimedZeros(0, 8)
-        || !canvas.claimZeros(8, 4, SctDiagnosticCode::OpaquePlacementUnsatisfied,
+    if (!canvas.claimZeros(8, 4, SctDiagnosticCode::OpaquePlacementUnsatisfied,
             "Opaque bytes overlap the derived SCT section count.")) return result;
     patchWord(canvas.bytes(), 8, static_cast<std::uint32_t>(document.sections.size()), options.byteOrder);
     for (std::size_t i = 0; i < document.sections.size(); ++i) {
@@ -421,6 +485,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
 
     SctDocumentLayout layout;
     std::unordered_map<std::uint64_t, SctDocumentByteSpan> instructionSpans;
+    std::unordered_map<std::uint64_t, SctDocumentByteSpan> indexedStringTargetSpans;
     std::unordered_map<std::uint64_t, SctDocumentByteSpan> footerSpans;
     std::unordered_set<std::uint64_t> placedStrings;
     std::vector<PendingRelocation> pendingRelocations;
@@ -430,8 +495,12 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     for (std::size_t sectionIndex = 0; sectionIndex < document.sections.size(); ++sectionIndex) {
         const auto& section = document.sections[sectionIndex];
         const auto sectionAnchor = [&](const auto& attachment) { return anchorIs(attachment, section.id); };
-        const auto sectionStart = cursor;
         if (!placeAttachments(sectionAnchor, SctOpaquePlacement::Before, cursor)) return result;
+        const auto alignedSectionStart = alignUp(cursor, 4u);
+        if (!alignedSectionStart) return result;
+        if (!canvas.ensure(*alignedSectionStart)) return result;
+        cursor = *alignedSectionStart;
+        const auto sectionStart = cursor;
 
         if (const auto* script = std::get_if<SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) {
@@ -467,9 +536,28 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             const auto found = std::find_if(document.strings.begin(), document.strings.end(),
                 [&](const auto& value) { return value.id == stringContent->stringId; });
             if (found == document.strings.end()) return result;
+            const auto preambleBytes = encodeWords(stringContent->preambleWords, options.byteOrder);
+            const auto preambleOffset = canvas.placeAtFirstFit(cursor, preambleBytes);
+            if (!preambleOffset) return result;
+            if (*preambleOffset != sectionStart) {
+                addDiagnostic(result.diagnostics, SctDiagnosticCode::OpaquePlacementUnsatisfied,
+                    "Indexed string preamble could not begin at its physical section start.",
+                    SctDocumentEntityId{section.id});
+                return result;
+            }
+            cursor = *preambleOffset + static_cast<std::uint32_t>(preambleBytes.size());
+            indexedStringTargetSpans.emplace(found->id.value(),
+                SctDocumentByteSpan{sectionStart, static_cast<std::uint32_t>(preambleBytes.size())});
             const auto stringAnchor = [&](const auto& attachment) { return anchorIs(attachment, found->id); };
             if (!placeAttachments(stringAnchor, SctOpaquePlacement::Before, cursor)) return result;
-            const auto bytes = encodeText(found->value);
+            const auto encodedText = encodeSctTextRecord(found->value, found->kind,
+                SctTextStorage::IndexedSection, options.textProfile);
+            if (!encodedText.bytes) {
+                addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
+                    encodedText.error, SctDocumentEntityId{found->id});
+                return result;
+            }
+            const auto& bytes = *encodedText.bytes;
             const auto offset = canvas.placeAtFirstFit(cursor, bytes);
             if (!offset) return result;
             const SctDocumentByteSpan span{*offset, static_cast<std::uint32_t>(bytes.size())};
@@ -490,7 +578,14 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     for (const auto& footer : document.footerEntries) {
         const auto footerAnchor = [&](const auto& attachment) { return anchorIs(attachment, footer.id); };
         if (!placeAttachments(footerAnchor, SctOpaquePlacement::Before, cursor)) return result;
-        const auto bytes = encodeText(footer.value);
+        const auto encodedText = encodeSctTextRecord(footer.value, footer.kind,
+            SctTextStorage::Footer, options.textProfile);
+        if (!encodedText.bytes) {
+            addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
+                encodedText.error, SctDocumentEntityId{footer.id});
+            return result;
+        }
+        const auto& bytes = *encodedText.bytes;
         const auto offset = canvas.placeAtFirstFit(cursor, bytes);
         if (!offset) return result;
         const SctDocumentByteSpan span{*offset, static_cast<std::uint32_t>(bytes.size())};
@@ -516,6 +611,8 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             using T = std::decay_t<decltype(target)>;
             if constexpr (std::is_same_v<T, SctInstructionId>) {
                 if (const auto found = instructionSpans.find(target.value()); found != instructionSpans.end()) targetSpan = found->second;
+            } else if constexpr (std::is_same_v<T, SctStringId>) {
+                if (const auto found = indexedStringTargetSpans.find(target.value()); found != indexedStringTargetSpans.end()) targetSpan = found->second;
             } else {
                 if (const auto found = footerSpans.find(target.value()); found != footerSpans.end()) targetSpan = found->second;
             }
@@ -526,6 +623,13 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             continue;
         }
         const auto targetDataOffset = static_cast<std::int64_t>(targetSpan->offset - dataStart);
+        if (pending.targetAlignment == 0u
+            || (targetDataOffset % static_cast<std::int64_t>(pending.targetAlignment)) != 0) {
+            addDiagnostic(result.diagnostics, SctDiagnosticCode::RelocationOutOfRange,
+                "Document reference target does not satisfy the opcode alignment contract.",
+                SctDocumentEntityId{pending.source});
+            continue;
+        }
         std::int64_t value = 0;
         if (pending.formula == SctRelocationFormula::InstructionEndMinusWord) {
             value = targetDataOffset - static_cast<std::int64_t>(sourceIt->second.offset - dataStart)
@@ -543,6 +647,12 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             continue;
         }
         const auto encodedValue = static_cast<std::uint32_t>(value);
+        if ((encodedValue & ~pending.encodedValueMask) != 0u) {
+            addDiagnostic(result.diagnostics, SctDiagnosticCode::RelocationOutOfRange,
+                "Document reference encoding would use reserved low target bits.",
+                SctDocumentEntityId{pending.source});
+            continue;
+        }
         patchWord(canvas.bytes(), pending.wordOffsetWithinInstruction, encodedValue, options.byteOrder);
         layout.relocations.push_back({pending.source, pending.parameter, pending.target, pending.formula,
             {pending.wordOffsetWithinInstruction, 4}, encodedValue});

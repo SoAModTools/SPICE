@@ -1,5 +1,7 @@
 #include "SctDocumentImporter.h"
 
+#include "SctTextCodec.h"
+
 #include <algorithm>
 #include <limits>
 #include <numeric>
@@ -67,10 +69,14 @@ SctCanonicalExpression convertExpression(const SctExpression& expression,
     return converted;
 }
 
-std::optional<SctEditableText> editableText(const std::vector<std::uint8_t>& bytes) {
-    if (bytes.empty() || bytes.back() != 0) return std::nullopt;
-    if (std::find(bytes.begin(), bytes.end() - 1, 0) != bytes.end() - 1) return std::nullopt;
-    return SctEditableText{std::string(bytes.begin(), bytes.end() - 1)};
+std::uint16_t readHeaderU16(const std::vector<std::uint8_t>& bytes, std::size_t offset,
+    SctSourceByteOrder order) {
+    if (order == SctSourceByteOrder::LittleEndian) {
+        return static_cast<std::uint16_t>(bytes[offset]
+            | (static_cast<std::uint16_t>(bytes[offset + 1]) << 8));
+    }
+    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8)
+        | bytes[offset + 1]);
 }
 
 struct ClaimLedger {
@@ -84,6 +90,7 @@ struct ClaimLedger {
 };
 
 using InstructionMap = std::unordered_map<std::uint32_t, SctInstructionId>;
+using StringMap = std::unordered_map<std::uint32_t, SctStringId>;
 using FooterMap = std::unordered_map<std::uint32_t, SctFooterEntryId>;
 
 std::vector<std::size_t> physicalInstructionOrder(const SctSection& section) {
@@ -140,9 +147,37 @@ std::optional<SctFooterEntryId> footerTarget(const SctInstruction& instruction,
     return std::nullopt;
 }
 
+std::optional<SctStringId> indexedStringTarget(const SctInstruction& instruction,
+    const SctParameter& parameter, const SctOpcodeTextReferenceRule& rule, const StringMap& ids) {
+    if (parameter.rawWords.empty()) return std::nullopt;
+    std::uint32_t operandWordIndex = instruction.opcodeWordIndex + 1u;
+    bool foundParameter = false;
+    for (const auto& candidate : instruction.parameters) {
+        if (candidate.index == parameter.index) {
+            foundParameter = true;
+            break;
+        }
+        operandWordIndex += static_cast<std::uint32_t>(candidate.rawWords.size());
+    }
+    if (!foundParameter) return std::nullopt;
+    const auto operandPayloadOffset = instruction.payloadOffset + operandWordIndex * 4u;
+    const auto relativeBase = rule.relativeBase == SctRelativeReferenceBase::OperandWord
+        ? static_cast<std::int64_t>(operandPayloadOffset)
+        : static_cast<std::int64_t>(instruction.payloadOffset + instruction.sizeBytes - 4u);
+    const auto masked = parameter.rawWords.front() & rule.encodedValueMask;
+    const auto relative = rule.signedRelative
+        ? static_cast<std::int64_t>(static_cast<std::int32_t>(masked))
+        : static_cast<std::int64_t>(masked);
+    const auto target = relativeBase + relative;
+    if (target < 0 || target > std::numeric_limits<std::uint32_t>::max()
+        || static_cast<std::uint32_t>(target) % rule.targetAlignment != 0u) return std::nullopt;
+    const auto found = ids.find(static_cast<std::uint32_t>(target));
+    return found == ids.end() ? std::nullopt : std::optional(found->second);
+}
+
 SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstruction& instruction,
     const SctSection& section, const SctOpcodeSchema& schema, const InstructionMap& instructionIds,
-    const SctFooter* footer, const FooterMap& footerIds, SctDocumentImportResult& result,
+    const StringMap& stringIds, const SctFooter* footer, const FooterMap& footerIds, SctDocumentImportResult& result,
     SctInstructionId entityId) {
     SctDocumentParameter converted;
     converted.schemaIndex = sctOpcodeBaseParameterIndex(schema, parameter.index);
@@ -162,7 +197,17 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
             return converted;
         }
     }
-    if (sctOpcodeFooterReference(schema, parameter.index).kind != SctFooterParamKind::None) {
+    if (const auto textReference = sctOpcodeTextReference(schema, parameter.index); textReference.has_value()) {
+        if (textReference->storage == SctTextStorage::IndexedSection) {
+            if (const auto target = indexedStringTarget(instruction, parameter, *textReference, stringIds)) {
+                converted.value = SctStringReference{*target};
+                return converted;
+            }
+            converted.value = SctOpaqueParameterValue{parameter.rawWords};
+            addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
+                "Indexed SCT string target could not be resolved to a string ID.", SctDocumentEntityId{entityId});
+            return converted;
+        }
         if (footer) {
             if (const auto target = footerTarget(instruction, parameter.index, *footer, footerIds)) {
                 converted.value = SctFooterEntryReference{*target};
@@ -174,7 +219,8 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
             "Footer target could not be resolved to a footer-entry ID.", SctDocumentEntityId{entityId});
         return converted;
     }
-    if (sctOpcodeParameterEncoding(schema, parameter.index) == SctOpcodeParameterEncoding::ScptExpression) {
+    const auto encoding = sctOpcodeParameterEncoding(schema, parameter.index);
+    if (encoding == SctOpcodeParameterEncoding::ScptExpression) {
         if (parameter.expression) {
             converted.value = convertExpression(*parameter.expression, parameter.rawWords, result, SctDocumentEntityId{entityId});
         } else {
@@ -183,6 +229,8 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
             addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousExpression,
                 "SCPT parameter had no parser AST and was retained as opaque words.", SctDocumentEntityId{entityId});
         }
+    } else if (encoding == SctOpcodeParameterEncoding::RawWordsUntilSentinel) {
+        converted.value = SctTerminatedWordSequenceValue{parameter.rawWords};
     } else if (parameter.rawWords.size() == 1) {
         converted.value = SctEncodedWordValue{parameter.rawWords.front()};
     } else {
@@ -213,6 +261,14 @@ SctDocumentImportResult SctDocumentImporter::import(
         : parsed.file.detectedEndian == "little" ? SctSourceByteOrder::LittleEndian : SctSourceByteOrder::Unknown;
     result.receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
     result.receipt.declaredSourcePlatform = options.declaredSourcePlatform;
+    result.receipt.sourceTextProfile = options.sourceTextProfile;
+    const bool profileMatchesPlatform = !options.sourceTextProfile.has_value()
+        || !options.declaredSourcePlatform.has_value()
+        || sctTextProfileSupportsPlatform(*options.sourceTextProfile, *options.declaredSourcePlatform);
+    if (!profileMatchesPlatform) {
+        addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::TextProfileMismatch,
+            "The selected source text profile does not match the declared source platform.");
+    }
     if (!parsed.parseOk) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::ParseFailed,
             "A canonical document cannot be imported from a failed parse.");
@@ -224,6 +280,20 @@ SctDocumentImportResult SctDocumentImporter::import(
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
             "Decoded SCT payload is shorter than its physical index table.");
         return result;
+    }
+    const auto dataStart = static_cast<std::uint32_t>(dataStart64);
+    if (bytes.size() >= 8u) {
+        auto& header = result.receipt.source.header;
+        std::copy_n(bytes.begin(), 8u, header.rawBytes.begin());
+        if (result.receipt.source.byteOrder != SctSourceByteOrder::Unknown) {
+            header.values = {
+                readHeaderU16(bytes, 0u, result.receipt.source.byteOrder),
+                readHeaderU16(bytes, 2u, result.receipt.source.byteOrder),
+                readHeaderU16(bytes, 4u, result.receipt.source.byteOrder),
+                readHeaderU16(bytes, 6u, result.receipt.source.byteOrder),
+            };
+            header.available = true;
+        }
     }
     for (const auto& section : parsed.file.sections) {
         if (section.startOffset > section.endOffset || section.endOffset > bytes.size()) {
@@ -237,6 +307,13 @@ SctDocumentImportResult SctDocumentImporter::import(
     std::vector<SctSectionId> sectionIds;
     sectionIds.reserve(parsed.file.sections.size());
     for (std::size_t i = 0; i < parsed.file.sections.size(); ++i) sectionIds.push_back(document.allocateSectionId());
+
+    StringMap stringIds;
+    for (const auto& section : parsed.file.sections) {
+        if (section.stringEntry.has_value()) {
+            stringIds.emplace(section.startOffset - dataStart, document.allocateStringId());
+        }
+    }
 
     InstructionMap instructionIds;
     for (const auto& section : parsed.file.sections) {
@@ -293,6 +370,8 @@ SctDocumentImportResult SctDocumentImporter::import(
         }
     }
 
+    result.receipt.provenance.push_back({{}, 0, 8, std::nullopt,
+        SctSourceCoverageKind::SourceObservation});
     result.receipt.provenance.push_back({{}, 8, 4, std::nullopt});
     std::vector<std::string> sectionNames;
     sectionNames.reserve(parsed.file.sections.size());
@@ -326,9 +405,6 @@ SctDocumentImportResult SctDocumentImporter::import(
                 std::vector<std::uint8_t>(unusual, fieldEnd), SctOpaqueReason::Padding);
         }
     }
-    addAttachment(document, result, SctDocumentAnchor{}, 0,
-        std::vector<std::uint8_t>(bytes.begin(), bytes.begin() + 8), SctOpaqueReason::Header);
-
     const SctFooter* footer = parsed.file.footer ? &*parsed.file.footer : nullptr;
     if (footer) {
         const auto dataSize = bytes.size() - static_cast<std::size_t>(dataStart64);
@@ -346,23 +422,73 @@ SctDocumentImportResult SctDocumentImporter::import(
         ClaimLedger ledger{std::vector<std::uint8_t>(sourceSection.endOffset - sourceSection.startOffset)};
 
         if (sourceSection.stringEntry) {
-            const auto stringId = document.allocateStringId();
+            const auto stringIdIt = stringIds.find(sourceSection.startOffset - dataStart);
+            if (stringIdIt == stringIds.end()) {
+                addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnsafePhysicalStructure,
+                    "Indexed string section had no deterministic string identity.", SctDocumentEntityId{targetSection.id});
+                targetSection.content = SctOpaqueSectionContent{};
+                document.sections.push_back(std::move(targetSection));
+                continue;
+            }
+            const auto stringId = stringIdIt->second;
             const auto& entry = *sourceSection.stringEntry;
-            SctDocumentString string{stringId, SctOpaqueText{entry.rawTextBytes}};
-            if (const auto text = editableText(entry.rawTextBytes)) string.value = *text;
-            else addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
-                "String bytes were retained as opaque because single-byte termination was ambiguous.", SctDocumentEntityId{stringId});
             const auto local = static_cast<std::size_t>(entry.textStartOffset);
-            if (!ledger.claim(local, entry.rawTextBytes.size())) {
+            const auto preambleSize = entry.preambleWords.size() * sizeof(std::uint32_t);
+            const auto sectionSize = static_cast<std::size_t>(sourceSection.endOffset - sourceSection.startOffset);
+            const auto physicalTextSize = local <= sectionSize ? sectionSize - local : 0u;
+            std::vector<std::uint8_t> physicalText;
+            if (local <= sectionSize) {
+                physicalText.assign(bytes.begin() + sourceSection.startOffset + local,
+                    bytes.begin() + sourceSection.endOffset);
+            }
+            std::size_t recordSize = physicalText.size();
+            if (!entry.rawTextBytes.empty() && entry.rawTextBytes.size() <= physicalText.size()) {
+                const auto suffix = physicalText.size() - entry.rawTextBytes.size();
+                const bool derivedAlignment = suffix <= 3u
+                    && std::all_of(physicalText.begin() + entry.rawTextBytes.size(), physicalText.end(),
+                        [](std::uint8_t value) { return value == 0u; });
+                if (derivedAlignment) recordSize = entry.rawTextBytes.size();
+            } else if (physicalText.empty()) {
+                recordSize = 0u;
+            }
+            std::vector<std::uint8_t> recordBytes(physicalText.begin(), physicalText.begin() + recordSize);
+            SctDocumentString string{stringId, SctOpaqueText{recordBytes}, SctTextKind::SctString};
+            std::string textReason = "No source text profile was supplied.";
+            bool semanticText = false;
+            if (profileMatchesPlatform && options.sourceTextProfile.has_value()) {
+                const auto decoded = decodeSctTextRecord(recordBytes, SctTextKind::SctString,
+                    SctTextStorage::IndexedSection, *options.sourceTextProfile);
+                if (decoded.value) {
+                    string.value = *decoded.value;
+                    semanticText = !std::holds_alternative<SctOpaqueText>(string.value);
+                    textReason.clear();
+                } else textReason = decoded.error;
+            }
+            if (!semanticText) {
+                addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
+                    "Indexed SCT string remained opaque: " + textReason, SctDocumentEntityId{stringId});
+            }
+            result.receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextProfile,
+                semanticText, textReason});
+            const bool validPreamble = entry.preambleWords.size() >= 2u
+                && entry.preambleWords.front() == 9u
+                && entry.preambleWords.back() == 0x0000001du
+                && std::find(entry.preambleWords.begin(), entry.preambleWords.end() - 1u, 0x0000001du)
+                    == entry.preambleWords.end() - 1u;
+            if (!validPreamble || local > ledger.claims.size() || physicalTextSize > ledger.claims.size() - local
+                || !ledger.claim(0u, preambleSize) || !ledger.claim(local, recordSize)) {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::OverlappingSourceClaims,
                     "String evidence overlapped or exceeded its physical section and was preserved opaquely.", SctDocumentEntityId{stringId});
                 targetSection.content = SctOpaqueSectionContent{};
             } else {
                 document.strings.push_back(std::move(string));
-                targetSection.content = SctStringSectionContent{stringId};
+                targetSection.content = SctStringSectionContent{stringId, entry.preambleWords};
+                result.receipt.provenance.push_back({SctDocumentEntityId{targetSection.id},
+                    sourceSection.startOffset, static_cast<std::uint32_t>(preambleSize),
+                    static_cast<std::uint32_t>(sectionIndex)});
                 result.receipt.provenance.push_back({SctDocumentEntityId{stringId},
                     sourceSection.startOffset + entry.textStartOffset,
-                    static_cast<std::uint32_t>(entry.rawTextBytes.size()), static_cast<std::uint32_t>(sectionIndex)});
+                    static_cast<std::uint32_t>(recordSize), static_cast<std::uint32_t>(sectionIndex)});
             }
         } else if (sourceSection.kind == SctSectionKind::Label) {
             targetSection.content = SctLabelSectionContent{};
@@ -399,7 +525,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                         continue;
                     }
                     auto canonical = makeParameter(parameter, instruction, sourceSection, *schema,
-                        instructionIds, footer, footerIds, result, converted.id);
+                        instructionIds, stringIds, footer, footerIds, result, converted.id);
                     if (repeated && parameter.index >= repeated->firstParameter) {
                         const auto width = repeated->lastParameter - repeated->firstParameter + 1;
                         const auto ordinal = (parameter.index - repeated->firstParameter) / width;
@@ -448,7 +574,6 @@ SctDocumentImportResult SctDocumentImporter::import(
 
     if (footer) {
         ClaimLedger ledger{std::vector<std::uint8_t>(footer->payloadEndOffset - footer->payloadStartOffset)};
-        const auto dataStart = static_cast<std::uint32_t>(dataStart64);
         for (const auto entryIndex : footerEntryOrder) {
             const auto& entry = footer->entries[entryIndex];
             const auto idIt = footerIds.find(entry.payloadOffset);
@@ -459,12 +584,26 @@ SctDocumentImportResult SctDocumentImporter::import(
             }
             const auto id = idIt->second;
             const auto kind = entry.kind == SctFooterEntryKind::SctString
-                ? SctDocumentFooterEntryKind::SctString
-                : SctDocumentFooterEntryKind::String;
+                ? SctTextKind::SctString
+                : SctTextKind::PlainString;
             SctDocumentFooterEntry converted{id, kind, SctOpaqueText{entry.rawBytes}};
-            if (const auto text = editableText(entry.rawBytes)) converted.value = *text;
-            else addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
-                "Footer bytes were retained as opaque because single-byte termination was ambiguous.", SctDocumentEntityId{id});
+            std::string textReason = "No source text profile was supplied.";
+            bool semanticText = false;
+            if (profileMatchesPlatform && options.sourceTextProfile.has_value()) {
+                const auto decoded = decodeSctTextRecord(entry.rawBytes, kind,
+                    SctTextStorage::Footer, *options.sourceTextProfile);
+                if (decoded.value) {
+                    converted.value = *decoded.value;
+                    semanticText = !std::holds_alternative<SctOpaqueText>(converted.value);
+                    textReason.clear();
+                } else textReason = decoded.error;
+            }
+            if (!semanticText) {
+                addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
+                    "Footer text remained opaque: " + textReason, SctDocumentEntityId{id});
+            }
+            result.receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextProfile,
+                semanticText, textReason});
             const auto local = entry.payloadOffset - footer->payloadStartOffset;
             if (ledger.claim(local, entry.rawBytes.size())) {
                 document.footerEntries.push_back(std::move(converted));

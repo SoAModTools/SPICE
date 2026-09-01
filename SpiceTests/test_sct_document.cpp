@@ -3,7 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 namespace {
 using namespace spice::sct;
@@ -55,6 +58,39 @@ SctDocument makeReferenceDocument() {
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}});
     return document;
 }
+
+void writeBe32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
+    bytes[offset] = static_cast<std::uint8_t>(value >> 24u);
+    bytes[offset + 1u] = static_cast<std::uint8_t>(value >> 16u);
+    bytes[offset + 2u] = static_cast<std::uint8_t>(value >> 8u);
+    bytes[offset + 3u] = static_cast<std::uint8_t>(value);
+}
+
+void appendBe32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
+    const auto offset = bytes.size();
+    bytes.resize(offset + 4u);
+    writeBe32(bytes, offset, value);
+}
+
+SctParseResult parseIndexedStringReferenceFixture() {
+    constexpr std::size_t dataStart = 12u + 2u * 0x14u;
+    std::vector<std::uint8_t> bytes(dataStart, 0u);
+    writeBe32(bytes, 8u, 2u);
+    std::copy_n("SCRIPT", 6u, bytes.begin() + 16u);
+    writeBe32(bytes, 32u, 16u);
+    std::copy_n("M00010000", 9u, bytes.begin() + 36u);
+
+    appendBe32(bytes, 144u);
+    appendBe32(bytes, 12u); // target section at data + 16, relative to this operand at data + 4
+    appendBe32(bytes, 0x00800000u);
+    appendBe32(bytes, 12u);
+    appendBe32(bytes, 9u);
+    appendBe32(bytes, 0x1du);
+    bytes.push_back('A');
+    bytes.push_back(0u);
+    while ((bytes.size() % 4u) != 0u) bytes.push_back(0u);
+    return SctParser{}.parse(bytes, "indexed_string_reference.sct");
+}
 }
 
 static_assert(!std::is_same_v<SctSectionId, SctInstructionId>);
@@ -104,6 +140,50 @@ TEST(SctDocumentImporter, RecordsEncodingObservationsWithoutInferringAPlatform) 
     ASSERT_TRUE(imported.document.has_value());
     EXPECT_EQ(imported.receipt.source.byteOrder, SctSourceByteOrder::LittleEndian);
     EXPECT_FALSE(imported.receipt.declaredSourcePlatform.has_value());
+}
+
+TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferences) {
+    const auto parsed = parseIndexedStringReferenceFixture();
+    ASSERT_TRUE(parsed.parseOk);
+    ASSERT_EQ(2u, parsed.file.sections.size());
+    ASSERT_EQ(SctSectionKind::String, parsed.file.sections[1].kind);
+
+    const auto imported = SctDocumentImporter::import(
+        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+    ASSERT_TRUE(imported.document.has_value());
+    ASSERT_EQ(1u, imported.document->strings.size());
+    ASSERT_EQ(2u, imported.document->sections.size());
+    const auto& stringContent = std::get<SctStringSectionContent>(imported.document->sections[1].content);
+    EXPECT_EQ((std::vector<std::uint32_t>{9u, 0x1du}), stringContent.preambleWords);
+    EXPECT_EQ(SctTextKind::SctString, imported.document->strings.front().kind);
+
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        imported.document->sections[0].content).instructions;
+    ASSERT_FALSE(instructions.empty());
+    ASSERT_EQ(144u, instructions.front().opcode);
+    ASSERT_EQ(2u, instructions.front().fixedParameters.size());
+    const auto* reference = std::get_if<SctStringReference>(
+        &instructions.front().fixedParameters[0].value);
+    ASSERT_NE(nullptr, reference);
+    EXPECT_EQ(stringContent.stringId, reference->target);
+
+    const auto index = SctDocumentIndex::build(*imported.document);
+    ASSERT_EQ(1u, index.outboundReferences(instructions.front().id).size());
+    EXPECT_TRUE(std::holds_alternative<SctStringId>(
+        index.outboundReferences(instructions.front().id).front().target));
+    EXPECT_TRUE(SctDocumentValidator::validateDocument(*imported.document).validDocument);
+
+    auto wrongStorage = *imported.document;
+    const auto footerId = wrongStorage.allocateFooterEntryId();
+    wrongStorage.footerEntries.push_back({footerId, SctTextKind::SctString,
+        SctMessage{std::nullopt, SctFormattedText{{SctTextChunk{"footer"}}}}});
+    std::get<SctScriptSectionContent>(wrongStorage.sections[0].content)
+        .instructions.front().fixedParameters[0].value = SctFooterEntryReference{footerId};
+    EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongStorage).validDocument);
+
+    auto wrongKind = *imported.document;
+    wrongKind.strings.front().kind = SctTextKind::PlainString;
+    EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongKind).validDocument);
 }
 
 TEST(SctDocumentImporter, PreservesDuplicatePhysicalNamesWithoutMergingRows) {
@@ -175,7 +255,8 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     footer.entries.push_back(std::move(entry));
     parsed.file.footer = std::move(footer);
 
-    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
+    const auto imported = SctDocumentImporter::import(
+        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
     ASSERT_TRUE(imported.document.has_value());
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 3u);
@@ -186,10 +267,80 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
         imported.document->footerEntries[0].id);
     EXPECT_EQ(imported.document->footerEntries[0].kind, SctDocumentFooterEntryKind::String);
     const auto validation = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForTarget) << messages;
+}
+
+TEST(SctDocumentImporter, ConvertsFooterSctStringOffsetsForOpcodes24And25) {
+    SctParseResult parsed;
+    parsed.parseOk = true;
+    parsed.file.originalPayloadBytes.resize(54u, 0u);
+    SctSection section;
+    section.id.name = "SCT_TEXT";
+    section.startOffset = 32u;
+    section.endOffset = 52u;
+    section.kind = SctSectionKind::Script;
+
+    SctInstruction opcode24;
+    opcode24.opcode = 24u;
+    opcode24.payloadOffset = 0u;
+    opcode24.offset = 0u;
+    opcode24.sizeBytes = 8u;
+    opcode24.decodeOk = true;
+    opcode24.parameters.push_back({0u, {}, SctParameterValueKind::Raw,
+        SctSemanticConfidence::Known, {0u}, {}, std::nullopt});
+
+    SctParameter expression;
+    expression.index = 0u;
+    expression.rawWords = {0x00800000u};
+    expression.expression = SctExpression{};
+    expression.expression->ast = SctScptAstNode{
+        SctScptAstNodeKind::NoLoopValue, {}, {}, {0x00800000u}, {}};
+    SctParameter reference;
+    reference.index = 1u;
+    reference.rawWords = {0u};
+    SctInstruction opcode25;
+    opcode25.opcode = 25u;
+    opcode25.payloadOffset = 8u;
+    opcode25.offset = 8u;
+    opcode25.sizeBytes = 12u;
+    opcode25.decodeOk = true;
+    opcode25.parameters = {expression, reference};
+    section.instructions = {opcode24, opcode25};
+    parsed.file.sections.push_back(std::move(section));
+
+    SctFooter footer;
+    footer.present = true;
+    footer.payloadStartOffset = 20u;
+    footer.payloadEndOffset = 22u;
+    footer.rawBytes = {'S', 0u};
+    SctFooterEntry entry;
+    entry.kind = SctFooterEntryKind::SctString;
+    entry.payloadOffset = 20u;
+    entry.rawBytes = {'S', 0u};
+    entry.references.push_back({0u, 0u, 4u, 20u, 24u});
+    entry.references.push_back({8u, 1u, 16u, 20u, 25u});
+    footer.entries.push_back(std::move(entry));
+    parsed.file.footer = std::move(footer);
+
+    const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
+    ASSERT_TRUE(imported.document.has_value());
+    ASSERT_EQ(1u, imported.document->footerEntries.size());
+    EXPECT_EQ(SctTextKind::SctString, imported.document->footerEntries.front().kind);
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        imported.document->sections.front().content).instructions;
+    ASSERT_EQ(2u, instructions.size());
+    ASSERT_TRUE(std::holds_alternative<SctFooterEntryReference>(
+        instructions[0].fixedParameters[0].value));
+    ASSERT_TRUE(std::holds_alternative<SctFooterEntryReference>(
+        instructions[1].fixedParameters[1].value));
+    EXPECT_TRUE(SctDocumentValidator::validateDocument(*imported.document).validDocument);
+
+    auto wrongKind = *imported.document;
+    wrongKind.footerEntries.front().kind = SctTextKind::PlainString;
+    EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongKind).validDocument);
 }
 
 TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections) {
@@ -246,7 +397,7 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[2].fixedParameters[0].value).target, instructions[0].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[4].fixedParameters[0].value).target, instructions[0].id);
     const auto validation = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForTarget) << messages;
@@ -291,7 +442,8 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
     ASSERT_EQ(canonical.repeatedParameterGroups[0].parameters.size(), 1u);
     EXPECT_EQ(canonical.repeatedParameterGroups[0].parameters[0].schemaIndex, 2u);
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, &imported.receipt).validForTarget);
+        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs,
+        &imported.receipt).validForTarget);
 }
 
 TEST(SctDocumentImporter, ReturnsPartialDocumentWithOpaqueFallbackForContradictoryEvidence) {
@@ -336,9 +488,9 @@ TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingThe
     ASSERT_TRUE(imported.document.has_value());
     const auto structural = SctDocumentValidator::validateDocument(*imported.document);
     const auto gameCube = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
     const auto dreamcast = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::Dreamcast, &imported.receipt);
+        *imported.document, SctPlatform::Dreamcast, SctTextProfile::DreamcastUs, &imported.receipt);
     EXPECT_TRUE(structural.validDocument);
     EXPECT_TRUE(gameCube.validForTarget);
     EXPECT_FALSE(dreamcast.validForTarget);
@@ -418,7 +570,8 @@ TEST(SctDocumentValidator, RejectsZeroDuplicateOutOfAllocatorIdsAndBrokenAttachm
     const auto sectionId = document.allocateSectionId();
     document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
     document.sections.push_back({sectionId, "B", SctLabelSectionContent{}});
-    document.strings.push_back({SctStringId{}, SctEditableText{"bad"}});
+    document.strings.push_back({SctStringId{},
+        SctMessage{std::nullopt, SctFormattedText{{SctTextChunk{"bad"}}}}});
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({attachmentId, {1}, SctInstructionId{99},
         SctOpaquePlacement::FixedOffset, std::nullopt, 3, SctOpaqueRelocationSupport::FixedOnly,

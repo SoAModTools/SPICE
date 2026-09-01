@@ -2,6 +2,7 @@
 #include "SctOpcodeCatalogNames.h"
 #include "SctOpcodeParameterRoles.h"
 #include "SctModel.h"
+#include "SctTextContract.h"
 
 #include <algorithm>
 #include <array>
@@ -52,11 +53,13 @@ enum class SctBinaryShapeConfidence {
 enum class SctOpcodeParameterEncoding {
     RawWord,
     ScptExpression,
+    RawWordsUntilSentinel,
 };
 
 enum class SctOpcodeParameterStorage {
     Word32,
     ScptWordSequence,
+    RawWordSequence,
 };
 
 enum class SctOpcodeScalarType {
@@ -72,8 +75,7 @@ enum class SctOpcodeScalarType {
 enum class SctOpcodeReferenceKind {
     None,
     Instruction,
-    FooterString,
-    FooterSctString,
+    Text,
 };
 
 enum class SctOpcodeDefaultKind {
@@ -89,6 +91,12 @@ enum class SctOpcodeDocumentRole {
     FoldedModifier,
 };
 
+enum class SctOpcodeNaturalRefreshBehavior {
+    Unknown,
+    NoNewFrame,
+    MayCreateNewFrame,
+};
+
 enum class SctOpcodeContractConfidence {
     Unknown,
     Provisional,
@@ -102,8 +110,14 @@ struct SctOpcodeParameterSchema {
     SctOpcodeParameterStorage storage = SctOpcodeParameterStorage::Word32;
     SctOpcodeScalarType scalarType = SctOpcodeScalarType::Unknown;
     SctOpcodeReferenceKind referenceKind = SctOpcodeReferenceKind::None;
+    std::optional<SctOpcodeTextReferenceRule> textReference;
+    bool relativeReferenceSigned = false;
+    SctRelativeReferenceBase relativeReferenceBase = SctRelativeReferenceBase::OperandWord;
+    std::uint32_t referenceTargetAlignment = 1;
+    std::uint32_t referenceEncodedValueMask = 0xffffffffu;
     std::uint32_t allowedBitMask = 0xffffffffu;
     std::uint32_t requiredBitValue = 0u;
+    SctOpcodeContractConfidence bitContractConfidence = SctOpcodeContractConfidence::Unknown;
     std::int64_t minimumValue = 0;
     std::int64_t maximumValue = 0;
     bool hasConfirmedRange = false;
@@ -148,12 +162,6 @@ struct SctOpcodeSemanticMetadata {
     std::string_view notes = {};
 };
 
-struct SctFooterReferenceRule {
-    std::uint32_t parameterIndex = 0;
-    SctFooterParamKind kind = SctFooterParamKind::None;
-    bool signedRelative = false;
-};
-
 struct SctOpcodeRepeatedGroup {
     std::uint32_t firstParameter = 0;
     std::uint32_t lastParameter = 0;
@@ -165,16 +173,47 @@ struct SctOpcodeSchema {
     SctOpcodeParamPattern parameters{};
     SctBinaryShapeConfidence binaryShapeConfidence = SctBinaryShapeConfidence::Unknown;
     SctOpcodeSemanticMetadata semantic{};
-    std::array<SctFooterReferenceRule, 2> footerReferences{};
-    std::uint8_t footerReferenceCount = 0;
+    std::array<SctOpcodeTextReferenceRule, 2> textReferences{};
+    std::uint8_t textReferenceCount = 0;
     SctOpcodeAvailability gameCubeAvailability = SctOpcodeAvailability::Unknown;
     SctOpcodeAvailability dreamcastAvailability = SctOpcodeAvailability::Unknown;
     SctOpcodeDocumentRole documentRole = SctOpcodeDocumentRole::Instruction;
+    SctOpcodeNaturalRefreshBehavior naturalRefreshBehavior = SctOpcodeNaturalRefreshBehavior::Unknown;
+    SctOpcodeContractConfidence naturalRefreshConfidence = SctOpcodeContractConfidence::Unknown;
     std::array<SctOpcodeParameterSchema, 32> parameterCatalog{};
     std::uint8_t parameterCatalogCount = 0;
 };
 
 namespace detail {
+// Provisional handler-behavior hints transcribed from legacy SALSA's
+// "Skip Frame Refresh" catalog field. This is not the serialized opcode-13
+// modifier represented by SctDocumentInstruction::skipRefresh.
+inline constexpr std::array<bool, 266> kNaturalNoNewFrameHints{{
+    true, true, true, true, true, true, true, true, true, true, true, true,
+    false, true, true, false, true, true, true, true, true, true, true, false,
+    false, false, true, true, true, false, false, false, false, false, false, false,
+    false, false, false, false, false, true, true, false, true, false, false, false,
+    false, false, true, true, true, true, true, true, true, true, true, false,
+    false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, true, true, true, true, true,
+    true, true, true, true, true, false, false, true, true, true, true, true,
+    true, true, true, true, false, true, true, true, true, true, true, true,
+    true, true, true, true, true, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, false, false, false,
+    false, false, false, true, false, false, false, false, false, false, false, false,
+    false, false, false, false, false, false, false, false, false, true, false, false,
+    false, true, true, false, false, false, true, true, true, true, true, true,
+    true, true, true, true, true, true, true, false, false, false, true, true,
+    false, false, false, true, true, true, true, true, true, false, true, true,
+    true, true, true, false, true, true, true, true, false, true, true, false,
+    true, true, true, true, true, true, true, true, true, true, false, true,
+    true, true, true, true, true, true, true, true, true, true, true, true,
+    true, true, true, false, true, false, false, true, true, false, false, true,
+    true, true, true, false, false, true, true, false, false, true, false, true,
+    true, true, true, true, false, true, true, false, false, false, false, false,
+    false, false,
+}};
+
 inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds{{
     SctOpcodeParamPattern{2, 0x1ull, -1, -1, -1, 1, -1}, // opcode 0
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 1
@@ -185,7 +224,7 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     SctOpcodeParamPattern{2, 0x2ull, -1, -1, -1, -1, -1}, // opcode 6
     SctOpcodeParamPattern{2, 0x2ull, -1, -1, -1, -1, -1}, // opcode 7
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 8
-    SctOpcodeParamPattern{1, 0x1ull, -1, -1, -1, -1, -1}, // opcode 9
+    SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 9: raw words through exact 0x1d
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, 0, -1}, // opcode 10
     SctOpcodeParamPattern{1, 0x0ull, -1, -1, -1, -1, -1}, // opcode 11
     SctOpcodeParamPattern{0, 0x0ull, -1, -1, -1, -1, -1}, // opcode 12
@@ -537,25 +576,38 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     return meta;
 }
 
-[[nodiscard]] constexpr SctFooterParamMetadata makeFooterParamMetadata(std::uint16_t opcode, std::uint32_t parameterIndex) {
+[[nodiscard]] constexpr std::optional<SctOpcodeTextReferenceRule> makeTextReferenceMetadata(
+    std::uint16_t opcode, std::uint32_t parameterIndex) {
+    constexpr auto footerPlain = [](std::uint32_t index, bool signedRelative) {
+        return SctOpcodeTextReferenceRule{index, SctTextKind::PlainString, SctTextStorage::Footer,
+            signedRelative, SctRelativeReferenceBase::OperandWord, 1u, 0xffffffffu};
+    };
+    constexpr auto footerSct = [](std::uint32_t index, bool signedRelative) {
+        return SctOpcodeTextReferenceRule{index, SctTextKind::SctString, SctTextStorage::Footer,
+            signedRelative, SctRelativeReferenceBase::OperandWord, 1u, 0xffffffffu};
+    };
+    constexpr auto indexedSct = [](std::uint32_t index) {
+        return SctOpcodeTextReferenceRule{index, SctTextKind::SctString, SctTextStorage::IndexedSection,
+            true, SctRelativeReferenceBase::OperandWord, 4u, 0xfffffffcu};
+    };
     switch (opcode) {
     case 23:
-        if (parameterIndex == 0u) return {SctFooterParamKind::String, true};
+        if (parameterIndex == 0u) return footerPlain(parameterIndex, true);
         break;
     case 24:
-        if (parameterIndex == 0u) return {SctFooterParamKind::SctString, true};
+        if (parameterIndex == 0u) return footerSct(parameterIndex, true);
         break;
     case 25:
-        if (parameterIndex == 1u) return {SctFooterParamKind::SctString, false};
+        if (parameterIndex == 1u) return footerSct(parameterIndex, false);
         break;
     case 43:
-        if (parameterIndex == 0u) return {SctFooterParamKind::String, false};
+        if (parameterIndex == 0u) return footerPlain(parameterIndex, false);
         break;
     case 54:
-        if (parameterIndex == 1u) return {SctFooterParamKind::String, true};
+        if (parameterIndex == 1u) return footerPlain(parameterIndex, true);
         break;
     case 69:
-        if (parameterIndex == 0u) return {SctFooterParamKind::String, true};
+        if (parameterIndex == 0u) return footerPlain(parameterIndex, true);
         break;
     case 110:
     case 113:
@@ -564,24 +616,24 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     case 248:
     case 250:
     case 257:
-        if (parameterIndex == 0u) return {SctFooterParamKind::String, false};
+        if (parameterIndex == 0u) return footerPlain(parameterIndex, false);
         break;
     case 144:
-        if (parameterIndex == 0u) return {SctFooterParamKind::SctString, true};
+        if (parameterIndex == 0u) return indexedSct(parameterIndex);
         break;
     case 155:
-        if (parameterIndex == 1u) return {SctFooterParamKind::SctString, true};
+        if (parameterIndex == 1u) return indexedSct(parameterIndex);
         break;
     case 215:
-        if (parameterIndex == 1u) return {SctFooterParamKind::String, false};
+        if (parameterIndex == 1u) return footerPlain(parameterIndex, false);
         break;
     case 265:
-        if (parameterIndex == 1u) return {SctFooterParamKind::SctString, true};
+        if (parameterIndex == 1u) return indexedSct(parameterIndex);
         break;
     default:
         break;
     }
-    return {};
+    return std::nullopt;
 }
 
 [[nodiscard]] constexpr bool isSharedInvalidOpcode(std::uint16_t opcode) noexcept {
@@ -610,14 +662,14 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
         || static_cast<int>(parameterIndex) == schema.parameters.switchJumpParam;
 }
 
-[[nodiscard]] constexpr SctFooterParamMetadata footerReferenceForBaseParameter(
+[[nodiscard]] constexpr std::optional<SctOpcodeTextReferenceRule> textReferenceForBaseParameter(
     const SctOpcodeSchema& schema, std::uint32_t parameterIndex) noexcept {
-    for (std::size_t i = 0; i < schema.footerReferenceCount; ++i) {
-        if (schema.footerReferences[i].parameterIndex == parameterIndex) {
-            return {schema.footerReferences[i].kind, schema.footerReferences[i].signedRelative};
+    for (std::size_t i = 0; i < schema.textReferenceCount; ++i) {
+        if (schema.textReferences[i].parameterIndex == parameterIndex) {
+            return schema.textReferences[i];
         }
     }
-    return {};
+    return std::nullopt;
 }
 
 [[nodiscard]] constexpr SctOpcodeParameterSchema makeParameterCatalogEntry(
@@ -645,12 +697,25 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
         && parameterIndex >= static_cast<std::uint32_t>(schema.parameters.loopStartParam)
         && parameterIndex <= static_cast<std::uint32_t>(schema.parameters.loopEndParam);
 
+    if (schema.opcode == 9u && parameterIndex == 0u) {
+        parameter.encoding = SctOpcodeParameterEncoding::RawWordsUntilSentinel;
+        parameter.storage = SctOpcodeParameterStorage::RawWordSequence;
+        parameter.sentinelEncodedWord = 0x0000001du;
+        parameter.hasConfirmedSentinel = true;
+        parameter.sentinelConfidence = SctOpcodeContractConfidence::Confirmed;
+        parameter.defaultKind = SctOpcodeDefaultKind::ConfirmedEncodedWord;
+        parameter.defaultEncodedWord = 0x0000001du;
+        parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
+        return parameter;
+    }
+
     if (parameterIndex == 0u && (schema.opcode == 5u || schema.opcode == 6u || schema.opcode == 7u)) {
         parameter.scalarType = SctOpcodeScalarType::VariableReference;
         parameter.allowedBitMask = schema.opcode == 5u ? 0x1000ffffu
             : schema.opcode == 6u ? 0x5000ffffu : 0x4000ffffu;
         parameter.requiredBitValue = schema.opcode == 5u ? 0x10000000u
             : schema.opcode == 6u ? 0x50000000u : 0x40000000u;
+        parameter.bitContractConfidence = SctOpcodeContractConfidence::Confirmed;
         parameter.minimumValue = 0;
         parameter.maximumValue = 0xffff;
         parameter.hasConfirmedRange = true;
@@ -668,6 +733,10 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     if (repeated && schema.parameters.iterationCountParam >= 0
         && parameterIndex == static_cast<std::uint32_t>(schema.parameters.iterationCountParam)) {
         parameter.scalarType = SctOpcodeScalarType::RepetitionCount;
+        if (schema.opcode == 131u || schema.opcode == 132u) {
+            parameter.allowedBitMask = 0x0000ffffu;
+            parameter.bitContractConfidence = SctOpcodeContractConfidence::Provisional;
+        }
         parameter.defaultKind = SctOpcodeDefaultKind::DerivedRepeatedGroupCount;
         parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
         return parameter;
@@ -675,18 +744,36 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     if (isControlReferenceParameter(schema, parameterIndex)) {
         parameter.scalarType = SctOpcodeScalarType::RelativeOffset;
         parameter.referenceKind = SctOpcodeReferenceKind::Instruction;
+        parameter.relativeReferenceSigned = true;
+        parameter.relativeReferenceBase = schema.semantic.controlRole == SctOpcodeControlRole::Switch
+            ? SctRelativeReferenceBase::OperandWord
+            : SctRelativeReferenceBase::InstructionEndMinusWord;
+        parameter.referenceTargetAlignment = 4u;
+        parameter.referenceEncodedValueMask = 0xfffffffcu;
         parameter.defaultKind = SctOpcodeDefaultKind::Required;
         parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
         return parameter;
     }
-    const auto footer = footerReferenceForBaseParameter(schema, parameterIndex);
-    if (footer.kind != SctFooterParamKind::None) {
+    const auto text = textReferenceForBaseParameter(schema, parameterIndex);
+    if (text.has_value()) {
         parameter.scalarType = SctOpcodeScalarType::RelativeOffset;
-        parameter.referenceKind = footer.kind == SctFooterParamKind::String
-            ? SctOpcodeReferenceKind::FooterString : SctOpcodeReferenceKind::FooterSctString;
+        parameter.referenceKind = SctOpcodeReferenceKind::Text;
+        parameter.textReference = text;
+        parameter.relativeReferenceSigned = text->signedRelative;
+        parameter.relativeReferenceBase = text->relativeBase;
+        parameter.referenceTargetAlignment = text->targetAlignment;
+        parameter.referenceEncodedValueMask = text->encodedValueMask;
         parameter.defaultKind = SctOpcodeDefaultKind::Required;
         parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
         return parameter;
+    }
+
+    if (schema.opcode == 3u && parameterIndex == 2u) {
+        parameter.scalarType = SctOpcodeScalarType::SignedInteger;
+        parameter.semanticConfidence = SctOpcodeContractConfidence::Provisional;
+        parameter.sentinelEncodedWord = 0xffffffffu;
+        parameter.hasConfirmedSentinel = true;
+        parameter.sentinelConfidence = SctOpcodeContractConfidence::Confirmed;
     }
 
     // Zero is a safe structural seed for the known binary shape, but absent a
@@ -706,6 +793,10 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
         schema.parameters = kOpcodeParamPatternSeeds[opcode];
         schema.binaryShapeConfidence = SctBinaryShapeConfidence::Confirmed;
         schema.semantic = makeOpcodeSemanticMetadata(schema.opcode);
+        schema.naturalRefreshBehavior = kNaturalNoNewFrameHints[opcode]
+            ? SctOpcodeNaturalRefreshBehavior::NoNewFrame
+            : SctOpcodeNaturalRefreshBehavior::MayCreateNewFrame;
+        schema.naturalRefreshConfidence = SctOpcodeContractConfidence::Provisional;
         schema.gameCubeAvailability = isSharedInvalidOpcode(schema.opcode)
             ? SctOpcodeAvailability::UnavailableInvalidStub
             : SctOpcodeAvailability::Available;
@@ -718,15 +809,11 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
         }
 
         for (std::uint32_t parameterIndex = 0; parameterIndex < schema.parameters.paramCount; ++parameterIndex) {
-            const auto footer = makeFooterParamMetadata(schema.opcode, parameterIndex);
-            if (footer.kind == SctFooterParamKind::None) {
+            const auto text = makeTextReferenceMetadata(schema.opcode, parameterIndex);
+            if (!text.has_value()) {
                 continue;
             }
-            schema.footerReferences[schema.footerReferenceCount++] = {
-                parameterIndex,
-                footer.kind,
-                footer.signedRelative,
-            };
+            schema.textReferences[schema.textReferenceCount++] = *text;
         }
         const auto catalogCount = schema.parameters.loopEndParam >= 0
             ? std::max<std::uint32_t>(schema.parameters.paramCount,
@@ -803,8 +890,8 @@ inline constexpr auto kSalsaOpcodeParamPatterns = detail::makeLegacyParamPattern
     const SctOpcodeSchema& schema,
     std::uint32_t parameterIndex) noexcept {
     const auto baseParameterIndex = sctOpcodeBaseParameterIndex(schema, parameterIndex);
-    return baseParameterIndex < 64u && ((schema.parameters.scptAnalyzeMask >> baseParameterIndex) & 1ull) != 0ull
-        ? SctOpcodeParameterEncoding::ScptExpression
+    return baseParameterIndex < schema.parameterCatalogCount
+        ? schema.parameterCatalog[baseParameterIndex].encoding
         : SctOpcodeParameterEncoding::RawWord;
 }
 
@@ -816,17 +903,29 @@ inline constexpr auto kSalsaOpcodeParamPatterns = detail::makeLegacyParamPattern
         ? &schema.parameterCatalog[baseParameterIndex] : nullptr;
 }
 
-[[nodiscard]] constexpr SctFooterParamMetadata sctOpcodeFooterReference(
+[[nodiscard]] constexpr std::optional<SctOpcodeTextReferenceRule> sctOpcodeTextReference(
     const SctOpcodeSchema& schema,
     std::uint32_t parameterIndex) noexcept {
     const auto baseParameterIndex = sctOpcodeBaseParameterIndex(schema, parameterIndex);
-    for (std::size_t i = 0; i < schema.footerReferenceCount; ++i) {
-        const auto& reference = schema.footerReferences[i];
+    for (std::size_t i = 0; i < schema.textReferenceCount; ++i) {
+        const auto& reference = schema.textReferences[i];
         if (reference.parameterIndex == baseParameterIndex) {
-            return {reference.kind, reference.signedRelative};
+            return reference;
         }
     }
-    return {};
+    return std::nullopt;
+}
+
+[[deprecated("Use sctOpcodeTextReference and inspect SctTextStorage")]]
+[[nodiscard]] constexpr SctFooterParamMetadata sctOpcodeFooterReference(
+    const SctOpcodeSchema& schema,
+    std::uint32_t parameterIndex) noexcept {
+    const auto reference = sctOpcodeTextReference(schema, parameterIndex);
+    if (!reference.has_value() || reference->storage != SctTextStorage::Footer) {
+        return {};
+    }
+    return {reference->kind == SctTextKind::PlainString
+        ? SctFooterParamKind::String : SctFooterParamKind::SctString, reference->signedRelative};
 }
 
 [[deprecated("Use findSctOpcodeSchema and SctOpcodeSchema::semantic")]]
@@ -839,12 +938,17 @@ inline constexpr auto kSalsaOpcodeParamPatterns = detail::makeLegacyParamPattern
     return metadata;
 }
 
-[[deprecated("Use findSctOpcodeSchema and sctOpcodeFooterReference")]]
+[[deprecated("Use findSctOpcodeSchema and sctOpcodeTextReference")]]
 [[nodiscard]] constexpr SctFooterParamMetadata sctFooterParamMetadata(
     std::uint16_t opcode,
     std::uint32_t parameterIndex) noexcept {
     if (const auto* schema = findSctOpcodeSchema(opcode); schema != nullptr) {
-        return sctOpcodeFooterReference(*schema, parameterIndex);
+        const auto reference = sctOpcodeTextReference(*schema, parameterIndex);
+        if (reference.has_value() && reference->storage == SctTextStorage::Footer) {
+            return {reference->kind == SctTextKind::PlainString
+                ? SctFooterParamKind::String : SctFooterParamKind::SctString,
+                reference->signedRelative};
+        }
     }
     return {};
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SctTextContract.h"
+
 #include <compare>
 #include <cstdint>
 #include <functional>
@@ -69,6 +71,10 @@ enum class SctDiagnosticCode {
     OpaquePlacementUnsatisfied,
     CompressionFailed,
     ProvisionalAuthoringDefault,
+    ProvisionalOpcodeConstraint,
+    TextInvalid,
+    TextProfileMismatch,
+    HeaderUnavailable,
 };
 
 struct SctDocumentDiagnostic {
@@ -86,9 +92,17 @@ struct SctDocumentDiagnostic {
         std::uint32_t size = 0;
         auto operator<=>(const TextByteRange&) const = default;
     };
+    enum class TextRegion { Header, Body };
+    struct TextLocation {
+        TextRegion region = TextRegion::Body;
+        std::optional<std::uint32_t> elementOrdinal;
+        TextByteRange utf8Range;
+        auto operator<=>(const TextLocation&) const = default;
+    };
     std::optional<ParameterAddress> parameter;
     std::vector<std::uint32_t> expressionChildPath;
     std::optional<TextByteRange> textRange;
+    std::optional<TextLocation> textLocation;
 };
 
 using SctParameterAddress = SctDocumentDiagnostic::ParameterAddress;
@@ -114,11 +128,14 @@ struct SctCanonicalExpression {
 };
 
 struct SctEncodedWordValue { std::uint32_t value = 0; };
+struct SctTerminatedWordSequenceValue { std::vector<std::uint32_t> words; };
 struct SctInstructionReference { SctInstructionId target; };
+struct SctStringReference { SctStringId target; };
 struct SctFooterEntryReference { SctFooterEntryId target; };
 struct SctOpaqueParameterValue { std::vector<std::uint32_t> words; };
 using SctDocumentParameterValue = std::variant<SctEncodedWordValue, SctCanonicalExpression,
-    SctInstructionReference, SctFooterEntryReference, SctOpaqueParameterValue>;
+    SctTerminatedWordSequenceValue, SctInstructionReference, SctStringReference,
+    SctFooterEntryReference, SctOpaqueParameterValue>;
 
 struct SctDocumentParameter {
     std::uint32_t schemaIndex = 0;
@@ -138,25 +155,54 @@ struct SctDocumentInstruction {
     std::vector<SctDocumentRepeatedParameterGroup> repeatedParameterGroups;
 };
 
-struct SctEditableText { std::string bytes; };
+struct SctPlainText { std::string utf8; };
+
+enum class SctMessageCommandCode { A, B, C, D, E, P, R, S, U, X, Wc, Wo };
+struct SctNoCommandArgument { auto operator<=>(const SctNoCommandArgument&) const = default; };
+struct SctDecimalCommandArgument {
+    std::optional<std::uint32_t> value;
+    auto operator<=>(const SctDecimalCommandArgument&) const = default;
+};
+struct SctByteListCommandArgument {
+    std::vector<std::uint8_t> values;
+    auto operator<=>(const SctByteListCommandArgument&) const = default;
+};
+using SctMessageCommandArgument = std::variant<SctNoCommandArgument,
+    SctDecimalCommandArgument, SctByteListCommandArgument>;
+struct SctInlineCommand {
+    SctMessageCommandCode code = SctMessageCommandCode::C;
+    SctMessageCommandArgument argument = SctNoCommandArgument{};
+};
+struct SctTextChunk { std::string utf8; };
+using SctFormattedTextElement = std::variant<SctTextChunk, SctInlineCommand>;
+struct SctFormattedText { std::vector<SctFormattedTextElement> elements; };
+struct SctMessage {
+    std::optional<std::string> headerUtf8;
+    SctFormattedText body;
+};
 struct SctOpaqueText { std::vector<std::uint8_t> bytes; };
-using SctTextValue = std::variant<SctEditableText, SctOpaqueText>;
+struct SctEmptyIndexedText { auto operator<=>(const SctEmptyIndexedText&) const = default; };
+using SctTextValue = std::variant<SctPlainText, SctMessage, SctOpaqueText, SctEmptyIndexedText>;
 
 struct SctDocumentString {
     SctStringId id;
     SctTextValue value;
+    SctTextKind kind = SctTextKind::SctString;
 };
 
-enum class SctDocumentFooterEntryKind { String, SctString };
+using SctDocumentFooterEntryKind = SctTextKind;
 
 struct SctDocumentFooterEntry {
     SctFooterEntryId id;
-    SctDocumentFooterEntryKind kind = SctDocumentFooterEntryKind::String;
+    SctTextKind kind = SctTextKind::PlainString;
     SctTextValue value;
 };
 
 struct SctScriptSectionContent { std::vector<SctDocumentInstruction> instructions; };
-struct SctStringSectionContent { SctStringId stringId; };
+struct SctStringSectionContent {
+    SctStringId stringId;
+    std::vector<std::uint32_t> preambleWords{9u, 0x0000001du};
+};
 struct SctLabelSectionContent {};
 struct SctOpaqueSectionContent {};
 using SctDocumentSectionContent = std::variant<SctScriptSectionContent, SctStringSectionContent,

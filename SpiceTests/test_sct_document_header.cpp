@@ -12,7 +12,8 @@ TEST(SctDocumentHeader, IsSelfContainedAndUsesDocumentOwnedFooterKinds) {
     spice::sct::SctDocument document;
     const auto footerId = document.allocateFooterEntryId();
     document.footerEntries.push_back({footerId, spice::sct::SctDocumentFooterEntryKind::SctString,
-        spice::sct::SctEditableText{"text"}});
+        spice::sct::SctMessage{std::nullopt,
+            spice::sct::SctFormattedText{{spice::sct::SctTextChunk{"text"}}}}});
     ASSERT_EQ(document.footerEntries.size(), 1u);
     EXPECT_EQ(document.footerEntries[0].kind, spice::sct::SctDocumentFooterEntryKind::SctString);
 }

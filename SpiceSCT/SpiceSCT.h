@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SctTextContract.h"
+#include "SctHeaderContract.h"
 #include "SctModel.h"
 #include "SctIrBuilder.h"
 #include "SctJsonExporter.h"
@@ -9,6 +11,7 @@
 #include "SctParser.h"
 #include "SctOpcodeMetadata.h"
 #include "SctDocument.h"
+#include "SctTextBuilder.h"
 #include "SctDocumentBuilder.h"
 #include "SctDocumentIndex.h"
 #include "SctInstructionFactory.h"

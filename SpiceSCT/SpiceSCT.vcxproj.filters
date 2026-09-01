@@ -32,6 +32,18 @@
     <ClInclude Include="SctOpcodeMetadata.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctTextContract.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctHeaderContract.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctTextBuilder.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctTextCodec.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SctOpcodeCatalogNames.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -84,6 +96,12 @@
     </ClCompile>
     <ClCompile Include="SctScptDecodeHelpers.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SctTextBuilder.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctTextCodec.cpp">
+      <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctIrBuilder.cpp">
       <Filter>Model</Filter>

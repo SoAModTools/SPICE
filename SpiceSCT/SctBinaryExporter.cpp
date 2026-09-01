@@ -313,14 +313,15 @@ void patchFooterReferenceWords(
     }
     std::size_t operandWordOffset = 0;
     for (const auto& parameter : instruction.parameters) {
-        const auto metadata = sctOpcodeFooterReference(*schema, parameter.index);
-        if (metadata.kind != SctFooterParamKind::None && !parameter.rawWords.empty()) {
+        const auto metadata = sctOpcodeTextReference(*schema, parameter.index);
+        if (metadata.has_value() && metadata->storage == SctTextStorage::Footer
+            && !parameter.rawWords.empty()) {
             const auto wordIndex = opcodeIndex + 1u + operandWordOffset;
             if (wordIndex >= words.size()) {
                 break;
             }
             const auto oldOperandPayloadOffset = instruction.payloadOffset + static_cast<std::uint32_t>(wordIndex * 4u);
-            const auto oldRelative = metadata.signedRelative
+            const auto oldRelative = metadata->signedRelative
                 ? static_cast<std::int64_t>(static_cast<std::int32_t>(parameter.rawWords.front()))
                 : static_cast<std::int64_t>(parameter.rawWords.front());
             const auto oldTarget = static_cast<std::int64_t>(oldOperandPayloadOffset) + oldRelative;

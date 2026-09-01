@@ -9,7 +9,8 @@ namespace {
 using namespace spice::sct;
 
 SctDocumentExportOptions gameCubeOptions() {
-    return SctDocumentExportOptions{SctPlatform::GameCube, SctDocumentOutputByteOrder::BigEndian,
+    return SctDocumentExportOptions{SctPlatform::GameCube, SctTextProfile::GameCubeUs,
+        SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper::Raw, SctOpaquePreservationPolicy::RequirePreservation};
 }
 } // namespace
@@ -61,7 +62,7 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     const auto structuralValidation = SctDocumentValidator::validateDocument(candidate);
     ASSERT_TRUE(structuralValidation.validDocument);
     const auto targetValidation = SctDocumentValidator::validateForTarget(
-        candidate, SctPlatform::GameCube, &imported.receipt);
+        candidate, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
     ASSERT_TRUE(targetValidation.validForTarget);
     const auto exported = SctDocumentExporter::exportDocument(
         candidate, gameCubeOptions(), &imported.receipt);

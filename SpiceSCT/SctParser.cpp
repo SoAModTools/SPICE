@@ -72,7 +72,7 @@ struct GlobalDecodedInstruction {
 
 struct FooterReferenceCandidate {
     SctFooterReference reference;
-    SctFooterEntryKind kind = SctFooterEntryKind::String;
+    SctFooterEntryKind kind = SctFooterEntryKind::PlainString;
     bool valid = false;
 };
 
@@ -250,9 +250,12 @@ struct OpcodeBoundaryProbe {
     entry.preambleWords = preamble.rawWords;
     if (preamble.endOffset < sectionBytes.size()) {
         const auto textBytes = sectionBytes.subspan(preamble.endOffset);
-        entry.rawTextBytes.insert(entry.rawTextBytes.end(), textBytes.begin(), textBytes.end());
-        entry.decodedText = decodeStringBytes(textBytes);
-        entry.decodeOk = true;
+        const auto terminator = std::find(textBytes.begin(), textBytes.end(), 0u);
+        const auto boundedEnd = terminator == textBytes.end() ? textBytes.end() : terminator + 1;
+        entry.rawTextBytes.insert(entry.rawTextBytes.end(), textBytes.begin(), boundedEnd);
+        entry.decodedText = decodeStringBytes(
+            textBytes.first(static_cast<std::size_t>(boundedEnd - textBytes.begin())));
+        entry.decodeOk = terminator != textBytes.end();
     }
     return entry;
 }
@@ -749,6 +752,44 @@ void addInstructionSemanticEdges(
         }
         edges.push_back(std::move(edge));
     }
+
+    std::uint32_t operandWordIndex = instruction.opcodeWordIndex + 1u;
+    for (const auto& parameter : instruction.parameters) {
+        const auto reference = sctOpcodeTextReference(*schema, parameter.index);
+        if (reference.has_value() && reference->storage == SctTextStorage::IndexedSection
+            && !parameter.rawWords.empty()) {
+            const auto operandPayloadOffset = instruction.payloadOffset + operandWordIndex * 4u;
+            const auto masked = parameter.rawWords.front() & reference->encodedValueMask;
+            const auto relative = reference->signedRelative
+                ? static_cast<std::int64_t>(static_cast<std::int32_t>(masked))
+                : static_cast<std::int64_t>(masked);
+            const auto target = static_cast<std::int64_t>(operandPayloadOffset) + relative;
+            SctEdge edge{};
+            edge.type = SctEdgeType::ReferencesString;
+            edge.confidence = SctSemanticConfidence::Known;
+            edge.fromOffset = instruction.payloadOffset - sourceSectionStart;
+            edge.fromPayloadOffset = instruction.payloadOffset;
+            edge.opcode = instruction.opcode;
+            edge.detail = "Instruction references an indexed SCT string section.";
+            edge.attributes.emplace("parameter_index", decimalString(parameter.index));
+            edge.attributes.emplace("operand_payload_offset", decimalString(operandPayloadOffset));
+            if (target >= 0 && target <= std::numeric_limits<std::uint32_t>::max()) {
+                edge.toPayloadOffset = static_cast<std::uint32_t>(target);
+                if (const auto targetSection = sectionIndexForPayloadOffset(rows, *edge.toPayloadOffset);
+                    targetSection.has_value() && rows[*targetSection].start == *edge.toPayloadOffset) {
+                    edge.toOffset = 0u;
+                    edge.attributes.emplace("target_section", rows[*targetSection].name);
+                    edge.attributes.emplace("target_section_index", decimalString(*targetSection));
+                } else {
+                    edge.attributes.emplace("target_resolution", "not_indexed_section_start");
+                }
+            } else {
+                edge.attributes.emplace("target_resolution", "out_of_range");
+            }
+            edges.push_back(std::move(edge));
+        }
+        operandWordIndex += static_cast<std::uint32_t>(parameter.rawWords.size());
+    }
 }
 
 [[nodiscard]] std::string decimalString(std::uint32_t value) {
@@ -791,8 +832,8 @@ void addInstructionSemanticEdges(
             continue;
         }
         for (const auto& parameter : instruction.parameters) {
-            const auto metadata = sctOpcodeFooterReference(*schema, parameter.index);
-            if (metadata.kind == SctFooterParamKind::None) {
+            const auto metadata = sctOpcodeTextReference(*schema, parameter.index);
+            if (!metadata.has_value() || metadata->storage != SctTextStorage::Footer) {
                 continue;
             }
             const auto operandPayloadOffset = parameterOperandPayloadOffset(instruction, parameter.index);
@@ -800,16 +841,16 @@ void addInstructionSemanticEdges(
                 continue;
             }
             const auto target = static_cast<std::int64_t>(*operandPayloadOffset)
-                + footerRelativeValue(parameter, metadata.signedRelative);
+                + footerRelativeValue(parameter, metadata->signedRelative);
 
             FooterReferenceCandidate candidate{};
             candidate.reference.instructionPayloadOffset = payloadOffset;
             candidate.reference.parameterIndex = parameter.index;
             candidate.reference.operandPayloadOffset = *operandPayloadOffset;
             candidate.reference.opcode = instruction.opcode;
-            candidate.kind = metadata.kind == SctFooterParamKind::SctString
+            candidate.kind = metadata->kind == SctTextKind::SctString
                 ? SctFooterEntryKind::SctString
-                : SctFooterEntryKind::String;
+                : SctFooterEntryKind::PlainString;
 
             if (target >= 0 && target < static_cast<std::int64_t>(dataBytes.size())) {
                 candidate.reference.targetPayloadOffset = static_cast<std::uint32_t>(target);
@@ -1122,8 +1163,9 @@ void populateFooterEntriesAndGroups(
                 return false;
             }
 
-            const bool isScptParam = sctOpcodeParameterEncoding(*opcodeSchema, paramIndex)
-                == SctOpcodeParameterEncoding::ScptExpression;
+            const auto parameterEncoding = sctOpcodeParameterEncoding(*opcodeSchema, paramIndex);
+            const bool isScptParam = parameterEncoding == SctOpcodeParameterEncoding::ScptExpression;
+            const bool isRawSentinelSequence = parameterEncoding == SctOpcodeParameterEncoding::RawWordsUntilSentinel;
             std::uint32_t wordsForParam = 1;
             SctInstruction::ScptParameterValueRecord scptRecord{};
             if (isScptParam) {
@@ -1136,6 +1178,24 @@ void populateFooterEntriesAndGroups(
                 }
                 decoded.inst.scptAnalyzeOperandIndexes.push_back(static_cast<std::uint8_t>(paramIndex));
                 scptRecord.operandWordCount = wordsForParam;
+            } else if (isRawSentinelSequence) {
+                wordsForParam = 0;
+                const auto* parameterSchema = sctOpcodeParameterSchema(*opcodeSchema, paramIndex);
+                const auto sentinel = parameterSchema != nullptr && parameterSchema->hasConfirmedSentinel
+                    ? parameterSchema->sentinelEncodedWord : 0x0000001du;
+                auto rawCursor = paramWordOffset;
+                while (rawCursor + 4u <= sectionBytes.size()) {
+                    ++wordsForParam;
+                    if (readU32(sectionBytes, rawCursor, chosenEndian) == sentinel) {
+                        break;
+                    }
+                    rawCursor += 4u;
+                }
+                if (wordsForParam == 0u
+                    || readU32(sectionBytes, paramWordOffset + (wordsForParam - 1u) * 4u, chosenEndian) != sentinel) {
+                    diagnostics.push_back({"Raw sentinel-terminated parameter reached section end before 0x1d.", offset});
+                    return false;
+                }
             }
 
             if (paramPattern.iterationCountParam >= 0
@@ -1149,7 +1209,8 @@ void populateFooterEntriesAndGroups(
                 parameter.role = std::string(opcodeMetadata.parameterRoles[baseParamIndex]);
             }
             parameter.confidence = opcodeMetadata.confidence;
-            parameter.valueKind = isScptParam ? SctParameterValueKind::Expression : SctParameterValueKind::Integer;
+            parameter.valueKind = isScptParam ? SctParameterValueKind::Expression
+                : isRawSentinelSequence ? SctParameterValueKind::Raw : SctParameterValueKind::Integer;
 
             if (!isScptParam && (parameter.role.find("offset") != std::string::npos
                 || parameter.role.find("Offset") != std::string::npos)) {
@@ -1159,10 +1220,10 @@ void populateFooterEntriesAndGroups(
                 || opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsScript)) {
                 parameter.valueKind = SctParameterValueKind::ResourceRef;
             }
-            if (!isScptParam && sctOpcodeFooterReference(*opcodeSchema, paramIndex).kind != SctFooterParamKind::None) {
+            if (!isScptParam && sctOpcodeTextReference(*opcodeSchema, paramIndex).has_value()) {
                 parameter.valueKind = SctParameterValueKind::StringRef;
                 if (parameter.role.empty()) {
-                    parameter.role = "footerStringRef";
+                    parameter.role = "textRef";
                 }
             }
 
@@ -1795,6 +1856,89 @@ SctParseResult SctParser::parse(
                 break;
             }
             cursor = nextCursor;
+        }
+    }
+
+    // Short indexed strings can look like valid byte-swapped opcodes. A confirmed
+    // indexed-string relocation is stronger evidence than that boundary heuristic,
+    // so promote exact opcode-9 row targets before assigning decoded instructions.
+    std::set<std::uint32_t> referencedIndexedStringRows;
+    for (const auto& [payloadOffset, global] : globalInstructions) {
+        const auto& instruction = global.decoded.inst;
+        const auto* schema = findSctOpcodeSchema(instruction.opcode);
+        if (schema == nullptr) continue;
+        std::uint32_t operandWordIndex = instruction.opcodeWordIndex + 1u;
+        for (const auto& parameter : instruction.parameters) {
+            const auto rule = sctOpcodeTextReference(*schema, parameter.index);
+            if (rule.has_value() && rule->storage == SctTextStorage::IndexedSection
+                && !parameter.rawWords.empty()) {
+                const auto operandPayloadOffset = instruction.payloadOffset + operandWordIndex * 4u;
+                const auto base = rule->relativeBase == SctRelativeReferenceBase::OperandWord
+                    ? static_cast<std::int64_t>(operandPayloadOffset)
+                    : static_cast<std::int64_t>(instruction.payloadOffset + instruction.sizeBytes - 4u);
+                const auto masked = parameter.rawWords.front() & rule->encodedValueMask;
+                const auto relative = rule->signedRelative
+                    ? static_cast<std::int64_t>(static_cast<std::int32_t>(masked))
+                    : static_cast<std::int64_t>(masked);
+                const auto target = base + relative;
+                if (target >= 0 && target <= std::numeric_limits<std::uint32_t>::max()
+                    && static_cast<std::uint32_t>(target) % rule->targetAlignment == 0u) {
+                    const auto sectionIndex = sectionIndexForPayloadOffset(
+                        rows, static_cast<std::uint32_t>(target));
+                    if (sectionIndex.has_value()
+                        && rows[*sectionIndex].start == static_cast<std::uint32_t>(target)) {
+                        referencedIndexedStringRows.insert(*sectionIndex);
+                    }
+                }
+            }
+            operandWordIndex += static_cast<std::uint32_t>(parameter.rawWords.size());
+        }
+    }
+    for (const auto rowIndex : referencedIndexedStringRows) {
+        auto& row = rows[rowIndex];
+        const auto sectionBytes = dataBytes.subspan(row.start, row.end - row.start);
+        const auto preamble = parseLabelPreamble(sectionBytes, indexEndian);
+        if (!preamble.present || !firstStringEndOffset(sectionBytes, preamble).has_value()) {
+            result.diagnostics.push_back({
+                "Indexed text reference targets a row without a bounded opcode-9 string payload.",
+                row.start,
+                row.name
+            });
+            continue;
+        }
+        row.isCode = false;
+        row.isString = true;
+        row.isLabelOnly = false;
+        auto& section = result.file.sections[rowIndex];
+        section.kind = SctSectionKind::String;
+        section.isStringSection = true;
+        section.instructions.clear();
+        section.edges.clear();
+        section.stringEntry = makeStringEntry(sectionBytes, preamble);
+        section.rawSpans.clear();
+        section.rawSpans.push_back(makeRawSpan(
+            sectionBytes,
+            SctRawSpanReason::StringPayload,
+            "Raw indexed-string bytes preserved after typed relocation evidence."));
+        section.heuristicEvidence.notes.push_back(
+            "Classified as an indexed SCT string from a confirmed typed relocation to its opcode-9 row start.");
+
+        for (auto it = globalInstructions.begin(); it != globalInstructions.end();) {
+            if (it->first >= row.start && it->first < row.end) it = globalInstructions.erase(it);
+            else ++it;
+        }
+        const auto grouped = std::any_of(result.file.stringGroups.begin(), result.file.stringGroups.end(),
+            [&](const auto& group) {
+                return std::find(group.stringSectionIndexes.begin(), group.stringSectionIndexes.end(), rowIndex)
+                    != group.stringSectionIndexes.end();
+            });
+        if (!grouped) {
+            SctStringGroup group{};
+            group.name = "Untitled(" + std::to_string(syntheticGroupIndex++) + ")";
+            group.stringSectionIndexes.push_back(rowIndex);
+            group.synthetic = true;
+            group.notes.push_back("Synthetic string group created from indexed-reference evidence.");
+            result.file.stringGroups.push_back(std::move(group));
         }
     }
 

@@ -1,5 +1,8 @@
 #include "SctDocumentValidator.h"
 
+#include "SctTextBuilder.h"
+#include "SctTextCodec.h"
+
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,6 +17,24 @@ void error(SctDocumentValidationResult& result, SctDiagnosticCode code, std::str
     SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)};
     diagnostic.parameter = parameter;
     diagnostic.expressionChildPath = std::move(expressionPath);
+    result.diagnostics.push_back(std::move(diagnostic));
+}
+
+void warning(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
+    std::optional<SctDocumentEntityId> entity = std::nullopt,
+    std::optional<SctParameterAddress> parameter = std::nullopt) {
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Warning, code, std::move(entity), std::move(message)};
+    diagnostic.parameter = parameter;
+    result.diagnostics.push_back(std::move(diagnostic));
+}
+
+void textError(SctDocumentValidationResult& result, std::string message,
+    SctDocumentEntityId entity, SctDocumentDiagnostic::TextRegion region,
+    std::optional<std::uint32_t> elementOrdinal, std::uint32_t offset, std::uint32_t size) {
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error,
+        SctDiagnosticCode::TextInvalid, entity, std::move(message)};
+    diagnostic.textLocation = SctDocumentDiagnostic::TextLocation{
+        region, elementOrdinal, {offset, size}};
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
@@ -121,15 +142,74 @@ void validateExpression(const SctCanonicalExpression& expression, SctDocumentVal
 
 bool powerOfTwo(std::uint32_t value) { return value && (value & (value - 1)) == 0; }
 
-void validateText(const SctTextValue& value, SctDocumentValidationResult& result, SctDocumentEntityId entity) {
-    if (const auto* text = std::get_if<SctEditableText>(&value)) {
-        if (text->bytes.find('\0') != std::string::npos) {
-            error(result, SctDiagnosticCode::InvalidContent,
-                "Editable single-byte text cannot contain an embedded terminator.", entity);
+bool validCommandArgument(const SctInlineCommand& command) {
+    const bool decimal = command.code == SctMessageCommandCode::A
+        || command.code == SctMessageCommandCode::S
+        || command.code == SctMessageCommandCode::Wc
+        || command.code == SctMessageCommandCode::Wo;
+    if (decimal) return std::holds_alternative<SctDecimalCommandArgument>(command.argument);
+    if (command.code == SctMessageCommandCode::P) {
+        return std::holds_alternative<SctByteListCommandArgument>(command.argument);
+    }
+    return std::holds_alternative<SctNoCommandArgument>(command.argument);
+}
+
+void validateText(const SctTextValue& value, SctTextKind kind, SctTextStorage storage,
+    SctDocumentValidationResult& result, SctDocumentEntityId entity) {
+    if (const auto* plain = std::get_if<SctPlainText>(&value)) {
+        if (kind != SctTextKind::PlainString || !SctTextBuilder::isValidUtf8(plain->utf8)
+            || plain->utf8.find('\0') != std::string::npos) {
+            textError(result, "Plain text must be zero-free valid UTF-8 and belong to a PlainString entity.",
+                entity, SctDocumentDiagnostic::TextRegion::Body, std::nullopt, 0,
+                static_cast<std::uint32_t>(plain->utf8.size()));
         }
-    } else if (std::get<SctOpaqueText>(value).bytes.empty()) {
-        error(result, SctDiagnosticCode::InvalidContent,
-            "Opaque text must preserve at least one source byte.", entity);
+        return;
+    }
+    if (const auto* message = std::get_if<SctMessage>(&value)) {
+        if (kind != SctTextKind::SctString) {
+            textError(result, "Semantic SCT messages must belong to SctString entities.", entity,
+                SctDocumentDiagnostic::TextRegion::Body, std::nullopt, 0, 0);
+        }
+        if (message->headerUtf8 && (!SctTextBuilder::isValidUtf8(*message->headerUtf8)
+            || message->headerUtf8->find('\0') != std::string::npos
+            || message->headerUtf8->find('\r') != std::string::npos
+            || message->headerUtf8->find('\n') != std::string::npos)) {
+            textError(result, "Message headers must contain valid UTF-8 without NUL or line breaks.", entity,
+                SctDocumentDiagnostic::TextRegion::Header, std::nullopt, 0,
+                static_cast<std::uint32_t>(message->headerUtf8->size()));
+        }
+        bool previousText = false;
+        for (std::size_t ordinal = 0; ordinal < message->body.elements.size(); ++ordinal) {
+            const auto& element = message->body.elements[ordinal];
+            if (const auto* chunk = std::get_if<SctTextChunk>(&element)) {
+                if (chunk->utf8.empty() || previousText || !SctTextBuilder::isValidUtf8(chunk->utf8)
+                    || chunk->utf8.find('\0') != std::string::npos || chunk->utf8.find('\r') != std::string::npos) {
+                    textError(result,
+                        "Message text chunks must be nonempty, coalesced, valid UTF-8 using LF line endings.",
+                        entity, SctDocumentDiagnostic::TextRegion::Body,
+                        static_cast<std::uint32_t>(ordinal), 0,
+                        static_cast<std::uint32_t>(chunk->utf8.size()));
+                }
+                previousText = true;
+            } else {
+                if (!validCommandArgument(std::get<SctInlineCommand>(element))) {
+                    textError(result, "Inline command argument does not match its confirmed command grammar.",
+                        entity, SctDocumentDiagnostic::TextRegion::Body,
+                        static_cast<std::uint32_t>(ordinal), 0, 0);
+                }
+                previousText = false;
+            }
+        }
+        return;
+    }
+    if (const auto* opaque = std::get_if<SctOpaqueText>(&value)) {
+        if (opaque->bytes.empty()) error(result, SctDiagnosticCode::TextInvalid,
+            "Opaque text must preserve the complete nonempty source record.", entity);
+        return;
+    }
+    if (kind != SctTextKind::SctString || storage != SctTextStorage::IndexedSection) {
+        error(result, SctDiagnosticCode::TextInvalid,
+            "Unterminated empty text is valid only for an indexed SctString entity.", entity);
     }
 }
 
@@ -141,11 +221,13 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
     std::unordered_map<std::uint64_t, std::size_t> stringSectionUses;
     for (const auto& string : document.strings) {
         recordId(result, string.id, stringIds, document.nextStringIdValue(), "String");
-        validateText(string.value, result, SctDocumentEntityId{string.id});
+        validateText(string.value, string.kind, SctTextStorage::IndexedSection,
+            result, SctDocumentEntityId{string.id});
     }
     for (const auto& footer : document.footerEntries) {
         recordId(result, footer.id, footerIds, document.nextFooterEntryIdValue(), "Footer entry");
-        validateText(footer.value, result, SctDocumentEntityId{footer.id});
+        validateText(footer.value, footer.kind, SctTextStorage::Footer,
+            result, SctDocumentEntityId{footer.id});
     }
 
     for (const auto& section : document.sections) {
@@ -160,6 +242,19 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                     "String section references a missing string entity.", SctDocumentEntityId{section.id});
             }
             ++stringSectionUses[strings->stringId.value()];
+            const auto entity = std::find_if(document.strings.begin(), document.strings.end(),
+                [&](const auto& value) { return value.id == strings->stringId; });
+            if (entity != document.strings.end() && entity->kind != SctTextKind::SctString) {
+                error(result, SctDiagnosticCode::InvalidContent,
+                    "Indexed string sections must contain SCT message text.", SctDocumentEntityId{section.id});
+            }
+            const auto stop = std::find(strings->preambleWords.begin(), strings->preambleWords.end(), 0x0000001du);
+            if (strings->preambleWords.size() < 2u || strings->preambleWords.front() != 9u
+                || stop == strings->preambleWords.end() || stop != strings->preambleWords.end() - 1u) {
+                error(result, SctDiagnosticCode::InvalidContent,
+                    "Indexed string preamble must begin with opcode 9 and end at its first exact 0x1d word.",
+                    SctDocumentEntityId{section.id});
+            }
         }
         if (const auto* script = std::get_if<SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) recordId(result, instruction.id, instructionIds,
@@ -222,6 +317,14 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                     "Instruction has repeated groups but its schema has none.", entity);
             }
             if (repeated) {
+                const auto* countSchema = sctOpcodeParameterSchema(*schema, repeated->iterationCountParameter);
+                if (countSchema != nullptr
+                    && countSchema->bitContractConfidence == SctOpcodeContractConfidence::Provisional
+                    && (instruction.repeatedParameterGroups.size() & ~static_cast<std::size_t>(countSchema->allowedBitMask)) != 0u) {
+                    warning(result, SctDiagnosticCode::ProvisionalOpcodeConstraint,
+                        "Repeated group count exceeds a provisional legacy opcode constraint.", entity,
+                        SctParameterAddress{repeated->iterationCountParameter, std::nullopt});
+                }
                 const auto width = repeated->lastParameter - repeated->firstParameter + 1;
                 for (const auto& group : instruction.repeatedParameterGroups) {
                     if (group.parameters.size() != width) {
@@ -261,8 +364,27 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                         && ((scalar->value & ~parameterSchema->allowedBitMask) != 0u
                             || (scalar->value & parameterSchema->requiredBitValue)
                                 != parameterSchema->requiredBitValue)) {
+                        if (parameterSchema->bitContractConfidence == SctOpcodeContractConfidence::Provisional) {
+                            warning(result, SctDiagnosticCode::ProvisionalOpcodeConstraint,
+                                "Encoded scalar word violates a provisional opcode bit constraint.", entity, address);
+                        } else {
+                            error(result, SctDiagnosticCode::ParameterMismatch,
+                                "Encoded scalar word violates the parameter bit contract.", entity, address);
+                        }
+                    }
+                } else if (const auto* sequence = std::get_if<SctTerminatedWordSequenceValue>(&parameter.value)) {
+                    if (expectedEncoding != SctOpcodeParameterEncoding::RawWordsUntilSentinel) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
-                            "Encoded scalar word violates the parameter bit contract.", entity, address);
+                            "Terminated raw-word sequence is assigned outside a sentinel-sequence parameter.", entity, address);
+                    }
+                    const auto* parameterSchema = sctOpcodeParameterSchema(*schema, parameter.schemaIndex);
+                    const auto sentinel = parameterSchema != nullptr && parameterSchema->hasConfirmedSentinel
+                        ? parameterSchema->sentinelEncodedWord : 0x0000001du;
+                    const auto stop = std::find(sequence->words.begin(), sequence->words.end(), sentinel);
+                    if (sequence->words.empty() || stop == sequence->words.end()
+                        || stop != sequence->words.end() - 1u) {
+                        error(result, SctDiagnosticCode::ParameterMismatch,
+                            "Raw-word sequence must end at its first required sentinel.", entity, address);
                     }
                 } else if (const auto* reference = std::get_if<SctInstructionReference>(&parameter.value)) {
                     if (!reference->target || !instructionIds.contains(reference->target.value())) {
@@ -276,21 +398,37 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                         error(result, SctDiagnosticCode::ParameterMismatch,
                             "Instruction reference is assigned outside the opcode's control-target parameter.", entity, address);
                     }
+                } else if (const auto* reference = std::get_if<SctStringReference>(&parameter.value)) {
+                    if (!reference->target || !stringIds.contains(reference->target.value())) {
+                        error(result, SctDiagnosticCode::UnresolvedReference,
+                            "Instruction parameter references a missing indexed string.", entity, address);
+                    }
+                    const auto rule = sctOpcodeTextReference(*schema, parameter.schemaIndex);
+                    if (!rule.has_value() || rule->storage != SctTextStorage::IndexedSection) {
+                        error(result, SctDiagnosticCode::ParameterMismatch,
+                            "Indexed string reference is assigned to a parameter with a different storage rule.", entity, address);
+                    } else {
+                        const auto found = std::find_if(document.strings.begin(), document.strings.end(),
+                            [&](const auto& value) { return value.id == reference->target; });
+                        if (found != document.strings.end() && found->kind != rule->kind) {
+                            error(result, SctDiagnosticCode::ParameterMismatch,
+                                "Indexed string reference kind is incompatible with the opcode schema.", entity, address);
+                        }
+                    }
                 } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&parameter.value)) {
                     if (!reference->target || !footerIds.contains(reference->target.value())) {
                         error(result, SctDiagnosticCode::UnresolvedReference,
                             "Instruction parameter references a missing footer entry.", entity, address);
                     }
-                    const auto rule = sctOpcodeFooterReference(*schema, parameter.schemaIndex);
-                    if (rule.kind == SctFooterParamKind::None) {
+                    const auto rule = sctOpcodeTextReference(*schema, parameter.schemaIndex);
+                    if (!rule.has_value() || rule->storage != SctTextStorage::Footer) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
                             "Footer reference is assigned to a parameter without a footer-reference rule.", entity, address);
                     } else {
                         const auto found = std::find_if(document.footerEntries.begin(), document.footerEntries.end(),
                             [&](const auto& entry) { return entry.id == reference->target; });
                         if (found != document.footerEntries.end()
-                            && ((rule.kind == SctFooterParamKind::String && found->kind != SctDocumentFooterEntryKind::String)
-                                || (rule.kind == SctFooterParamKind::SctString && found->kind != SctDocumentFooterEntryKind::SctString))) {
+                            && found->kind != rule->kind) {
                             error(result, SctDiagnosticCode::ParameterMismatch,
                                 "Footer reference kind is incompatible with the opcode schema.", entity, address);
                         }
@@ -345,6 +483,7 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
 SctTargetValidationResult SctDocumentValidator::validateForTarget(
     const SctDocument& document,
     SctPlatform targetPlatform,
+    SctTextProfile textProfile,
     const SctDocumentImportReceipt* receipt) {
     SctTargetValidationResult result;
     auto structural = validateDocument(document);
@@ -354,6 +493,11 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
         std::optional<SctDocumentEntityId> entity = std::nullopt) {
         result.diagnostics.push_back({SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)});
     };
+
+    if (!sctTextProfileSupportsPlatform(textProfile, targetPlatform)) {
+        addTargetError(SctDiagnosticCode::TextProfileMismatch,
+            "The selected target text profile does not match the target platform.");
+    }
 
     for (const auto& section : document.sections) {
         const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
@@ -374,6 +518,27 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
             result.unresolvedOpaqueAttachments.push_back(attachment.id);
         }
     }
+
+    const auto validateTargetText = [&](const SctTextValue& value, SctTextKind kind,
+        SctTextStorage storage, SctDocumentEntityId entity) {
+        if (std::holds_alternative<SctOpaqueText>(value)) {
+            if (receipt == nullptr || !receipt->declaredSourcePlatform.has_value()
+                || *receipt->declaredSourcePlatform != targetPlatform
+                || !receipt->sourceTextProfile.has_value()
+                || *receipt->sourceTextProfile != textProfile) {
+                addTargetError(SctDiagnosticCode::OpaquePlatformUnverified,
+                    "Strict opaque-text export requires matching source platform and text-profile evidence.", entity);
+            }
+            return;
+        }
+        const auto encoded = encodeSctTextRecord(value, kind, storage, textProfile);
+        if (!encoded.bytes) addTargetError(SctDiagnosticCode::EncodingUnsupported,
+            encoded.error, entity);
+    };
+    for (const auto& string : document.strings) validateTargetText(string.value, string.kind,
+        SctTextStorage::IndexedSection, SctDocumentEntityId{string.id});
+    for (const auto& footer : document.footerEntries) validateTargetText(footer.value, footer.kind,
+        SctTextStorage::Footer, SctDocumentEntityId{footer.id});
     if (!document.opaqueAttachments.empty()
         && (receipt == nullptr
             || !receipt->declaredSourcePlatform.has_value()

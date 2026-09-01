@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SctTextContract.h"
+
 #include <bit>
 #include <cstdint>
 #include <limits>
@@ -48,10 +50,7 @@ enum class SctParameterValueKind {
     StringRef,
 };
 
-enum class SctFooterEntryKind {
-    String,
-    SctString,
-};
+using SctFooterEntryKind = SctTextKind;
 
 enum class SctEdgeType {
     Fallthrough,

@@ -40,14 +40,19 @@ bool valueMatches(const SctOpcodeParameterSchema& schema, const SctDocumentParam
     switch (schema.referenceKind) {
     case SctOpcodeReferenceKind::Instruction:
         return std::holds_alternative<SctInstructionReference>(value);
-    case SctOpcodeReferenceKind::FooterString:
-    case SctOpcodeReferenceKind::FooterSctString:
-        return std::holds_alternative<SctFooterEntryReference>(value);
+    case SctOpcodeReferenceKind::Text:
+        if (!schema.textReference.has_value()) return false;
+        return schema.textReference->storage == SctTextStorage::IndexedSection
+            ? std::holds_alternative<SctStringReference>(value)
+            : std::holds_alternative<SctFooterEntryReference>(value);
     case SctOpcodeReferenceKind::None:
         break;
     }
     if (schema.encoding == SctOpcodeParameterEncoding::ScptExpression) {
         return std::holds_alternative<SctCanonicalExpression>(value);
+    }
+    if (schema.encoding == SctOpcodeParameterEncoding::RawWordsUntilSentinel) {
+        return std::holds_alternative<SctTerminatedWordSequenceValue>(value);
     }
     return std::holds_alternative<SctEncodedWordValue>(value);
 }
@@ -55,6 +60,9 @@ bool valueMatches(const SctOpcodeParameterSchema& schema, const SctDocumentParam
 SctDocumentParameterValue defaultValue(const SctOpcodeParameterSchema& schema) {
     if (schema.encoding == SctOpcodeParameterEncoding::ScptExpression) {
         return SctExpressionFactory::decimalLiteral(0);
+    }
+    if (schema.encoding == SctOpcodeParameterEncoding::RawWordsUntilSentinel) {
+        return SctTerminatedWordSequenceValue{{schema.defaultEncodedWord}};
     }
     return SctEncodedWordValue{schema.defaultEncodedWord};
 }
@@ -365,17 +373,27 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
                 addError(result, SctDiagnosticCode::UnresolvedReference,
                     "Resolved draft parameter references a missing instruction.", parameter.address);
             }
+        } else if (const auto* reference = std::get_if<SctStringReference>(&*parameter.value)) {
+            const auto* string = index.find(reference->target);
+            const auto location = index.stringLocation(reference->target);
+            const auto rule = sctOpcodeTextReference(*schema, parameter.address.schemaIndex);
+            if (string == nullptr || !location.has_value() || !location->sectionId.has_value()) {
+                addError(result, SctDiagnosticCode::UnresolvedReference,
+                    "Resolved draft parameter references a missing or unplaced indexed string.", parameter.address);
+            } else if (!rule.has_value() || rule->storage != SctTextStorage::IndexedSection
+                || string->kind != rule->kind) {
+                addError(result, SctDiagnosticCode::ParameterMismatch,
+                    "Resolved indexed string reference disagrees with the opcode schema.", parameter.address);
+            }
         } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&*parameter.value)) {
             const auto* footer = index.find(reference->target);
             if (footer == nullptr) {
                 addError(result, SctDiagnosticCode::UnresolvedReference,
                     "Resolved draft parameter references a missing footer entry.", parameter.address);
             } else {
-                const auto rule = sctOpcodeFooterReference(*schema, parameter.address.schemaIndex);
-                if ((rule.kind == SctFooterParamKind::String
-                        && footer->kind != SctDocumentFooterEntryKind::String)
-                    || (rule.kind == SctFooterParamKind::SctString
-                        && footer->kind != SctDocumentFooterEntryKind::SctString)) {
+                const auto rule = sctOpcodeTextReference(*schema, parameter.address.schemaIndex);
+                if (!rule.has_value() || rule->storage != SctTextStorage::Footer
+                    || footer->kind != rule->kind) {
                     addError(result, SctDiagnosticCode::ParameterMismatch,
                         "Resolved footer reference kind disagrees with the opcode schema.", parameter.address);
                 }

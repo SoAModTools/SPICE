@@ -19,8 +19,14 @@ SctCanonicalExpression noLoop(std::uint32_t value = 0x7fffffffu) {
 SctDocumentExportOptions rawOptions(
     SctDocumentOutputByteOrder byteOrder = SctDocumentOutputByteOrder::BigEndian,
     SctPlatform platform = SctPlatform::GameCube) {
-    return SctDocumentExportOptions{platform, byteOrder, SctDocumentOutputWrapper::Raw,
+    const auto profile = platform == SctPlatform::GameCube
+        ? SctTextProfile::GameCubeUs : SctTextProfile::DreamcastUs;
+    return SctDocumentExportOptions{platform, profile, byteOrder, SctDocumentOutputWrapper::Raw,
         SctOpaquePreservationPolicy::RequirePreservation};
+}
+
+SctMessage message(std::string text) {
+    return {std::nullopt, SctFormattedText{{SctTextChunk{std::move(text)}}}};
 }
 
 std::uint32_t readWord(const std::vector<std::uint8_t>& bytes, std::uint32_t offset,
@@ -65,22 +71,22 @@ TEST(SctDocumentValidationContext, DoesNotInferPlatformFromByteOrderAndRequiresR
     auto document = makeJumpDocument();
     EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::Dreamcast).validForTarget);
+        document, SctPlatform::Dreamcast, SctTextProfile::DreamcastUs).validForTarget);
 
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, SctDocumentAnchor{},
         SctOpaquePlacement::FixedOffset, 0, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Header});
     EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     EXPECT_FALSE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::GameCube).validForTarget);
+        document, SctPlatform::GameCube, SctTextProfile::GameCubeUs).validForTarget);
 
     SctDocumentImportReceipt receipt;
     receipt.source.byteOrder = SctSourceByteOrder::LittleEndian;
     receipt.declaredSourcePlatform = SctPlatform::GameCube;
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::GameCube, &receipt).validForTarget);
+        document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &receipt).validForTarget);
     const auto mismatch = SctDocumentValidator::validateForTarget(
-        document, SctPlatform::Dreamcast, &receipt);
+        document, SctPlatform::Dreamcast, SctTextProfile::DreamcastUs, &receipt);
     EXPECT_FALSE(mismatch.validForTarget);
     EXPECT_TRUE(std::any_of(mismatch.diagnostics.begin(), mismatch.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::OpaquePlatformUnverified;
@@ -157,6 +163,82 @@ TEST(SctDocumentExporter, EncodesForwardBranchAndBackwardCallRelocations) {
     EXPECT_LT(static_cast<std::int32_t>(callRelocation->encodedValue), 0);
 }
 
+TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionStart) {
+    SctDocument document;
+    const auto scriptSectionId = document.allocateSectionId();
+    const auto stringSectionAId = document.allocateSectionId();
+    const auto stringSectionBId = document.allocateSectionId();
+    const auto instructionId = document.allocateInstructionId();
+    const auto stringAId = document.allocateStringId();
+    const auto stringBId = document.allocateStringId();
+
+    SctDocumentInstruction instruction;
+    instruction.id = instructionId;
+    instruction.opcode = 144u;
+    instruction.fixedParameters = {{0u, SctStringReference{stringAId}}, {1u, noLoop(0x00800000u)}};
+    document.sections.push_back({scriptSectionId, "SCRIPT", SctScriptSectionContent{{instruction}}});
+    document.sections.push_back({stringSectionAId, "STR_A", SctStringSectionContent{stringAId,
+        {9u, 0x04000000u, 0x3f800000u, 0x1du}}});
+    document.sections.push_back({stringSectionBId, "STR_B", SctStringSectionContent{stringBId}});
+    document.strings.push_back({stringAId, message("a"), SctTextKind::SctString});
+    document.strings.push_back({stringBId, message("a longer value"), SctTextKind::SctString});
+
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+    auto first = SctDocumentExporter::exportDocument(document, rawOptions());
+    ASSERT_TRUE(first.success) << diagnosticMessages(first.diagnostics);
+    ASSERT_TRUE(first.layout.has_value());
+    ASSERT_EQ(1u, first.layout->relocations.size());
+    EXPECT_TRUE(std::holds_alternative<SctStringId>(first.layout->relocations.front().target));
+    EXPECT_EQ(stringAId, std::get<SctStringId>(first.layout->relocations.front().target));
+
+    std::swap(document.sections[1], document.sections[2]);
+    document.strings[0].value = message("a substantially longer edited value");
+    document.strings[1].value = message("b");
+    std::get<SctScriptSectionContent>(document.sections[0].content)
+        .instructions.front().fixedParameters[0].value = SctStringReference{stringBId};
+
+    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions());
+    ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
+    ASSERT_TRUE(exported.layout.has_value());
+    ASSERT_EQ(1u, exported.layout->relocations.size());
+    const auto& relocation = exported.layout->relocations.front();
+    ASSERT_TRUE(std::holds_alternative<SctStringId>(relocation.target));
+    EXPECT_EQ(stringBId, std::get<SctStringId>(relocation.target));
+    const auto targetSection = std::find_if(exported.layout->sections.begin(), exported.layout->sections.end(),
+        [&](const auto& section) { return section.id == stringSectionBId; });
+    ASSERT_NE(targetSection, exported.layout->sections.end());
+    EXPECT_EQ(0u, targetSection->payloadSpan.offset % 4u);
+    const auto operandValue = static_cast<std::int32_t>(readWord(
+        exported.bytes, relocation.operandSpan.offset, SctDocumentOutputByteOrder::BigEndian));
+    EXPECT_EQ(static_cast<std::int64_t>(targetSection->payloadSpan.offset),
+        static_cast<std::int64_t>(relocation.operandSpan.offset) + operandValue);
+
+    const auto reparsed = SctParser{}.parse(exported.bytes, "indexed_string_edit.sct");
+    ASSERT_TRUE(reparsed.parseOk);
+    const auto reimported = SctDocumentImporter::import(
+        reparsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+    ASSERT_TRUE(reimported.document.has_value());
+    const auto* reparsedScript = std::get_if<SctScriptSectionContent>(
+        &reimported.document->sections[0].content);
+    ASSERT_NE(nullptr, reparsedScript);
+    ASSERT_FALSE(reparsedScript->instructions.empty());
+    const auto& reparsedInstruction = reparsedScript->instructions.front();
+    const auto* reparsedReference = std::get_if<SctStringReference>(
+        &reparsedInstruction.fixedParameters[0].value);
+    ASSERT_NE(nullptr, reparsedReference);
+    const auto reimportedIndex = SctDocumentIndex::build(*reimported.document);
+    const auto location = reimportedIndex.stringLocation(reparsedReference->target);
+    ASSERT_TRUE(location.has_value());
+    ASSERT_TRUE(location->sectionOrdinal.has_value());
+    EXPECT_EQ("STR_B", reimported.document->sections[*location->sectionOrdinal].nameBytes);
+    const auto* reimportedString = reimportedIndex.find(reparsedReference->target);
+    ASSERT_NE(nullptr, reimportedString);
+    const auto* editable = std::get_if<SctMessage>(&reimportedString->value);
+    ASSERT_NE(nullptr, editable);
+    ASSERT_EQ(editable->body.elements.size(), 1u);
+    EXPECT_EQ("b", std::get<SctTextChunk>(editable->body.elements.front()).utf8);
+}
+
 TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema) {
     SctDocument document;
     const auto switchSection = document.allocateSectionId();
@@ -197,7 +279,7 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
     document.sections.push_back({switchSection, "SWITCH", SctScriptSectionContent{{sw}}});
     document.sections.push_back({footerSection, "FOOTER", SctScriptSectionContent{{footerLoad, signedFooterLoad}}});
     document.sections.push_back({targetSection, "TARGET", SctScriptSectionContent{{targetLead, target}}});
-    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctEditableText{"entry"}});
+    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"entry"}});
 
     const auto exported = SctDocumentExporter::exportDocument(document, rawOptions());
     ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
@@ -233,23 +315,28 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
 TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejectsConflict) {
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
-    const auto headerId = document.allocateOpaqueAttachmentId();
     const auto paddingId = document.allocateOpaqueAttachmentId();
     const auto contentId = document.allocateOpaqueAttachmentId();
     document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
-    document.opaqueAttachments.push_back({headerId, {1, 2, 3, 4, 5, 6, 7, 8}, SctDocumentAnchor{},
-        SctOpaquePlacement::FixedOffset, 0, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Header});
     document.opaqueAttachments.push_back({paddingId, std::vector<std::uint8_t>(15, 0), sectionId,
         SctOpaquePlacement::FixedOffset, 17, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Padding});
     document.opaqueAttachments.push_back({contentId, {0xaa, 0xbb}, sectionId,
         SctOpaquePlacement::FixedOffset, 32, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::UnknownEncoding});
     SctDocumentImportReceipt receipt;
     receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    receipt.sourceTextProfile = SctTextProfile::GameCubeUs;
+    receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
+    receipt.source.header.available = true;
+    receipt.source.header.rawBytes = {1, 2, 3, 4, 5, 6, 7, 8};
+    receipt.source.header.values = {0x0102, 0x0304, 0x0506, 0x0708};
 
     const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &receipt);
     ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
     ASSERT_TRUE(exported.layout.has_value());
-    ASSERT_EQ(exported.preservation.attachments.size(), 3u);
+    ASSERT_EQ(exported.preservation.attachments.size(), 2u);
+    ASSERT_TRUE(exported.preservation.header.has_value());
+    EXPECT_EQ(exported.preservation.header->status,
+        SctHeaderMaterializationStatus::PreservedSourceBytes);
     EXPECT_EQ(std::vector<std::uint8_t>(exported.bytes.begin(), exported.bytes.begin() + 8),
         (std::vector<std::uint8_t>{1, 2, 3, 4, 5, 6, 7, 8}));
     EXPECT_EQ(exported.bytes[32], 0xaa);

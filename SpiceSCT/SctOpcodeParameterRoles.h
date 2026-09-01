@@ -26,7 +26,7 @@ inline constexpr std::array<SctOpcodeParameterRoleSeed, 677> kOpcodeParameterRol
     SctOpcodeParameterRoleSeed{6, 1, "valueExpr"},
     SctOpcodeParameterRoleSeed{7, 0, "floatVarRef"},
     SctOpcodeParameterRoleSeed{7, 1, "valueExpr"},
-    SctOpcodeParameterRoleSeed{9, 0, "payloadExpr"},
+    SctOpcodeParameterRoleSeed{9, 0, "preambleWords"},
     SctOpcodeParameterRoleSeed{10, 0, "offset"},
     SctOpcodeParameterRoleSeed{11, 0, "offset"},
     SctOpcodeParameterRoleSeed{16, 0, "durationExpr"},
@@ -420,7 +420,7 @@ inline constexpr std::array<SctOpcodeParameterRoleSeed, 677> kOpcodeParameterRol
     SctOpcodeParameterRoleSeed{142, 2, "blueExpr"},
     SctOpcodeParameterRoleSeed{142, 3, "overlayScalarExpr"},
     SctOpcodeParameterRoleSeed{142, 4, "durationExpr"},
-    SctOpcodeParameterRoleSeed{144, 0, "labelStringOffset"},
+    SctOpcodeParameterRoleSeed{144, 0, "indexedSctStringOffset"},
     SctOpcodeParameterRoleSeed{144, 1, "displayControlExpr"},
     SctOpcodeParameterRoleSeed{145, 0, "slotIndexExpr"},
     SctOpcodeParameterRoleSeed{146, 0, "objectIdExpr"},
@@ -445,7 +445,7 @@ inline constexpr std::array<SctOpcodeParameterRoleSeed, 677> kOpcodeParameterRol
     SctOpcodeParameterRoleSeed{153, 1, "repeated"},
     SctOpcodeParameterRoleSeed{154, 0, "chestObjectIdExpr"},
     SctOpcodeParameterRoleSeed{155, 0, "choiceInitialOrCountExpr"},
-    SctOpcodeParameterRoleSeed{155, 1, "labelStringOffset"},
+    SctOpcodeParameterRoleSeed{155, 1, "indexedSctStringOffset"},
     SctOpcodeParameterRoleSeed{155, 2, "displayControlExpr"},
     SctOpcodeParameterRoleSeed{157, 0, "pcIdExpr"},
     SctOpcodeParameterRoleSeed{158, 0, "pcIdExpr"},
@@ -691,7 +691,7 @@ inline constexpr std::array<SctOpcodeParameterRoleSeed, 677> kOpcodeParameterRol
     SctOpcodeParameterRoleSeed{264, 6, "rotationZExpr"},
     SctOpcodeParameterRoleSeed{264, 7, "reservedOptionalControlExpr"},
     SctOpcodeParameterRoleSeed{265, 0, "displayedValueExpr"},
-    SctOpcodeParameterRoleSeed{265, 1, "labelStringOffset"},
+    SctOpcodeParameterRoleSeed{265, 1, "indexedSctStringOffset"},
 }};
 
 } // namespace spice::sct::detail
