@@ -44,6 +44,9 @@
     <ClInclude Include="SctTextCodec.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctTextEvidence.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SctOpcodeCatalogNames.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -110,6 +113,9 @@
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctTextCodec.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctTextEvidence.cpp">
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctIrBuilder.cpp">

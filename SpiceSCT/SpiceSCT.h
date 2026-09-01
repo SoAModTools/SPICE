@@ -12,6 +12,7 @@
 #include "SctOpcodeMetadata.h"
 #include "SctDocument.h"
 #include "SctTextBuilder.h"
+#include "SctTextEvidence.h"
 #include "SctDocumentBuilder.h"
 #include "SctDocumentIndex.h"
 #include "SctInstructionFactory.h"

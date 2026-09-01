@@ -110,6 +110,7 @@
     <ClInclude Include="SctHeaderContract.h" />
     <ClInclude Include="SctTextBuilder.h" />
     <ClInclude Include="SctTextCodec.h" />
+    <ClInclude Include="SctTextEvidence.h" />
     <ClInclude Include="SctOpcodeCatalogNames.h" />
     <ClInclude Include="SctOpcodeParameterRoles.h" />
     <ClInclude Include="SctScptDecodeHelpers.h" />
@@ -134,6 +135,7 @@
     <ClCompile Include="SctScptDecodeHelpers.cpp" />
     <ClCompile Include="SctTextBuilder.cpp" />
     <ClCompile Include="SctTextCodec.cpp" />
+    <ClCompile Include="SctTextEvidence.cpp" />
     <ClCompile Include="SctDocumentImporter.cpp" />
     <ClCompile Include="SctDocumentBuilder.cpp" />
     <ClCompile Include="SctDocumentIndex.cpp" />
