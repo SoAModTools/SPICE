@@ -102,7 +102,12 @@ std::vector<std::size_t> physicalInstructionOrder(const SctSection& section) {
     return order;
 }
 
-std::optional<SctInstructionId> edgeTarget(const SctSection& section, const SctInstruction& instruction,
+struct ControlTarget {
+    std::optional<SctInstructionId> id;
+    std::optional<std::uint32_t> payloadOffset;
+};
+
+ControlTarget edgeTarget(const SctSection& section, const SctInstruction& instruction,
     std::uint32_t parameterIndex, const SctOpcodeSchema& schema, const InstructionMap& ids) {
     SctEdgeType wanted = SctEdgeType::Jump;
     switch (schema.semantic.controlRole) {
@@ -110,7 +115,7 @@ std::optional<SctInstructionId> edgeTarget(const SctSection& section, const SctI
     case SctOpcodeControlRole::Switch: wanted = SctEdgeType::SwitchCase; break;
     case SctOpcodeControlRole::Jump: wanted = SctEdgeType::Jump; break;
     case SctOpcodeControlRole::CallSubscript: wanted = SctEdgeType::CallSubscript; break;
-    default: return std::nullopt;
+    default: return {};
     }
     std::vector<const SctEdge*> matching;
     for (const auto& edge : section.edges) {
@@ -121,16 +126,16 @@ std::optional<SctInstructionId> edgeTarget(const SctSection& section, const SctI
     const SctEdge* selected = nullptr;
     if (wanted == SctEdgeType::SwitchCase) {
         const auto repeated = sctOpcodeRepeatedGroup(schema);
-        if (!repeated || parameterIndex < repeated->firstParameter) return std::nullopt;
+        if (!repeated || parameterIndex < repeated->firstParameter) return {};
         const auto width = repeated->lastParameter - repeated->firstParameter + 1;
         const auto ordinal = (parameterIndex - repeated->firstParameter) / width;
         if (ordinal < matching.size()) selected = matching[ordinal];
     } else if (!matching.empty()) {
         selected = matching.front();
     }
-    if (!selected) return std::nullopt;
+    if (!selected) return {};
     const auto found = ids.find(*selected->toPayloadOffset);
-    return found == ids.end() ? std::nullopt : std::optional(found->second);
+    return {found == ids.end() ? std::nullopt : std::optional(found->second), selected->toPayloadOffset};
 }
 
 std::optional<SctFooterEntryId> footerTarget(const SctInstruction& instruction,
@@ -147,9 +152,8 @@ std::optional<SctFooterEntryId> footerTarget(const SctInstruction& instruction,
     return std::nullopt;
 }
 
-std::optional<SctStringId> indexedStringTarget(const SctInstruction& instruction,
-    const SctParameter& parameter, const SctOpcodeTextReferenceRule& rule, const StringMap& ids) {
-    if (parameter.rawWords.empty()) return std::nullopt;
+std::optional<std::uint32_t> operandPayloadOffset(
+    const SctInstruction& instruction, const SctParameter& parameter) {
     std::uint32_t operandWordIndex = instruction.opcodeWordIndex + 1u;
     bool foundParameter = false;
     for (const auto& candidate : instruction.parameters) {
@@ -160,25 +164,87 @@ std::optional<SctStringId> indexedStringTarget(const SctInstruction& instruction
         operandWordIndex += static_cast<std::uint32_t>(candidate.rawWords.size());
     }
     if (!foundParameter) return std::nullopt;
-    const auto operandPayloadOffset = instruction.payloadOffset + operandWordIndex * 4u;
+    return instruction.payloadOffset + operandWordIndex * 4u;
+}
+
+std::optional<std::int64_t> calculatedTextTarget(const SctInstruction& instruction,
+    const SctParameter& parameter, const SctOpcodeTextReferenceRule& rule,
+    std::optional<std::uint32_t> operandOffset) {
+    if (parameter.rawWords.empty() || !operandOffset) return std::nullopt;
     const auto relativeBase = rule.relativeBase == SctRelativeReferenceBase::OperandWord
-        ? static_cast<std::int64_t>(operandPayloadOffset)
+        ? static_cast<std::int64_t>(*operandOffset)
         : static_cast<std::int64_t>(instruction.payloadOffset + instruction.sizeBytes - 4u);
     const auto masked = parameter.rawWords.front() & rule.encodedValueMask;
     const auto relative = rule.signedRelative
         ? static_cast<std::int64_t>(static_cast<std::int32_t>(masked))
         : static_cast<std::int64_t>(masked);
-    const auto target = relativeBase + relative;
-    if (target < 0 || target > std::numeric_limits<std::uint32_t>::max()
-        || static_cast<std::uint32_t>(target) % rule.targetAlignment != 0u) return std::nullopt;
-    const auto found = ids.find(static_cast<std::uint32_t>(target));
+    return relativeBase + relative;
+}
+
+std::optional<std::int64_t> calculatedControlTarget(const SctInstruction& instruction,
+    const SctParameter& parameter, const SctOpcodeParameterSchema& rule,
+    std::optional<std::uint32_t> operandOffset) {
+    if (parameter.rawWords.empty() || !operandOffset) return std::nullopt;
+    const auto relativeBase = rule.relativeReferenceBase == SctRelativeReferenceBase::OperandWord
+        ? static_cast<std::int64_t>(*operandOffset)
+        : static_cast<std::int64_t>(instruction.payloadOffset + instruction.sizeBytes - 4u);
+    const auto masked = parameter.rawWords.front() & rule.referenceEncodedValueMask;
+    const auto relative = rule.relativeReferenceSigned
+        ? static_cast<std::int64_t>(static_cast<std::int32_t>(masked))
+        : static_cast<std::int64_t>(masked);
+    return relativeBase + relative;
+}
+
+std::optional<SctStringId> indexedStringTarget(std::optional<std::int64_t> target,
+    const SctOpcodeTextReferenceRule& rule, const StringMap& ids) {
+    if (!target || *target < 0 || *target > std::numeric_limits<std::uint32_t>::max()
+        || static_cast<std::uint32_t>(*target) % rule.targetAlignment != 0u) return std::nullopt;
+    const auto found = ids.find(static_cast<std::uint32_t>(*target));
     return found == ids.end() ? std::nullopt : std::optional(found->second);
+}
+
+SctParameterAddress parameterAddress(const SctOpcodeSchema& schema, std::uint32_t parameterIndex) {
+    SctParameterAddress address{sctOpcodeBaseParameterIndex(schema, parameterIndex), std::nullopt};
+    if (const auto repeated = sctOpcodeRepeatedGroup(schema);
+        repeated && parameterIndex >= repeated->firstParameter) {
+        const auto width = repeated->lastParameter - repeated->firstParameter + 1u;
+        address.repeatedGroupOrdinal = (parameterIndex - repeated->firstParameter) / width;
+    }
+    return address;
+}
+
+SctExpectedReferenceTarget expectedInstructionTarget() {
+    return {SctReferenceTargetStorage::Instruction, std::nullopt};
+}
+
+SctExpectedReferenceTarget expectedTextTarget(const SctOpcodeTextReferenceRule& rule) {
+    return {rule.storage == SctTextStorage::IndexedSection
+            ? SctReferenceTargetStorage::IndexedString : SctReferenceTargetStorage::FooterEntry,
+        rule.kind};
+}
+
+SctDocumentParameter unresolvedReference(const SctParameter& parameter,
+    const SctInstruction& instruction, const SctOpcodeSchema& schema,
+    SctExpectedReferenceTarget expected, std::optional<std::uint32_t> operandOffset,
+    std::optional<std::int64_t> targetOffset, SctDocumentImportResult& result,
+    SctInstructionId entityId, std::uint32_t dataStart, std::string message) {
+    const auto address = parameterAddress(schema, parameter.index);
+    const auto absoluteOperand = operandOffset
+        ? std::optional<std::uint32_t>{dataStart + *operandOffset} : std::nullopt;
+    const auto absoluteTarget = targetOffset
+        ? std::optional<std::int64_t>{static_cast<std::int64_t>(dataStart) + *targetOffset}
+        : std::nullopt;
+    result.receipt.unresolvedReferences.push_back({entityId, address,
+        dataStart + instruction.payloadOffset, absoluteOperand, absoluteTarget});
+    addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
+        std::move(message), SctDocumentEntityId{entityId});
+    return {address.schemaIndex, SctUnresolvedReferenceValue{std::move(expected), parameter.rawWords}};
 }
 
 SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstruction& instruction,
     const SctSection& section, const SctOpcodeSchema& schema, const InstructionMap& instructionIds,
     const StringMap& stringIds, const SctFooter* footer, const FooterMap& footerIds, SctDocumentImportResult& result,
-    SctInstructionId entityId) {
+    SctInstructionId entityId, std::uint32_t dataStart) {
     SctDocumentParameter converted;
     converted.schemaIndex = sctOpcodeBaseParameterIndex(schema, parameter.index);
     if (schema.semantic.controlRole != SctOpcodeControlRole::None) {
@@ -187,26 +253,35 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
             || static_cast<int>(converted.schemaIndex) == pattern.switchJumpParam
             || (schema.semantic.controlRole == SctOpcodeControlRole::CallSubscript && converted.schemaIndex == 0);
         if (isTarget) {
-            if (const auto target = edgeTarget(section, instruction, parameter.index, schema, instructionIds)) {
-                converted.value = SctInstructionReference{*target};
+            const auto target = edgeTarget(section, instruction, parameter.index, schema, instructionIds);
+            if (target.id) {
+                converted.value = SctInstructionReference{*target.id};
                 return converted;
             }
-            converted.value = SctOpaqueParameterValue{parameter.rawWords};
-            addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
-                "Control-flow target could not be resolved to an instruction ID.", SctDocumentEntityId{entityId});
-            return converted;
+            const auto operandOffset = operandPayloadOffset(instruction, parameter);
+            const auto* parameterSchema = sctOpcodeParameterSchema(schema, parameter.index);
+            const auto calculated = parameterSchema
+                ? calculatedControlTarget(instruction, parameter, *parameterSchema, operandOffset)
+                : std::optional<std::int64_t>{};
+            return unresolvedReference(parameter, instruction, schema, expectedInstructionTarget(),
+                operandOffset, target.payloadOffset
+                    ? std::optional<std::int64_t>{static_cast<std::int64_t>(*target.payloadOffset)} : calculated,
+                result, entityId, dataStart,
+                "Control-flow target could not be resolved to an instruction ID.");
         }
     }
     if (const auto textReference = sctOpcodeTextReference(schema, parameter.index); textReference.has_value()) {
+        const auto operandOffset = operandPayloadOffset(instruction, parameter);
+        const auto calculatedTarget = calculatedTextTarget(instruction, parameter, *textReference, operandOffset);
         if (textReference->storage == SctTextStorage::IndexedSection) {
-            if (const auto target = indexedStringTarget(instruction, parameter, *textReference, stringIds)) {
+            if (const auto target = indexedStringTarget(calculatedTarget, *textReference, stringIds)) {
                 converted.value = SctStringReference{*target};
                 return converted;
             }
-            converted.value = SctOpaqueParameterValue{parameter.rawWords};
-            addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
-                "Indexed SCT string target could not be resolved to a string ID.", SctDocumentEntityId{entityId});
-            return converted;
+            return unresolvedReference(parameter, instruction, schema, expectedTextTarget(*textReference),
+                operandOffset, calculatedTarget, result, entityId,
+                dataStart,
+                "Indexed SCT string target could not be resolved to a string ID.");
         }
         if (footer) {
             if (const auto target = footerTarget(instruction, parameter.index, *footer, footerIds)) {
@@ -214,10 +289,10 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
                 return converted;
             }
         }
-        converted.value = SctOpaqueParameterValue{parameter.rawWords};
-        addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
-            "Footer target could not be resolved to a footer-entry ID.", SctDocumentEntityId{entityId});
-        return converted;
+        return unresolvedReference(parameter, instruction, schema, expectedTextTarget(*textReference),
+            operandOffset, calculatedTarget, result, entityId,
+            dataStart,
+            "Footer target could not be resolved to a footer-entry ID.");
     }
     const auto encoding = sctOpcodeParameterEncoding(schema, parameter.index);
     if (encoding == SctOpcodeParameterEncoding::ScptExpression) {
@@ -474,8 +549,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                     "String evidence overlapped or exceeded its physical section and was preserved opaquely.", SctDocumentEntityId{stringId});
                 targetSection.content = SctOpaqueSectionContent{};
             } else {
-                document.strings.push_back(std::move(string));
-                targetSection.content = SctStringSectionContent{stringId, entry.preambleWords};
+                targetSection.content = SctStringSectionContent{std::move(string), entry.preambleWords};
                 result.receipt.provenance.push_back({SctDocumentEntityId{targetSection.id},
                     sourceSection.startOffset, static_cast<std::uint32_t>(preambleSize),
                     static_cast<std::uint32_t>(sectionIndex)});
@@ -518,7 +592,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                         continue;
                     }
                     auto canonical = makeParameter(parameter, instruction, sourceSection, *schema,
-                        instructionIds, stringIds, footer, footerIds, result, converted.id);
+                        instructionIds, stringIds, footer, footerIds, result, converted.id, dataStart);
                     if (repeated && parameter.index >= repeated->firstParameter) {
                         const auto width = repeated->lastParameter - repeated->firstParameter + 1;
                         const auto ordinal = (parameter.index - repeated->firstParameter) / width;

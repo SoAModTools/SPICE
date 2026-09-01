@@ -131,10 +131,20 @@ struct SctTerminatedWordSequenceValue { std::vector<std::uint32_t> words; };
 struct SctInstructionReference { SctInstructionId target; };
 struct SctStringReference { SctStringId target; };
 struct SctFooterEntryReference { SctFooterEntryId target; };
+enum class SctReferenceTargetStorage { Instruction, IndexedString, FooterEntry };
+struct SctExpectedReferenceTarget {
+    SctReferenceTargetStorage storage = SctReferenceTargetStorage::Instruction;
+    std::optional<SctTextKind> textKind;
+    auto operator<=>(const SctExpectedReferenceTarget&) const = default;
+};
+struct SctUnresolvedReferenceValue {
+    SctExpectedReferenceTarget expectedTarget;
+    std::vector<std::uint32_t> encodedWords;
+};
 struct SctOpaqueParameterValue { std::vector<std::uint32_t> words; };
 using SctDocumentParameterValue = std::variant<SctEncodedWordValue, SctCanonicalExpression,
     SctTerminatedWordSequenceValue, SctInstructionReference, SctStringReference,
-    SctFooterEntryReference, SctOpaqueParameterValue>;
+    SctFooterEntryReference, SctUnresolvedReferenceValue, SctOpaqueParameterValue>;
 
 struct SctDocumentParameter {
     std::uint32_t schemaIndex = 0;
@@ -199,7 +209,7 @@ struct SctDocumentFooterEntry {
 
 struct SctScriptSectionContent { std::vector<SctDocumentInstruction> instructions; };
 struct SctStringSectionContent {
-    SctStringId stringId;
+    SctDocumentString string;
     std::vector<std::uint32_t> preambleWords{9u, 0x0000001du};
 };
 struct SctLabelSectionContent {};
@@ -234,7 +244,6 @@ struct SctOpaqueAttachment {
 class SctDocument {
 public:
     std::vector<SctDocumentSection> sections;
-    std::vector<SctDocumentString> strings;
     std::vector<SctDocumentFooterEntry> footerEntries;
     std::vector<SctOpaqueAttachment> opaqueAttachments;
 

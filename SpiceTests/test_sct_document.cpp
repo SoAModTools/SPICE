@@ -151,11 +151,10 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    ASSERT_EQ(1u, imported.document->strings.size());
     ASSERT_EQ(2u, imported.document->sections.size());
     const auto& stringContent = std::get<SctStringSectionContent>(imported.document->sections[1].content);
     EXPECT_EQ((std::vector<std::uint32_t>{9u, 0x1du}), stringContent.preambleWords);
-    EXPECT_EQ(SctTextKind::SctString, imported.document->strings.front().kind);
+    EXPECT_EQ(SctTextKind::SctString, stringContent.string.kind);
 
     const auto& instructions = std::get<SctScriptSectionContent>(
         imported.document->sections[0].content).instructions;
@@ -165,7 +164,7 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     const auto* reference = std::get_if<SctStringReference>(
         &instructions.front().fixedParameters[0].value);
     ASSERT_NE(nullptr, reference);
-    EXPECT_EQ(stringContent.stringId, reference->target);
+    EXPECT_EQ(stringContent.string.id, reference->target);
 
     const auto index = SctDocumentIndex::build(*imported.document);
     ASSERT_EQ(1u, index.outboundReferences(instructions.front().id).size());
@@ -182,7 +181,7 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongStorage).validDocument);
 
     auto wrongKind = *imported.document;
-    wrongKind.strings.front().kind = SctTextKind::PlainString;
+    std::get<SctStringSectionContent>(wrongKind.sections[1].content).string.kind = SctTextKind::PlainString;
     EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongKind).validDocument);
 }
 
@@ -486,11 +485,19 @@ TEST(SctDocumentImporter, FailedParseDoesNotProduceDocument) {
 TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingTheContract) {
     const auto imported = SctDocumentImporter::import(makeOpcode265Parse(), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto structural = SctDocumentValidator::validateDocument(*imported.document);
+    auto document = *imported.document;
+    const auto stringId = document.allocateStringId();
+    const auto stringSectionId = document.allocateSectionId();
+    document.sections.push_back({stringSectionId, "STRING",
+        SctStringSectionContent{SctDocumentString{stringId,
+            SctMessage{std::nullopt, SctFormattedText{{SctTextChunk{"text"}}}}}}});
+    auto& opcode265 = std::get<SctScriptSectionContent>(document.sections.front().content).instructions.front();
+    opcode265.fixedParameters[1].value = SctStringReference{stringId};
+    const auto structural = SctDocumentValidator::validateDocument(document);
     const auto gameCube = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
+        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
     const auto dreamcast = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &imported.receipt);
+        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &imported.receipt);
     EXPECT_TRUE(structural.validDocument);
     EXPECT_TRUE(gameCube.validForTarget);
     EXPECT_FALSE(dreamcast.validForTarget);
@@ -570,8 +577,10 @@ TEST(SctDocumentValidator, RejectsZeroDuplicateOutOfAllocatorIdsAndBrokenAttachm
     const auto sectionId = document.allocateSectionId();
     document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
     document.sections.push_back({sectionId, "B", SctLabelSectionContent{}});
-    document.strings.push_back({SctStringId{},
-        SctMessage{std::nullopt, SctFormattedText{{SctTextChunk{"bad"}}}}});
+    const auto invalidStringSection = document.allocateSectionId();
+    document.sections.push_back({invalidStringSection, "STRING",
+        SctStringSectionContent{SctDocumentString{SctStringId{},
+            SctMessage{std::nullopt, SctFormattedText{{SctTextChunk{"bad"}}}}}}});
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({attachmentId, {1}, SctInstructionId{99},
         SctOpaquePlacement::FixedOffset, std::nullopt, 3, SctOpaqueRelocationSupport::FixedOnly,

@@ -38,21 +38,11 @@ SctDocumentIndex SctDocumentIndex::build(const SctDocument& document) {
                     }
                 }
             }
-        }
-    }
-    for (std::size_t ordinal = 0; ordinal < document.strings.size(); ++ordinal) {
-        const auto& string = document.strings[ordinal];
-        result.strings_.emplace(string.id.value(), &string);
-        result.stringLocations_.emplace(string.id.value(), SctStringDocumentLocation{ordinal});
-    }
-    for (std::size_t sectionOrdinal = 0; sectionOrdinal < document.sections.size(); ++sectionOrdinal) {
-        const auto& section = document.sections[sectionOrdinal];
-        const auto* stringContent = std::get_if<SctStringSectionContent>(&section.content);
-        if (stringContent == nullptr) continue;
-        const auto found = result.stringLocations_.find(stringContent->stringId.value());
-        if (found != result.stringLocations_.end() && !found->second.sectionId.has_value()) {
-            found->second.sectionId = section.id;
-            found->second.sectionOrdinal = sectionOrdinal;
+        } else if (const auto* stringContent = std::get_if<SctStringSectionContent>(&section.content)) {
+            const auto& string = stringContent->string;
+            result.strings_.emplace(string.id.value(), &string);
+            result.stringLocations_.emplace(string.id.value(),
+                SctStringDocumentLocation{section.id, sectionOrdinal});
         }
     }
     for (std::size_t ordinal = 0; ordinal < document.footerEntries.size(); ++ordinal) {

@@ -95,12 +95,42 @@ struct SctInstructionMaterializationResult {
     std::vector<SctDocumentDiagnostic> diagnostics;
 };
 
+struct SctRepeatedParameterOverride {
+    std::uint32_t schemaIndex = 0;
+    SctDocumentParameterValue value;
+};
+
+struct SctRepeatedParameterDraft {
+    std::uint32_t schemaIndex = 0;
+    std::optional<SctDocumentParameterValue> value;
+    std::optional<SctDocumentParameterValue> suggestedValue;
+};
+
+struct SctRepeatedParameterGroupDraft {
+    std::uint16_t opcode = 0;
+    std::vector<SctRepeatedParameterDraft> parameters;
+};
+
+struct SctRepeatedParameterGroupDraftResult {
+    std::optional<SctRepeatedParameterGroupDraft> draft;
+    std::vector<SctDocumentDiagnostic> diagnostics;
+};
+
+struct SctRepeatedParameterGroupMaterializationResult {
+    std::optional<SctDocumentRepeatedParameterGroup> group;
+    std::vector<SctDocumentDiagnostic> diagnostics;
+};
+
 class SctInstructionFactory {
 public:
     [[nodiscard]] static SctInstructionDraftResult createDraft(
         const SctInstructionFactoryRequest& request);
     [[nodiscard]] static SctInstructionMaterializationResult materialize(
         SctDocument& document, const SctInstructionDraft& draft);
+    [[nodiscard]] static SctRepeatedParameterGroupDraftResult createRepeatedGroupDraft(
+        std::uint16_t opcode, const std::vector<SctRepeatedParameterOverride>& overrides = {});
+    [[nodiscard]] static SctRepeatedParameterGroupMaterializationResult materializeRepeatedGroup(
+        const SctRepeatedParameterGroupDraft& draft);
 };
 
 } // namespace spice::sct

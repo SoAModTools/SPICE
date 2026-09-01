@@ -26,9 +26,8 @@ struct SctInstructionDocumentLocation {
 };
 
 struct SctStringDocumentLocation {
-    std::size_t stringOrdinal = 0;
-    std::optional<SctSectionId> sectionId;
-    std::optional<std::size_t> sectionOrdinal;
+    SctSectionId sectionId;
+    std::size_t sectionOrdinal = 0;
 };
 
 // A derived, revision-scoped view. Mutating the source document invalidates the

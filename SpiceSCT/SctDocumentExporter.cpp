@@ -302,6 +302,11 @@ EncodedInstruction encodeInstruction(const SctDocumentInstruction& instruction,
             result.relocations.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal},
                 reference->target, formula, rule->signedRelative, rule->targetAlignment,
                 rule->encodedValueMask, wordIndex * 4u});
+        } else if (const auto* unresolved = std::get_if<SctUnresolvedReferenceValue>(&parameter.value)) {
+            (void)unresolved;
+            addDiagnostic(diagnostics, SctDiagnosticCode::UnresolvedReference,
+                "Unresolved relative references cannot be encoded safely.",
+                SctDocumentEntityId{instruction.id});
         } else {
             const auto& opaque = std::get<SctOpaqueParameterValue>(parameter.value);
             words.insert(words.end(), opaque.words.begin(), opaque.words.end());
@@ -538,14 +543,12 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
                 if (!placeAttachments(instructionAnchor, SctOpaquePlacement::After, cursor)) return result;
             }
         } else if (const auto* stringContent = std::get_if<SctStringSectionContent>(&section.content)) {
-            if (!placedStrings.insert(stringContent->stringId.value()).second) {
+            const auto& string = stringContent->string;
+            if (!placedStrings.insert(string.id.value()).second) {
                 addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
-                    "A string entity is assigned to more than one physical section.", SctDocumentEntityId{stringContent->stringId});
+                    "An indexed string ID occurs more than once.", SctDocumentEntityId{string.id});
                 return result;
             }
-            const auto found = std::find_if(document.strings.begin(), document.strings.end(),
-                [&](const auto& value) { return value.id == stringContent->stringId; });
-            if (found == document.strings.end()) return result;
             const auto preambleBytes = encodeWords(stringContent->preambleWords, options.byteOrder);
             const auto preambleOffset = canvas.placeAtFirstFit(cursor, preambleBytes);
             if (!preambleOffset) return result;
@@ -556,24 +559,24 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
                 return result;
             }
             cursor = *preambleOffset + static_cast<std::uint32_t>(preambleBytes.size());
-            indexedStringTargetSpans.emplace(found->id.value(),
+            indexedStringTargetSpans.emplace(string.id.value(),
                 SctDocumentByteSpan{sectionStart, static_cast<std::uint32_t>(preambleBytes.size())});
-            const auto stringAnchor = [&](const auto& attachment) { return anchorIs(attachment, found->id); };
+            const auto stringAnchor = [&](const auto& attachment) { return anchorIs(attachment, string.id); };
             if (!placeAttachments(stringAnchor, SctOpaquePlacement::Before, cursor)) return result;
-            const auto encodedText = encodeSctTextRecord(found->value, found->kind,
+            const auto encodedText = encodeSctTextRecord(string.value, string.kind,
                 SctTextStorage::IndexedSection, options.textEncoding);
             if (!encodedText.bytes) {
                 addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
-                    encodedText.error, SctDocumentEntityId{found->id});
+                    encodedText.error, SctDocumentEntityId{string.id});
                 return result;
             }
             const auto& bytes = *encodedText.bytes;
             const auto offset = canvas.placeAtFirstFit(cursor, bytes);
             if (!offset) return result;
             const SctDocumentByteSpan span{*offset, static_cast<std::uint32_t>(bytes.size())};
-            layout.strings.push_back({found->id, span});
+            layout.strings.push_back({string.id, span});
             result.preservation.text.push_back(
-                {SctDocumentEntityId{found->id}, span, textMaterializationStatus(found->value)});
+                {SctDocumentEntityId{string.id}, span, textMaterializationStatus(string.value)});
             cursor = span.offset + span.size;
             cursor = fixedEndFor(stringAnchor, cursor);
             if (!placeAttachments(stringAnchor, SctOpaquePlacement::After, cursor)) return result;

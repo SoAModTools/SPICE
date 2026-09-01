@@ -46,12 +46,21 @@ struct SctTextImportObservation {
     std::string reason;
 };
 
+struct SctUnresolvedReferenceObservation {
+    SctInstructionId sourceInstruction;
+    SctParameterAddress parameter;
+    std::uint32_t sourceInstructionPayloadOffset = 0;
+    std::optional<std::uint32_t> operandPayloadOffset;
+    std::optional<std::int64_t> calculatedTargetPayloadOffset;
+};
+
 struct SctDocumentImportReceipt {
     SctSourceObservations source;
     std::optional<SctPlatform> declaredSourcePlatform;
     std::optional<SctTextEncoding> sourceTextEncoding;
     std::vector<SctEntityProvenance> provenance;
     std::vector<SctTextImportObservation> text;
+    std::vector<SctUnresolvedReferenceObservation> unresolvedReferences;
 };
 
 struct SctDocumentImportResult {

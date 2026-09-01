@@ -86,6 +86,15 @@
     <ClInclude Include="SctDocumentExporter.h">
       <Filter>Export</Filter>
     </ClInclude>
+    <ClInclude Include="SctReferenceRepair.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctDocumentEntityFactory.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SctDocumentWorkflow.h">
+      <Filter>Model</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp">
@@ -132,6 +141,15 @@
     </ClCompile>
     <ClCompile Include="SctDocumentExporter.cpp">
       <Filter>Export</Filter>
+    </ClCompile>
+    <ClCompile Include="SctReferenceRepair.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentEntityFactory.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctDocumentWorkflow.cpp">
+      <Filter>Model</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

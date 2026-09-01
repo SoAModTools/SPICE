@@ -288,8 +288,9 @@ TEST(SctSemanticText, ImportKeepsAmbiguousIndexedPhysicalRegionWhollyOpaque) {
     const auto imported = SctDocumentImporter::import(parsed,
         {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    ASSERT_EQ(imported.document->strings.size(), 1u);
-    const auto* opaque = std::get_if<SctOpaqueText>(&imported.document->strings.front().value);
+    const auto& indexedString = std::get<SctStringSectionContent>(
+        imported.document->sections.front().content).string;
+    const auto* opaque = std::get_if<SctOpaqueText>(&indexedString.value);
     ASSERT_NE(opaque, nullptr);
     EXPECT_EQ(opaque->bytes, (std::vector<std::uint8_t>{
         'f', 'i', 'r', 's', 't', 0, 's', 'e', 'c', 'o', 'n', 'd', 0, 0, 0, 0}));
@@ -325,8 +326,9 @@ TEST(SctSemanticText, ImportEncodingIsIndependentOfDeclaredSourcePlatform) {
     const auto imported = SctDocumentImporter::import(parsed,
         {{SctPlatform::Dreamcast}, kSctShiftJis8140Encoding});
     ASSERT_TRUE(imported.document.has_value());
-    ASSERT_EQ(imported.document->strings.size(), 1u);
-    const auto* message = std::get_if<SctMessage>(&imported.document->strings.front().value);
+    const auto& indexedString = std::get<SctStringSectionContent>(
+        imported.document->sections.front().content).string;
+    const auto* message = std::get_if<SctMessage>(&indexedString.value);
     ASSERT_NE(message, nullptr);
     ASSERT_EQ(message->body.elements.size(), 1u);
     EXPECT_EQ(std::get<SctTextChunk>(message->body.elements.front()).utf8, "Hi");

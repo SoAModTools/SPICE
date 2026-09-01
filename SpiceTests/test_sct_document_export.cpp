@@ -177,11 +177,11 @@ TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionS
     instruction.opcode = 144u;
     instruction.fixedParameters = {{0u, SctStringReference{stringAId}}, {1u, noLoop(0x00800000u)}};
     document.sections.push_back({scriptSectionId, "SCRIPT", SctScriptSectionContent{{instruction}}});
-    document.sections.push_back({stringSectionAId, "STR_A", SctStringSectionContent{stringAId,
-        {9u, 0x04000000u, 0x3f800000u, 0x1du}}});
-    document.sections.push_back({stringSectionBId, "STR_B", SctStringSectionContent{stringBId}});
-    document.strings.push_back({stringAId, message("a"), SctTextKind::SctString});
-    document.strings.push_back({stringBId, message("a longer value"), SctTextKind::SctString});
+    document.sections.push_back({stringSectionAId, "STR_A",
+        SctStringSectionContent{SctDocumentString{stringAId, message("a"), SctTextKind::SctString},
+            {9u, 0x04000000u, 0x3f800000u, 0x1du}}});
+    document.sections.push_back({stringSectionBId, "STR_B",
+        SctStringSectionContent{SctDocumentString{stringBId, message("a longer value"), SctTextKind::SctString}}});
 
     ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     auto first = SctDocumentExporter::exportDocument(document, rawOptions());
@@ -192,8 +192,9 @@ TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionS
     EXPECT_EQ(stringAId, std::get<SctStringId>(first.layout->relocations.front().target));
 
     std::swap(document.sections[1], document.sections[2]);
-    document.strings[0].value = message("a substantially longer edited value");
-    document.strings[1].value = message("b");
+    std::get<SctStringSectionContent>(document.sections[2].content).string.value =
+        message("a substantially longer edited value");
+    std::get<SctStringSectionContent>(document.sections[1].content).string.value = message("b");
     std::get<SctScriptSectionContent>(document.sections[0].content)
         .instructions.front().fixedParameters[0].value = SctStringReference{stringBId};
 
@@ -229,8 +230,7 @@ TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionS
     const auto reimportedIndex = SctDocumentIndex::build(*reimported.document);
     const auto location = reimportedIndex.stringLocation(reparsedReference->target);
     ASSERT_TRUE(location.has_value());
-    ASSERT_TRUE(location->sectionOrdinal.has_value());
-    EXPECT_EQ("STR_B", reimported.document->sections[*location->sectionOrdinal].nameBytes);
+    EXPECT_EQ("STR_B", reimported.document->sections[location->sectionOrdinal].nameBytes);
     const auto* reimportedString = reimportedIndex.find(reparsedReference->target);
     ASSERT_NE(nullptr, reimportedString);
     const auto* editable = std::get_if<SctMessage>(&reimportedString->value);

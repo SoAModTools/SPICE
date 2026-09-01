@@ -120,6 +120,9 @@
     <ClInclude Include="SctDocumentImporter.h" />
     <ClInclude Include="SctDocumentValidator.h" />
     <ClInclude Include="SctDocumentExporter.h" />
+    <ClInclude Include="SctReferenceRepair.h" />
+    <ClInclude Include="SctDocumentEntityFactory.h" />
+    <ClInclude Include="SctDocumentWorkflow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SctParser.cpp" />
@@ -137,6 +140,9 @@
     <ClCompile Include="SctInstructionFactory.cpp" />
     <ClCompile Include="SctDocumentValidator.cpp" />
     <ClCompile Include="SctDocumentExporter.cpp" />
+    <ClCompile Include="SctReferenceRepair.cpp" />
+    <ClCompile Include="SctDocumentEntityFactory.cpp" />
+    <ClCompile Include="SctDocumentWorkflow.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Compression\Compression.vcxproj">

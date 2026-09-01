@@ -164,8 +164,8 @@ TEST(SctDocumentBuilder, ReconstitutesSparseIdsAndRejectsInvalidIdentityState) {
     instruction.id = SctInstructionId{42};
     instruction.opcode = 12;
     external.sections.push_back({SctSectionId{7}, "SCRIPT", SctScriptSectionContent{{instruction}}});
-    external.strings.push_back({SctStringId{3}, message("text")});
-    external.sections.push_back({SctSectionId{20}, "STRING", SctStringSectionContent{SctStringId{3}}});
+    external.sections.push_back({SctSectionId{20}, "STRING",
+        SctStringSectionContent{SctDocumentString{SctStringId{3}, message("text")}}});
     external.footerEntries.push_back({SctFooterEntryId{9}, SctDocumentFooterEntryKind::String, SctPlainText{"footer"}});
     external.opaqueAttachments.push_back({SctOpaqueAttachmentId{11}, {0xaa}, SctSectionId{7},
         SctOpaquePlacement::FixedOffset, 200u, 1, SctOpaqueRelocationSupport::FixedOnly,
@@ -201,8 +201,8 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     SctDocumentInstruction target{targetId, 12};
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{jump, target}}});
     const auto stringSectionId = document.allocateSectionId();
-    document.strings.push_back({stringId, message("text")});
-    document.sections.push_back({stringSectionId, "STRING", SctStringSectionContent{stringId}});
+    document.sections.push_back({stringSectionId, "STRING",
+        SctStringSectionContent{SctDocumentString{stringId, message("text")}}});
     document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"footer"}});
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, sectionId,
         SctOpaquePlacement::FixedOffset, 100u, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
@@ -220,7 +220,6 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     EXPECT_EQ(first.owningSection(targetId), &document.sections.front());
     EXPECT_EQ(first.opaqueAttachmentOrdinal(attachmentId), 0u);
     ASSERT_TRUE(first.stringLocation(stringId).has_value());
-    EXPECT_EQ(first.stringLocation(stringId)->stringOrdinal, 0u);
     EXPECT_EQ(first.stringLocation(stringId)->sectionId, stringSectionId);
     EXPECT_EQ(first.stringLocation(stringId)->sectionOrdinal, 1u);
     EXPECT_EQ(first.footerEntryOrdinal(footerId), 0u);
@@ -476,9 +475,9 @@ TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText)
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    ASSERT_EQ(imported.document->strings.size(), 1u);
     auto document = *imported.document;
-    std::get<SctTextChunk>(std::get<SctMessage>(document.strings.front().value).body.elements.front()).utf8 =
+    auto& indexedString = std::get<SctStringSectionContent>(document.sections.front().content).string;
+    std::get<SctTextChunk>(std::get<SctMessage>(indexedString.value).body.elements.front()).utf8 =
         "a substantially longer string";
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &imported.receipt);
     ASSERT_TRUE(exported.success);
@@ -489,9 +488,10 @@ TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText)
     const auto reimported = SctDocumentImporter::import(
         reparsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(reimported.document.has_value());
-    ASSERT_EQ(reimported.document->strings.size(), 1u);
+    const auto& reimportedString = std::get<SctStringSectionContent>(
+        reimported.document->sections.front().content).string;
     EXPECT_EQ(std::get<SctTextChunk>(std::get<SctMessage>(
-        reimported.document->strings.front().value).body.elements.front()).utf8,
+        reimportedString.value).body.elements.front()).utf8,
         "a substantially longer string");
 }
 

@@ -377,7 +377,7 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
             const auto* string = index.find(reference->target);
             const auto location = index.stringLocation(reference->target);
             const auto rule = sctOpcodeTextReference(*schema, parameter.address.schemaIndex);
-            if (string == nullptr || !location.has_value() || !location->sectionId.has_value()) {
+            if (string == nullptr || !location.has_value()) {
                 addError(result, SctDiagnosticCode::UnresolvedReference,
                     "Resolved draft parameter references a missing or unplaced indexed string.", parameter.address);
             } else if (!rule.has_value() || rule->storage != SctTextStorage::IndexedSection
@@ -404,6 +404,119 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
 
     instruction.id = document.allocateInstructionId();
     result.instruction = std::move(instruction);
+    return result;
+}
+
+SctRepeatedParameterGroupDraftResult SctInstructionFactory::createRepeatedGroupDraft(
+    std::uint16_t opcode, const std::vector<SctRepeatedParameterOverride>& overrides) {
+    SctRepeatedParameterGroupDraftResult result;
+    const auto* schema = findSctOpcodeSchema(opcode);
+    const auto repeated = schema == nullptr ? std::nullopt : sctOpcodeRepeatedGroup(*schema);
+    if (schema == nullptr || !repeated) {
+        addError(result, SctDiagnosticCode::ParameterMismatch,
+            "Opcode does not define a repeated parameter group.");
+        return result;
+    }
+    for (std::size_t i = 0; i < overrides.size(); ++i) {
+        for (std::size_t j = i + 1; j < overrides.size(); ++j) {
+            if (overrides[i].schemaIndex == overrides[j].schemaIndex) {
+                addError(result, SctDiagnosticCode::ParameterMismatch,
+                    "The same repeated parameter was overridden more than once.",
+                    SctParameterAddress{overrides[i].schemaIndex, 0u});
+            }
+        }
+    }
+    SctRepeatedParameterGroupDraft draft;
+    draft.opcode = opcode;
+    for (std::uint32_t index = repeated->firstParameter; index <= repeated->lastParameter; ++index) {
+        const auto* parameterSchema = sctOpcodeParameterSchema(*schema, index);
+        if (parameterSchema == nullptr || !parameterSchema->belongsToRepeatedGroup) {
+            addError(result, SctDiagnosticCode::ParameterMismatch,
+                "Repeated parameter schema is incomplete.", SctParameterAddress{index, 0u});
+            continue;
+        }
+        SctRepeatedParameterDraft parameter;
+        parameter.schemaIndex = index;
+        const auto supplied = std::find_if(overrides.begin(), overrides.end(), [&](const auto& value) {
+            return value.schemaIndex == index;
+        });
+        if (supplied != overrides.end()) {
+            if (!valueMatches(*parameterSchema, supplied->value)) {
+                addError(result, SctDiagnosticCode::ParameterMismatch,
+                    "Repeated parameter override does not match the opcode contract.",
+                    SctParameterAddress{index, 0u});
+            } else parameter.value = supplied->value;
+        } else if (parameterSchema->defaultKind == SctOpcodeDefaultKind::ProvisionalZero) {
+            parameter.suggestedValue = defaultValue(*parameterSchema);
+            SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Info,
+                SctDiagnosticCode::ProvisionalAuthoringDefault, std::nullopt,
+                "Repeated parameter has a provisional suggestion that must be resolved explicitly."};
+            diagnostic.parameter = SctParameterAddress{index, 0u};
+            result.diagnostics.push_back(std::move(diagnostic));
+        } else if (parameterSchema->defaultKind != SctOpcodeDefaultKind::Required) {
+            parameter.value = defaultValue(*parameterSchema);
+        }
+        draft.parameters.push_back(std::move(parameter));
+    }
+    for (const auto& supplied : overrides) {
+        if (supplied.schemaIndex < repeated->firstParameter || supplied.schemaIndex > repeated->lastParameter) {
+            addError(result, SctDiagnosticCode::ParameterMismatch,
+                "Repeated parameter override is outside the repeated group shape.",
+                SctParameterAddress{supplied.schemaIndex, 0u});
+        }
+    }
+    if (!hasErrors(result)) result.draft = std::move(draft);
+    return result;
+}
+
+SctRepeatedParameterGroupMaterializationResult SctInstructionFactory::materializeRepeatedGroup(
+    const SctRepeatedParameterGroupDraft& draft) {
+    SctRepeatedParameterGroupMaterializationResult result;
+    const auto* schema = findSctOpcodeSchema(draft.opcode);
+    const auto repeated = schema == nullptr ? std::nullopt : sctOpcodeRepeatedGroup(*schema);
+    if (schema == nullptr || !repeated) {
+        addError(result, SctDiagnosticCode::ParameterMismatch,
+            "Draft opcode does not define a repeated parameter group.");
+        return result;
+    }
+    SctDocumentRepeatedParameterGroup group;
+    std::vector<bool> consumed(draft.parameters.size(), false);
+    for (std::uint32_t index = repeated->firstParameter; index <= repeated->lastParameter; ++index) {
+        std::vector<std::size_t> matches;
+        for (std::size_t i = 0; i < draft.parameters.size(); ++i) {
+            if (draft.parameters[i].schemaIndex == index) matches.push_back(i);
+        }
+        if (matches.size() != 1u) {
+            addError(result, SctDiagnosticCode::ParameterMismatch,
+                matches.empty() ? "Repeated group draft is missing a parameter."
+                                : "Repeated group draft duplicates a parameter.",
+                SctParameterAddress{index, 0u});
+            continue;
+        }
+        const auto draftIndex = matches.front();
+        consumed[draftIndex] = true;
+        const auto& parameter = draft.parameters[draftIndex];
+        const auto* parameterSchema = sctOpcodeParameterSchema(*schema, index);
+        if (!parameter.value) {
+            addError(result,
+                parameter.suggestedValue ? SctDiagnosticCode::ProvisionalAuthoringDefault
+                                         : SctDiagnosticCode::ParameterMismatch,
+                parameter.suggestedValue
+                    ? "Provisional repeated parameter suggestion must be accepted or replaced explicitly."
+                    : "Required repeated parameter has not been resolved.",
+                SctParameterAddress{index, 0u});
+        } else if (parameterSchema == nullptr || !valueMatches(*parameterSchema, *parameter.value)) {
+            addError(result, SctDiagnosticCode::ParameterMismatch,
+                "Repeated parameter value does not match the opcode contract.",
+                SctParameterAddress{index, 0u});
+        } else group.parameters.push_back({index, *parameter.value});
+    }
+    for (std::size_t i = 0; i < consumed.size(); ++i) {
+        if (!consumed[i]) addError(result, SctDiagnosticCode::ParameterMismatch,
+            "Repeated group draft contains a parameter outside the group shape.",
+            SctParameterAddress{draft.parameters[i].schemaIndex, 0u});
+    }
+    if (!hasErrors(result)) result.group = std::move(group);
     return result;
 }
 

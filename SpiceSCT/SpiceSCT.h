@@ -18,3 +18,6 @@
 #include "SctDocumentImporter.h"
 #include "SctDocumentValidator.h"
 #include "SctDocumentExporter.h"
+#include "SctReferenceRepair.h"
+#include "SctDocumentEntityFactory.h"
+#include "SctDocumentWorkflow.h"

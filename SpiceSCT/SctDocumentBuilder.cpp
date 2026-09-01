@@ -52,10 +52,9 @@ SctDocumentBuildResult SctDocumentBuilder::reconstitute(SctDocument document) {
             for (const auto& instruction : script->instructions) {
                 observeId(instruction.id, "Instruction", instructionIds, maxInstruction, result.diagnostics);
             }
+        } else if (const auto* string = std::get_if<SctStringSectionContent>(&section.content)) {
+            observeId(string->string.id, "String", stringIds, maxString, result.diagnostics);
         }
-    }
-    for (const auto& string : document.strings) {
-        observeId(string.id, "String", stringIds, maxString, result.diagnostics);
     }
     for (const auto& footer : document.footerEntries) {
         observeId(footer.id, "Footer entry", footerIds, maxFooter, result.diagnostics);
