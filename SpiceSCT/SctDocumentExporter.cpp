@@ -36,6 +36,16 @@ bool hasErrors(const std::vector<SctDocumentDiagnostic>& diagnostics) {
     });
 }
 
+SctTextMaterializationStatus textMaterializationStatus(const SctTextValue& value) {
+    if (std::holds_alternative<SctOpaqueText>(value)) {
+        return SctTextMaterializationStatus::PreservedOpaqueBytes;
+    }
+    if (std::holds_alternative<SctEmptyIndexedText>(value)) {
+        return SctTextMaterializationStatus::EmptyIndexedText;
+    }
+    return SctTextMaterializationStatus::EncodedSemantically;
+}
+
 std::vector<std::uint8_t> encodeWords(
     const std::vector<std::uint32_t>& words,
     SctDocumentOutputByteOrder byteOrder) {
@@ -357,7 +367,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         break;
     }
     const auto validation = SctDocumentValidator::validateForTarget(
-        document, options.targetPlatform, options.textProfile, receipt);
+        document, options.targetPlatform, options.textEncoding, receipt);
     result.diagnostics = validation.diagnostics;
     if (hasErrors(result.diagnostics)) return result;
 
@@ -551,7 +561,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             const auto stringAnchor = [&](const auto& attachment) { return anchorIs(attachment, found->id); };
             if (!placeAttachments(stringAnchor, SctOpaquePlacement::Before, cursor)) return result;
             const auto encodedText = encodeSctTextRecord(found->value, found->kind,
-                SctTextStorage::IndexedSection, options.textProfile);
+                SctTextStorage::IndexedSection, options.textEncoding);
             if (!encodedText.bytes) {
                 addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
                     encodedText.error, SctDocumentEntityId{found->id});
@@ -562,6 +572,8 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             if (!offset) return result;
             const SctDocumentByteSpan span{*offset, static_cast<std::uint32_t>(bytes.size())};
             layout.strings.push_back({found->id, span});
+            result.preservation.text.push_back(
+                {SctDocumentEntityId{found->id}, span, textMaterializationStatus(found->value)});
             cursor = span.offset + span.size;
             cursor = fixedEndFor(stringAnchor, cursor);
             if (!placeAttachments(stringAnchor, SctOpaquePlacement::After, cursor)) return result;
@@ -579,7 +591,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         const auto footerAnchor = [&](const auto& attachment) { return anchorIs(attachment, footer.id); };
         if (!placeAttachments(footerAnchor, SctOpaquePlacement::Before, cursor)) return result;
         const auto encodedText = encodeSctTextRecord(footer.value, footer.kind,
-            SctTextStorage::Footer, options.textProfile);
+            SctTextStorage::Footer, options.textEncoding);
         if (!encodedText.bytes) {
             addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
                 encodedText.error, SctDocumentEntityId{footer.id});
@@ -590,6 +602,8 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         if (!offset) return result;
         const SctDocumentByteSpan span{*offset, static_cast<std::uint32_t>(bytes.size())};
         layout.footerEntries.push_back({footer.id, span});
+        result.preservation.text.push_back(
+            {SctDocumentEntityId{footer.id}, span, textMaterializationStatus(footer.value)});
         footerSpans.emplace(footer.id.value(), span);
         cursor = span.offset + span.size;
         cursor = fixedEndFor(footerAnchor, cursor);
@@ -682,6 +696,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
 
 void markFailedPreservation(const SctDocument& document, InternalBuildResult& result) {
     if (result.success) return;
+    result.preservation.text.clear();
     result.preservation.attachments.clear();
     result.preservation.attachments.reserve(document.opaqueAttachments.size());
     for (const auto& attachment : document.opaqueAttachments) {
@@ -721,6 +736,7 @@ SctDocumentExportResult SctDocumentExporter::exportDocument(
                 "AKLZ compression failed while exporting the SCT document.");
             result.success = false;
             result.layout.reset();
+            result.preservation.text.clear();
             for (auto& attachment : result.preservation.attachments) {
                 attachment.span = {};
                 attachment.status = SctOpaquePreservationStatus::Rejected;

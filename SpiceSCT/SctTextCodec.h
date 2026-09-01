@@ -24,12 +24,12 @@ struct SctEncodedTextResult {
     std::span<const std::uint8_t> bytes,
     SctTextKind kind,
     SctTextStorage storage,
-    SctTextProfile profile);
+    SctTextEncoding encoding);
 
 [[nodiscard]] SctEncodedTextResult encodeSctTextRecord(
     const SctTextValue& value,
     SctTextKind kind,
     SctTextStorage storage,
-    SctTextProfile profile);
+    SctTextEncoding encoding);
 
 } // namespace spice::sct

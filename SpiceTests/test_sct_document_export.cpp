@@ -19,9 +19,9 @@ SctCanonicalExpression noLoop(std::uint32_t value = 0x7fffffffu) {
 SctDocumentExportOptions rawOptions(
     SctDocumentOutputByteOrder byteOrder = SctDocumentOutputByteOrder::BigEndian,
     SctPlatform platform = SctPlatform::GameCube) {
-    const auto profile = platform == SctPlatform::GameCube
-        ? SctTextProfile::GameCubeUs : SctTextProfile::DreamcastUs;
-    return SctDocumentExportOptions{platform, profile, byteOrder, SctDocumentOutputWrapper::Raw,
+    const auto encoding = platform == SctPlatform::GameCube
+        ? kSctShiftJisByte7FEncoding : kSctShiftJisByte7FEncoding;
+    return SctDocumentExportOptions{platform, encoding, byteOrder, SctDocumentOutputWrapper::Raw,
         SctOpaquePreservationPolicy::RequirePreservation};
 }
 
@@ -71,22 +71,22 @@ TEST(SctDocumentValidationContext, DoesNotInferPlatformFromByteOrderAndRequiresR
     auto document = makeJumpDocument();
     EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::Dreamcast, SctTextProfile::DreamcastUs).validForTarget);
+        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding).validForTarget);
 
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, SctDocumentAnchor{},
         SctOpaquePlacement::FixedOffset, 0, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Header});
     EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     EXPECT_FALSE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::GameCube, SctTextProfile::GameCubeUs).validForTarget);
+        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding).validForTarget);
 
     SctDocumentImportReceipt receipt;
     receipt.source.byteOrder = SctSourceByteOrder::LittleEndian;
     receipt.declaredSourcePlatform = SctPlatform::GameCube;
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &receipt).validForTarget);
+        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &receipt).validForTarget);
     const auto mismatch = SctDocumentValidator::validateForTarget(
-        document, SctPlatform::Dreamcast, SctTextProfile::DreamcastUs, &receipt);
+        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &receipt);
     EXPECT_FALSE(mismatch.validForTarget);
     EXPECT_TRUE(std::any_of(mismatch.diagnostics.begin(), mismatch.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::OpaquePlatformUnverified;
@@ -216,7 +216,7 @@ TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionS
     const auto reparsed = SctParser{}.parse(exported.bytes, "indexed_string_edit.sct");
     ASSERT_TRUE(reparsed.parseOk);
     const auto reimported = SctDocumentImporter::import(
-        reparsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        reparsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(reimported.document.has_value());
     const auto* reparsedScript = std::get_if<SctScriptSectionContent>(
         &reimported.document->sections[0].content);
@@ -324,7 +324,7 @@ TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejects
         SctOpaquePlacement::FixedOffset, 32, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::UnknownEncoding});
     SctDocumentImportReceipt receipt;
     receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    receipt.sourceTextProfile = SctTextProfile::GameCubeUs;
+    receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
     receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
     receipt.source.header.available = true;
     receipt.source.header.rawBytes = {1, 2, 3, 4, 5, 6, 7, 8};

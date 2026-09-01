@@ -123,4 +123,13 @@ SctInlineCommandBuildResult SctTextBuilder::byteListCommand(std::vector<std::uin
         SctByteListCommandArgument{std::move(values)}}, {}};
 }
 
+SctInlineCommandBuildResult SctTextBuilder::colorCommand(
+    std::uint8_t red, std::uint8_t green, std::uint8_t blue) {
+    return byteListCommand({red, green, blue});
+}
+
+SctInlineCommandBuildResult SctTextBuilder::resetColorCommand() {
+    return byteListCommand({});
+}
+
 } // namespace spice::sct

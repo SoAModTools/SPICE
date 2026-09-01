@@ -73,7 +73,6 @@ enum class SctDiagnosticCode {
     ProvisionalAuthoringDefault,
     ProvisionalOpcodeConstraint,
     TextInvalid,
-    TextProfileMismatch,
     HeaderUnavailable,
 };
 

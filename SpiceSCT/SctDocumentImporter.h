@@ -36,12 +36,12 @@ struct SctSourceObservations {
 
 struct SctDocumentImportOptions {
     std::optional<SctPlatform> declaredSourcePlatform;
-    std::optional<SctTextProfile> sourceTextProfile;
+    std::optional<SctTextEncoding> sourceTextEncoding;
 };
 
 struct SctTextImportObservation {
     SctDocumentEntityId entity;
-    std::optional<SctTextProfile> profile;
+    std::optional<SctTextEncoding> encoding;
     bool semantic = false;
     std::string reason;
 };
@@ -49,7 +49,7 @@ struct SctTextImportObservation {
 struct SctDocumentImportReceipt {
     SctSourceObservations source;
     std::optional<SctPlatform> declaredSourcePlatform;
-    std::optional<SctTextProfile> sourceTextProfile;
+    std::optional<SctTextEncoding> sourceTextEncoding;
     std::vector<SctEntityProvenance> provenance;
     std::vector<SctTextImportObservation> text;
 };

@@ -483,7 +483,7 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
 SctTargetValidationResult SctDocumentValidator::validateForTarget(
     const SctDocument& document,
     SctPlatform targetPlatform,
-    SctTextProfile textProfile,
+    SctTextEncoding textEncoding,
     const SctDocumentImportReceipt* receipt) {
     SctTargetValidationResult result;
     auto structural = validateDocument(document);
@@ -493,11 +493,6 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
         std::optional<SctDocumentEntityId> entity = std::nullopt) {
         result.diagnostics.push_back({SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)});
     };
-
-    if (!sctTextProfileSupportsPlatform(textProfile, targetPlatform)) {
-        addTargetError(SctDiagnosticCode::TextProfileMismatch,
-            "The selected target text profile does not match the target platform.");
-    }
 
     for (const auto& section : document.sections) {
         const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
@@ -522,16 +517,9 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
     const auto validateTargetText = [&](const SctTextValue& value, SctTextKind kind,
         SctTextStorage storage, SctDocumentEntityId entity) {
         if (std::holds_alternative<SctOpaqueText>(value)) {
-            if (receipt == nullptr || !receipt->declaredSourcePlatform.has_value()
-                || *receipt->declaredSourcePlatform != targetPlatform
-                || !receipt->sourceTextProfile.has_value()
-                || *receipt->sourceTextProfile != textProfile) {
-                addTargetError(SctDiagnosticCode::OpaquePlatformUnverified,
-                    "Strict opaque-text export requires matching source platform and text-profile evidence.", entity);
-            }
             return;
         }
-        const auto encoded = encodeSctTextRecord(value, kind, storage, textProfile);
+        const auto encoded = encodeSctTextRecord(value, kind, storage, textEncoding);
         if (!encoded.bytes) addTargetError(SctDiagnosticCode::EncodingUnsupported,
             encoded.error, entity);
     };

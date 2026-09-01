@@ -40,6 +40,9 @@ public:
     [[nodiscard]] static SctInlineCommandBuildResult noArgumentCommand(SctMessageCommandCode code);
     [[nodiscard]] static SctInlineCommandBuildResult decimalCommand(
         SctMessageCommandCode code, std::optional<std::uint32_t> value);
+    [[nodiscard]] static SctInlineCommandBuildResult colorCommand(
+        std::uint8_t red, std::uint8_t green, std::uint8_t blue);
+    [[nodiscard]] static SctInlineCommandBuildResult resetColorCommand();
     [[nodiscard]] static SctInlineCommandBuildResult byteListCommand(std::vector<std::uint8_t> values);
 };
 

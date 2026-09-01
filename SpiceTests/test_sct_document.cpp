@@ -149,7 +149,7 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     ASSERT_EQ(SctSectionKind::String, parsed.file.sections[1].kind);
 
     const auto imported = SctDocumentImporter::import(
-        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
     ASSERT_EQ(1u, imported.document->strings.size());
     ASSERT_EQ(2u, imported.document->sections.size());
@@ -256,7 +256,7 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     parsed.file.footer = std::move(footer);
 
     const auto imported = SctDocumentImporter::import(
-        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 3u);
@@ -267,7 +267,7 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
         imported.document->footerEntries[0].id);
     EXPECT_EQ(imported.document->footerEntries[0].kind, SctDocumentFooterEntryKind::String);
     const auto validation = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForTarget) << messages;
@@ -397,7 +397,7 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[2].fixedParameters[0].value).target, instructions[0].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[4].fixedParameters[0].value).target, instructions[0].id);
     const auto validation = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForTarget) << messages;
@@ -442,7 +442,7 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
     ASSERT_EQ(canonical.repeatedParameterGroups[0].parameters.size(), 1u);
     EXPECT_EQ(canonical.repeatedParameterGroups[0].parameters[0].schemaIndex, 2u);
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs,
+        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding,
         &imported.receipt).validForTarget);
 }
 
@@ -488,9 +488,9 @@ TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingThe
     ASSERT_TRUE(imported.document.has_value());
     const auto structural = SctDocumentValidator::validateDocument(*imported.document);
     const auto gameCube = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, SctTextProfile::GameCubeUs, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
     const auto dreamcast = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::Dreamcast, SctTextProfile::DreamcastUs, &imported.receipt);
+        *imported.document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &imported.receipt);
     EXPECT_TRUE(structural.validDocument);
     EXPECT_TRUE(gameCube.validForTarget);
     EXPECT_FALSE(dreamcast.validForTarget);

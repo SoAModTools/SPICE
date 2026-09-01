@@ -13,15 +13,21 @@
 namespace spice::sct {
 namespace {
 
-constexpr bool isEu(SctTextProfile profile) {
-    return profile == SctTextProfile::GameCubeEu || profile == SctTextProfile::DreamcastEu;
+constexpr bool isShiftJis(SctTextEncoding encoding) {
+    return encoding.characters == SctCharacterEncoding::ShiftJis;
 }
 
-constexpr bool isJapanese(SctTextProfile profile) {
-    return profile == SctTextProfile::GameCubeJp;
+constexpr bool usesByte7FSpace(SctTextEncoding encoding) {
+    return encoding.messageSpace == SctMessageSpaceEncoding::Byte7F;
 }
 
-constexpr UINT codePage(SctTextProfile profile) { return isEu(profile) ? 1252u : 932u; }
+constexpr bool usesShiftJis8140Space(SctTextEncoding encoding) {
+    return encoding.messageSpace == SctMessageSpaceEncoding::ShiftJis8140;
+}
+
+constexpr UINT codePage(SctTextEncoding encoding) {
+    return isShiftJis(encoding) ? 932u : 1252u;
+}
 
 bool strictCp1252(std::span<const std::uint8_t> bytes) {
     constexpr std::uint8_t invalid[]{0x81u, 0x8du, 0x8fu, 0x90u, 0x9du};
@@ -80,22 +86,40 @@ std::optional<std::vector<std::uint8_t>> encodeWide(std::wstring_view text, UINT
     return result;
 }
 
-std::optional<std::string> decodeCharacters(std::span<const std::uint8_t> bytes, SctTextProfile profile) {
-    const auto wide = decodeWide(bytes, codePage(profile));
+std::optional<std::string> decodeCharacters(std::span<const std::uint8_t> bytes, SctTextEncoding encoding) {
+    const auto wide = decodeWide(bytes, codePage(encoding));
     return wide ? wideToUtf8(*wide) : std::nullopt;
 }
 
-std::optional<std::vector<std::uint8_t>> encodeCharacters(std::string_view utf8, SctTextProfile profile) {
+std::optional<std::vector<std::uint8_t>> encodeCharacters(std::string_view utf8, SctTextEncoding encoding) {
     const auto wide = utf8ToWide(utf8);
-    return wide ? encodeWide(*wide, codePage(profile)) : std::nullopt;
+    return wide ? encodeWide(*wide, codePage(encoding)) : std::nullopt;
 }
 
-bool sjisLead(std::uint8_t byte) {
+bool genericShiftJisLead(std::uint8_t byte) {
     return (byte >= 0x81u && byte <= 0x9fu) || (byte >= 0xe0u && byte <= 0xfcu);
 }
 
-std::size_t codeUnitSize(std::span<const std::uint8_t> bytes, std::size_t offset, SctTextProfile profile) {
-    if (!isEu(profile) && offset < bytes.size() && sjisLead(bytes[offset])) return 2u;
+bool sctShiftJisTrail(std::uint8_t byte) {
+    return (byte >= 0x40u && byte <= 0x7eu) || (byte >= 0x80u && byte <= 0xfcu);
+}
+
+bool sctShiftJisPair(std::span<const std::uint8_t> bytes, std::size_t offset) {
+    return offset + 1u < bytes.size()
+        && bytes[offset] >= 0x81u && bytes[offset] <= 0x98u
+        && sctShiftJisTrail(bytes[offset + 1u]);
+}
+
+std::optional<std::size_t> semanticCodeUnitSize(
+    std::span<const std::uint8_t> bytes, std::size_t offset, SctTextEncoding encoding) {
+    if (!isShiftJis(encoding) || offset >= bytes.size()) return 1u;
+    if (sctShiftJisPair(bytes, offset)) {
+        const auto combined = static_cast<std::uint16_t>(
+            static_cast<std::uint16_t>(bytes[offset]) << 8u | bytes[offset + 1u]);
+        if (combined > 0x9872u) return std::nullopt;
+        return 2u;
+    }
+    if (genericShiftJisLead(bytes[offset])) return std::nullopt;
     return 1u;
 }
 
@@ -164,57 +188,57 @@ bool parseByteList(std::span<const std::uint8_t> bytes, std::size_t& cursor,
     return false;
 }
 
-std::optional<std::size_t> findHeaderEnd(std::span<const std::uint8_t> bytes, SctTextProfile profile) {
+std::optional<std::size_t> findHeaderEnd(std::span<const std::uint8_t> bytes, SctTextEncoding encoding) {
     for (std::size_t cursor = 3; cursor < bytes.size();) {
         if (bytes[cursor] == ')') return cursor;
-        const auto size = codeUnitSize(bytes, cursor, profile);
-        if (cursor + size > bytes.size()) return std::nullopt;
-        cursor += size;
+        const auto size = semanticCodeUnitSize(bytes, cursor, encoding);
+        if (!size || cursor + *size > bytes.size()) return std::nullopt;
+        cursor += *size;
     }
     return std::nullopt;
 }
 
 std::optional<std::string> decodeMessageFragment(std::span<const std::uint8_t> bytes,
-    SctTextProfile profile) {
+    SctTextEncoding encoding) {
     std::string result;
     std::vector<std::uint8_t> pending;
     const auto flush = [&]() -> bool {
-        const auto decoded = decodeCharacters(pending, profile);
+        const auto decoded = decodeCharacters(pending, encoding);
         if (!decoded) return false;
         result += *decoded;
         pending.clear();
         return true;
     };
     for (std::size_t cursor = 0; cursor < bytes.size();) {
-        if (!isJapanese(profile) && bytes[cursor] == 0x7fu) {
+        if (usesByte7FSpace(encoding) && bytes[cursor] == 0x7fu) {
             if (!flush()) return std::nullopt;
             result.push_back(' ');
             ++cursor;
             continue;
         }
-        if (isJapanese(profile) && cursor + 1 < bytes.size()
+        if (usesShiftJis8140Space(encoding) && cursor + 1 < bytes.size()
             && bytes[cursor] == 0x81u && bytes[cursor + 1] == 0x40u) {
             if (!flush()) return std::nullopt;
             result.push_back(' ');
             cursor += 2;
             continue;
         }
-        const auto size = codeUnitSize(bytes, cursor, profile);
-        if (cursor + size > bytes.size()) return std::nullopt;
-        pending.insert(pending.end(), bytes.begin() + cursor, bytes.begin() + cursor + size);
-        cursor += size;
+        const auto size = semanticCodeUnitSize(bytes, cursor, encoding);
+        if (!size || cursor + *size > bytes.size()) return std::nullopt;
+        pending.insert(pending.end(), bytes.begin() + cursor, bytes.begin() + cursor + *size);
+        cursor += *size;
     }
     if (!flush()) return std::nullopt;
     return result;
 }
 
-std::optional<SctMessage> decodeMessage(std::span<const std::uint8_t> payload, SctTextProfile profile) {
+std::optional<SctMessage> decodeMessage(std::span<const std::uint8_t> payload, SctTextEncoding encoding) {
     SctMessage message;
     std::size_t cursor = 0;
     if (payload.size() >= 3u && payload[0] == '\\' && payload[1] == 'h' && payload[2] == '(') {
-        const auto end = findHeaderEnd(payload, profile);
+        const auto end = findHeaderEnd(payload, encoding);
         if (!end) return std::nullopt;
-        const auto header = decodeMessageFragment(payload.subspan(3u, *end - 3u), profile);
+        const auto header = decodeMessageFragment(payload.subspan(3u, *end - 3u), encoding);
         if (!header) return std::nullopt;
         message.headerUtf8 = *header;
         cursor = *end + 1u;
@@ -222,7 +246,7 @@ std::optional<SctMessage> decodeMessage(std::span<const std::uint8_t> payload, S
 
     std::vector<std::uint8_t> pending;
     const auto flush = [&]() -> bool {
-        const auto decoded = decodeCharacters(pending, profile);
+        const auto decoded = decodeCharacters(pending, encoding);
         if (!decoded) return false;
         appendText(message.body.elements, *decoded);
         pending.clear();
@@ -230,13 +254,13 @@ std::optional<SctMessage> decodeMessage(std::span<const std::uint8_t> payload, S
     };
 
     while (cursor < payload.size()) {
-        if (!isJapanese(profile) && payload[cursor] == 0x7fu) {
+        if (usesByte7FSpace(encoding) && payload[cursor] == 0x7fu) {
             if (!flush()) return std::nullopt;
             appendText(message.body.elements, " ");
             ++cursor;
             continue;
         }
-        if (isJapanese(profile) && cursor + 1 < payload.size()
+        if (usesShiftJis8140Space(encoding) && cursor + 1 < payload.size()
             && payload[cursor] == 0x81u && payload[cursor + 1] == 0x40u) {
             if (!flush()) return std::nullopt;
             appendText(message.body.elements, " ");
@@ -244,10 +268,10 @@ std::optional<SctMessage> decodeMessage(std::span<const std::uint8_t> payload, S
             continue;
         }
         if (payload[cursor] != '\\') {
-            const auto size = codeUnitSize(payload, cursor, profile);
-            if (cursor + size > payload.size()) return std::nullopt;
-            pending.insert(pending.end(), payload.begin() + cursor, payload.begin() + cursor + size);
-            cursor += size;
+            const auto size = semanticCodeUnitSize(payload, cursor, encoding);
+            if (!size || cursor + *size > payload.size()) return std::nullopt;
+            pending.insert(pending.end(), payload.begin() + cursor, payload.begin() + cursor + *size);
+            cursor += *size;
             continue;
         }
         if (cursor + 1 >= payload.size()) { pending.push_back('\\'); ++cursor; continue; }
@@ -325,12 +349,12 @@ bool decimalCommand(SctMessageCommandCode code) {
 }
 
 bool appendMessageText(std::vector<std::uint8_t>& out, std::string_view utf8,
-    SctTextProfile profile, bool header) {
+    SctTextEncoding encoding, bool header) {
     const auto wide = utf8ToWide(utf8);
     if (!wide) return false;
     std::wstring pending;
     const auto flush = [&]() -> bool {
-        const auto encoded = encodeWide(pending, codePage(profile));
+        const auto encoded = encodeWide(pending, codePage(encoding));
         if (!encoded) return false;
         out.insert(out.end(), encoded->begin(), encoded->end());
         pending.clear();
@@ -342,7 +366,7 @@ bool appendMessageText(std::vector<std::uint8_t>& out, std::string_view utf8,
         }
         if (character == L' ') {
             if (!flush()) return false;
-            if (isJapanese(profile)) out.insert(out.end(), {0x81u, 0x40u});
+            if (usesShiftJis8140Space(encoding)) out.insert(out.end(), {0x81u, 0x40u});
             else out.push_back(0x7fu);
         } else if (character == L'\n') {
             if (!flush()) return false;
@@ -382,31 +406,41 @@ bool appendCommand(std::vector<std::uint8_t>& out, const SctInlineCommand& comma
     return std::holds_alternative<SctNoCommandArgument>(command.argument);
 }
 
-bool containsLiteralExecutableEscape(std::string_view utf8) {
-    for (std::size_t cursor = 0; cursor + 1u < utf8.size(); ++cursor) {
-        if (utf8[cursor] != '\\') continue;
-        const auto next = utf8[cursor + 1u];
+bool containsLiteralExecutableEscape(
+    std::span<const std::uint8_t> bytes, SctTextEncoding encoding) {
+    for (std::size_t cursor = 0; cursor + 1u < bytes.size();) {
+        if (isShiftJis(encoding) && sctShiftJisPair(bytes, cursor)) {
+            cursor += 2u;
+            continue;
+        }
+        if (bytes[cursor] != '\\') {
+            ++cursor;
+            continue;
+        }
+        const auto next = bytes[cursor + 1u];
         if (next == 'n' || next == 'a' || next == 'b' || next == 'c' || next == 'd'
             || next == 'e' || next == 'h' || next == 'p' || next == 'r' || next == 's'
             || next == 'u' || next == 'x') return true;
-        if (next == 'w' && cursor + 2u < utf8.size()
-            && (utf8[cursor + 2u] == 'c' || utf8[cursor + 2u] == 'o')) return true;
+        if (next == 'w' && cursor + 2u < bytes.size()
+            && (bytes[cursor + 2u] == 'c' || bytes[cursor + 2u] == 'o')) return true;
+        ++cursor;
     }
     return false;
 }
 
-std::optional<std::vector<std::uint8_t>> encodeMessage(const SctMessage& message, SctTextProfile profile) {
+std::optional<std::vector<std::uint8_t>> encodeMessage(const SctMessage& message, SctTextEncoding encoding) {
     std::vector<std::uint8_t> out;
     if (message.headerUtf8) {
         out.insert(out.end(), {'\\', 'h', '('});
-        if (!appendMessageText(out, *message.headerUtf8, profile, true)) return std::nullopt;
+        if (!appendMessageText(out, *message.headerUtf8, encoding, true)) return std::nullopt;
         out.push_back(')');
     }
     for (const auto& element : message.body.elements) {
         if (const auto* chunk = std::get_if<SctTextChunk>(&element)) {
             std::vector<std::uint8_t> encoded;
-            if (containsLiteralExecutableEscape(chunk->utf8)
-                || !appendMessageText(encoded, chunk->utf8, profile, false)) return std::nullopt;
+            const auto literalBytes = encodeCharacters(chunk->utf8, encoding);
+            if (!literalBytes || containsLiteralExecutableEscape(*literalBytes, encoding)
+                || !appendMessageText(encoded, chunk->utf8, encoding, false)) return std::nullopt;
             out.insert(out.end(), encoded.begin(), encoded.end());
         } else if (!appendCommand(out, std::get<SctInlineCommand>(element))) return std::nullopt;
     }
@@ -416,19 +450,8 @@ std::optional<std::vector<std::uint8_t>> encodeMessage(const SctMessage& message
 
 } // namespace
 
-bool sctTextProfileSupportsPlatform(SctTextProfile profile, SctPlatform platform) noexcept {
-    switch (profile) {
-    case SctTextProfile::GameCubeUs:
-    case SctTextProfile::GameCubeEu:
-    case SctTextProfile::GameCubeJp: return platform == SctPlatform::GameCube;
-    case SctTextProfile::DreamcastUs:
-    case SctTextProfile::DreamcastEu: return platform == SctPlatform::Dreamcast;
-    }
-    return false;
-}
-
 SctDecodedTextResult decodeSctTextRecord(std::span<const std::uint8_t> bytes,
-    SctTextKind kind, SctTextStorage storage, SctTextProfile profile) {
+    SctTextKind kind, SctTextStorage storage, SctTextEncoding encoding) {
     if (bytes.empty()) {
         if (storage == SctTextStorage::IndexedSection && kind == SctTextKind::SctString) {
             return {SctEmptyIndexedText{}, {}};
@@ -442,15 +465,15 @@ SctDecodedTextResult decodeSctTextRecord(std::span<const std::uint8_t> bytes,
     const auto payload = bytes.first(bytes.size() - 1u);
     SctTextValue value;
     if (kind == SctTextKind::PlainString) {
-        const auto decoded = decodeCharacters(payload, profile);
-        if (!decoded) return {std::nullopt, "Plain text is not reversible under the selected profile."};
+        const auto decoded = decodeCharacters(payload, encoding);
+        if (!decoded) return {std::nullopt, "Plain text is not reversible under the selected encoding."};
         value = SctPlainText{*decoded};
     } else {
-        const auto decoded = decodeMessage(payload, profile);
+        const auto decoded = decodeMessage(payload, encoding);
         if (!decoded) return {std::nullopt, "SCT message syntax or encoding is not safely understood."};
         value = *decoded;
     }
-    const auto encoded = encodeSctTextRecord(value, kind, storage, profile);
+    const auto encoded = encodeSctTextRecord(value, kind, storage, encoding);
     if (!encoded.bytes) {
         return {std::nullopt, "Decoded text cannot be encoded in canonical form."};
     }
@@ -465,7 +488,7 @@ SctDecodedTextResult decodeSctTextRecord(std::span<const std::uint8_t> bytes,
 }
 
 SctEncodedTextResult encodeSctTextRecord(const SctTextValue& value, SctTextKind kind,
-    SctTextStorage storage, SctTextProfile profile) {
+    SctTextStorage storage, SctTextEncoding encoding) {
     if (const auto* opaque = std::get_if<SctOpaqueText>(&value)) return {opaque->bytes, {}};
     if (std::holds_alternative<SctEmptyIndexedText>(value)) {
         if (kind == SctTextKind::SctString && storage == SctTextStorage::IndexedSection) return {std::vector<std::uint8_t>{}, {}};
@@ -476,14 +499,14 @@ SctEncodedTextResult encodeSctTextRecord(const SctTextValue& value, SctTextKind 
         if (!plain || !SctTextBuilder::isValidUtf8(plain->utf8) || plain->utf8.find('\0') != std::string::npos) {
             return {std::nullopt, "Plain text value is not valid zero-free UTF-8."};
         }
-        auto encoded = encodeCharacters(plain->utf8, profile);
-        if (!encoded) return {std::nullopt, "Plain text is not encodable under the selected profile."};
+        auto encoded = encodeCharacters(plain->utf8, encoding);
+        if (!encoded) return {std::nullopt, "Plain text is not encodable under the selected encoding."};
         encoded->push_back(0u);
         return {std::move(encoded), {}};
     }
     const auto* message = std::get_if<SctMessage>(&value);
     if (!message) return {std::nullopt, "SCT message kind requires a semantic message value."};
-    auto encoded = encodeMessage(*message, profile);
+    auto encoded = encodeMessage(*message, encoding);
     if (!encoded) return {std::nullopt, "SCT message contains invalid UTF-8, command structure, or unencodable literal escape text."};
     return {std::move(encoded), {}};
 }

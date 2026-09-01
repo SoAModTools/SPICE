@@ -261,14 +261,7 @@ SctDocumentImportResult SctDocumentImporter::import(
         : parsed.file.detectedEndian == "little" ? SctSourceByteOrder::LittleEndian : SctSourceByteOrder::Unknown;
     result.receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
     result.receipt.declaredSourcePlatform = options.declaredSourcePlatform;
-    result.receipt.sourceTextProfile = options.sourceTextProfile;
-    const bool profileMatchesPlatform = !options.sourceTextProfile.has_value()
-        || !options.declaredSourcePlatform.has_value()
-        || sctTextProfileSupportsPlatform(*options.sourceTextProfile, *options.declaredSourcePlatform);
-    if (!profileMatchesPlatform) {
-        addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::TextProfileMismatch,
-            "The selected source text profile does not match the declared source platform.");
-    }
+    result.receipt.sourceTextEncoding = options.sourceTextEncoding;
     if (!parsed.parseOk) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::ParseFailed,
             "A canonical document cannot be imported from a failed parse.");
@@ -453,11 +446,11 @@ SctDocumentImportResult SctDocumentImporter::import(
             }
             std::vector<std::uint8_t> recordBytes(physicalText.begin(), physicalText.begin() + recordSize);
             SctDocumentString string{stringId, SctOpaqueText{recordBytes}, SctTextKind::SctString};
-            std::string textReason = "No source text profile was supplied.";
+            std::string textReason = "No source text encoding was supplied.";
             bool semanticText = false;
-            if (profileMatchesPlatform && options.sourceTextProfile.has_value()) {
+            if (options.sourceTextEncoding.has_value()) {
                 const auto decoded = decodeSctTextRecord(recordBytes, SctTextKind::SctString,
-                    SctTextStorage::IndexedSection, *options.sourceTextProfile);
+                    SctTextStorage::IndexedSection, *options.sourceTextEncoding);
                 if (decoded.value) {
                     string.value = *decoded.value;
                     semanticText = !std::holds_alternative<SctOpaqueText>(string.value);
@@ -468,7 +461,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
                     "Indexed SCT string remained opaque: " + textReason, SctDocumentEntityId{stringId});
             }
-            result.receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextProfile,
+            result.receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextEncoding,
                 semanticText, textReason});
             const bool validPreamble = entry.preambleWords.size() >= 2u
                 && entry.preambleWords.front() == 9u
@@ -587,11 +580,11 @@ SctDocumentImportResult SctDocumentImporter::import(
                 ? SctTextKind::SctString
                 : SctTextKind::PlainString;
             SctDocumentFooterEntry converted{id, kind, SctOpaqueText{entry.rawBytes}};
-            std::string textReason = "No source text profile was supplied.";
+            std::string textReason = "No source text encoding was supplied.";
             bool semanticText = false;
-            if (profileMatchesPlatform && options.sourceTextProfile.has_value()) {
+            if (options.sourceTextEncoding.has_value()) {
                 const auto decoded = decodeSctTextRecord(entry.rawBytes, kind,
-                    SctTextStorage::Footer, *options.sourceTextProfile);
+                    SctTextStorage::Footer, *options.sourceTextEncoding);
                 if (decoded.value) {
                     converted.value = *decoded.value;
                     semanticText = !std::holds_alternative<SctOpaqueText>(converted.value);
@@ -602,7 +595,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
                     "Footer text remained opaque: " + textReason, SctDocumentEntityId{id});
             }
-            result.receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextProfile,
+            result.receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextEncoding,
                 semanticText, textReason});
             const auto local = entry.payloadOffset - footer->payloadStartOffset;
             if (ledger.claim(local, entry.rawBytes.size())) {

@@ -26,7 +26,7 @@ public:
     [[nodiscard]] static SctTargetValidationResult validateForTarget(
         const SctDocument& document,
         SctPlatform targetPlatform,
-        SctTextProfile textProfile,
+        SctTextEncoding textEncoding,
         const SctDocumentImportReceipt* receipt = nullptr);
 };
 

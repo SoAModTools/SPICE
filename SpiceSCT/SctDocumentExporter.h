@@ -17,16 +17,16 @@ enum class SctOpaquePreservationPolicy { RequirePreservation };
 struct SctDocumentExportOptions {
     explicit SctDocumentExportOptions(
         SctPlatform target,
-        SctTextProfile targetTextProfile,
+        SctTextEncoding targetTextEncoding,
         SctDocumentOutputByteOrder outputByteOrder = SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper outputWrapper = SctDocumentOutputWrapper::Raw,
         SctOpaquePreservationPolicy preservationPolicy = SctOpaquePreservationPolicy::RequirePreservation,
         SctHeaderExportOptions headerOptions = {}) noexcept
-        : targetPlatform(target), textProfile(targetTextProfile), byteOrder(outputByteOrder), wrapper(outputWrapper),
+        : targetPlatform(target), textEncoding(targetTextEncoding), byteOrder(outputByteOrder), wrapper(outputWrapper),
           opaquePolicy(preservationPolicy), header(headerOptions) {}
 
     SctPlatform targetPlatform;
-    SctTextProfile textProfile;
+    SctTextEncoding textEncoding;
     SctDocumentOutputByteOrder byteOrder = SctDocumentOutputByteOrder::BigEndian;
     SctDocumentOutputWrapper wrapper = SctDocumentOutputWrapper::Raw;
     SctOpaquePreservationPolicy opaquePolicy = SctOpaquePreservationPolicy::RequirePreservation;
@@ -72,6 +72,18 @@ struct SctRelocationRecord {
 
 enum class SctOpaquePreservationStatus { PreservedByteIdentically, RelocatedUnderRule, Rejected };
 
+enum class SctTextMaterializationStatus {
+    EncodedSemantically,
+    PreservedOpaqueBytes,
+    EmptyIndexedText,
+};
+
+struct SctTextMaterializationRecord {
+    SctDocumentEntityId entity;
+    SctDocumentByteSpan span;
+    SctTextMaterializationStatus status = SctTextMaterializationStatus::EncodedSemantically;
+};
+
 struct SctOpaquePlacementRecord {
     SctOpaqueAttachmentId id;
     SctDocumentByteSpan span;
@@ -80,6 +92,7 @@ struct SctOpaquePlacementRecord {
 
 struct SctPreservationReport {
     std::vector<SctOpaquePlacementRecord> attachments;
+    std::vector<SctTextMaterializationRecord> text;
     std::optional<SctHeaderMaterializationRecord> header;
 };
 

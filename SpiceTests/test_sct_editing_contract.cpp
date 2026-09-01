@@ -31,7 +31,7 @@ SctParseResult makeLabelParse(std::string name, std::vector<std::uint8_t> unusua
 }
 
 SctDocumentExportOptions rawGameCubeOptions() {
-    return SctDocumentExportOptions{SctPlatform::GameCube, SctTextProfile::GameCubeUs,
+    return SctDocumentExportOptions{SctPlatform::GameCube, kSctShiftJisByte7FEncoding,
         SctDocumentOutputByteOrder::BigEndian,
         SctDocumentOutputWrapper::Raw, SctOpaquePreservationPolicy::RequirePreservation};
 }
@@ -429,7 +429,7 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     const auto parsed = SctParser{}.parse(exported.bytes, "factory.sct");
     ASSERT_TRUE(parsed.parseOk);
     const auto imported = SctDocumentImporter::import(
-        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
 }
 
@@ -474,7 +474,7 @@ TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText)
     const auto parsed = parseEditableStringFixture("short");
     ASSERT_TRUE(parsed.parseOk);
     const auto imported = SctDocumentImporter::import(
-        parsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
     ASSERT_EQ(imported.document->strings.size(), 1u);
     auto document = *imported.document;
@@ -487,7 +487,7 @@ TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText)
     ASSERT_EQ(reparsed.file.sections.size(), 1u);
     EXPECT_EQ(reparsed.file.sections.front().kind, SctSectionKind::String);
     const auto reimported = SctDocumentImporter::import(
-        reparsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        reparsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(reimported.document.has_value());
     ASSERT_EQ(reimported.document->strings.size(), 1u);
     EXPECT_EQ(std::get<SctTextChunk>(std::get<SctMessage>(
@@ -686,7 +686,7 @@ TEST(SctDocumentEditing, ReferencedFooterTextCanGrowAndReimport) {
     const auto reparsed = SctParser{}.parse(exported.bytes, "footer_edit.sct");
     ASSERT_TRUE(reparsed.parseOk);
     const auto reimported = SctDocumentImporter::import(
-        reparsed, {{SctPlatform::GameCube}, SctTextProfile::GameCubeUs});
+        reparsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(reimported.document.has_value());
     ASSERT_EQ(reimported.document->footerEntries.size(), 1u);
     EXPECT_EQ(std::get<SctPlainText>(reimported.document->footerEntries.front().value).utf8,
