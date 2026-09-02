@@ -95,6 +95,9 @@
     <ClInclude Include="SctDocumentAnalysis.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctStructuredControlFlow.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SctInstructionFactory.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -170,6 +173,9 @@
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctDocumentAnalysis.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctStructuredControlFlow.cpp">
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctInstructionFactory.cpp">

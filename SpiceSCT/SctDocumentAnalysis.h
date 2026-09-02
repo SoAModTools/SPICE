@@ -2,6 +2,7 @@
 
 #include "SctDocumentImporter.h"
 #include "SctDocumentIndex.h"
+#include "SctStructuredControlFlow.h"
 
 #include <cstddef>
 #include <map>
@@ -271,6 +272,7 @@ struct SctDocumentAnalysis {
     SctControlFlowIndex controlFlow;
     SctSemanticUsageIndex usage;
     SctOpaqueContextIndex opaqueContext;
+    SctStructuredControlFlowAnalysis structuredControlFlow;
     SctOpcodeEffectIndex effects;
     std::optional<SctImportedSiteAddressabilityIndex> importedSites;
 

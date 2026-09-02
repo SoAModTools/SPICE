@@ -662,6 +662,8 @@ SctDocumentAnalysis SctDocumentAnalysis::build(const SctDocument& document,
     const auto contributions = semanticContributions(document);
     result.usage = SctSemanticUsageIndex::build(contributions);
     result.opaqueContext = SctOpaqueContextIndex::build(document, evidence, result.controlFlow);
+    result.structuredControlFlow = SctStructuredControlFlowAnalysis::buildFromIndexes(
+        document, result.controlFlow, result.opaqueContext);
     result.effects = SctOpcodeEffectIndex::build(contributions);
     if (evidence != nullptr) {
         result.importedSites = SctImportedSiteAddressabilityIndex::build(
