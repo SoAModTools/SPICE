@@ -64,6 +64,13 @@ struct SctCanonicalExpression {
 enum class SctScptComparisonMode { NotApplicable, Floating, Low16Integer, Unknown };
 enum class SctScptComparisonFlag { Clear, Set, Unknown };
 
+// A node in a symbolic presentation projection of an ordered SCPT program.
+// The ordinal identifies a contributing operation in the analyzed revision; it
+// is not independently owned syntax. The same operation ordinal may therefore
+// appear in multiple derived positions (notably after opcode 0x0a), and all
+// ordinals may shift when earlier operations are inserted, removed, or moved.
+// This projection must not be used as source-mutation authority without a
+// separate transformation analysis that proves a safe operation edit.
 struct SctScptDerivedExpressionNode {
     std::uint32_t operationOrdinal = 0;
     SctScptComparisonMode comparisonMode = SctScptComparisonMode::NotApplicable;
@@ -90,6 +97,9 @@ struct SctScptProgramIssue {
 struct SctScptProgramAnalysis {
     std::vector<SctScptSymbolicStackValue> finalStack;
     std::optional<SctScptDerivedExpressionNode> returnedExpression;
+    // Present only for a conventional single-result program. This is a
+    // presentation projection over contributing operations, not an editable
+    // ownership tree; duplicate operation ordinals are valid.
     std::optional<SctScptDerivedExpressionNode> conventionalTree;
     std::uint32_t maximumLogicalStackDepth = 0;
     std::vector<SctScptProgramIssue> issues;

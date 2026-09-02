@@ -64,6 +64,9 @@ public:
     [[nodiscard]] static BuildResult floatVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult bitVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult byteVariable(std::uint32_t index);
+    // Semantic composition requires each operand to be a typed, stop-terminated
+    // program with exactly one well-defined conventional result. Use program()
+    // when intentionally constructing arbitrary or hazardous stack programs.
     [[nodiscard]] static BuildResult binaryOperator(
         SctExpressionBinaryOperator operation,
         SctCanonicalExpression left, SctCanonicalExpression right);

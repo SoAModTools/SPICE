@@ -267,7 +267,10 @@ private:
         SctImportedAddressabilitySummary::NoSites;
 };
 
-// A revision-scoped collection of derived views. Rebuild after mutating document.
+// A revision-scoped complete materialization of document analysis, including
+// structured control flow. Rebuild after mutating document. Workspace search
+// and incremental editors should prefer the narrower entity, usage, effect, or
+// instruction-contribution builders when they do not need the complete view.
 struct SctDocumentAnalysis {
     SctDocumentIndex entities;
     SctIndexedStringGroupIndex stringGroups;

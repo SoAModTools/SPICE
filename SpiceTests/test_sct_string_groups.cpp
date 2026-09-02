@@ -200,6 +200,37 @@ TEST(SctIndexedStringGroups, ImportPromotesMarkerAndRetainsHistoricalGrouping) {
     EXPECT_EQ(historical.memberSections, current.memberSections);
     EXPECT_EQ(historical.strings, current.strings);
     EXPECT_EQ(historical.confidence, SctSemanticConfidence::Heuristic);
+    EXPECT_TRUE(analysis.stringGroups.importedAmbiguities().empty());
+}
+
+TEST(SctIndexedStringGroups, ImportedOverlapIsExplicitAndHasNoSingularWinner) {
+    SctDocument document;
+    const auto marker = document.allocateSectionId();
+    const auto member = document.allocateSectionId();
+    const auto string = document.allocateStringId();
+    const std::vector<SctImportedIndexedStringGroupObservation> observations{
+        {0u, SctIndexedStringGroupBasis::ExplicitMarker, marker, {member}, {string},
+            SctSemanticConfidence::Heuristic},
+        {1u, SctIndexedStringGroupBasis::ExplicitMarker, marker, {member}, {string},
+            SctSemanticConfidence::Heuristic},
+    };
+
+    const auto index = SctIndexedStringGroupIndex::build(document, observations);
+    ASSERT_EQ(index.importedGroups().size(), 2u);
+    EXPECT_EQ(index.importedByMarker(marker), nullptr);
+    EXPECT_EQ(index.importedContainingSection(member), nullptr);
+    EXPECT_EQ(index.importedContainingString(string), nullptr);
+
+    ASSERT_EQ(index.importedAmbiguities().size(), 3u);
+    EXPECT_EQ(index.importedAmbiguities()[0].kind,
+        SctImportedStringGroupMembershipKind::MarkerSection);
+    EXPECT_EQ(index.importedAmbiguities()[1].kind,
+        SctImportedStringGroupMembershipKind::MemberSection);
+    EXPECT_EQ(index.importedAmbiguities()[2].kind,
+        SctImportedStringGroupMembershipKind::String);
+    for (const auto& ambiguity : index.importedAmbiguities()) {
+        EXPECT_EQ(ambiguity.importedGroupIndexes, (std::vector<std::size_t>{0u, 1u}));
+    }
 }
 
 TEST(SctIndexedStringGroups, CurrentGroupingTracksEditsWhileImportedEvidenceStaysHistorical) {

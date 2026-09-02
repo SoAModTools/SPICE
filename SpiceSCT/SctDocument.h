@@ -73,6 +73,8 @@ struct SctExpressionSite {
 
 struct SctExpressionOperationSite {
     SctExpressionSite expression;
+    // Revision-scoped position in the authoritative ordered SCPT program.
+    // Inserting, deleting, or moving an earlier operation can invalidate it.
     std::uint32_t operationOrdinal = 0;
     auto operator<=>(const SctExpressionOperationSite&) const = default;
 };
@@ -106,6 +108,7 @@ struct SctDraftExpressionSite {
 
 struct SctDraftExpressionOperationSite {
     SctDraftExpressionSite expression;
+    // Revision-scoped position in the detached draft program.
     std::uint32_t operationOrdinal = 0;
     auto operator<=>(const SctDraftExpressionOperationSite&) const = default;
 };

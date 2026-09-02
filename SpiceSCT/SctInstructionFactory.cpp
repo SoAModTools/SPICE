@@ -235,6 +235,18 @@ SctExpressionBuildResult SctExpressionFactory::binaryOperator(
         return result;
     }
 
+    const auto validateOperand = [&](const SctTypedScptProgram& program,
+                                     const char* operandName) {
+        if (analyzeSctScptProgram(program).conventionalTree) return;
+        addError(result, SctDiagnosticCode::ExpressionInvalid,
+            std::string{operandName}
+                + " SCPT operand must produce exactly one well-defined conventional result; "
+                  "use program() for arbitrary stack-program construction.");
+    };
+    validateOperand(*leftProgram, "Left");
+    validateOperand(*rightProgram, "Right");
+    if (hasErrors(result)) return result;
+
     SctScptBinaryOperation binary;
     switch (operation) {
     case SctExpressionBinaryOperator::Less: binary = {SctScptBinaryOperationKind::Comparison, 0x00u}; break;

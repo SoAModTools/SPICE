@@ -7,13 +7,32 @@
 #include <optional>
 #include <span>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace spice::sct {
 
 enum class SctIndexedStringGroupBasis {
+    // A marker section represents the group in the current flat document. It
+    // does not prove game-level semantic ownership or author intent.
     ExplicitMarker,
     UnmarkedContiguousRun,
+};
+
+enum class SctImportedStringGroupMembershipKind {
+    MarkerSection,
+    MemberSection,
+    String,
+};
+
+using SctImportedStringGroupMembershipTarget = std::variant<SctSectionId, SctStringId>;
+
+struct SctImportedIndexedStringGroupAmbiguity {
+    SctImportedStringGroupMembershipKind kind =
+        SctImportedStringGroupMembershipKind::MemberSection;
+    SctImportedStringGroupMembershipTarget target;
+    // Indexes into importedGroups(), in caller-supplied order.
+    std::vector<std::size_t> importedGroupIndexes;
 };
 
 struct SctIndexedStringGroupRecord {
@@ -47,6 +66,13 @@ public:
         importedGroups() const noexcept {
         return importedGroups_;
     }
+    // Importer-produced observations are expected to be disjoint. Public
+    // callers may supply arbitrary historical observations; overlaps are
+    // reported here, and the corresponding singular lookup returns nullptr.
+    [[nodiscard]] std::span<const SctImportedIndexedStringGroupAmbiguity>
+        importedAmbiguities() const noexcept {
+        return importedAmbiguities_;
+    }
 
     [[nodiscard]] const SctIndexedStringGroupRecord* currentByMarker(
         SctSectionId marker) const noexcept;
@@ -62,14 +88,18 @@ public:
         SctStringId string) const noexcept;
 
 private:
+    using MembershipIndex =
+        std::unordered_map<std::uint64_t, std::vector<std::size_t>>;
+
     std::vector<SctIndexedStringGroupRecord> currentGroups_;
     std::vector<SctImportedIndexedStringGroupObservation> importedGroups_;
-    std::unordered_map<std::uint64_t, std::size_t> currentMarkers_;
-    std::unordered_map<std::uint64_t, std::size_t> currentSections_;
-    std::unordered_map<std::uint64_t, std::size_t> currentStrings_;
-    std::unordered_map<std::uint64_t, std::size_t> importedMarkers_;
-    std::unordered_map<std::uint64_t, std::size_t> importedSections_;
-    std::unordered_map<std::uint64_t, std::size_t> importedStrings_;
+    std::vector<SctImportedIndexedStringGroupAmbiguity> importedAmbiguities_;
+    MembershipIndex currentMarkers_;
+    MembershipIndex currentSections_;
+    MembershipIndex currentStrings_;
+    MembershipIndex importedMarkers_;
+    MembershipIndex importedSections_;
+    MembershipIndex importedStrings_;
 };
 
 } // namespace spice::sct

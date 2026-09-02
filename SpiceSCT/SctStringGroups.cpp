@@ -1,24 +1,43 @@
 #include "SctStringGroups.h"
 
+#include <algorithm>
+
 namespace spice::sct {
 namespace {
 
-template <typename Record>
+template <typename Record, typename Index>
 void indexRecord(const Record& record, std::size_t index,
-    std::unordered_map<std::uint64_t, std::size_t>& markers,
-    std::unordered_map<std::uint64_t, std::size_t>& sections,
-    std::unordered_map<std::uint64_t, std::size_t>& strings) {
-    if (record.markerSection) markers.try_emplace(record.markerSection->value(), index);
-    for (const auto section : record.memberSections) sections.try_emplace(section.value(), index);
-    for (const auto string : record.strings) strings.try_emplace(string.value(), index);
+    Index& markers, Index& sections, Index& strings) {
+    const auto add = [index](auto& destination, std::uint64_t id) {
+        auto& indexes = destination[id];
+        if (indexes.empty() || indexes.back() != index) indexes.push_back(index);
+    };
+    if (record.markerSection) add(markers, record.markerSection->value());
+    for (const auto section : record.memberSections) add(sections, section.value());
+    for (const auto string : record.strings) add(strings, string.value());
 }
 
-template <typename Record>
+template <typename Record, typename Index>
 const Record* findRecord(const std::vector<Record>& records,
-    const std::unordered_map<std::uint64_t, std::size_t>& index, std::uint64_t id) noexcept {
+    const Index& index, std::uint64_t id) noexcept {
     const auto found = index.find(id);
-    return found == index.end() || found->second >= records.size()
-        ? nullptr : &records[found->second];
+    return found == index.end() || found->second.size() != 1u
+        || found->second.front() >= records.size()
+        ? nullptr : &records[found->second.front()];
+}
+
+template <typename Id, typename Index>
+void appendAmbiguities(const Index& index,
+    SctImportedStringGroupMembershipKind kind,
+    std::vector<SctImportedIndexedStringGroupAmbiguity>& ambiguities) {
+    std::vector<std::uint64_t> ids;
+    for (const auto& [id, indexes] : index) {
+        if (indexes.size() > 1u) ids.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+    for (const auto id : ids) {
+        ambiguities.push_back({kind, Id{id}, index.at(id)});
+    }
 }
 
 } // namespace
@@ -64,6 +83,12 @@ SctIndexedStringGroupIndex SctIndexedStringGroupIndex::build(const SctDocument& 
         indexRecord(result.importedGroups_[index], index, result.importedMarkers_,
             result.importedSections_, result.importedStrings_);
     }
+    appendAmbiguities<SctSectionId>(result.importedMarkers_,
+        SctImportedStringGroupMembershipKind::MarkerSection, result.importedAmbiguities_);
+    appendAmbiguities<SctSectionId>(result.importedSections_,
+        SctImportedStringGroupMembershipKind::MemberSection, result.importedAmbiguities_);
+    appendAmbiguities<SctStringId>(result.importedStrings_,
+        SctImportedStringGroupMembershipKind::String, result.importedAmbiguities_);
     return result;
 }
 

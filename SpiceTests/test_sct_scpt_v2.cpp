@@ -353,6 +353,48 @@ TEST(SctScptV3, ProgramFactoryAcceptsArbitraryValidOperationOrderAndRejectsMisma
         *mismatched.diagnostics.front().primaryLocation).operationOrdinal, 0u);
 }
 
+TEST(SctScptV3, BinaryOperatorRequiresSingleDefinedOperandResults) {
+    const auto residual = SctExpressionFactory::program({
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}},
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000200u, {}},
+    });
+    ASSERT_TRUE(residual.expression);
+    const auto residualRejected = SctExpressionFactory::binaryOperator(
+        SctExpressionBinaryOperator::Add, *residual.expression,
+        SctExpressionFactory::encodedDecimalLiteral(3));
+    EXPECT_FALSE(residualRejected.expression);
+    ASSERT_EQ(residualRejected.diagnostics.size(), 1u);
+    EXPECT_NE(residualRejected.diagnostics.front().message.find("Left SCPT operand"),
+        std::string::npos);
+
+    const auto underflow = SctExpressionFactory::program({
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x0eu},
+    });
+    ASSERT_TRUE(underflow.expression);
+    const auto underflowRejected = SctExpressionFactory::binaryOperator(
+        SctExpressionBinaryOperator::Add,
+        SctExpressionFactory::encodedDecimalLiteral(1), *underflow.expression);
+    EXPECT_FALSE(underflowRejected.expression);
+    ASSERT_EQ(underflowRejected.diagnostics.size(), 1u);
+    EXPECT_NE(underflowRejected.diagnostics.front().message.find("Right SCPT operand"),
+        std::string::npos);
+
+    const auto overwritten = SctExpressionFactory::program({
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000200u, {}},
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000300u, {}},
+        SctExpressionFactory::stackOverwritePreviousWithTop(),
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x0eu},
+    });
+    ASSERT_TRUE(overwritten.expression);
+    ASSERT_TRUE(analyzeSctScptProgram(typedProgram(*overwritten.expression)).conventionalTree);
+    const auto accepted = SctExpressionFactory::binaryOperator(
+        SctExpressionBinaryOperator::Multiply, *overwritten.expression,
+        SctExpressionFactory::encodedDecimalLiteral(4));
+    ASSERT_TRUE(accepted.expression);
+    const auto analysis = analyzeSctScptProgram(typedProgram(*accepted.expression));
+    EXPECT_TRUE(analysis.conventionalTree);
+}
+
 TEST(SctScptV3, EveryInputRangeAcceptsAndPreservesRuntimeRecognizedPrefixes) {
     const std::vector<std::vector<std::uint32_t>> importedForms{
         {0x07ffffffu, 0x3f800000u, 0x0000001du},
