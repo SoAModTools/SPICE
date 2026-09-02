@@ -103,6 +103,13 @@ void SctImportedSourceMap::buildIndexes() {
     for (std::size_t index = 0; index < semanticLocations_.size(); ++index) {
         semanticOrderIndex_.emplace(semanticLocations_[index].entity, index);
     }
+    std::uint64_t targetedEnvelopeMaximumEnd = 0;
+    targetedEnvelopePrefixMaximumEnd_.reserve(targetedEnvelopeOrdinals_.size());
+    for (const auto ordinal : targetedEnvelopeOrdinals_) {
+        targetedEnvelopeMaximumEnd = std::max(
+            targetedEnvelopeMaximumEnd, records_[ordinal].span.endOffset());
+        targetedEnvelopePrefixMaximumEnd_.push_back(targetedEnvelopeMaximumEnd);
+    }
 }
 
 SctImportedSourceMap::BuildResult SctImportedSourceMap::build(
@@ -276,21 +283,45 @@ std::optional<SctSourceRecordNeighborhood> SctImportedSourceMap::neighborhood(
 SctSourceRecordNeighborhood SctImportedSourceMap::neighborhood(
     SctImportedByteSpan span, std::optional<std::uint32_t> excludedOrdinal) const {
     SctSourceRecordNeighborhood result;
-    for (const auto ordinal : targetedLeafOrdinals_) {
-        if (excludedOrdinal && ordinal == *excludedOrdinal) continue;
-        const auto& record = records_[ordinal];
-        if (record.span.endOffset() <= span.offset) {
-            result.precedingTargetedLeaf = summarize(ordinal);
-            continue;
-        }
-        if (record.span.offset >= span.endOffset()) {
-            result.followingTargetedLeaf = summarize(ordinal);
+
+    auto preceding = std::partition_point(targetedLeafOrdinals_.begin(),
+        targetedLeafOrdinals_.end(), [&](std::uint32_t ordinal) {
+            return records_[ordinal].span.endOffset() <= span.offset;
+        });
+    while (preceding != targetedLeafOrdinals_.begin()) {
+        --preceding;
+        if (!excludedOrdinal || *preceding != *excludedOrdinal) {
+            result.precedingTargetedLeaf = summarize(*preceding);
             break;
         }
     }
-    for (const auto ordinal : targetedEnvelopeOrdinals_) {
-        if (excludedOrdinal && ordinal == *excludedOrdinal) continue;
-        if (contains(records_[ordinal].span, span)) {
+
+    auto following = std::lower_bound(targetedLeafOrdinals_.begin(),
+        targetedLeafOrdinals_.end(), span.endOffset(),
+        [&](std::uint32_t ordinal, std::uint64_t endOffset) {
+            return records_[ordinal].span.offset < endOffset;
+        });
+    while (following != targetedLeafOrdinals_.end()) {
+        if (!excludedOrdinal || *following != *excludedOrdinal) {
+            result.followingTargetedLeaf = summarize(*following);
+            break;
+        }
+        ++following;
+    }
+
+    const auto afterEnvelope = std::upper_bound(targetedEnvelopeOrdinals_.begin(),
+        targetedEnvelopeOrdinals_.end(), span.offset,
+        [&](std::uint32_t offset, std::uint32_t ordinal) {
+            return offset < records_[ordinal].span.offset;
+        });
+    std::size_t envelopeIndex = static_cast<std::size_t>(
+        afterEnvelope - targetedEnvelopeOrdinals_.begin());
+    while (envelopeIndex != 0u) {
+        --envelopeIndex;
+        if (targetedEnvelopePrefixMaximumEnd_[envelopeIndex] < span.endOffset()) break;
+        const auto ordinal = targetedEnvelopeOrdinals_[envelopeIndex];
+        if ((!excludedOrdinal || ordinal != *excludedOrdinal)
+            && contains(records_[ordinal].span, span)) {
             result.containingTargetedEnvelopes.push_back(summarize(ordinal));
         }
     }

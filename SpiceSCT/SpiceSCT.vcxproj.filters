@@ -89,6 +89,9 @@
     <ClInclude Include="SctSourceMap.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctIndexedPreamble.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SctStringGroups.h">
       <Filter>Model</Filter>
     </ClInclude>

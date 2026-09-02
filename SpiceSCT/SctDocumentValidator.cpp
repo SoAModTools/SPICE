@@ -1,5 +1,6 @@
 #include "SctDocumentValidator.h"
 
+#include "SctIndexedPreamble.h"
 #include "SctTextBuilder.h"
 #include "SctTextCodec.h"
 #include "SctScptEncoding.h"
@@ -272,20 +273,14 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                 error(result, SctDiagnosticCode::InvalidContent,
                     "Indexed string sections must contain SCT message text.", SctDocumentEntityId{section.id});
             }
-            const auto stop = std::find(strings->preambleWords.begin(), strings->preambleWords.end(), 0x0000001du);
-            if (strings->preambleWords.size() < 2u || strings->preambleWords.front() != 9u
-                || stop == strings->preambleWords.end() || stop != strings->preambleWords.end() - 1u) {
+            if (!detail::isValidIndexedStringPreamble(strings->preambleWords)) {
                 error(result, SctDiagnosticCode::InvalidContent,
                     "Indexed string preamble must begin with opcode 9 and end at its first exact 0x1d word.",
                     SctDocumentEntityId{section.id});
             }
         }
         if (const auto* marker = std::get_if<SctStringGroupMarkerSectionContent>(&section.content)) {
-            const auto stop = std::find(marker->preambleWords.begin(),
-                marker->preambleWords.end(), 0x0000001du);
-            if (marker->preambleWords.size() < 2u || marker->preambleWords.front() != 9u
-                || stop == marker->preambleWords.end()
-                || stop != marker->preambleWords.end() - 1u) {
+            if (!detail::isValidIndexedStringPreamble(marker->preambleWords)) {
                 error(result, SctDiagnosticCode::InvalidContent,
                     "Indexed-string group marker preamble must begin with opcode 9 and end at its first exact 0x1d word.",
                     SctDocumentEntityId{section.id});

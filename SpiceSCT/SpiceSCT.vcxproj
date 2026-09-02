@@ -121,6 +121,7 @@
     <ClInclude Include="SctDocumentBuilder.h" />
     <ClInclude Include="SctDocumentIndex.h" />
     <ClInclude Include="SctSourceMap.h" />
+    <ClInclude Include="SctIndexedPreamble.h" />
     <ClInclude Include="SctStringGroups.h" />
     <ClInclude Include="SctSha256.h" />
     <ClInclude Include="SctDocumentAnalysis.h" />

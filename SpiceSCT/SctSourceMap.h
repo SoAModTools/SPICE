@@ -209,6 +209,7 @@ private:
     std::vector<std::uint32_t> leafOrdinals_;
     std::vector<std::uint32_t> targetedLeafOrdinals_;
     std::vector<std::uint32_t> targetedEnvelopeOrdinals_;
+    std::vector<std::uint64_t> targetedEnvelopePrefixMaximumEnd_;
 };
 
 struct SctImportedSourceMap::BuildResult {

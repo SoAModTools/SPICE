@@ -116,6 +116,72 @@ const SctControlFlowEdge* edgeOf(std::span<const SctControlFlowEdge> edges,
     return found == edges.end() ? nullptr : &*found;
 }
 
+bool sourceSpanContains(SctImportedByteSpan outer, SctImportedByteSpan inner) {
+    return outer.offset <= inner.offset && outer.endOffset() >= inner.endOffset();
+}
+
+SctSourceRecordSummary sourceSummary(
+    std::span<const SctSourceSpanRecord> records, std::uint32_t ordinal) {
+    const auto& record = records[ordinal];
+    return {{ordinal}, record.span, record.role, record.layer, record.target};
+}
+
+SctSourceRecordNeighborhood linearNeighborhoodReference(
+    std::span<const SctSourceSpanRecord> records, SctImportedByteSpan span,
+    std::optional<std::uint32_t> excludedOrdinal = std::nullopt) {
+    SctSourceRecordNeighborhood result;
+    for (std::uint32_t ordinal = 0; ordinal < records.size(); ++ordinal) {
+        if (excludedOrdinal && ordinal == *excludedOrdinal) continue;
+        const auto& record = records[ordinal];
+        if (!record.target || record.layer != SctSourceSpanLayer::Leaf) continue;
+        if (record.span.endOffset() <= span.offset) {
+            result.precedingTargetedLeaf = sourceSummary(records, ordinal);
+            continue;
+        }
+        if (record.span.offset >= span.endOffset()) {
+            result.followingTargetedLeaf = sourceSummary(records, ordinal);
+            break;
+        }
+    }
+    for (std::uint32_t ordinal = 0; ordinal < records.size(); ++ordinal) {
+        if (excludedOrdinal && ordinal == *excludedOrdinal) continue;
+        const auto& record = records[ordinal];
+        if (record.target && record.layer == SctSourceSpanLayer::Envelope
+            && sourceSpanContains(record.span, span)) {
+            result.containingTargetedEnvelopes.push_back(sourceSummary(records, ordinal));
+        }
+    }
+    std::stable_sort(result.containingTargetedEnvelopes.begin(),
+        result.containingTargetedEnvelopes.end(), [](const auto& left, const auto& right) {
+            if (left.span.size != right.span.size) return left.span.size < right.span.size;
+            return left.ordinal.value > right.ordinal.value;
+        });
+    return result;
+}
+
+void expectSourceSummaryEqual(const std::optional<SctSourceRecordSummary>& actual,
+    const std::optional<SctSourceRecordSummary>& expected) {
+    ASSERT_EQ(actual.has_value(), expected.has_value());
+    if (!actual) return;
+    EXPECT_EQ(actual->ordinal, expected->ordinal);
+    EXPECT_EQ(actual->span, expected->span);
+    EXPECT_EQ(actual->role, expected->role);
+    EXPECT_EQ(actual->layer, expected->layer);
+    EXPECT_EQ(actual->target, expected->target);
+}
+
+void expectNeighborhoodEqual(const SctSourceRecordNeighborhood& actual,
+    const SctSourceRecordNeighborhood& expected) {
+    expectSourceSummaryEqual(actual.precedingTargetedLeaf, expected.precedingTargetedLeaf);
+    expectSourceSummaryEqual(actual.followingTargetedLeaf, expected.followingTargetedLeaf);
+    ASSERT_EQ(actual.containingTargetedEnvelopes.size(),
+        expected.containingTargetedEnvelopes.size());
+    for (std::size_t index = 0; index < actual.containingTargetedEnvelopes.size(); ++index) {
+        expectSourceSummaryEqual(actual.containingTargetedEnvelopes[index],
+            expected.containingTargetedEnvelopes[index]);
+    }
+}
+
 SctCanonicalExpression variableExpression() {
     return {SctTypedScptProgram{{
         SctScptValueOperation{SctScptValueKind::DirectIntVariable, 0x50000018u, {}},
@@ -772,6 +838,64 @@ TEST(SctImportedSourceMap, NeighborhoodsExposeTargetedSitesWithoutInferringOwner
         std::optional<SctImportedSourceTarget>{instructionEntity});
     EXPECT_FALSE(built.map->neighborhood({0u, 4u}).precedingTargetedLeaf);
     EXPECT_FALSE(built.map->recordSummary({999u}));
+}
+
+TEST(SctImportedSourceMap, IndexedNeighborhoodsMatchLinearReference) {
+    constexpr std::uint32_t payloadSize = 4096u;
+    const SctInstructionId instructionId{1u};
+    std::vector<SctSourceSpanRecord> records{
+        {{0u, payloadSize}, SctSourceSpanRole::Instruction,
+            SctSourceSpanLayer::Envelope, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{SctExpressionSite{
+                instructionId, SctScheduledExpressionSite{}}}},
+        {{256u, 2048u}, SctSourceSpanRole::Expression,
+            SctSourceSpanLayer::Envelope, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{SctExpressionSite{
+                instructionId, SctParameterAddress{0u, std::nullopt}}}},
+        {{256u, 2048u}, SctSourceSpanRole::Expression,
+            SctSourceSpanLayer::Envelope, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{SctExpressionSite{
+                instructionId, SctParameterAddress{1u, std::nullopt}}}},
+        {{512u, 512u}, SctSourceSpanRole::ExpressionOperation,
+            SctSourceSpanLayer::Envelope, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{SctExpressionOperationSite{
+                {instructionId, SctParameterAddress{1u, std::nullopt}}, 0u}}},
+    };
+    for (std::uint32_t offset = 0u; offset < payloadSize; offset += 4u) {
+        const auto ordinal = offset / 4u;
+        const bool targeted = (ordinal % 11u) == 0u;
+        records.push_back({{offset, 4u}, targeted
+                ? SctSourceSpanRole::InstructionParameter
+                : SctSourceSpanRole::DerivedPadding,
+            SctSourceSpanLayer::Leaf, targeted
+                ? SctSourceCoverageKind::SemanticEntity
+                : SctSourceCoverageKind::DerivedLayout,
+            targeted ? std::optional<SctImportedSourceTarget>{SctParameterSite{
+                instructionId, {ordinal, std::nullopt}}} : std::nullopt});
+    }
+
+    auto built = SctImportedSourceMap::build(payloadSize, std::move(records));
+    ASSERT_TRUE(built.map);
+    const auto sourceRecords = built.map->records();
+    const std::array spans{
+        SctImportedByteSpan{0u, 0u}, SctImportedByteSpan{0u, 4u},
+        SctImportedByteSpan{252u, 8u}, SctImportedByteSpan{512u, 4u},
+        SctImportedByteSpan{800u, 0u}, SctImportedByteSpan{1024u, 64u},
+        SctImportedByteSpan{2304u, 0u}, SctImportedByteSpan{4090u, 6u},
+        SctImportedByteSpan{4096u, 0u}};
+    for (const auto span : spans) {
+        SCOPED_TRACE(testing::PrintToString(span.offset));
+        expectNeighborhoodEqual(built.map->neighborhood(span),
+            linearNeighborhoodReference(sourceRecords, span));
+    }
+
+    for (std::uint32_t ordinal = 0u; ordinal < sourceRecords.size(); ordinal += 29u) {
+        SCOPED_TRACE(ordinal);
+        const auto actual = built.map->neighborhood(SctSourceRecordOrdinal{ordinal});
+        ASSERT_TRUE(actual);
+        expectNeighborhoodEqual(*actual, linearNeighborhoodReference(
+            sourceRecords, sourceRecords[ordinal].span, ordinal));
+    }
 }
 
 TEST(SctImportLineage, BindingRejectsOtherImportsAndTracksHistoricalAddressability) {

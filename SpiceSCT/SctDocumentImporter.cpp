@@ -1,4 +1,5 @@
 #include "SctDocumentImporter.h"
+#include "SctIndexedPreamble.h"
 #include "SctSha256.h"
 
 #include "SctScptEncoding.h"
@@ -1009,11 +1010,7 @@ SctDocumentImportResult SctDocumentImporter::import(
             receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextEncoding,
                 textDecision.disposition, std::move(textDecision.viableAlternativeConventions),
                 std::move(textDecision.reason)});
-            const bool validPreamble = entry.preambleWords.size() >= 2u
-                && entry.preambleWords.front() == 9u
-                && entry.preambleWords.back() == 0x0000001du
-                && std::find(entry.preambleWords.begin(), entry.preambleWords.end() - 1u, 0x0000001du)
-                    == entry.preambleWords.end() - 1u;
+            const bool validPreamble = detail::isValidIndexedStringPreamble(entry.preambleWords);
             if (!validPreamble || local > ledger.claims.size() || physicalTextSize > ledger.claims.size() - local
                 || !ledger.claim(0u, preambleSize) || !ledger.claim(local, recordSize)) {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::OverlappingSourceClaims,
@@ -1043,10 +1040,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                 sourceSection.endOffset, receipt.source.byteOrder);
             const auto sectionSize = static_cast<std::size_t>(
                 sourceSection.endOffset - sourceSection.startOffset);
-            if (!preambleWords || preambleWords->size() < 2u
-                || preambleWords->front() != 9u || preambleWords->back() != 0x0000001du
-                || std::find(preambleWords->begin(), preambleWords->end() - 1u, 0x0000001du)
-                    != preambleWords->end() - 1u
+            if (!preambleWords || !detail::isValidIndexedStringPreamble(*preambleWords)
                 || !ledger.claim(0u, sectionSize)) {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning,
                     SctDiagnosticCode::OverlappingSourceClaims,

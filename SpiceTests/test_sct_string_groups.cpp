@@ -1,4 +1,5 @@
 #include "../SpiceSCT/SpiceSCT.h"
+#include "../SpiceSCT/SctIndexedPreamble.h"
 
 #include <gtest/gtest.h>
 
@@ -58,6 +59,52 @@ SctDocumentSection makeStringSection(
     stringId = document.allocateStringId();
     return {sectionId, std::move(name),
         SctStringSectionContent{SctDocumentString{stringId, SctEmptyIndexedText{}}}};
+}
+
+TEST(SctIndexedPreamble, SharedStructuralRuleCoversEveryShape) {
+    struct Case {
+        std::vector<std::uint32_t> words;
+        bool valid;
+    };
+    const std::vector<Case> cases{
+        {{9u, 0x1du}, true},
+        {{9u, 0x7ffffffeu, 0x1du}, true},
+        {{}, false},
+        {{9u}, false},
+        {{8u, 0x1du}, false},
+        {{9u, 0x7ffffffeu}, false},
+        {{9u, 0x1du, 0x7ffffffeu}, false},
+        {{9u, 0x1du, 0x1du}, false},
+    };
+
+    for (const auto& test : cases) {
+        SCOPED_TRACE(testing::PrintToString(test.words));
+        EXPECT_EQ(detail::isValidIndexedStringPreamble(test.words), test.valid);
+
+        SctDocument stringDocument;
+        const auto stringSectionId = stringDocument.allocateSectionId();
+        const auto stringId = stringDocument.allocateStringId();
+        stringDocument.sections.push_back({stringSectionId, "STRING",
+            SctStringSectionContent{
+                SctDocumentString{stringId, SctEmptyIndexedText{}}, test.words}});
+        EXPECT_EQ(SctDocumentValidator::validateDocument(stringDocument).validDocument, test.valid);
+
+        SctDocument markerDocument;
+        const auto markerSectionId = markerDocument.allocateSectionId();
+        markerDocument.sections.push_back({markerSectionId, "MARKER",
+            SctStringGroupMarkerSectionContent{test.words}});
+        EXPECT_EQ(SctDocumentValidator::validateDocument(markerDocument).validDocument, test.valid);
+
+        SctDocument factoryDocument;
+        const auto stringFactory = SctDocumentEntityFactory::createIndexedStringSection(
+            factoryDocument, "STRING", SctEmptyIndexedText{}, test.words);
+        const auto markerFactory = SctDocumentEntityFactory::createStringGroupMarkerSection(
+            factoryDocument, "MARKER", test.words);
+        EXPECT_EQ(stringFactory.section.has_value(), test.valid);
+        EXPECT_EQ(markerFactory.section.has_value(), test.valid);
+        EXPECT_EQ(factoryDocument.nextSectionIdValue(), test.valid ? 3u : 1u);
+        EXPECT_EQ(factoryDocument.nextStringIdValue(), test.valid ? 2u : 1u);
+    }
 }
 
 TEST(SctIndexedStringGroups, DerivesMarkedUnmarkedAndEmptyGroupsFromFlatOrder) {
