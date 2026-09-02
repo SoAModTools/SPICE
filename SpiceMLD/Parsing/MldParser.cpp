@@ -16,6 +16,8 @@
 #include <array>
 #include <cctype>
 #include <iomanip>
+#include <limits>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -324,213 +326,87 @@ void resolveObjectNjLayout(
     return nullptr;
 }
 
-[[nodiscard]] std::optional<std::uint32_t> tryReadObjectNodeCount(const ExtractedNjBlock& block) {
-    std::vector<std::size_t> readOffsets{};
-    const auto appendReadOffset = [&](const std::size_t offset) {
-        if (std::find(readOffsets.begin(), readOffsets.end(), offset) == readOffsets.end()) {
-            readOffsets.push_back(offset);
-        }
-    };
-    if (block.modelReadOffset.has_value()) {
-        appendReadOffset(*block.modelReadOffset);
-    }
-    appendReadOffset(0U);
-    appendReadOffset(0x10U);
-
-    auto tryRead = [&](const std::size_t trim) -> std::optional<std::uint32_t> {
-        if (trim >= block.bytes.size()) {
-            return std::nullopt;
-        }
-        try {
-            const auto bytes = asByteSpan(block.bytes).subspan(trim);
-            const auto modelFile = Sa3Dport::File::ModelFile::read_from_bytes(bytes);
-            if (!modelFile.model) {
-                return std::nullopt;
-            }
-            return static_cast<std::uint32_t>(modelFile.model->tree_nodes().size());
-        } catch (const std::exception&) {
-            return std::nullopt;
-        }
-    };
-
-    for (const auto readOffset : readOffsets) {
-        if (auto nodeCount = tryRead(readOffset); nodeCount.has_value()) {
-            return nodeCount;
-        }
-    }
-    return std::nullopt;
-}
-
-struct AnimationTargetCandidate {
-    std::uint32_t objectAddress = 0;
-    std::uint32_t nodeCount = 0;
+struct MotionLayoutResult {
+    bool available = false;
+    Sa3Dport::Animation::MotionTargetLayout layout{};
+    std::string diagnostic{};
 };
 
-struct AnimationBindingProbe {
-    AnimationTargetCandidate target{};
-    Sa3Dport::File::AnimationProbeResult probe{};
-};
-
-[[nodiscard]] std::vector<AnimationTargetCandidate> collectAnimationTargets(
-    const ParsedRawEntry& entry,
-    const std::vector<ExtractedNjBlock>& blocks) {
-    std::vector<AnimationTargetCandidate> candidates{};
-    for (const auto objectAddress : entry.objectAddresses) {
-        const auto* objectBlock = findContainingObjectBlock(blocks, objectAddress);
-        if (objectBlock == nullptr) {
-            continue;
+[[nodiscard]] std::uint64_t motionLayoutSignature(
+    const Sa3Dport::Animation::MotionTargetLayout& layout) {
+    constexpr std::uint64_t offsetBasis = 1469598103934665603ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::uint64_t result = offsetBasis;
+    const auto mix = [&](const std::uint32_t value, std::uint64_t& hash) {
+        for (unsigned shift = 0; shift < 32U; shift += 8U) {
+            hash ^= static_cast<std::uint8_t>((value >> shift) & 0xFFU);
+            hash *= prime;
         }
-        if (auto nodeCount = tryReadObjectNodeCount(*objectBlock); nodeCount.has_value()) {
-            candidates.push_back(AnimationTargetCandidate{
-                .objectAddress = objectAddress,
-                .nodeCount = *nodeCount,
-            });
-        }
+    };
+    mix(layout.lane_count(), result);
+    for (const auto& lane : layout.lanes) {
+        mix(lane.node_index, result);
+        mix(lane.vertex_count.value_or(std::numeric_limits<std::uint32_t>::max()), result);
+        mix(lane.normal_count.value_or(std::numeric_limits<std::uint32_t>::max()), result);
     }
-
-    return candidates;
+    return result;
 }
 
-[[nodiscard]] std::string describeAnimationProbe(
-    const AnimationBindingProbe& probe) {
-    std::ostringstream message;
-    message << "object=0x" << std::hex << std::setw(8) << std::setfill('0') << probe.target.objectAddress
-        << std::dec << "/nodes=" << probe.target.nodeCount
-        << "/shortRot=" << (probe.probe.short_rot ? "true" : "false")
-        << '/' << (probe.probe.valid ? "valid" : "invalid");
-    if (probe.probe.valid) {
-        message << "/consumedEnd=" << probe.probe.consumed_end;
-    } else if (!probe.probe.failure_reason.empty()) {
-        message << '/' << probe.probe.failure_reason;
-    }
-    return message.str();
-}
-
-[[nodiscard]] std::optional<AnimationBindingProbe> chooseAnimationBinding(
-    const std::vector<AnimationTargetCandidate>& targets,
-    const ExtractedNjBlock& motionBlock,
-    std::vector<std::string>& rejectedCandidates) {
-    std::optional<AnimationBindingProbe> best{};
-
-    for (const auto& target : targets) {
-        for (const bool shortRot : {false, true}) {
-            auto probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
-                asByteSpan(motionBlock.bytes), target.nodeCount, shortRot);
-            AnimationBindingProbe candidate{
-                .target = target,
-                .probe = std::move(probe),
-            };
-            if (!candidate.probe.valid) {
-                rejectedCandidates.push_back(describeAnimationProbe(candidate));
-                continue;
-            }
-
-            if (!best.has_value() ||
-                candidate.probe.consumed_end > best->probe.consumed_end ||
-                (candidate.probe.consumed_end == best->probe.consumed_end &&
-                    best->probe.short_rot && !candidate.probe.short_rot)) {
-                best = std::move(candidate);
-            }
-        }
+[[nodiscard]] MotionLayoutResult deriveMotionTargetLayout(
+    const model::MldObjectResource& resource,
+    const Sa3Dport::File::NinjaMotionKind kind) {
+    MotionLayoutResult result{};
+    if (!resource.model || !resource.model->model) {
+        result.diagnostic = "object resource is not parseable as an NJCM tree";
+        return result;
     }
 
-    return best;
-}
-
-void parseMldAnimations(ParseResult& result) {
-    for (const auto& entry : result.rawEntries) {
-        bool hasMotion = false;
-        for (const auto address : entry.motionAddresses) {
-            if (address != 0U) {
-                hasMotion = true;
-                break;
-            }
-        }
-        if (!hasMotion) {
+    const auto nodes = resource.model->model->tree_nodes();
+    result.layout.lanes.reserve(nodes.size());
+    for (std::size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
+        const auto& node = nodes[nodeIndex];
+        if (!node || node->no_animate()) {
             continue;
         }
 
-        const auto targets = collectAnimationTargets(entry, result.extractedNjBlocks);
-        if (targets.empty()) {
-            result.diagnostics.push_back(ParseDiagnostic{
-                .severity = ParseDiagnostic::Severity::Warning,
-                .message = "Entry " + std::to_string(entry.tableIndex) +
-                    " has motion addresses but no parseable object tree for animation node count.",
-            });
-            continue;
-        }
-
-        for (std::size_t slot = 0; slot < entry.motionAddresses.size(); ++slot) {
-            const auto motionAddress = entry.motionAddresses[slot];
-            if (motionAddress == 0U) {
-                continue;
-            }
-
-            const auto* block = findMotionBlock(result.extractedNjBlocks, motionAddress);
-            if (block == nullptr) {
-                result.diagnostics.push_back(ParseDiagnostic{
-                    .severity = ParseDiagnostic::Severity::Warning,
-                    .message = "Entry " + std::to_string(entry.tableIndex) +
-                        " motion slot " + std::to_string(slot) +
-                        " points to missing block " + std::to_string(motionAddress) + ".",
-                });
-                continue;
-            }
-
-            std::vector<std::string> rejectedCandidates{};
-            const auto binding = chooseAnimationBinding(targets, *block, rejectedCandidates);
-            if (!binding.has_value()) {
-                std::ostringstream message;
-                message << "Failed to bind animation for entry " << entry.tableIndex
-                    << " fxn=\"" << entry.fxnName << "\" motion slot " << slot
-                    << " motion=0x" << std::hex << std::setw(8) << std::setfill('0') << motionAddress
-                    << std::dec << ". Candidates: ";
-                for (std::size_t i = 0; i < rejectedCandidates.size(); ++i) {
-                    if (i != 0U) {
-                        message << "; ";
-                    }
-                    message << rejectedCandidates[i];
+        Sa3Dport::Animation::MotionTargetLane lane{
+            .node_index = static_cast<std::uint32_t>(nodeIndex),
+        };
+        if (kind == Sa3Dport::File::NinjaMotionKind::Shape) {
+            if (node->attach_address == 0U) {
+                lane.vertex_count = 0U;
+                lane.normal_count = 0U;
+            } else if (!node->attach) {
+                result.diagnostic = "animated node attach is not available in a supported representation for NSSM";
+                result.layout.lanes.clear();
+                return result;
+            } else {
+                const auto chunkAttach = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::ChunkAttach>(
+                    node->attach);
+                if (!chunkAttach) {
+                    result.diagnostic = "animated node uses an unsupported attach representation for NSSM";
+                    result.layout.lanes.clear();
+                    return result;
                 }
-                result.diagnostics.push_back(ParseDiagnostic{
-                    .severity = ParseDiagnostic::Severity::Warning,
-                    .message = message.str(),
-                });
-                continue;
-            }
-
-            try {
-                const auto animationFile = Sa3Dport::File::AnimationFile::read_from_bytes(
-                    asByteSpan(block->bytes), binding->target.nodeCount, binding->probe.short_rot);
-                result.animations.push_back(ParsedMldAnimation{
-                    .sourceEntryId = entry.sourceEntryId,
-                    .tableIndex = entry.tableIndex,
-                    .sourceObjectAddress = binding->target.objectAddress,
-                    .sourceMotionAddress = motionAddress,
-                    .motionSlot = slot,
-                    .nodeCount = binding->target.nodeCount,
-                    .shortRot = binding->probe.short_rot,
-                    .motion = std::make_shared<Sa3Dport::Animation::Motion>(animationFile.animation),
-                });
-            } catch (const std::exception& ex) {
-                result.diagnostics.push_back(ParseDiagnostic{
-                    .severity = ParseDiagnostic::Severity::Warning,
-                    .message = "Failed to parse animation for entry " + std::to_string(entry.tableIndex) +
-                        " fxn=\"" + entry.fxnName +
-                        "\" motion slot " + std::to_string(slot) +
-                        " motion=" + std::to_string(motionAddress) +
-                        " object=" + std::to_string(binding->target.objectAddress) +
-                        " nodes=" + std::to_string(binding->target.nodeCount) +
-                        " shortRot=" + (binding->probe.short_rot ? std::string("true") : std::string("false")) +
-                        ": " + ex.what(),
-                });
+                std::uint64_t vertexCount = 0;
+                for (const auto& chunk : chunkAttach->vertex_chunks) {
+                    if (chunk.has_value()) {
+                        vertexCount += chunk->vertices.size();
+                    }
+                }
+                if (vertexCount > std::numeric_limits<std::uint32_t>::max()) {
+                    result.diagnostic = "animated node vertex count exceeds the supported range";
+                    result.layout.lanes.clear();
+                    return result;
+                }
+                lane.vertex_count = static_cast<std::uint32_t>(vertexCount);
+                lane.normal_count = static_cast<std::uint32_t>(vertexCount);
             }
         }
+        result.layout.lanes.push_back(std::move(lane));
     }
-
-    result.diagnostics.push_back(ParseDiagnostic{
-        .severity = ParseDiagnostic::Severity::Info,
-        .message = "Decoded MLD animations: " + std::to_string(result.animations.size()),
-    });
+    result.available = true;
+    return result;
 }
 
 using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwnerRef>>;
@@ -1506,6 +1382,15 @@ model::MldFile MldParser::parseBytes(
     std::unordered_set<std::uint32_t> textureAddresses{};
     SpatialOwnerMap groundOwners{};
     SpatialOwnerMap objectOwners{};
+    struct CachedMotionProbe {
+        Sa3Dport::Animation::MotionTargetLayout layout{};
+        Sa3Dport::File::AnimationProbeResult probe{};
+    };
+    std::map<std::pair<std::uint32_t, Sa3Dport::File::NinjaMotionKind>, MotionLayoutResult>
+        targetLayoutCache{};
+    std::map<std::pair<std::uint32_t, std::uint64_t>, std::vector<CachedMotionProbe>>
+        motionProbeCache{};
+
     for (const auto& record : file.entries) {
         const auto& entry = record.entry;
         if (entry.objectAddresses) {
@@ -1577,6 +1462,19 @@ model::MldFile MldParser::parseBytes(
             resource.blockOffset = block.offset;
             resource.blockSize = block.size;
             resource.rawBytes = block.bytes;
+            resource.structure = Sa3Dport::File::AnimationFile::parse_structure(
+                asByteSpan(resource.rawBytes));
+            for (const auto& diagnostic : resource.structure.diagnostics) {
+                resource.diagnostics.push_back(model::MldDiagnostic{
+                    .severity = diagnostic.error
+                        ? model::MldDiagnostic::Severity::Warning
+                        : model::MldDiagnostic::Severity::Info,
+                    .message = diagnostic.message,
+                    .sourceOffset = diagnostic.offset.has_value()
+                        ? std::optional<std::uint32_t>(block.offset + *diagnostic.offset)
+                        : std::optional<std::uint32_t>(block.offset),
+                });
+            }
             file.motionResources.emplace(block.offset, std::move(resource));
         }
     }
@@ -1626,102 +1524,215 @@ model::MldFile MldParser::parseBytes(
 
     for (const auto& record : file.entries) {
         const auto& entry = record.entry;
-        if (!entry.motionAddresses || !entry.objectAddresses) {
+        if (!entry.motionAddresses) {
             continue;
-        }
-        std::vector<AnimationTargetCandidate> targets{};
-        for (const auto objectAddress : entry.objectAddresses->values) {
-            const auto found = file.objectResources.find(objectAddress);
-            if (found == file.objectResources.end() || !found->second.model || !found->second.model->model) {
-                continue;
-            }
-            targets.push_back(AnimationTargetCandidate{
-                .objectAddress = objectAddress,
-                .nodeCount = static_cast<std::uint32_t>(found->second.model->model->tree_nodes().size()),
-            });
         }
         for (std::size_t slot = 0; slot < entry.motionAddresses->values.size(); ++slot) {
             const auto motionAddress = entry.motionAddresses->values[slot];
             if (motionAddress == 0U) {
                 continue;
             }
+
+            model::MldEntryMotionRelation relation{
+                .tableIndex = entry.tableIndex,
+                .sourceEntryId = entry.entryId,
+                .motionSlot = slot,
+                .motionAddress = motionAddress,
+            };
             const auto block = findMotionBlock(njBlocks, motionAddress);
             auto resource = file.motionResources.find(motionAddress);
             if (block == nullptr || resource == file.motionResources.end()) {
+                relation.status = model::MldMotionRelationStatus::TargetUnavailable;
+                file.motionRelations.push_back(std::move(relation));
                 addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
-                    "Motion slot points to a missing resource.", motionAddress);
+                    "Motion slot points to a missing structural resource.", motionAddress);
                 continue;
             }
-            std::vector<std::string> rejected{};
-            const auto binding = chooseAnimationBinding(targets, *block, rejected);
-            if (!binding.has_value()) {
-                addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
-                    "Could not bind motion slot " + std::to_string(slot) + " for entry " +
-                        std::to_string(entry.tableIndex) + ".",
-                    motionAddress);
-                continue;
-            }
-            try {
-                std::vector<AnimationBindingProbe> validInterpretations{};
-                for (const auto& target : targets) {
-                    for (const bool shortRot : {false, true}) {
-                        auto probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
-                            asByteSpan(block->bytes), target.nodeCount, shortRot);
-                        if (probe.valid) {
-                            validInterpretations.push_back(AnimationBindingProbe{
-                                .target = target,
-                                .probe = std::move(probe),
-                            });
-                        }
+
+            relation.motionKind = resource->second.structure.header.kind;
+            if (relation.motionKind == Sa3Dport::File::NinjaMotionKind::Camera) {
+                relation.scope = model::MldMotionRelationScope::NoObjectTarget;
+                relation.status = model::MldMotionRelationStatus::Camera;
+                Sa3Dport::Animation::MotionTargetLayout cameraLayout{};
+                cameraLayout.lanes.push_back(Sa3Dport::Animation::MotionTargetLane{.node_index = 0U});
+                const auto signature = motionLayoutSignature(cameraLayout);
+                const auto existing = std::find_if(
+                    resource->second.variants.begin(), resource->second.variants.end(),
+                    [&](const auto& item) {
+                        return item.targetLayoutSignature == signature &&
+                            item.targetLayout == cameraLayout && !item.shortRot;
+                    });
+                auto probe = Sa3Dport::File::AnimationProbeResult{};
+                probe.valid = existing != resource->second.variants.end();
+                if (!probe.valid) {
+                    probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
+                        asByteSpan(block->bytes), cameraLayout,
+                        Sa3Dport::Animation::EulerRecordWidth::Full32);
+                }
+                if (!probe.valid) {
+                    resource->second.diagnostics.push_back(model::MldDiagnostic{
+                        .severity = model::MldDiagnostic::Severity::Warning,
+                        .message = "Failed to validate NCAM: " + probe.failure_reason,
+                        .sourceOffset = motionAddress,
+                    });
+                } else if (existing == resource->second.variants.end()) {
+                    try {
+                        const auto parsed = Sa3Dport::File::AnimationFile::read_from_bytes(
+                            asByteSpan(block->bytes), cameraLayout,
+                            Sa3Dport::Animation::EulerRecordWidth::Full32);
+                        resource->second.variants.push_back(model::MldMotionVariant{
+                            .nodeCount = cameraLayout.lane_count(),
+                            .shortRot = false,
+                            .targetLayoutSignature = signature,
+                            .targetLayout = cameraLayout,
+                            .motion = std::make_shared<const Sa3Dport::Animation::Motion>(parsed.animation),
+                            .originalSemanticHash = hashBytes(resource->second.rawBytes),
+                        });
+                        resource->second.variants.back().originalMotion = resource->second.variants.back().motion;
+                    } catch (const std::exception& ex) {
+                        resource->second.diagnostics.push_back(model::MldDiagnostic{
+                            .severity = model::MldDiagnostic::Severity::Warning,
+                            .message = "Failed to decode NCAM: " + std::string(ex.what()),
+                            .sourceOffset = motionAddress,
+                        });
                     }
                 }
-                for (const auto& interpretation : validInterpretations) {
-                    const auto existing = std::find_if(resource->second.variants.begin(), resource->second.variants.end(), [&](const auto& item) {
-                        return item.nodeCount == interpretation.target.nodeCount
-                            && item.shortRot == interpretation.probe.short_rot;
-                    });
-                    if (existing != resource->second.variants.end()) {
+                file.motionRelations.push_back(std::move(relation));
+                continue;
+            }
+
+            if (relation.motionKind != Sa3Dport::File::NinjaMotionKind::Node &&
+                relation.motionKind != Sa3Dport::File::NinjaMotionKind::Shape) {
+                relation.scope = model::MldMotionRelationScope::StructuralOnly;
+                relation.status = model::MldMotionRelationStatus::NoCompatibleTarget;
+                file.motionRelations.push_back(std::move(relation));
+                continue;
+            }
+
+            relation.scope = model::MldMotionRelationScope::SameEntryObjectList;
+
+            if (entry.objectAddresses) {
+                relation.targetCandidates.reserve(entry.objectAddresses->values.size());
+                for (std::size_t objectSlot = 0; objectSlot < entry.objectAddresses->values.size(); ++objectSlot) {
+                    const auto objectAddress = entry.objectAddresses->values[objectSlot];
+                    model::MldMotionTargetCandidate candidate{
+                        .objectSlot = objectSlot,
+                        .objectAddress = objectAddress,
+                    };
+                    const auto object = file.objectResources.find(objectAddress);
+                    if (objectAddress == 0U || object == file.objectResources.end()) {
+                        candidate.diagnostic = objectAddress == 0U
+                            ? "object slot is null"
+                            : "object resource is missing";
+                        relation.targetCandidates.push_back(std::move(candidate));
                         continue;
                     }
-                    const auto parsed = Sa3Dport::File::AnimationFile::read_from_bytes(
-                        asByteSpan(block->bytes), interpretation.target.nodeCount, interpretation.probe.short_rot);
-                    resource->second.variants.push_back(model::MldMotionVariant{
-                        .nodeCount = interpretation.target.nodeCount,
-                        .shortRot = interpretation.probe.short_rot,
-                        .motion = std::make_shared<const Sa3Dport::Animation::Motion>(parsed.animation),
-                        .originalSemanticHash = hashBytes(resource->second.rawBytes),
-                    });
-                    resource->second.variants.back().originalMotion = resource->second.variants.back().motion;
+
+                    const auto layoutKey = std::pair{objectAddress, relation.motionKind};
+                    auto layoutFound = targetLayoutCache.find(layoutKey);
+                    if (layoutFound == targetLayoutCache.end()) {
+                        layoutFound = targetLayoutCache.emplace(
+                            layoutKey, deriveMotionTargetLayout(object->second, relation.motionKind)).first;
+                    }
+                    const auto& layout = layoutFound->second;
+                    candidate.targetAvailable = layout.available;
+                    candidate.diagnostic = layout.diagnostic;
+                    if (!layout.available) {
+                        relation.targetCandidates.push_back(std::move(candidate));
+                        continue;
+                    }
+                    candidate.targetLayoutSignature = motionLayoutSignature(layout.layout);
+                    auto variant = std::find_if(
+                        resource->second.variants.begin(), resource->second.variants.end(),
+                        [&](const auto& item) {
+                            return item.targetLayoutSignature == candidate.targetLayoutSignature &&
+                                item.targetLayout == layout.layout && !item.shortRot;
+                        });
+                    if (variant == resource->second.variants.end()) {
+                        const auto probeKey = std::pair{motionAddress, candidate.targetLayoutSignature};
+                        auto& cachedProbes = motionProbeCache[probeKey];
+                        const auto cached = std::find_if(cachedProbes.begin(), cachedProbes.end(), [&](const auto& item) {
+                            return item.layout == layout.layout;
+                        });
+                        Sa3Dport::File::AnimationProbeResult probe{};
+                        if (cached != cachedProbes.end()) {
+                            probe = cached->probe;
+                        } else {
+                            probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
+                                asByteSpan(block->bytes), layout.layout,
+                                Sa3Dport::Animation::EulerRecordWidth::Full32);
+                            cachedProbes.push_back(CachedMotionProbe{layout.layout, probe});
+                        }
+                        candidate.compatible = probe.valid;
+                        if (!probe.valid) {
+                            candidate.diagnostic = probe.failure_reason;
+                            relation.targetCandidates.push_back(std::move(candidate));
+                            continue;
+                        }
+                    } else {
+                        candidate.compatible = true;
+                    }
+                    if (variant == resource->second.variants.end()) {
+                        try {
+                            const auto parsed = Sa3Dport::File::AnimationFile::read_from_bytes(
+                                asByteSpan(block->bytes), layout.layout,
+                                Sa3Dport::Animation::EulerRecordWidth::Full32);
+                            resource->second.variants.push_back(model::MldMotionVariant{
+                                .nodeCount = layout.layout.lane_count(),
+                                .shortRot = false,
+                                .targetLayoutSignature = candidate.targetLayoutSignature,
+                                .targetLayout = layout.layout,
+                                .motion = std::make_shared<const Sa3Dport::Animation::Motion>(parsed.animation),
+                                .originalSemanticHash = hashBytes(resource->second.rawBytes),
+                            });
+                            resource->second.variants.back().originalMotion = resource->second.variants.back().motion;
+                            variant = std::prev(resource->second.variants.end());
+                        } catch (const std::exception& ex) {
+                            candidate.compatible = false;
+                            candidate.diagnostic = ex.what();
+                            relation.targetCandidates.push_back(std::move(candidate));
+                            continue;
+                        }
+                    }
+                    candidate.motionVariantIndex = static_cast<std::size_t>(
+                        std::distance(resource->second.variants.begin(), variant));
+                    relation.targetCandidates.push_back(std::move(candidate));
                 }
-                const auto variant = std::find_if(resource->second.variants.begin(), resource->second.variants.end(), [&](const auto& item) {
-                    return item.nodeCount == binding->target.nodeCount && item.shortRot == binding->probe.short_rot;
-                });
-                if (variant == resource->second.variants.end()) {
-                    throw std::runtime_error("selected motion interpretation was not retained");
+            }
+
+            std::vector<std::size_t> compatibleCandidates{};
+            bool hasUnavailableCandidate = relation.targetCandidates.empty();
+            for (std::size_t i = 0; i < relation.targetCandidates.size(); ++i) {
+                const auto& candidate = relation.targetCandidates[i];
+                if (candidate.compatible) {
+                    compatibleCandidates.push_back(i);
                 }
-                std::set<std::pair<std::uint32_t, bool>> uniqueInterpretations{};
-                for (const auto& interpretation : validInterpretations) {
-                    uniqueInterpretations.emplace(interpretation.target.nodeCount, interpretation.probe.short_rot);
-                }
-                if (uniqueInterpretations.size() > 1U) {
-                    addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
-                        "Motion has multiple valid object/node-count interpretations; all variants were retained and one compatibility binding was selected.",
-                        motionAddress);
-                }
+                hasUnavailableCandidate = hasUnavailableCandidate || !candidate.targetAvailable;
+            }
+            if (compatibleCandidates.size() == 1U) {
+                relation.status = model::MldMotionRelationStatus::Unique;
+                relation.resolvedCandidateIndex = compatibleCandidates.front();
+                const auto& candidate = relation.targetCandidates[compatibleCandidates.front()];
+                const auto& variant = resource->second.variants[*candidate.motionVariantIndex];
                 file.animationBindings.push_back(model::MldAnimationBinding{
                     .tableIndex = entry.tableIndex,
                     .sourceEntryId = entry.entryId,
                     .motionSlot = slot,
                     .motionAddress = motionAddress,
-                    .objectAddress = binding->target.objectAddress,
-                    .nodeCount = binding->target.nodeCount,
-                    .shortRot = binding->probe.short_rot,
-                    .motionVariantIndex = static_cast<std::size_t>(std::distance(resource->second.variants.begin(), variant)),
+                    .objectAddress = candidate.objectAddress,
+                    .nodeCount = variant.nodeCount,
+                    .shortRot = false,
+                    .motionVariantIndex = *candidate.motionVariantIndex,
+                    .scope = model::MldMotionRelationScope::SameEntryObjectList,
                 });
-            } catch (const std::exception& ex) {
-                addCanonicalDiagnostic(file, model::MldDiagnostic::Severity::Warning,
-                    "Failed to decode bound motion: " + std::string(ex.what()), motionAddress);
+            } else if (compatibleCandidates.size() > 1U) {
+                relation.status = model::MldMotionRelationStatus::Ambiguous;
+            } else {
+                relation.status = hasUnavailableCandidate
+                    ? model::MldMotionRelationStatus::TargetUnavailable
+                    : model::MldMotionRelationStatus::NoCompatibleTarget;
             }
+            file.motionRelations.push_back(std::move(relation));
         }
     }
 
@@ -1748,6 +1759,7 @@ model::MldFile MldParser::parseFile(std::span<const std::uint8_t> mldBytes, cons
 
 ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& options) const {
     ParseResult result{};
+    result.coordinatePolicy = options.coordinates;
     const auto payload = std::span<const std::uint8_t>(file.decodedBytes.data(), file.decodedBytes.size());
 
     for (const auto& diagnostic : file.parseDiagnostics) {
@@ -1911,6 +1923,34 @@ ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& o
                 .nodeCount = binding.nodeCount,
                 .shortRot = binding.shortRot,
                 .motion = variant.motion,
+            });
+        }
+
+        for (const auto& relation : file.motionRelations) {
+            if (relation.scope != model::MldMotionRelationScope::NoObjectTarget ||
+                relation.motionKind != Sa3Dport::File::NinjaMotionKind::Camera) {
+                continue;
+            }
+            const auto resource = file.motionResources.find(relation.motionAddress);
+            if (resource == file.motionResources.end()) {
+                continue;
+            }
+            const auto variant = std::find_if(resource->second.variants.begin(), resource->second.variants.end(),
+                [](const auto& candidate) { return candidate.motion != nullptr && candidate.nodeCount == 1U; });
+            if (variant == resource->second.variants.end()) {
+                result.diagnostics.push_back(ParseDiagnostic{
+                    .severity = ParseDiagnostic::Severity::Warning,
+                    .message = "NCAM at " + std::to_string(relation.motionAddress) +
+                        " has no decoded one-lane camera variant.",
+                });
+                continue;
+            }
+            result.cameraMotions.push_back(ParsedMldCameraMotion{
+                .sourceEntryId = relation.sourceEntryId,
+                .tableIndex = relation.tableIndex,
+                .sourceMotionAddress = relation.motionAddress,
+                .motionSlot = relation.motionSlot,
+                .motion = variant->motion,
             });
         }
 

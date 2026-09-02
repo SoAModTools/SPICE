@@ -2,6 +2,7 @@
 
 #include "Types.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -117,6 +118,34 @@ struct BlenderIrMesh {
     BlenderIrMeshDiagnostics diagnostics{};
 };
 
+enum class BlenderIrAuxiliaryGeometryRole {
+    Type56ShadowVolume,
+};
+
+struct BlenderIrAuxiliaryVertex {
+    std::uint16_t sourceCacheIndex = 0;
+    Vec3 position{};
+};
+
+struct BlenderIrAuxiliaryTriangle {
+    std::size_t primitiveOrdinal = 0;
+    std::array<std::uint16_t, 3> sourceIndices{};
+    std::array<std::uint32_t, 3> vertexIndices{};
+    std::vector<std::uint16_t> userWords{};
+};
+
+struct BlenderIrAuxiliaryGeometry {
+    BlenderIrAuxiliaryGeometryRole role = BlenderIrAuxiliaryGeometryRole::Type56ShadowVolume;
+    std::size_t sourceAttachOffset = 0;
+    std::size_t sourceChunkOffset = 0;
+    std::uint8_t sourceChunkType = 0;
+    std::uint8_t chunkAttributes = 0;
+    std::uint16_t rawCountAndUserWord = 0;
+    bool fromCacheReplay = false;
+    std::vector<BlenderIrAuxiliaryVertex> vertices{};
+    std::vector<BlenderIrAuxiliaryTriangle> triangles{};
+};
+
 struct BlenderIrNode {
     std::size_t sourceNodeOffset = 0;
     std::uint32_t sourceEvalFlags = 0;
@@ -126,6 +155,7 @@ struct BlenderIrNode {
     Transform localTransform{};
     std::optional<std::size_t> parentNodeIndex{};
     std::vector<std::size_t> childNodeIndices{};
+    std::vector<BlenderIrAuxiliaryGeometry> auxiliaryGeometry{};
 };
 
 struct BlenderIrObjectTree {
@@ -134,19 +164,6 @@ struct BlenderIrObjectTree {
     std::size_t sourceChunkOffset = 0;
     std::vector<BlenderIrNode> nodes{};
     std::vector<std::size_t> rootNodeIndices{};
-};
-
-struct BlenderIrInstance {
-    std::uint32_t sourceEntryId = 0;
-    std::size_t tableIndex = 0;
-    std::int32_t tblId = 0;
-    std::string fxnName{};
-    Transform transform{};
-    std::vector<std::uint32_t> functionParameters{};
-    std::vector<std::uint32_t> objectAddresses{};
-    std::vector<std::uint32_t> groundAddresses{};
-    std::vector<std::size_t> meshIndices{};
-    std::vector<std::size_t> objectTreeIndices{};
 };
 
 struct BlenderIrVec3Keyframe {
@@ -201,6 +218,30 @@ struct BlenderIrUnsupportedAnimationChannel {
     std::size_t nodeIndex = 0;
     std::string channel{};
     std::size_t keyframeCount = 0;
+};
+
+struct BlenderIrCameraMotion {
+    std::uint32_t sourceMotionAddress = 0;
+    std::size_t motionSlot = 0;
+    std::uint32_t frameCount = 0;
+    std::string interpolationMode{};
+    std::vector<BlenderIrVec3Keyframe> position{};
+    std::vector<BlenderIrVec3Keyframe> target{};
+    std::vector<BlenderIrUnsupportedAnimationChannel> unsupportedChannels{};
+};
+
+struct BlenderIrInstance {
+    std::uint32_t sourceEntryId = 0;
+    std::size_t tableIndex = 0;
+    std::int32_t tblId = 0;
+    std::string fxnName{};
+    Transform transform{};
+    std::vector<std::uint32_t> functionParameters{};
+    std::vector<std::uint32_t> objectAddresses{};
+    std::vector<std::uint32_t> groundAddresses{};
+    std::vector<std::size_t> meshIndices{};
+    std::vector<std::size_t> objectTreeIndices{};
+    std::vector<BlenderIrCameraMotion> cameraMotions{};
 };
 
 struct BlenderIrNodeAnimation {

@@ -53,6 +53,8 @@ class ImportStats:
     texture_count: int = 0
     material_count: int = 0
     animation_action_count: int = 0
+    camera_count: int = 0
+    shadow_volume_count: int = 0
     warnings: int = 0
     warning_messages: list[str] = field(default_factory=list)
     debug_lines: int = 0
@@ -3514,6 +3516,186 @@ def _create_empty(name: str) -> Object:
     return bpy.data.objects.new(name, None)
 
 
+def _apply_location_keys(obj: Object, keyframes: list[dict[str, Any]], action_name: str, interpolation: str) -> None:
+    animation_data = obj.animation_data_create()
+    action = bpy.data.actions.new(action_name)
+    action.use_fake_user = True
+    animation_data.action = action
+    for keyframe in keyframes:
+        obj.location = _source_vec3_to_blender(keyframe.get("value", [0.0, 0.0, 0.0]))
+        obj.keyframe_insert(data_path="location", frame=int(keyframe.get("frame", 0)))
+    _set_action_interpolation(action, interpolation)
+
+
+def _create_camera_motion(
+    entry_root: Object,
+    entry: dict[str, Any],
+    camera_motion: dict[str, Any],
+    collection: Collection,
+    stats: ImportStats,
+) -> None:
+    entry_id = int(entry.get("sourceEntryId", 0))
+    table_index = int(entry.get("tableIndex", entry_id))
+    fxn_name = str(entry.get("fxnName", ""))
+    motion_slot = int(camera_motion.get("motionSlot", 0))
+    motion_address = int(camera_motion.get("sourceMotionAddress", 0))
+    position_keys = camera_motion.get("position", [])
+    target_keys = camera_motion.get("target", [])
+    if not isinstance(position_keys, list) or not isinstance(target_keys, list) or not position_keys or not target_keys:
+        stats.add_warning(
+            f"NCAM motionSlot={motion_slot} for tableIndex={table_index} has no usable position/target keys."
+        )
+        return
+
+    stem = f"SoaCamera_{entry_id:03d}_slot_{motion_slot:02d}_motion_0x{motion_address:X}"
+    camera_data = bpy.data.cameras.new(f"{stem}_Data")
+    camera_obj = bpy.data.objects.new(stem, camera_data)
+    target_obj = _create_empty(f"{stem}_Target")
+    _set_parent_with_identity_inverse(camera_obj, entry_root)
+    _set_parent_with_identity_inverse(target_obj, entry_root)
+    _apply_identity_local_transform(camera_obj)
+    _apply_identity_local_transform(target_obj)
+    _link_object_to_collection(collection, camera_obj)
+    _link_object_to_collection(collection, target_obj)
+
+    constraint = camera_obj.constraints.new(type="TRACK_TO")
+    constraint.name = "Spice NCAM Target"
+    constraint.target = target_obj
+    constraint.track_axis = "TRACK_NEGATIVE_Z"
+    constraint.up_axis = "UP_Y"
+
+    for obj in (camera_obj, target_obj):
+        _tag_entry_object(obj, entry_id, table_index, fxn_name)
+        _set_custom_int_property(obj, "spice_motion_slot", motion_slot, stats, field_name=f"{stem}.motionSlot")
+        _set_custom_int_property(
+            obj,
+            "spice_source_motion_address",
+            motion_address,
+            stats,
+            field_name=f"{stem}.sourceMotionAddress",
+        )
+        _set_custom_int_property(
+            obj,
+            "spice_frame_count",
+            camera_motion.get("frameCount", 0),
+            stats,
+            field_name=f"{stem}.frameCount",
+        )
+        obj["spice_motion_kind"] = "NCAM"
+    camera_obj["spice_camera_optics"] = "unknown-source-semantics"
+    target_obj["spice_camera_target"] = True
+
+    interpolation = str(camera_motion.get("interpolationMode", ""))
+    _apply_location_keys(camera_obj, position_keys, f"{stem}_Position", interpolation)
+    _apply_location_keys(target_obj, target_keys, f"{stem}_Target", interpolation)
+    stats.animation_action_count += 2
+    stats.camera_count += 1
+    stats.object_count += 2
+
+    unsupported = camera_motion.get("unsupportedChannels", [])
+    if unsupported:
+        names = ",".join(str(item.get("channel", "unknown")) for item in unsupported[:8])
+        stats.add_warning(f"NCAM motionSlot={motion_slot} preserves unapplied channel(s): {names}.")
+
+
+def _shadow_volume_material() -> Material:
+    material_name = "Spice_Type56_ShadowVolume"
+    material = bpy.data.materials.get(material_name)
+    if material is None:
+        material = bpy.data.materials.new(material_name)
+    material.diffuse_color = (0.65, 0.08, 0.08, 0.28)
+    try:
+        material.surface_render_method = "DITHERED"
+    except AttributeError:
+        try:
+            material.blend_method = "BLEND"
+        except AttributeError:
+            pass
+    return material
+
+
+def _create_shadow_volume(
+    auxiliary: dict[str, Any],
+    entry_id: int,
+    table_index: int,
+    fxn_name: str,
+    tree_index: int,
+    node_index: int,
+    node_obj: Object | None,
+    armature_obj: Object | None,
+    use_armatures: bool,
+    collection: Collection,
+    stats: ImportStats,
+) -> None:
+    if str(auxiliary.get("role", "")) != "type56ShadowVolume":
+        return
+    vertices_data = auxiliary.get("vertices", [])
+    triangles_data = auxiliary.get("triangles", [])
+    if not isinstance(vertices_data, list) or not isinstance(triangles_data, list):
+        stats.add_warning(f"Invalid type-56 auxiliary geometry at objectTree={tree_index}, node={node_index}.")
+        return
+
+    vertices = []
+    for vertex in vertices_data:
+        position = vertex.get("position", [0.0, 0.0, 0.0])
+        converted = _source_vec3_to_blender(position)
+        vertices.append((converted.x, converted.y, converted.z))
+    faces: list[tuple[int, int, int]] = []
+    for triangle in triangles_data:
+        indices = triangle.get("vertexIndices", [])
+        if not isinstance(indices, list) or len(indices) != 3:
+            continue
+        face = tuple(int(value) for value in indices)
+        if any(index < 0 or index >= len(vertices) for index in face):
+            stats.add_warning(
+                f"Type-56 auxiliary triangle has an invalid local index at objectTree={tree_index}, node={node_index}."
+            )
+            continue
+        faces.append(face)
+    if not vertices or not faces:
+        return
+
+    chunk_offset = int(auxiliary.get("sourceChunkOffset", 0))
+    name = f"SoaShadow_t{tree_index}_n{node_index}_0x{chunk_offset:X}"
+    mesh = bpy.data.meshes.new(f"{name}_Mesh")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    mesh.materials.append(_shadow_volume_material())
+    obj = bpy.data.objects.new(name, mesh)
+    if use_armatures and armature_obj is not None:
+        obj.parent = armature_obj
+        obj.parent_type = "BONE"
+        obj.parent_bone = _bone_name(node_index)
+        _apply_identity_local_transform(obj)
+    elif node_obj is not None:
+        _set_parent_with_identity_inverse(obj, node_obj)
+        _apply_identity_local_transform(obj)
+    else:
+        stats.add_warning(f"Type-56 auxiliary geometry has no node parent at objectTree={tree_index}, node={node_index}.")
+        bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.meshes.remove(mesh, do_unlink=True)
+        return
+
+    _link_object_to_collection(collection, obj)
+    obj.display_type = "WIRE"
+    obj.show_in_front = True
+    obj.hide_render = True
+    obj.color = (0.65, 0.08, 0.08, 0.28)
+    _tag_entry_object(obj, entry_id, table_index, fxn_name)
+    obj["spice_auxiliary_role"] = "type56ShadowVolume"
+    obj["spice_from_cache_replay"] = bool(auxiliary.get("fromCacheReplay", False))
+    for key, source_key in (
+        ("spice_source_attach_offset", "sourceAttachOffset"),
+        ("spice_source_chunk_offset", "sourceChunkOffset"),
+        ("spice_source_chunk_type", "sourceChunkType"),
+        ("spice_chunk_attributes", "chunkAttributes"),
+        ("spice_raw_count_and_user_word", "rawCountAndUserWord"),
+    ):
+        _set_custom_int_property(obj, key, auxiliary.get(source_key, 0), stats, field_name=f"{name}.{source_key}")
+    stats.shadow_volume_count += 1
+    stats.object_count += 1
+
+
 def import_blender_ir_json(
     json_path: str,
     clear_target_collection: bool,
@@ -3522,6 +3704,7 @@ def import_blender_ir_json(
     animation_preview_slot: str = "",
     object_tree_import_mode: str = "ARMATURE",
     create_nla_tracks: bool = False,
+    import_shadow_volumes: bool = False,
 ) -> ImportStats:
     payload = _parse_json(json_path)
     stats = ImportStats()
@@ -3530,10 +3713,16 @@ def import_blender_ir_json(
 
     root_collection = _ensure_collection(target_collection_name)
     source_collection = _ensure_collection(f"{target_collection_name}_SourceMeshes", parent=root_collection)
+    shadow_collection = None
+    if import_shadow_volumes:
+        shadow_collection = _ensure_collection(f"{target_collection_name}_ShadowVolumes", parent=root_collection)
 
     if clear_target_collection:
         _clear_collection(root_collection)
         _clear_collection(source_collection)
+        existing_shadow_collection = bpy.data.collections.get(f"{target_collection_name}_ShadowVolumes")
+        if existing_shadow_collection is not None:
+            _clear_collection(existing_shadow_collection)
 
     texture_lookup = _build_texture_lookup(payload.get("textures", []), stats)
 
@@ -3624,6 +3813,9 @@ def import_blender_ir_json(
         )
         _link_object_to_collection(entry_collection, entry_root)
         stats.object_count += 1
+
+        for camera_motion in entry.get("cameraMotions", []):
+            _create_camera_motion(entry_root, entry, camera_motion, entry_collection, stats)
 
         tree_indices = entry.get("objectTreeIndices", [])
         if not tree_indices:
@@ -3820,6 +4012,23 @@ def import_blender_ir_json(
                 if not use_armatures:
                     _configure_weighted_deformation(attach_obj, mesh_data, node_objects, stats)
                 stats.object_count += 1
+
+            if import_shadow_volumes and shadow_collection is not None:
+                for node_idx, node in enumerate(nodes):
+                    for auxiliary in node.get("auxiliaryGeometry", []):
+                        _create_shadow_volume(
+                            auxiliary,
+                            entry_id,
+                            table_index,
+                            fxn_name,
+                            ti,
+                            node_idx,
+                            node_objects[node_idx] if node_idx < len(node_objects) else None,
+                            armature_obj,
+                            use_armatures,
+                            shadow_collection,
+                            stats,
+                        )
 
         for slot, mesh_index in enumerate(entry.get("meshIndices", [])):
             mi = int(mesh_index)
@@ -4145,6 +4354,14 @@ class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
         ),
     )
 
+    import_shadow_volumes: BoolProperty(
+        name="Import Type-56 Shadow Volumes",
+        default=False,
+        description=(
+            "Create non-rendering wireframe visualization meshes for parsed Ninja type-56 volume geometry."
+        ),
+    )
+
     def execute(self, context: bpy.types.Context) -> set[str]:
         del context
         json_path = str(Path(self.filepath))
@@ -4158,6 +4375,7 @@ class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
                 animation_preview_slot=self.animation_preview_slot,
                 object_tree_import_mode=self.object_tree_import_mode,
                 create_nla_tracks=self.create_nla_tracks,
+                import_shadow_volumes=self.import_shadow_volumes,
             )
         except Exception as exc:  # Blender operator-level error boundary
             self.report({"ERROR"}, f"Spice import failed: {exc}")
@@ -4178,6 +4396,7 @@ class IMPORT_SCENE_OT_spice_blender_ir(bpy.types.Operator, ImportHelper):
                 f"meshes={stats.mesh_count}, objects={stats.object_count}, "
                 f"armatures={stats.armature_count}, textures={stats.texture_count}, "
                 f"materials={stats.material_count}, "
+                f"cameras={stats.camera_count}, shadowVolumes={stats.shadow_volume_count}, "
                 f"actions={stats.animation_action_count}, "
                 f"warnings={stats.warnings}, debugLines={stats.debug_lines}"
             ),

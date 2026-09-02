@@ -19,6 +19,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace spice::mld::parsing {
@@ -750,6 +751,138 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
     }
 }
 
+void appendType56AuxiliaryGeometry(
+    const Sa3Dport::Mesh::Chunk::ChunkAttach& attach,
+    const std::optional<Sa3Dport::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
+    const ChunkBufferContext& bufferContext,
+    const std::size_t nodeIndex,
+    const std::uint32_t objectAddress,
+    const std::size_t modelSourceOffset,
+    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
+    std::vector<model::BlenderIrAuxiliaryGeometry>& destination,
+    std::vector<std::string>& diagnostics) {
+    if (!activePolyChunks.has_value() || nodeIndex >= worldMatrices.size()) {
+        return;
+    }
+
+    const auto currentInverse = inverseMatrix(worldMatrices[nodeIndex]);
+    if (!currentInverse.has_value()) {
+        diagnostics.push_back("Type-56 projection omitted for object " + std::to_string(objectAddress) +
+            ", node " + std::to_string(nodeIndex) + ": owning node transform is not invertible.");
+        return;
+    }
+
+    std::unordered_set<const Sa3Dport::Mesh::Chunk::PolyChunk*> directlyRendered{};
+    bool caching = false;
+    for (const auto& maybeChunk : attach.poly_chunks) {
+        if (!maybeChunk.has_value()) {
+            continue;
+        }
+        const auto& chunk = *maybeChunk;
+        if (const auto bits = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::PolyChunks::BitsChunk>(chunk)) {
+            if (bits->type == Sa3Dport::Mesh::Chunk::PolyChunkType::CacheList) {
+                caching = true;
+                continue;
+            }
+            if (bits->type == Sa3Dport::Mesh::Chunk::PolyChunkType::DrawList) {
+                continue;
+            }
+        }
+        if (!caching) {
+            directlyRendered.insert(chunk.get());
+        }
+    }
+
+    for (const auto& maybeChunk : *activePolyChunks) {
+        if (!maybeChunk.has_value()) {
+            continue;
+        }
+        const auto volume = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(*maybeChunk);
+        if (!volume || volume->type != Sa3Dport::Mesh::Chunk::PolyChunkType::Volume_Polygon3) {
+            continue;
+        }
+
+        model::BlenderIrAuxiliaryGeometry geometry{};
+        geometry.sourceAttachOffset = modelSourceOffset + attach.source_address;
+        geometry.sourceChunkOffset = modelSourceOffset + volume->source_address;
+        geometry.sourceChunkType = static_cast<std::uint8_t>(volume->type);
+        geometry.chunkAttributes = volume->attributes;
+        geometry.rawCountAndUserWord = volume->count_and_user;
+        geometry.fromCacheReplay = !directlyRendered.contains(volume.get());
+
+        std::unordered_map<std::uint16_t, std::uint32_t> localIndexByCacheIndex{};
+        std::vector<std::uint16_t> unresolvedIndices{};
+        for (std::size_t primitiveOrdinal = 0; primitiveOrdinal < volume->polygons.size(); ++primitiveOrdinal) {
+            const auto& polygon = volume->polygons[primitiveOrdinal];
+            if (polygon.indices.size() != 3U) {
+                continue;
+            }
+
+            model::BlenderIrAuxiliaryTriangle triangle{};
+            triangle.primitiveOrdinal = primitiveOrdinal;
+            triangle.userWords = polygon.user_words;
+            bool resolved = true;
+            for (std::size_t corner = 0; corner < 3U; ++corner) {
+                const auto cacheIndex = polygon.indices[corner];
+                triangle.sourceIndices[corner] = cacheIndex;
+                if (cacheIndex >= bufferContext.vertex_cache_valid.size() ||
+                    !bufferContext.vertex_cache_valid[cacheIndex]) {
+                    unresolvedIndices.push_back(cacheIndex);
+                    resolved = false;
+                    continue;
+                }
+
+                auto found = localIndexByCacheIndex.find(cacheIndex);
+                if (found == localIndexByCacheIndex.end()) {
+                    const auto sourceNode = bufferContext.vertex_cache_source_node[cacheIndex];
+                    if (sourceNode >= worldMatrices.size()) {
+                        unresolvedIndices.push_back(cacheIndex);
+                        resolved = false;
+                        continue;
+                    }
+                    const auto worldPosition = transformPoint(
+                        bufferContext.vertex_cache[cacheIndex].position,
+                        worldMatrices[sourceNode]);
+                    const auto localPosition = transformPoint(worldPosition, *currentInverse);
+                    const auto localIndex = static_cast<std::uint32_t>(geometry.vertices.size());
+                    geometry.vertices.push_back(model::BlenderIrAuxiliaryVertex{
+                        .sourceCacheIndex = cacheIndex,
+                        .position = toVec3(localPosition),
+                    });
+                    found = localIndexByCacheIndex.emplace(cacheIndex, localIndex).first;
+                }
+                triangle.vertexIndices[corner] = found->second;
+            }
+            if (resolved) {
+                geometry.triangles.push_back(std::move(triangle));
+            }
+        }
+
+        if (!unresolvedIndices.empty()) {
+            std::sort(unresolvedIndices.begin(), unresolvedIndices.end());
+            unresolvedIndices.erase(std::unique(unresolvedIndices.begin(), unresolvedIndices.end()), unresolvedIndices.end());
+            std::string indices{};
+            constexpr std::size_t kReportedLimit = 16U;
+            for (std::size_t i = 0; i < std::min(unresolvedIndices.size(), kReportedLimit); ++i) {
+                if (!indices.empty()) {
+                    indices += ',';
+                }
+                indices += std::to_string(unresolvedIndices[i]);
+            }
+            diagnostics.push_back("Type-56 projection omitted unresolved primitive(s) for object " +
+                std::to_string(objectAddress) + ", node " + std::to_string(nodeIndex) +
+                ", attach " + hexOffset(static_cast<std::uint32_t>(geometry.sourceAttachOffset)) +
+                ", chunk " + hexOffset(static_cast<std::uint32_t>(geometry.sourceChunkOffset)) +
+                "; cache indices=" + indices +
+                (unresolvedIndices.size() > kReportedLimit ? ",..." : "") + ".");
+        }
+
+        if (!geometry.triangles.empty()) {
+            destination.push_back(std::move(geometry));
+        }
+    }
+}
+
 [[nodiscard]] std::optional<std::size_t> appendAttachMesh(const NodePtr& node,
     const std::size_t nodeIndex,
     const std::uint32_t objectAddress,
@@ -760,13 +893,17 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
     std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
     const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
     const std::vector<std::optional<std::size_t>>& parentIndices,
+    std::vector<model::BlenderIrAuxiliaryGeometry>& auxiliaryGeometry,
     model::BlenderIrScene& out) {
     const auto chunkAttach = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::ChunkAttach>(node->attach);
     if (!chunkAttach) {
         return std::nullopt;
     }
 
+    bufferContext.current_source_node = nodeIndex;
     const auto bufferMeshes = buffer_chunk_attach_with_active_poly_chunks(*chunkAttach, activePolyChunks, bufferContext);
+    appendType56AuxiliaryGeometry(*chunkAttach, activePolyChunks, bufferContext, nodeIndex,
+        objectAddress, sourceChunkOffset, worldMatrices, auxiliaryGeometry, out.diagnostics);
     if (bufferMeshes.empty()) {
         return std::nullopt;
     }
@@ -933,6 +1070,43 @@ template <class Map>
         out.push_back(model::BlenderIrVec3Keyframe{
             .frame = frame,
             .value = toVec3(value),
+        });
+    }
+    return out;
+}
+
+[[nodiscard]] model::Vec3 applyCoordinatePolicy(
+    const Sa3Dport::Structs::Vector3& value,
+    const CoordinatePolicy& policy) {
+    model::Vec3 out = toVec3(value);
+    if (policy.swapYZ) {
+        std::swap(out.y, out.z);
+    }
+    if (policy.negateX) {
+        out.x = -out.x;
+    }
+    if (policy.negateY) {
+        out.y = -out.y;
+    }
+    if (policy.negateZ) {
+        out.z = -out.z;
+    }
+    out.x *= policy.uniformScale;
+    out.y *= policy.uniformScale;
+    out.z *= policy.uniformScale;
+    return out;
+}
+
+template <class Map>
+[[nodiscard]] std::vector<model::BlenderIrVec3Keyframe> toCoordinateVec3Keyframes(
+    const Map& values,
+    const CoordinatePolicy& policy) {
+    std::vector<model::BlenderIrVec3Keyframe> out;
+    out.reserve(values.size());
+    for (const auto& [frame, value] : values) {
+        out.push_back(model::BlenderIrVec3Keyframe{
+            .frame = frame,
+            .value = applyCoordinatePolicy(value, policy),
         });
     }
     return out;
@@ -1168,6 +1342,56 @@ void appendAnimations(const ParseResult& parseResult,
     }
 }
 
+void appendCameraMotions(const ParseResult& parseResult, model::BlenderIrScene& out) {
+    std::unordered_map<std::size_t, std::size_t> instanceIndexByTableIndex{};
+    for (std::size_t i = 0; i < out.indexEntries.size(); ++i) {
+        instanceIndexByTableIndex.emplace(out.indexEntries[i].tableIndex, i);
+    }
+
+    for (const auto& source : parseResult.cameraMotions) {
+        if (!source.motion) {
+            continue;
+        }
+        const auto instance = instanceIndexByTableIndex.find(source.tableIndex);
+        if (instance == instanceIndexByTableIndex.end()) {
+            out.diagnostics.push_back("NCAM at " + hexOffset(source.sourceMotionAddress) +
+                " has no owning Blender IR entry.");
+            continue;
+        }
+        const auto lane = source.motion->keyframes.find(0U);
+        if (lane == source.motion->keyframes.end() || lane->second.position.empty() || lane->second.target.empty()) {
+            out.diagnostics.push_back("NCAM at " + hexOffset(source.sourceMotionAddress) +
+                " was not projected because position or target keys are missing.");
+            continue;
+        }
+
+        model::BlenderIrCameraMotion camera{};
+        camera.sourceMotionAddress = source.sourceMotionAddress;
+        camera.motionSlot = source.motionSlot;
+        camera.frameCount = source.motion->declared_frame_count != 0U
+            ? source.motion->declared_frame_count
+            : source.motion->frame_count();
+        camera.interpolationMode = interpolationModeName(source.motion->interpolation_mode);
+        camera.position = toCoordinateVec3Keyframes(lane->second.position, parseResult.coordinatePolicy);
+        camera.target = toCoordinateVec3Keyframes(lane->second.target, parseResult.coordinatePolicy);
+
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "eulerRotation", lane->second.euler_rotation.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "scale", lane->second.scale.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "vector", lane->second.vector.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "vertex", lane->second.vertex.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "normal", lane->second.normal.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "roll", lane->second.roll.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "angle", lane->second.angle.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "lightColor", lane->second.light_color.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "intensity", lane->second.intensity.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "spot", lane->second.spot.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "point", lane->second.point.size());
+        appendUnsupportedChannel(camera.unsupportedChannels, 0U, "quaternionRotation", lane->second.quaternion_rotation.size());
+
+        out.indexEntries[instance->second].cameraMotions.push_back(std::move(camera));
+    }
+}
+
 void appendGrndMeshes(
     const ParseResult& parseResult,
     model::BlenderIrScene& out,
@@ -1315,6 +1539,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
 
         std::unordered_map<const Sa3Dport::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
         std::vector<std::optional<std::size_t>> meshIndexByNodeIndex(nodes.size());
+        std::vector<std::vector<model::BlenderIrAuxiliaryGeometry>> auxiliaryGeometryByNodeIndex(nodes.size());
         for (std::size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
             const auto& node = nodes[nodeIndex];
             nodeIndexByPtr[node.get()] = nodeIndex;
@@ -1330,6 +1555,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
                 sourceVertexByKey,
                 worldMatrices,
                 parentIndices,
+                auxiliaryGeometryByNodeIndex[nodeIndex],
                 out);
             if (meshIndexByNodeIndex[nodeIndex].has_value()) {
                 meshIndicesByObjectAddress[objectAddress].push_back(*meshIndexByNodeIndex[nodeIndex]);
@@ -1342,6 +1568,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
             irNode.hasAttach = node->attach != nullptr;
             irNode.meshIndex = meshIndexByNodeIndex[nodeIndex];
             irNode.localTransform = toTransform(node);
+            irNode.auxiliaryGeometry = std::move(auxiliaryGeometryByNodeIndex[nodeIndex]);
             tree.nodes.push_back(std::move(irNode));
         }
 
@@ -1405,6 +1632,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         out.indexEntries.push_back(std::move(instance));
     }
 
+    appendCameraMotions(parseResult, out);
     appendAnimations(parseResult, treeIndicesByObjectAddress, out);
     appendTextureArchive(parseResult, out);
     out.diagnostics.push_back("SA3D adapter produced " + std::to_string(out.meshes.size()) + " meshes, " +

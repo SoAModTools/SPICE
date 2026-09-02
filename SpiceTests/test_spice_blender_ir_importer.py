@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 import types
 import unittest
@@ -88,6 +89,53 @@ def _load_importer() -> types.ModuleType:
 
 
 IMPORTER = _load_importer()
+
+
+class CameraAndShadowImportContractTests(unittest.TestCase):
+    def test_shadow_volume_import_is_opt_in(self) -> None:
+        signature = inspect.signature(IMPORTER.import_blender_ir_json)
+        self.assertIn("import_shadow_volumes", signature.parameters)
+        self.assertIs(signature.parameters["import_shadow_volumes"].default, False)
+
+    def test_camera_and_shadow_helpers_are_available(self) -> None:
+        self.assertTrue(callable(IMPORTER._create_camera_motion))
+        self.assertTrue(callable(IMPORTER._create_shadow_volume))
+
+    def test_camera_projection_rejects_legacy_or_malformed_missing_channels(self) -> None:
+        stats = IMPORTER.ImportStats()
+        IMPORTER._create_camera_motion(
+            None,
+            {"sourceEntryId": 7, "tableIndex": 3},
+            {"motionSlot": 2, "sourceMotionAddress": 0x340},
+            None,
+            stats,
+        )
+        self.assertEqual(stats.camera_count, 0)
+        self.assertEqual(stats.warnings, 1)
+        self.assertIn("position/target", stats.warning_messages[0])
+
+    def test_shadow_projection_rejects_invalid_optional_records(self) -> None:
+        stats = IMPORTER.ImportStats()
+        IMPORTER._create_shadow_volume(
+            {"role": "type56ShadowVolume", "vertices": "invalid", "triangles": []},
+            7,
+            3,
+            "wall",
+            1,
+            2,
+            None,
+            None,
+            False,
+            None,
+            stats,
+        )
+        self.assertEqual(stats.shadow_volume_count, 0)
+        self.assertEqual(stats.warnings, 1)
+        self.assertIn("objectTree=1, node=2", stats.warning_messages[0])
+
+    def test_shadow_collection_name_is_target_scoped(self) -> None:
+        source = inspect.getsource(IMPORTER.import_blender_ir_json)
+        self.assertIn('f"{target_collection_name}_ShadowVolumes"', source)
 
 
 class TriangleMetadataDecoderTests(unittest.TestCase):

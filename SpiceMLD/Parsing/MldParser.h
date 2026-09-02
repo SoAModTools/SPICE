@@ -103,6 +103,14 @@ struct ParsedMldAnimation {
     std::shared_ptr<const Sa3Dport::Animation::Motion> motion{};
 };
 
+struct ParsedMldCameraMotion {
+    std::uint32_t sourceEntryId = 0;
+    std::size_t tableIndex = 0;
+    std::uint32_t sourceMotionAddress = 0;
+    std::size_t motionSlot = 0;
+    std::shared_ptr<const Sa3Dport::Animation::Motion> motion{};
+};
+
 struct ExtractedNjBlock {
     enum class Kind {
         Object,
@@ -148,6 +156,7 @@ struct ExtractedMldSpatialBlock {
 };
 
 struct ParseResult {
+    CoordinatePolicy coordinatePolicy{};
     model::WorldModel world{};
     model::SearchWorldModel searchWorld{};
     std::vector<ParsedEntryListItem> entryList{};
@@ -157,6 +166,7 @@ struct ParseResult {
     std::vector<std::pair<std::string, std::size_t>> chunkTypeHistogram{};
     std::vector<ExtractedNjBlock> extractedNjBlocks{};
     std::vector<ParsedMldAnimation> animations{};
+    std::vector<ParsedMldCameraMotion> cameraMotions{};
     std::vector<ExtractedMldSpatialBlock> extractedSpatialBlocks{};
     std::optional<model::MldTextureArchive> textureArchive{};
     std::optional<model::BlenderIrScene> blenderIrScene{};

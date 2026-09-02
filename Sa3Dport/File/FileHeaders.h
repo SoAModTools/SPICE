@@ -13,6 +13,7 @@ struct FileHeaders {
     static constexpr std::uint32_t NMDM = 0x4D444D4Eu;
     static constexpr std::uint32_t NSSM = 0x4D53534Eu;
     static constexpr std::uint32_t NCAM = 0x4D41434Eu;
+    static constexpr std::uint32_t POF0 = 0x30464F50u;
 
     static constexpr std::array<std::uint32_t, 1> TextureListBlockHeaders {
         NJTL,

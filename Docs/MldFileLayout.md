@@ -62,7 +62,29 @@ GameCube archives associate records with GVR texture chunks. Dreamcast archives 
 
 ## Payload Blocks
 
-Object, ground, and motion blocks are reached through their owning address lists. Known tags include `GRND`, `GOBJ`, `NJCM`, `GJCM`, `NJTL`, and `GJTL`. `GRND` and `GOBJ` store a declared block size at `+0x04`; unknown blocks must remain bounded and preserved according to their owning list.
+Object, ground, and motion blocks are reached through their owning address lists. Known tags include `GRND`, `GOBJ`, `NJCM`, `GJCM`, `NJTL`, `GJTL`, `NMDM`, `NSSM`, and `NCAM`. `GRND` and `GOBJ` store a declared block size at `+0x04`; unknown blocks remain bounded and preserved according to their owning list.
+
+## Ninja Motion Blocks
+
+`NMDM` is node motion, `NSSM` is shape motion, and `NCAM` is camera motion. Each has an 8-byte tagged-block header followed by the shared 16-byte `NJS_MOTION` header:
+
+| Payload offset | Size | Field |
+| --- | ---: | --- |
+| `0x00` | 4 | Payload-relative motion-data pointer |
+| `0x04` | 4 | Declared frame count |
+| `0x08` | 2 | Channel mask |
+| `0x0A` | 2 | Raw style and interpolation word |
+| `0x0C` | 4 | Reserved word |
+
+The low style nibble records the number of enabled channel fields per target lane, and bits 6–7 select the interpolation family. MLD motions use full 16-byte Euler key records. The `POF0` block immediately following a motion contains cumulative pointer-field deltas in one-, two-, or four-byte forms. Deltas are measured in four-byte words from the motion payload; null pointers remain null.
+
+Motion headers are structurally parseable without choosing an object. Entry object and motion lists then establish same-entry candidate relationships. `NMDM` and `NSSM` candidates use animated NJCM nodes only; `NSSM` also derives each lane's vertex and normal array count from its chunk attach. `Unique` means unique only within the entry's object list and is a convenience binding, not a final runtime resolution. The scripting runtime can explicitly select other entries, fall back through parent worksheets, select primary or secondary slots, and blend motions; SpiceMLD does not infer those handler- and script-controlled relationships. Ambiguous candidates remain model data rather than object-bound Blender animations. Decoded `NCAM` position and target channels project separately as entry-owned camera motions.
+
+## Ninja Volume Polygon Chunks
+
+Chunk attaches may contain non-rendering volume chunks. Their type byte is 56 for triangles, 57 for quads, and 58 for triangle strips. All use the standard sized-chunk header followed by a U16 count word: its low 14 bits are the primitive or strip count and its high two bits are the number of U16 user words per primitive.
+
+Type 56 records contain three U16 indices; type 57 records contain four. Type 58 records begin with a signed index count. Its sign reverses initial winding, and each index after the first two completes one triangle and is followed by that triangle's user words. Canonical strip winding uses odd-triangle parity XOR the negative-count flag. Some shipped type-56 chunks include exactly one zero padding word inside the declared chunk size; it is retained explicitly. Volume chunks stay attached to the parsed NJCM model and remain excluded from ordinary render meshes. Type 56 additionally projects as node-owned auxiliary geometry after resolving its indices through the effective Ninja vertex cache; types 57 and 58 remain model-only. The GameCube special renderer directly establishes the type-56 shadow-volume use. The corresponding Dreamcast meaning remains inferred.
 
 ## GRND Block
 

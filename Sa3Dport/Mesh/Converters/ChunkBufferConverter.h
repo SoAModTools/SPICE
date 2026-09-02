@@ -17,9 +17,14 @@ namespace Sa3Dport::Mesh::Converters {
 struct ChunkBufferContext {
     Buffer::BufferMaterial material {};
     std::vector<Chunk::Structs::ChunkVertex> vertex_cache;
+    std::vector<bool> vertex_cache_valid;
+    std::vector<std::size_t> vertex_cache_source_node;
+    std::size_t current_source_node = 0;
 
     ChunkBufferContext()
-        : vertex_cache(0x10000) {
+        : vertex_cache(0x10000),
+          vertex_cache_valid(0x10000, false),
+          vertex_cache_source_node(0x10000, 0U) {
     }
 };
 
@@ -76,12 +81,18 @@ inline std::vector<Buffer::BufferMesh> buffer_chunk_attach(
         if (!chunk.has_weight()) {
             for (std::size_t j = 0; j < chunk.vertices.size(); ++j) {
                 const auto& source = chunk.vertices[j];
-                context.vertex_cache[j + chunk.index_offset] = source;
+                const auto cacheIndex = j + chunk.index_offset;
+                context.vertex_cache[cacheIndex] = source;
+                context.vertex_cache_valid[cacheIndex] = true;
+                context.vertex_cache_source_node[cacheIndex] = context.current_source_node;
                 vertices.push_back({source.position, source.normal, static_cast<std::uint16_t>(j), 1.0f});
             }
         } else {
             for (const auto& source : chunk.vertices) {
-                context.vertex_cache[source.index() + chunk.index_offset] = source;
+                const auto cacheIndex = source.index() + chunk.index_offset;
+                context.vertex_cache[cacheIndex] = source;
+                context.vertex_cache_valid[cacheIndex] = true;
+                context.vertex_cache_source_node[cacheIndex] = context.current_source_node;
                 vertices.push_back({source.position, source.normal, source.index(), source.weight()});
             }
         }

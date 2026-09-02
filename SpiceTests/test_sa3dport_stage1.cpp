@@ -36,6 +36,29 @@ void PutU32(std::vector<std::byte>& data, std::uint32_t offset, std::uint32_t va
     data[offset + 3u] = std::byte((value >> 24u) & 0xFFu);
 }
 
+void PutU16Endian(
+    std::vector<std::byte>& data,
+    std::uint32_t offset,
+    std::uint16_t value,
+    S::Endian endian) {
+    PutU16(data, offset, endian == S::Endian::Little
+        ? value
+        : static_cast<std::uint16_t>((value << 8u) | (value >> 8u)));
+}
+
+void PutU32Endian(
+    std::vector<std::byte>& data,
+    std::uint32_t offset,
+    std::uint32_t value,
+    S::Endian endian) {
+    const auto encoded = endian == S::Endian::Little ? value
+        : ((value & 0x000000FFU) << 24U) |
+            ((value & 0x0000FF00U) << 8U) |
+            ((value & 0x00FF0000U) >> 8U) |
+            ((value & 0xFF000000U) >> 24U);
+    PutU32(data, offset, encoded);
+}
+
 void PutF32(std::vector<std::byte>& data, std::uint32_t offset, float value) {
     PutU32(data, offset, std::bit_cast<std::uint32_t>(value));
 }
@@ -62,6 +85,32 @@ std::vector<std::byte> MakeAnimationBlock(std::uint32_t size = 0x120u) {
     std::vector<std::byte> data(size, std::byte {0});
     PutU32(data, 0, F::FileHeaders::NMDM);
     PutU32(data, 4, size - 8u);
+    return data;
+}
+
+std::vector<std::byte> MakeStructuralMotionBlock(
+    std::uint32_t tag,
+    S::Endian endian,
+    bool includePof0 = true) {
+    constexpr std::uint32_t payloadSize = 16U;
+    constexpr std::uint32_t motionEnd = 8U + payloadSize;
+    constexpr std::uint32_t pofSize = 8U;
+    std::vector<std::byte> data(includePof0 ? motionEnd + 8U + pofSize : motionEnd, std::byte{0});
+    PutU32(data, 0U, tag);
+    PutU32Endian(data, 4U, payloadSize, endian);
+    PutU32Endian(data, 8U, 0U, endian);
+    PutU32Endian(data, 12U, 17U, endian);
+    PutU16Endian(data, 16U, 0U, endian);
+    PutU16Endian(data, 18U, 0x0080U, endian);
+    PutU32Endian(data, 20U, 0x12345678U, endian);
+    if (includePof0) {
+        PutU32(data, motionEnd, F::FileHeaders::POF0);
+        PutU32Endian(data, motionEnd + 4U, pofSize, endian);
+        data[motionEnd + 8U] = std::byte{0x40};
+        data[motionEnd + 9U] = std::byte{0x80};
+        data[motionEnd + 10U] = std::byte{0x00};
+        data[motionEnd + 11U] = std::byte{0xC0};
+    }
     return data;
 }
 
@@ -308,6 +357,174 @@ TEST(Sa3DportAnimation, ReadsTransformKeyframeValuesFromNjAnimationBlock) {
     EXPECT_EQ(keyframes.quaternion_rotation.at(0u), S::Quaternion(0.1f, 0.2f, 0.3f, 0.9f));
 }
 
+TEST(Sa3DportAnimation, StructurallyParsesMotionKindsEndiansAndPof0DeltaWidths) {
+    const std::array kinds{
+        std::pair{F::FileHeaders::NMDM, F::NinjaMotionKind::Node},
+        std::pair{F::FileHeaders::NSSM, F::NinjaMotionKind::Shape},
+        std::pair{F::FileHeaders::NCAM, F::NinjaMotionKind::Camera},
+    };
+    for (const auto endian : {S::Endian::Little, S::Endian::Big}) {
+        for (const auto& [tag, kind] : kinds) {
+            const auto data = MakeStructuralMotionBlock(tag, endian);
+            const auto block = F::AnimationFile::parse_structure(data);
+            EXPECT_EQ(block.status, F::NinjaMotionParseStatus::Complete);
+            EXPECT_EQ(block.header.raw_tag, tag);
+            EXPECT_EQ(block.header.kind, kind);
+            EXPECT_EQ(block.header.payload_size, 16U);
+            EXPECT_EQ(block.header.frame_count, 17U);
+            EXPECT_EQ(block.header.raw_style, 0x0080U);
+            EXPECT_EQ(block.header.interpolation_mode, A::InterpolationMode::User);
+            EXPECT_EQ(block.header.reserved, 0x12345678U);
+            EXPECT_EQ(block.chunk_header_range.offset, 0U);
+            EXPECT_EQ(block.motion_header_range.offset, 8U);
+            ASSERT_TRUE(block.pof0_range.has_value());
+            EXPECT_EQ(block.pof0_range->offset, 24U);
+            ASSERT_EQ(block.relocations.size(), 3U);
+            EXPECT_EQ(block.relocations[0].encoded_range.size, 1U);
+            EXPECT_EQ(block.relocations[1].encoded_range.size, 2U);
+            EXPECT_EQ(block.relocations[2].encoded_range.size, 4U);
+            for (const auto& relocation : block.relocations) {
+                EXPECT_EQ(relocation.pointer_field_offset, 0U);
+                EXPECT_EQ(relocation.raw_pointer, 0U);
+                EXPECT_FALSE(relocation.resolved_payload_offset.has_value());
+            }
+        }
+    }
+}
+
+TEST(Sa3DportAnimation, StructuralParsePreservesUnknownTagAndReportsMissingOrMalformedPof0) {
+    constexpr std::uint32_t unknownTag = 0x214E4A58U;
+    const auto unknown = F::AnimationFile::parse_structure(
+        MakeStructuralMotionBlock(unknownTag, S::Endian::Little));
+    EXPECT_EQ(unknown.header.raw_tag, unknownTag);
+    EXPECT_EQ(unknown.header.kind, F::NinjaMotionKind::Unknown);
+
+    const auto missing = F::AnimationFile::parse_structure(
+        MakeStructuralMotionBlock(F::FileHeaders::NMDM, S::Endian::Little, false));
+    EXPECT_EQ(missing.status, F::NinjaMotionParseStatus::Partial);
+    EXPECT_FALSE(missing.diagnostics.empty());
+
+    auto malformed = MakeStructuralMotionBlock(F::FileHeaders::NMDM, S::Endian::Little);
+    malformed[32U] = std::byte{0x01};
+    const auto malformedBlock = F::AnimationFile::parse_structure(malformed);
+    EXPECT_EQ(malformedBlock.status, F::NinjaMotionParseStatus::Partial);
+
+    auto styleMismatch = MakeStructuralMotionBlock(F::FileHeaders::NMDM, S::Endian::Little);
+    PutU16(styleMismatch, 16U, static_cast<std::uint16_t>(A::KeyframeAttributes::Position));
+    const auto styleMismatchBlock = F::AnimationFile::parse_structure(styleMismatch);
+    EXPECT_EQ(styleMismatchBlock.status, F::NinjaMotionParseStatus::Partial);
+
+    auto truncated = MakeStructuralMotionBlock(F::FileHeaders::NMDM, S::Endian::Little);
+    PutU32(truncated, 28U, 1U);
+    truncated.resize(33U);
+    truncated[32U] = std::byte{0xC0};
+    const auto truncatedBlock = F::AnimationFile::parse_structure(truncated);
+    EXPECT_EQ(truncatedBlock.status, F::NinjaMotionParseStatus::Partial);
+
+    auto nonNull = MakeStructuralMotionBlock(F::FileHeaders::NMDM, S::Endian::Big);
+    PutU32Endian(nonNull, 8U, 8U, S::Endian::Big);
+    const auto nonNullBlock = F::AnimationFile::parse_structure(nonNull);
+    ASSERT_FALSE(nonNullBlock.relocations.empty());
+    EXPECT_EQ(nonNullBlock.relocations[0].raw_pointer, 8U);
+    ASSERT_TRUE(nonNullBlock.relocations[0].resolved_payload_offset.has_value());
+    EXPECT_EQ(*nonNullBlock.relocations[0].resolved_payload_offset, 16U);
+}
+
+TEST(Sa3DportAnimation, Pof0DeltaFormsAdvanceCumulativelyInFourByteWords) {
+    auto data = MakeStructuralMotionBlock(F::FileHeaders::NMDM, S::Endian::Little);
+    PutU32(data, 12U, 0U);
+    PutU32(data, 16U, 0U);
+    PutU32(data, 20U, 0U);
+    data[32U] = std::byte{0x41};
+    data[33U] = std::byte{0x80};
+    data[34U] = std::byte{0x01};
+    data[35U] = std::byte{0xC0};
+    data[36U] = std::byte{0x00};
+    data[37U] = std::byte{0x00};
+    data[38U] = std::byte{0x01};
+    data[39U] = std::byte{0x00};
+
+    const auto block = F::AnimationFile::parse_structure(data);
+    EXPECT_EQ(block.status, F::NinjaMotionParseStatus::Complete);
+    ASSERT_EQ(block.relocations.size(), 3U);
+    EXPECT_EQ(block.relocations[0].pointer_field_offset, 4U);
+    EXPECT_EQ(block.relocations[1].pointer_field_offset, 8U);
+    EXPECT_EQ(block.relocations[2].pointer_field_offset, 12U);
+    EXPECT_EQ(block.relocations[0].encoded_range.size, 1U);
+    EXPECT_EQ(block.relocations[1].encoded_range.size, 2U);
+    EXPECT_EQ(block.relocations[2].encoded_range.size, 4U);
+}
+
+TEST(Sa3DportAnimation, TargetLayoutMapsAnimatedLanesToFullTreeNodeIndicesAndUsesFullEuler) {
+    constexpr std::uint32_t motionOffset = 8U;
+    constexpr std::uint32_t keyframeTableOffset = 0x30U;
+    constexpr std::uint32_t rotationOffset = 0x50U;
+    constexpr auto type = A::KeyframeAttributes::EulerRotation;
+    for (const auto endian : {S::Endian::Little, S::Endian::Big}) {
+        std::vector<std::byte> data(0x70U, std::byte{0});
+        PutU32(data, 0U, F::FileHeaders::NMDM);
+        PutU32Endian(data, 4U, static_cast<std::uint32_t>(data.size() - 8U), endian);
+        PutU32Endian(data, motionOffset, MotionPointer(keyframeTableOffset), endian);
+        PutU32Endian(data, motionOffset + 4U, 1U, endian);
+        PutU16Endian(data, motionOffset + 8U, static_cast<std::uint16_t>(type), endian);
+        PutU16Endian(data, motionOffset + 10U, static_cast<std::uint16_t>(A::channel_count(type)), endian);
+        PutU32Endian(data, keyframeTableOffset, MotionPointer(rotationOffset), endian);
+        PutU32Endian(data, keyframeTableOffset + 4U, 1U, endian);
+        PutU32Endian(data, rotationOffset, 0U, endian);
+        PutU32Endian(data, rotationOffset + 4U, 0x4000U, endian);
+        PutU32Endian(data, rotationOffset + 8U, 0U, endian);
+        PutU32Endian(data, rotationOffset + 12U, 0U, endian);
+
+        A::MotionTargetLayout layout{};
+        layout.lanes.push_back(A::MotionTargetLane{.node_index = 3U});
+        const auto probe = F::AnimationFile::probe_from_bytes(
+            data, layout, A::EulerRecordWidth::Full32);
+        ASSERT_TRUE(probe.valid) << probe.failure_reason;
+        EXPECT_FALSE(probe.short_rot);
+        const auto parsed = F::AnimationFile::read_from_bytes(
+            data, layout, A::EulerRecordWidth::Full32);
+        EXPECT_EQ(parsed.animation.keyframes.count(0), 0U);
+        ASSERT_EQ(parsed.animation.keyframes.count(3), 1U);
+        EXPECT_FALSE(parsed.animation.short_rot);
+        EXPECT_NEAR(parsed.animation.keyframes.at(3).euler_rotation.at(0U).x,
+            S::MathHelper::HalfPi, 0.001F);
+    }
+}
+
+TEST(Sa3DportAnimation, DecodesOneLaneCameraPositionAndTargetChannels) {
+    auto data = MakeAnimationBlock(0x80U);
+    PutU32(data, 0U, F::FileHeaders::NCAM);
+    constexpr std::uint32_t motionOffset = 8U;
+    constexpr std::uint32_t keyframeTableOffset = 0x30U;
+    constexpr std::uint32_t positionOffset = 0x50U;
+    constexpr std::uint32_t targetOffset = 0x60U;
+    constexpr auto type = A::KeyframeAttributes::Position | A::KeyframeAttributes::Target;
+
+    PutU32(data, motionOffset, MotionPointer(keyframeTableOffset));
+    PutU32(data, motionOffset + 4U, 12U);
+    PutU16(data, motionOffset + 8U, static_cast<std::uint16_t>(type));
+    PutU16(data, motionOffset + 10U, static_cast<std::uint16_t>(A::channel_count(type)));
+    PutU32(data, keyframeTableOffset, MotionPointer(positionOffset));
+    PutU32(data, keyframeTableOffset + 4U, MotionPointer(targetOffset));
+    PutU32(data, keyframeTableOffset + 8U, 1U);
+    PutU32(data, keyframeTableOffset + 12U, 1U);
+    PutU32(data, positionOffset, 4U);
+    PutVec3(data, positionOffset + 4U, {1.0F, 2.0F, 3.0F});
+    PutU32(data, targetOffset, 4U);
+    PutVec3(data, targetOffset + 4U, {4.0F, 5.0F, 6.0F});
+
+    A::MotionTargetLayout camera{};
+    camera.lanes.push_back(A::MotionTargetLane{.node_index = 0U});
+    const auto probe = F::AnimationFile::probe_from_bytes(
+        data, camera, A::EulerRecordWidth::Full32);
+    ASSERT_TRUE(probe.valid) << probe.failure_reason;
+    const auto motion = F::AnimationFile::read_from_bytes(
+        data, camera, A::EulerRecordWidth::Full32).animation;
+    ASSERT_EQ(motion.keyframes.size(), 1U);
+    EXPECT_EQ(motion.keyframes.at(0).position.at(4U), S::Vector3(1.0F, 2.0F, 3.0F));
+    EXPECT_EQ(motion.keyframes.at(0).target.at(4U), S::Vector3(4.0F, 5.0F, 6.0F));
+}
+
 TEST(Sa3DportAnimation, ProbesMotionNodeCountAndDeclaredFrameCount) {
     auto data = MakeAnimationBlock(0x60u);
     constexpr std::uint32_t motionOffset = 8u;
@@ -335,6 +552,12 @@ TEST(Sa3DportAnimation, ProbesMotionNodeCountAndDeclaredFrameCount) {
     const auto invalid = F::AnimationFile::probe_from_bytes(data, 2u);
     EXPECT_FALSE(invalid.valid);
     EXPECT_FALSE(invalid.failure_reason.empty());
+
+    auto nullDescriptor = data;
+    PutU32(nullDescriptor, keyframeTableOffset, 0U);
+    const auto nullDescriptorProbe = F::AnimationFile::probe_from_bytes(nullDescriptor, 1U);
+    EXPECT_FALSE(nullDescriptorProbe.valid);
+    EXPECT_NE(nullDescriptorProbe.failure_reason.find("null set pointer"), std::string::npos);
 
     const auto animationFile = F::AnimationFile::read_from_bytes(data, 1u);
     EXPECT_EQ(animationFile.animation.declared_frame_count, 7u);
@@ -418,6 +641,31 @@ TEST(Sa3DportAnimation, ReadsVertexArrayKeyframesThroughLut) {
     EXPECT_EQ(vertex.at(0u).values.size(), 8u);
     EXPECT_EQ(vertex.at(0u).values[0], S::Vector3(1.0f, 0.0f, 0.0f));
     EXPECT_EQ(vertex.at(0u).label, "vertex__0x30");
+
+    A::MotionTargetLayout targetLayout{};
+    targetLayout.lanes.push_back(A::MotionTargetLane{
+        .node_index = 7U,
+        .vertex_count = 4U,
+        .normal_count = 4U,
+    });
+    const auto targetProbe = F::AnimationFile::probe_from_bytes(
+        data, targetLayout, A::EulerRecordWidth::Full32);
+    ASSERT_TRUE(targetProbe.valid) << targetProbe.failure_reason;
+    const auto targetMotion = F::AnimationFile::read_from_bytes(
+        data, targetLayout, A::EulerRecordWidth::Full32).animation;
+    ASSERT_EQ(targetMotion.keyframes.count(7), 1U);
+    const auto& targetValues = targetMotion.keyframes.at(7).vertex.at(0U).values;
+    ASSERT_EQ(targetValues.size(), 4U);
+    EXPECT_EQ(targetValues[0], S::Vector3(1.0f, 0.0f, 0.0f));
+    EXPECT_EQ(targetValues[1], S::Vector3(0.0f, 1.0f, 0.0f));
+    EXPECT_EQ(targetValues[2], S::Vector3(0.0f, 0.0f, 1.0f));
+    EXPECT_EQ(targetValues[3], S::Vector3(2.0f, 2.0f, 2.0f));
+
+    targetLayout.lanes[0].vertex_count = 64U;
+    const auto oversized = F::AnimationFile::probe_from_bytes(
+        data, targetLayout, A::EulerRecordWidth::Full32);
+    EXPECT_FALSE(oversized.valid);
+    EXPECT_FALSE(oversized.failure_reason.empty());
 }
 
 TEST(Sa3DportStructs, BoundsRecalculatesMatrixAndPositionNormalHashesExactBits) {

@@ -62,7 +62,13 @@
     <ClInclude Include="Animation\Motion.h">
       <Filter>Port\Animation</Filter>
     </ClInclude>
+    <ClInclude Include="Animation\MotionTargetLayout.h">
+      <Filter>Port\Animation</Filter>
+    </ClInclude>
     <ClInclude Include="File\AnimationFile.h">
+      <Filter>Port\File</Filter>
+    </ClInclude>
+    <ClInclude Include="File\NinjaMotionBlock.h">
       <Filter>Port\File</Filter>
     </ClInclude>
     <ClInclude Include="Mesh\Buffer\BufferMesh.h">

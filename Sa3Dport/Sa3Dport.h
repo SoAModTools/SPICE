@@ -25,6 +25,7 @@
 #include "Mesh/Chunk/PolyChunks/MaterialChunk.h"
 #include "Mesh/Chunk/PolyChunks/StripChunk.h"
 #include "Mesh/Chunk/PolyChunks/TextureChunk.h"
+#include "Mesh/Chunk/PolyChunks/VolumeChunk.h"
 #include "Mesh/Chunk/Structs/ChunkCorner.h"
 #include "Mesh/Chunk/Structs/ChunkStrip.h"
 #include "Mesh/Chunk/Structs/ChunkVertex.h"

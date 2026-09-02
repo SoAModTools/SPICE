@@ -560,6 +560,54 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 }
                 out << node.childNodeIndices[ci];
             }
+            out << "],\"auxiliaryGeometry\":[";
+            for (std::size_t ai = 0; ai < node.auxiliaryGeometry.size(); ++ai) {
+                if (ai != 0) {
+                    out << ',';
+                }
+                const auto& auxiliary = node.auxiliaryGeometry[ai];
+                const auto auxiliaryPath = "objectTrees[" + std::to_string(treeIdx) + "].nodes[" +
+                    std::to_string(nodeIdx) + "].auxiliaryGeometry[" + std::to_string(ai) + "]";
+                out << "{\"role\":\"type56ShadowVolume\""
+                    << ",\"sourceAttachOffset\":" << auxiliary.sourceAttachOffset
+                    << ",\"sourceChunkOffset\":" << auxiliary.sourceChunkOffset
+                    << ",\"sourceChunkType\":" << static_cast<unsigned>(auxiliary.sourceChunkType)
+                    << ",\"chunkAttributes\":" << static_cast<unsigned>(auxiliary.chunkAttributes)
+                    << ",\"rawCountAndUserWord\":" << auxiliary.rawCountAndUserWord
+                    << ",\"fromCacheReplay\":" << (auxiliary.fromCacheReplay ? "true" : "false")
+                    << ",\"vertices\":[";
+                for (std::size_t vi = 0; vi < auxiliary.vertices.size(); ++vi) {
+                    if (vi != 0) {
+                        out << ',';
+                    }
+                    out << "{\"sourceCacheIndex\":" << auxiliary.vertices[vi].sourceCacheIndex
+                        << ",\"position\":";
+                    writeVec3(out, auxiliary.vertices[vi].position, nonFinite,
+                        auxiliaryPath + ".vertices[" + std::to_string(vi) + "].position");
+                    out << '}';
+                }
+                out << "],\"triangles\":[";
+                for (std::size_t pi = 0; pi < auxiliary.triangles.size(); ++pi) {
+                    if (pi != 0) {
+                        out << ',';
+                    }
+                    const auto& triangle = auxiliary.triangles[pi];
+                    out << "{\"primitiveOrdinal\":" << triangle.primitiveOrdinal
+                        << ",\"sourceIndices\":[" << triangle.sourceIndices[0] << ','
+                        << triangle.sourceIndices[1] << ',' << triangle.sourceIndices[2] << ']'
+                        << ",\"vertexIndices\":[" << triangle.vertexIndices[0] << ','
+                        << triangle.vertexIndices[1] << ',' << triangle.vertexIndices[2] << ']'
+                        << ",\"userWords\":[";
+                    for (std::size_t ui = 0; ui < triangle.userWords.size(); ++ui) {
+                        if (ui != 0) {
+                            out << ',';
+                        }
+                        out << triangle.userWords[ui];
+                    }
+                    out << "]}";
+                }
+                out << "]}";
+            }
             out << "]}";
         }
         out << "]}";
@@ -623,6 +671,37 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
                 out << ',';
             }
             out << entry.objectTreeIndices[oi];
+        }
+        out << ']';
+
+        out << ",\"cameraMotions\":[";
+        for (std::size_t ci = 0; ci < entry.cameraMotions.size(); ++ci) {
+            if (ci != 0) {
+                out << ',';
+            }
+            const auto& camera = entry.cameraMotions[ci];
+            const auto cameraPath = "indexEntries[" + std::to_string(idx) + "].cameraMotions[" +
+                std::to_string(ci) + "]";
+            out << "{\"sourceMotionAddress\":" << camera.sourceMotionAddress
+                << ",\"motionSlot\":" << camera.motionSlot
+                << ",\"frameCount\":" << camera.frameCount
+                << ",\"interpolationMode\":";
+            writeJsonString(out, camera.interpolationMode);
+            out << ",\"position\":";
+            writeVec3Keyframes(out, camera.position, nonFinite, cameraPath + ".position");
+            out << ",\"target\":";
+            writeVec3Keyframes(out, camera.target, nonFinite, cameraPath + ".target");
+            out << ",\"unsupportedChannels\":[";
+            for (std::size_t ui = 0; ui < camera.unsupportedChannels.size(); ++ui) {
+                if (ui != 0) {
+                    out << ',';
+                }
+                const auto& unsupported = camera.unsupportedChannels[ui];
+                out << "{\"nodeIndex\":" << unsupported.nodeIndex << ",\"channel\":";
+                writeJsonString(out, unsupported.channel);
+                out << ",\"keyframeCount\":" << unsupported.keyframeCount << '}';
+            }
+            out << "]}";
         }
         out << ']';
 

@@ -32,6 +32,7 @@ That opens the importer operator (`import_scene.spice_blender_ir`) with options:
 - **Object Tree Mode** (`Armature` by default; `Empty Debug` preserves the older empty-per-node layout for transform parity checks)
 - **Preview Motion Slot** (optional motion slot to assign as the active Action in the Action Editor; all slots are still imported as separate Actions)
 - **Create NLA Tracks** (off by default; creates muted NLA strips for users who want an NLA overview)
+- **Import Type-56 Shadow Volumes** (off by default; creates non-rendering wireframe helpers in `<Collection>_ShadowVolumes`)
 
 Then select your exported `blender_ir_scene.json` and import.
 
@@ -47,6 +48,8 @@ Then select your exported `blender_ir_scene.json` and import.
 - Weighted and rigid meshes through armature modifiers and vertex groups named after source node indices.
 - Empty-per-node import through **Object Tree Mode: Empty Debug** for parity/debugging.
 - Optional muted NLA strips through **Create NLA Tracks**. This is disabled by default so the Action Editor remains the primary animation slot selector.
+- NCAM position/target motions as a camera plus animated target Empty. The importer does not select the scene camera or invent source optics.
+- Optional type-56 shadow-volume helpers, kept separate from ordinary render meshes and rigidly attached to the owning node or armature bone.
 
 It is intentionally baseline and aligned to current JSON export.
 

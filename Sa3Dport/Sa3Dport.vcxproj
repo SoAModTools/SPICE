@@ -98,7 +98,9 @@
     <ClInclude Include="Animation\Enums.h" />
     <ClInclude Include="Animation\Keyframes.h" />
     <ClInclude Include="Animation\Motion.h" />
+    <ClInclude Include="Animation\MotionTargetLayout.h" />
     <ClInclude Include="File\AnimationFile.h" />
+    <ClInclude Include="File\NinjaMotionBlock.h" />
     <ClInclude Include="File\FileHeaders.h" />
     <ClInclude Include="File\MetaBlockType.h" />
     <ClInclude Include="File\MetaData.h" />

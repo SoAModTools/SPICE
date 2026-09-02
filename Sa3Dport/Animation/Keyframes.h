@@ -186,7 +186,8 @@ inline void update_summary(Keyframes& result,
     std::uint32_t count,
     std::string_view labelPrefix,
     std::uint32_t imageBase,
-    Structs::BaseLUT& lut) {
+    Structs::BaseLUT& lut,
+    std::optional<std::uint32_t> expectedArrayCount = std::nullopt) {
     std::map<std::uint32_t, Structs::LabeledArray<Structs::Vector3>> result;
     using Structs::FloatIOType;
     if (count == 0) {
@@ -216,10 +217,13 @@ inline void update_summary(Keyframes& result,
         return result;
     }
 
-    std::uint32_t smallestSize = (keyframeTableAddress - addresses.back()) / 12U;
-    for (std::size_t i = 1; i < addresses.size(); ++i) {
-        for (std::size_t j = 0; j < i; ++j) {
-            smallestSize = std::min(smallestSize, (addresses[i] - addresses[j]) / 12U);
+    std::uint32_t smallestSize = expectedArrayCount.value_or(0U);
+    if (!expectedArrayCount.has_value()) {
+        smallestSize = (keyframeTableAddress - addresses.back()) / 12U;
+        for (std::size_t i = 1; i < addresses.size(); ++i) {
+            for (std::size_t j = 0; j < i; ++j) {
+                smallestSize = std::min(smallestSize, (addresses[i] - addresses[j]) / 12U);
+            }
         }
     }
 
@@ -319,7 +323,9 @@ inline void read_channel_values(Keyframes& result,
                                 KeyframeAttributes flag,
                                 std::uint32_t imageBase,
                                 bool shortRot,
-                                Structs::BaseLUT& lut) {
+                                Structs::BaseLUT& lut,
+                                std::optional<std::uint32_t> vertexCount = std::nullopt,
+                                std::optional<std::uint32_t> normalCount = std::nullopt) {
     using Structs::FloatIOType;
     switch (flag) {
     case KeyframeAttributes::Position:
@@ -339,11 +345,11 @@ inline void read_channel_values(Keyframes& result,
         update_summary(result, flag, setAddress, result.vector);
         break;
     case KeyframeAttributes::Vertex:
-        result.vertex = read_vector3_array_set(reader, setAddress, frameCount, "vertex_", imageBase, lut);
+        result.vertex = read_vector3_array_set(reader, setAddress, frameCount, "vertex_", imageBase, lut, vertexCount);
         update_summary(result, flag, setAddress, result.vertex);
         break;
     case KeyframeAttributes::Normal:
-        result.normal = read_vector3_array_set(reader, setAddress, frameCount, "normal_", imageBase, lut);
+        result.normal = read_vector3_array_set(reader, setAddress, frameCount, "normal_", imageBase, lut, normalCount);
         update_summary(result, flag, setAddress, result.normal);
         break;
     case KeyframeAttributes::Target:
@@ -389,7 +395,9 @@ inline void read_channel_values(Keyframes& result,
     KeyframeAttributes type,
     std::uint32_t imageBase,
     bool shortRot,
-    Structs::BaseLUT& lut) {
+    Structs::BaseLUT& lut,
+    std::optional<std::uint32_t> vertexCount = std::nullopt,
+    std::optional<std::uint32_t> normalCount = std::nullopt) {
     const int channels = channel_count(type);
     std::uint32_t keyframePointerArray = address;
     std::uint32_t keyframeCountArray = address + static_cast<std::uint32_t>(4 * channels);
@@ -404,7 +412,8 @@ inline void read_channel_values(Keyframes& result,
         if (setAddress.has_value()) {
             const std::uint32_t frameCount = reader.read_u32(keyframeCountArray);
             if (frameCount > 0) {
-                read_channel_values(result, reader, *setAddress, frameCount, flag, imageBase, shortRot, lut);
+                read_channel_values(
+                    result, reader, *setAddress, frameCount, flag, imageBase, shortRot, lut, vertexCount, normalCount);
             }
         }
 

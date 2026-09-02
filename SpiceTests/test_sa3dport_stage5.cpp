@@ -23,6 +23,16 @@ void WriteU16(std::vector<std::byte>& data, std::uint32_t offset, std::uint16_t 
     data[offset + 1u] = std::byte((value >> 8u) & 0xFFu);
 }
 
+void WriteU16Endian(
+    std::vector<std::byte>& data,
+    std::uint32_t offset,
+    std::uint16_t value,
+    S::Endian endian) {
+    WriteU16(data, offset, endian == S::Endian::Little
+        ? value
+        : static_cast<std::uint16_t>((value << 8u) | (value >> 8u)));
+}
+
 void WriteU32(std::vector<std::byte>& data, std::uint32_t offset, std::uint32_t value) {
     if (data.size() < offset + 4u) {
         data.resize(offset + 4u);
@@ -202,13 +212,223 @@ TEST(Sa3DportStage5, ChunkBufferContextSharesVertexCacheAcrossAttaches) {
     EXPECT_EQ(triangles[1].color.argb(), 0x78123456u);
 }
 
-TEST(Sa3DportStage5, RejectsVolumeChunksForThisSlice) {
-    std::vector<std::byte> data(4);
-    WriteHeader(data, 0, PolyChunkType::Volume_Polygon3);
+TEST(Sa3DportStage5, ReadsVolumeTrianglesAndQuadsWithAllUserWordCountsAndEndians) {
+    for (const auto endian : {S::Endian::Little, S::Endian::Big}) {
+        for (const auto type : {PolyChunkType::Volume_Polygon3, PolyChunkType::Volume_Polygon4}) {
+            for (std::uint16_t userCount = 0; userCount <= 3; ++userCount) {
+                const std::uint16_t indexCount = type == PolyChunkType::Volume_Polygon3 ? 3U : 4U;
+                const std::uint16_t sizeWords = static_cast<std::uint16_t>(1U + indexCount + userCount);
+                std::vector<std::byte> data(4U + sizeWords * 2U);
+                WriteU16Endian(data, 0U,
+                    static_cast<std::uint16_t>(type) | 0xA500U, endian);
+                WriteU16Endian(data, 2U, sizeWords, endian);
+                WriteU16Endian(data, 4U, static_cast<std::uint16_t>(1U | (userCount << 14U)), endian);
+                std::uint32_t cursor = 6U;
+                for (std::uint16_t i = 0; i < indexCount; ++i, cursor += 2U) {
+                    WriteU16Endian(data, cursor, static_cast<std::uint16_t>(0x100U + i), endian);
+                }
+                for (std::uint16_t i = 0; i < userCount; ++i, cursor += 2U) {
+                    WriteU16Endian(data, cursor, static_cast<std::uint16_t>(0xA000U + i), endian);
+                }
+
+                S::EndianStackReader reader(data, endian);
+                std::uint32_t address = 0;
+                const auto chunk = std::dynamic_pointer_cast<
+                    Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(ReadPolyChunk(reader, address));
+                ASSERT_NE(chunk, nullptr);
+                EXPECT_EQ(address, data.size());
+                EXPECT_EQ(chunk->source_address, 0U);
+                EXPECT_EQ(chunk->declared_size_words, sizeWords);
+                EXPECT_EQ(chunk->attributes, 0xA5U);
+                EXPECT_EQ(chunk->count_and_user,
+                    static_cast<std::uint16_t>(1U | (userCount << 14U)));
+                EXPECT_EQ(chunk->polygon_attribute_count, userCount);
+                ASSERT_EQ(chunk->polygons.size(), 1U);
+                EXPECT_EQ(chunk->polygons[0].indices.size(), indexCount);
+                EXPECT_EQ(chunk->polygons[0].indices.front(), 0x100U);
+                EXPECT_EQ(chunk->polygons[0].user_words.size(), userCount);
+            }
+        }
+    }
+}
+
+TEST(Sa3DportStage5, ReadsVolumeStripWithEveryUserWordCountAndEndian) {
+    for (const auto endian : {S::Endian::Little, S::Endian::Big}) {
+        for (std::uint16_t userCount = 0U; userCount <= 3U; ++userCount) {
+            const auto sizeWords = static_cast<std::uint16_t>(5U + userCount);
+            std::vector<std::byte> data(4U + sizeWords * 2U);
+            WriteU16Endian(data, 0U,
+                static_cast<std::uint16_t>(PolyChunkType::Volume_Strip) | 0x3C00U, endian);
+            WriteU16Endian(data, 2U, sizeWords, endian);
+            WriteU16Endian(data, 4U,
+                static_cast<std::uint16_t>(1U | (userCount << 14U)), endian);
+            WriteU16Endian(data, 6U, 3U, endian);
+            WriteU16Endian(data, 8U, 0x10U, endian);
+            WriteU16Endian(data, 10U, 0x11U, endian);
+            WriteU16Endian(data, 12U, 0x12U, endian);
+            for (std::uint16_t user = 0; user < userCount; ++user) {
+                WriteU16Endian(data, 14U + user * 2U,
+                    static_cast<std::uint16_t>(0xA100U + user), endian);
+            }
+
+            S::EndianStackReader reader(data, endian);
+            std::uint32_t address = 0U;
+            const auto volume = std::dynamic_pointer_cast<
+                Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(ReadPolyChunk(reader, address));
+            ASSERT_NE(volume, nullptr);
+            EXPECT_EQ(address, data.size());
+            EXPECT_EQ(volume->attributes, 0x3CU);
+            ASSERT_EQ(volume->strips.size(), 1U);
+            EXPECT_EQ(volume->strips[0].indices,
+                (std::vector<std::uint16_t>{0x10U, 0x11U, 0x12U}));
+            ASSERT_EQ(volume->strips[0].triangle_user_words.size(), 1U);
+            EXPECT_EQ(volume->strips[0].triangle_user_words[0].size(), userCount);
+        }
+    }
+}
+
+TEST(Sa3DportStage5, ReadsPositiveAndNegativeVolumeStripsWithCanonicalWinding) {
+    constexpr std::uint16_t sizeWords = 15U;
+    std::vector<std::byte> data(4U + sizeWords * 2U + 2U);
+    WriteHeader(data, 0U, PolyChunkType::Volume_Strip);
+    WriteU16(data, 2U, sizeWords);
+    WriteU16(data, 4U, static_cast<std::uint16_t>(2U | (1U << 14U)));
+    std::uint32_t cursor = 6U;
+    for (const std::int16_t signedCount : {std::int16_t(4), std::int16_t(-4)}) {
+        WriteU16(data, cursor, static_cast<std::uint16_t>(signedCount));
+        cursor += 2U;
+        WriteU16(data, cursor, 0U); cursor += 2U;
+        WriteU16(data, cursor, 1U); cursor += 2U;
+        WriteU16(data, cursor, 2U); cursor += 2U;
+        WriteU16(data, cursor, 0xA1U); cursor += 2U;
+        WriteU16(data, cursor, 3U); cursor += 2U;
+        WriteU16(data, cursor, 0xA2U); cursor += 2U;
+    }
+    WriteHeader(data, cursor, PolyChunkType::End);
+
+    S::EndianStackReader reader(data, S::Endian::Little);
+    const auto chunks = ReadPolyChunks(reader, 0U);
+    ASSERT_EQ(chunks.size(), 1U);
+    const auto volume = std::dynamic_pointer_cast<
+        Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(*chunks[0]);
+    ASSERT_NE(volume, nullptr);
+    ASSERT_EQ(volume->strips.size(), 2U);
+    EXPECT_EQ(volume->strips[0].signed_index_count, 4);
+    EXPECT_EQ(volume->strips[1].signed_index_count, -4);
+    ASSERT_EQ(volume->strips[0].triangle_user_words.size(), 2U);
+    EXPECT_EQ(volume->strips[0].triangle_user_words[1][0], 0xA2U);
+
+    const auto positive = volume->strips[0].canonical_triangles();
+    const auto negative = volume->strips[1].canonical_triangles();
+    ASSERT_EQ(positive.size(), 2U);
+    EXPECT_EQ(positive[0], (std::array<std::uint16_t, 3>{0U, 1U, 2U}));
+    EXPECT_EQ(positive[1], (std::array<std::uint16_t, 3>{2U, 1U, 3U}));
+    EXPECT_EQ(negative[0], (std::array<std::uint16_t, 3>{1U, 0U, 2U}));
+    EXPECT_EQ(negative[1], (std::array<std::uint16_t, 3>{1U, 2U, 3U}));
+
+    ChunkAttach attach{};
+    attach.poly_chunks.push_back(*chunks[0]);
+    Sa3Dport::Mesh::Converters::ChunkBufferContext context{};
+    EXPECT_TRUE(Sa3Dport::Mesh::Converters::buffer_chunk_attach(
+        attach, attach.poly_chunks, context).empty());
+    ASSERT_EQ(attach.poly_chunks.size(), 1U);
+}
+
+TEST(Sa3DportStage5, PreservesBoundedZeroPaddingInsideDeclaredVolumeSize) {
+    std::vector<std::byte> data(14U);
+    WriteHeader(data, 0U, PolyChunkType::Volume_Polygon3);
+    WriteU16(data, 2U, 5U);
+    WriteU16(data, 4U, 1U);
+    WriteU16(data, 6U, 3U);
+    WriteU16(data, 8U, 4U);
+    WriteU16(data, 10U, 5U);
+    WriteU16(data, 12U, 0U);
 
     S::EndianStackReader reader(data, S::Endian::Little);
     std::uint32_t address = 0;
+    const auto volume = std::dynamic_pointer_cast<
+        Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(ReadPolyChunk(reader, address));
+    ASSERT_NE(volume, nullptr);
+    EXPECT_EQ(address, data.size());
+    EXPECT_EQ(volume->trailing_padding_words, (std::vector<std::uint16_t>{0U}));
+}
+
+TEST(Sa3DportStage5, ReadsBigEndianVolumeStripUserWords) {
+    std::vector<std::byte> data(20U);
+    WriteU16Endian(data, 0U, static_cast<std::uint16_t>(PolyChunkType::Volume_Strip), S::Endian::Big);
+    WriteU16Endian(data, 2U, 8U, S::Endian::Big);
+    WriteU16Endian(data, 4U, static_cast<std::uint16_t>(1U | (3U << 14U)), S::Endian::Big);
+    WriteU16Endian(data, 6U, static_cast<std::uint16_t>(-3), S::Endian::Big);
+    WriteU16Endian(data, 8U, 0x10U, S::Endian::Big);
+    WriteU16Endian(data, 10U, 0x11U, S::Endian::Big);
+    WriteU16Endian(data, 12U, 0x12U, S::Endian::Big);
+    WriteU16Endian(data, 14U, 0xA1U, S::Endian::Big);
+    WriteU16Endian(data, 16U, 0xA2U, S::Endian::Big);
+    WriteU16Endian(data, 18U, 0xA3U, S::Endian::Big);
+
+    S::EndianStackReader reader(data, S::Endian::Big);
+    std::uint32_t address = 0;
+    const auto volume = std::dynamic_pointer_cast<
+        Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(ReadPolyChunk(reader, address));
+    ASSERT_NE(volume, nullptr);
+    ASSERT_EQ(volume->strips.size(), 1U);
+    EXPECT_EQ(volume->strips[0].signed_index_count, -3);
+    EXPECT_EQ(volume->strips[0].indices, (std::vector<std::uint16_t>{0x10U, 0x11U, 0x12U}));
+    ASSERT_EQ(volume->strips[0].triangle_user_words.size(), 1U);
+    EXPECT_EQ(volume->strips[0].triangle_user_words[0],
+        (std::vector<std::uint16_t>{0xA1U, 0xA2U, 0xA3U}));
+}
+
+TEST(Sa3DportStage5, RejectsMalformedVolumeRecordsWithinDeclaredBounds) {
+    for (const auto& data : {
+        std::vector<std::byte>(2U),
+        std::vector<std::byte>(6U),
+        std::vector<std::byte>(8U)}) {
+        auto malformed = data;
+        if (malformed.size() >= 2U) WriteHeader(malformed, 0U, PolyChunkType::Volume_Polygon3);
+        if (malformed.size() >= 4U) WriteU16(malformed, 2U, 0xFFFFU);
+        if (malformed.size() >= 6U && malformed.size() == 8U) {
+            WriteU16(malformed, 2U, 2U);
+            WriteU16(malformed, 4U, 1U);
+        }
+        S::EndianStackReader malformedReader(malformed, S::Endian::Little);
+        std::uint32_t malformedAddress = 0U;
+        EXPECT_THROW(ReadPolyChunk(malformedReader, malformedAddress), std::runtime_error);
+    }
+
+    for (const std::uint16_t signedCount : {std::uint16_t(0x8000U), std::uint16_t(2U)}) {
+        std::vector<std::byte> data(8U);
+        WriteHeader(data, 0U, PolyChunkType::Volume_Strip);
+        WriteU16(data, 2U, 2U);
+        WriteU16(data, 4U, 1U);
+        WriteU16(data, 6U, signedCount);
+        S::EndianStackReader reader(data, S::Endian::Little);
+        std::uint32_t address = 0;
+        EXPECT_THROW(ReadPolyChunk(reader, address), std::runtime_error);
+    }
+
+    std::vector<std::byte> mismatch(14U);
+    WriteHeader(mismatch, 0U, PolyChunkType::Volume_Polygon3);
+    WriteU16(mismatch, 2U, 5U);
+    WriteU16(mismatch, 4U, 1U);
+    WriteU16(mismatch, 6U, 0U);
+    WriteU16(mismatch, 8U, 1U);
+    WriteU16(mismatch, 10U, 2U);
+    WriteU16(mismatch, 12U, 0xFFFFU);
+    S::EndianStackReader reader(mismatch, S::Endian::Little);
+    std::uint32_t address = 0;
     EXPECT_THROW(ReadPolyChunk(reader, address), std::runtime_error);
+
+    std::vector<std::byte> excessivePadding(16U);
+    WriteHeader(excessivePadding, 0U, PolyChunkType::Volume_Polygon3);
+    WriteU16(excessivePadding, 2U, 6U);
+    WriteU16(excessivePadding, 4U, 1U);
+    WriteU16(excessivePadding, 6U, 0U);
+    WriteU16(excessivePadding, 8U, 1U);
+    WriteU16(excessivePadding, 10U, 2U);
+    S::EndianStackReader excessivePaddingReader(excessivePadding, S::Endian::Little);
+    address = 0U;
+    EXPECT_THROW(ReadPolyChunk(excessivePaddingReader, address), std::runtime_error);
 }
 
 } // namespace

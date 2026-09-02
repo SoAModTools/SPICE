@@ -2,12 +2,15 @@
 
 #include "Animation/Enums.h"
 #include "Animation/Keyframes.h"
+#include "Animation/MotionTargetLayout.h"
 #include "Structs/EndianStackReader.h"
 #include "Structs/BaseLUT.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <optional>
+#include <vector>
 
 namespace Sa3Dport::Animation {
 
@@ -66,22 +69,51 @@ struct Motion {
                                      std::uint32_t modelCount,
                                      std::uint32_t imageBase,
                                      bool shortRot = false) {
+        MotionTargetLayout layout{};
+        layout.lanes.reserve(modelCount);
+        for (std::uint32_t node = 0; node < modelCount; ++node) {
+            layout.lanes.push_back(MotionTargetLane{.node_index = node});
+        }
+        return read(
+            reader,
+            address,
+            layout,
+            imageBase,
+            shortRot ? EulerRecordWidth::Short16 : EulerRecordWidth::Full32);
+    }
+
+    [[nodiscard]] static Motion read(const Structs::EndianStackReader& reader,
+                                     std::uint32_t address,
+                                     const MotionTargetLayout& targetLayout,
+                                     std::uint32_t imageBase,
+                                     EulerRecordWidth eulerWidth = EulerRecordWidth::Full32) {
         std::uint32_t keyframeAddress = read_motion_pointer(reader, address, imageBase).value_or(0);
         const std::uint32_t declaredFrameCount = reader.read_u32(address + 4);
         const auto keyframeType = static_cast<KeyframeAttributes>(reader.read_u16(address + 8));
         const std::uint16_t tmp = reader.read_u16(address + 10);
         const auto mode = static_cast<InterpolationMode>((tmp >> 6) & 0x3u);
+        const bool shortRot = eulerWidth == EulerRecordWidth::Short16;
 
         Motion result;
         result.declared_frame_count = declaredFrameCount;
         result.interpolation_mode = mode;
-        result.node_count = modelCount;
+        result.node_count = targetLayout.lane_count();
         result.short_rot = shortRot;
         result.manual_keyframe_types = keyframeType;
 
         Structs::BaseLUT lut;
-        for (std::uint32_t i = 0; i < modelCount; ++i) {
-            result.keyframes.emplace(static_cast<int>(i), read_keyframes(reader, keyframeAddress, keyframeType, imageBase, shortRot, lut));
+        for (const auto& lane : targetLayout.lanes) {
+            result.keyframes.emplace(
+                static_cast<int>(lane.node_index),
+                read_keyframes(
+                    reader,
+                    keyframeAddress,
+                    keyframeType,
+                    imageBase,
+                    shortRot,
+                    lut,
+                    lane.vertex_count,
+                    lane.normal_count));
         }
 
         return result;
