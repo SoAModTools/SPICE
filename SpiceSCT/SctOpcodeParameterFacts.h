@@ -12,6 +12,13 @@
 
 namespace spice::sct {
 
+// Runtime facts are profile-specific research data, not SCT format contracts.
+// Individual records, coverage, confidence, and conclusions may be corrected or
+// extended as research improves. The public contract is the typed vocabulary and
+// query behavior, not catalogue completeness or any particular fact value. These
+// facts are informational and must not become document-validation, construction,
+// layout, or export rules.
+
 enum class SctRuntimeProfileId {
     GameCubeUsRetail20021219,
     GameCubeJpRetail20021112,

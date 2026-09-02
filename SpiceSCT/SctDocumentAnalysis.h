@@ -88,6 +88,10 @@ struct SctOpaqueExpressionUsage {
 class SctSemanticUsageIndex {
 public:
     [[nodiscard]] static SctSemanticUsageIndex build(const SctDocument& document);
+    // Contributions must follow physical document order: SctDocument::sections order,
+    // then instruction order within each script section. Occurrence collections and
+    // filtered queries preserve the supplied order; this overload does not sort or
+    // validate it.
     [[nodiscard]] static SctSemanticUsageIndex build(
         std::span<const SctInstructionSemanticContribution> contributions);
 
@@ -205,6 +209,10 @@ public:
 class SctOpcodeEffectIndex {
 public:
     [[nodiscard]] static SctOpcodeEffectIndex build(const SctDocument& document);
+    // Contributions must follow physical document order: SctDocument::sections order,
+    // then instruction order within each script section. Effect collections and
+    // filtered queries preserve the supplied order; this overload does not sort or
+    // validate it.
     [[nodiscard]] static SctOpcodeEffectIndex build(
         std::span<const SctInstructionSemanticContribution> contributions);
     [[nodiscard]] std::span<const SctOpcodeEffectOccurrence> effects() const noexcept { return effects_; }

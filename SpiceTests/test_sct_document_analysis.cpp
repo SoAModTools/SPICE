@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <future>
+#include <iterator>
 #include <variant>
 
 using namespace spice::sct;
@@ -128,6 +129,167 @@ SctCanonicalExpression variableExpression() {
         {SctCanonicalExpressionNodeKind::ByteVariable, 0x10000005u},
     };
     return {std::move(root), SctExpressionTermination::InlineValue};
+}
+
+SctDocument semanticCompositionDocument() {
+    SctDocument document;
+    const auto firstSection = document.allocateSectionId();
+    const auto labelSection = document.allocateSectionId();
+    const auto secondSection = document.allocateSectionId();
+    const auto richId = document.allocateInstructionId();
+    const auto loadMldId = document.allocateInstructionId();
+    const auto groundId = document.allocateInstructionId();
+    const auto loadScriptId = document.allocateInstructionId();
+    const auto secondRichId = document.allocateInstructionId();
+    const auto targetId = document.allocateInstructionId();
+    const auto stringId = document.allocateStringId();
+    const auto footerId = document.allocateFooterEntryId();
+
+    auto rich = instruction(richId, 100u);
+    rich.scheduledExpression = SctCanonicalExpression{SctOpaqueExpression{{0x17u, 0x1du}},
+        SctExpressionTermination::StopCode};
+    rich.fixedParameters = {
+        parameter(0u, variableExpression()),
+        parameter(1u, SctInstructionReference{targetId}),
+        parameter(2u, SctStringReference{stringId}),
+        parameter(3u, SctFooterEntryReference{footerId}),
+        parameter(4u, SctUnresolvedReferenceValue{{SctReferenceTargetStorage::Instruction,
+            std::nullopt}, {4u}}),
+        parameter(5u, SctOpaqueParameterValue{{1u, 2u}}),
+    };
+
+    auto loadMld = instruction(loadMldId, 23u);
+    loadMld.fixedParameters = {parameter(0u, SctFooterEntryReference{footerId})};
+
+    auto ground = instruction(groundId, 114u);
+    ground.fixedParameters = {parameter(0u, SctCanonicalExpression{
+        SctCanonicalExpressionNode{}, SctExpressionTermination::InlineValue})};
+
+    auto loadScript = instruction(loadScriptId, 43u);
+    loadScript.fixedParameters = {parameter(0u, SctFooterEntryReference{footerId})};
+
+    auto secondRich = instruction(secondRichId, 100u);
+    secondRich.fixedParameters = {parameter(0u, variableExpression())};
+
+    document.sections.push_back({firstSection, "FIRST",
+        SctScriptSectionContent{{std::move(rich), std::move(loadMld)}}});
+    document.sections.push_back({labelSection, "BETWEEN", SctLabelSectionContent{}});
+    document.sections.push_back({secondSection, "SECOND", SctScriptSectionContent{{
+        std::move(ground), std::move(loadScript), std::move(secondRich),
+        instruction(targetId, 12u)}}});
+    return document;
+}
+
+template <typename Record, typename Member>
+std::vector<Record> flattenContributions(
+    std::span<const SctInstructionSemanticContribution> contributions, Member member) {
+    std::vector<Record> result;
+    for (const auto& contribution : contributions) {
+        const auto& records = contribution.*member;
+        result.insert(result.end(), records.begin(), records.end());
+    }
+    return result;
+}
+
+void expectOpcodeUsagesEqual(std::span<const SctOpcodeUsage> expected,
+    std::span<const SctOpcodeUsage> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].opcode, actual[index].opcode);
+        EXPECT_EQ(expected[index].instruction, actual[index].instruction);
+    }
+}
+
+void expectReferenceUsagesEqual(std::span<const SctReferenceUsage> expected,
+    std::span<const SctReferenceUsage> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].source, actual[index].source);
+        EXPECT_EQ(expected[index].target, actual[index].target);
+    }
+}
+
+void expectVariableUsagesEqual(std::span<const SctVariableUsage> expected,
+    std::span<const SctVariableUsage> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].variable, actual[index].variable);
+        EXPECT_EQ(expected[index].encodedForm, actual[index].encodedForm);
+        EXPECT_EQ(expected[index].source, actual[index].source);
+    }
+}
+
+void expectUnresolvedUsagesEqual(std::span<const SctUnresolvedReferenceUsage> expected,
+    std::span<const SctUnresolvedReferenceUsage> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].source, actual[index].source);
+        EXPECT_EQ(expected[index].expectedTarget, actual[index].expectedTarget);
+        EXPECT_EQ(expected[index].encodedWordCount, actual[index].encodedWordCount);
+    }
+}
+
+void expectOpaqueParameterUsagesEqual(std::span<const SctOpaqueParameterUsage> expected,
+    std::span<const SctOpaqueParameterUsage> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].source, actual[index].source);
+        EXPECT_EQ(expected[index].wordCount, actual[index].wordCount);
+    }
+}
+
+void expectOpaqueExpressionUsagesEqual(std::span<const SctOpaqueExpressionUsage> expected,
+    std::span<const SctOpaqueExpressionUsage> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].source, actual[index].source);
+        EXPECT_EQ(expected[index].wordCount, actual[index].wordCount);
+    }
+}
+
+void expectEffectsEqual(std::span<const SctOpcodeEffectOccurrence> expected,
+    std::span<const SctOpcodeEffectOccurrence> actual) {
+    ASSERT_EQ(expected.size(), actual.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        SCOPED_TRACE(index);
+        EXPECT_EQ(expected[index].usability, actual[index].usability);
+        ASSERT_EQ(expected[index].effect.index(), actual[index].effect.index());
+        if (const auto* expectedLoad = std::get_if<SctResourceLoadEffect>(&expected[index].effect)) {
+            const auto& actualLoad = std::get<SctResourceLoadEffect>(actual[index].effect);
+            EXPECT_EQ(expectedLoad->sourceInstruction, actualLoad.sourceInstruction);
+            EXPECT_EQ(expectedLoad->resource, actualLoad.resource);
+            EXPECT_EQ(expectedLoad->resourceParameter, actualLoad.resourceParameter);
+            EXPECT_EQ(expectedLoad->confidence, actualLoad.confidence);
+        } else {
+            const auto& expectedGround = std::get<SctGroundVariantSelectionEffect>(
+                expected[index].effect);
+            const auto& actualGround = std::get<SctGroundVariantSelectionEffect>(
+                actual[index].effect);
+            EXPECT_EQ(expectedGround.sourceInstruction, actualGround.sourceInstruction);
+            EXPECT_EQ(expectedGround.tableIdParameter, actualGround.tableIdParameter);
+            EXPECT_EQ(expectedGround.variantParameter, actualGround.variantParameter);
+            EXPECT_EQ(expectedGround.confidence, actualGround.confidence);
+        }
+    }
+}
+
+std::vector<SctInstructionSemanticContribution> contributionsInPhysicalOrder(
+    const SctDocument& document) {
+    std::vector<SctInstructionSemanticContribution> result;
+    for (const auto& section : document.sections) {
+        const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
+        if (script == nullptr) continue;
+        for (const auto& value : script->instructions) {
+            result.push_back(SctInstructionSemanticAnalyzer::build(value));
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -280,37 +442,119 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
 }
 
 TEST(SctInstructionSemanticAnalyzer, ContributionsComposeIntoWholeDocumentIndexes) {
-    auto document = controlFlowDocument();
-    const auto& script = std::get<SctScriptSectionContent>(
-        document.sections.front().content).instructions;
-    std::vector<SctInstructionSemanticContribution> contributions;
-    for (const auto& value : script) {
-        contributions.push_back(SctInstructionSemanticAnalyzer::build(value));
-    }
+    auto document = semanticCompositionDocument();
+    const auto contributions = contributionsInPhysicalOrder(document);
+    std::vector<SctOpcodeUsage> expectedOpcodes;
+    for (const auto& contribution : contributions) expectedOpcodes.push_back(contribution.opcode);
+    const auto expectedReferences = flattenContributions<SctReferenceUsage>(contributions,
+        &SctInstructionSemanticContribution::references);
+    const auto expectedVariables = flattenContributions<SctVariableUsage>(contributions,
+        &SctInstructionSemanticContribution::variables);
+    const auto expectedUnresolved = flattenContributions<SctUnresolvedReferenceUsage>(contributions,
+        &SctInstructionSemanticContribution::unresolvedReferences);
+    const auto expectedOpaqueParameters = flattenContributions<SctOpaqueParameterUsage>(contributions,
+        &SctInstructionSemanticContribution::opaqueParameters);
+    const auto expectedOpaqueExpressions = flattenContributions<SctOpaqueExpressionUsage>(contributions,
+        &SctInstructionSemanticContribution::opaqueExpressions);
+    const auto expectedEffects = flattenContributions<SctOpcodeEffectOccurrence>(contributions,
+        &SctInstructionSemanticContribution::effects);
+    ASSERT_FALSE(expectedOpcodes.empty());
+    ASSERT_FALSE(expectedReferences.empty());
+    ASSERT_FALSE(expectedVariables.empty());
+    ASSERT_FALSE(expectedUnresolved.empty());
+    ASSERT_FALSE(expectedOpaqueParameters.empty());
+    ASSERT_FALSE(expectedOpaqueExpressions.empty());
+    ASSERT_FALSE(expectedEffects.empty());
 
     const auto directUsage = SctSemanticUsageIndex::build(document);
     const auto composedUsage = SctSemanticUsageIndex::build(contributions);
-    EXPECT_EQ(composedUsage.opcodeUsages().size(), directUsage.opcodeUsages().size());
-    EXPECT_EQ(composedUsage.referenceUsages().size(), directUsage.referenceUsages().size());
-    EXPECT_EQ(composedUsage.variableUsages().size(), directUsage.variableUsages().size());
-    EXPECT_EQ(composedUsage.unresolvedReferences().size(), directUsage.unresolvedReferences().size());
-    EXPECT_EQ(composedUsage.opaqueParameters().size(), directUsage.opaqueParameters().size());
-    EXPECT_EQ(composedUsage.opaqueExpressions().size(), directUsage.opaqueExpressions().size());
+    for (const auto* usage : {&directUsage, &composedUsage}) {
+        expectOpcodeUsagesEqual(expectedOpcodes, usage->opcodeUsages());
+        expectReferenceUsagesEqual(expectedReferences, usage->referenceUsages());
+        expectVariableUsagesEqual(expectedVariables, usage->variableUsages());
+        expectUnresolvedUsagesEqual(expectedUnresolved, usage->unresolvedReferences());
+        expectOpaqueParameterUsagesEqual(expectedOpaqueParameters, usage->opaqueParameters());
+        expectOpaqueExpressionUsagesEqual(expectedOpaqueExpressions, usage->opaqueExpressions());
+    }
 
     const auto directEffects = SctOpcodeEffectIndex::build(document);
     const auto composedEffects = SctOpcodeEffectIndex::build(contributions);
-    EXPECT_EQ(composedEffects.effects().size(), directEffects.effects().size());
-    EXPECT_EQ(composedEffects.usableEffects().size(), directEffects.usableEffects().size());
+    expectEffectsEqual(expectedEffects, directEffects.effects());
+    expectEffectsEqual(expectedEffects, composedEffects.effects());
 
-    auto edited = script.front();
-    const auto unchangedBefore = SctInstructionSemanticAnalyzer::build(script[1]);
+    const auto& firstScript = std::get<SctScriptSectionContent>(
+        document.sections[0].content).instructions;
+    const auto& secondScript = std::get<SctScriptSectionContent>(
+        document.sections[2].content).instructions;
+    const auto richId = firstScript[0].id;
+    const auto loadMldId = firstScript[1].id;
+
+    std::vector<SctOpcodeUsage> expectedOpcode100;
+    std::copy_if(expectedOpcodes.begin(), expectedOpcodes.end(),
+        std::back_inserter(expectedOpcode100),
+        [](const auto& usage) { return usage.opcode == 100u; });
+    expectOpcodeUsagesEqual(expectedOpcode100, composedUsage.usagesForOpcode(100u));
+
+    std::vector<SctReferenceUsage> expectedOutbound;
+    std::copy_if(expectedReferences.begin(), expectedReferences.end(),
+        std::back_inserter(expectedOutbound), [richId](const auto& usage) {
+            return usage.source.instruction == richId;
+        });
+    expectReferenceUsagesEqual(expectedOutbound, composedUsage.outboundReferences(richId));
+
+    const SctVariableIdentity repeatedVariable{SctVariableKind::Integer, 24u};
+    std::vector<SctVariableUsage> expectedVariableQuery;
+    std::copy_if(expectedVariables.begin(), expectedVariables.end(),
+        std::back_inserter(expectedVariableQuery), [repeatedVariable](const auto& usage) {
+            return usage.variable == repeatedVariable;
+        });
+    expectVariableUsagesEqual(expectedVariableQuery,
+        composedUsage.usagesForVariable(repeatedVariable));
+
+    std::vector<SctOpcodeEffectOccurrence> expectedInstructionEffects;
+    std::copy_if(expectedEffects.begin(), expectedEffects.end(),
+        std::back_inserter(expectedInstructionEffects), [loadMldId](const auto& occurrence) {
+            return std::visit([loadMldId](const auto& effect) {
+                return effect.sourceInstruction == loadMldId;
+            }, occurrence.effect);
+        });
+    expectEffectsEqual(expectedInstructionEffects,
+        composedEffects.effectsForInstruction(loadMldId));
+
+    std::vector<SctOpcodeEffectOccurrence> expectedUsableEffects;
+    std::copy_if(expectedEffects.begin(), expectedEffects.end(),
+        std::back_inserter(expectedUsableEffects), [](const auto& occurrence) {
+            return occurrence.usability == SctOpcodeEffectUsability::Usable;
+        });
+    ASSERT_GE(expectedUsableEffects.size(), 2u);
+    EXPECT_TRUE(std::any_of(expectedEffects.begin(), expectedEffects.end(), [](const auto& occurrence) {
+        return occurrence.usability != SctOpcodeEffectUsability::Usable;
+    }));
+    expectEffectsEqual(expectedUsableEffects, composedEffects.usableEffects());
+
+    auto reversedContributions = contributions;
+    std::reverse(reversedContributions.begin(), reversedContributions.end());
+    std::vector<SctOpcodeUsage> reversedOpcodes;
+    for (const auto& contribution : reversedContributions) {
+        reversedOpcodes.push_back(contribution.opcode);
+    }
+    const auto reversedEffects = flattenContributions<SctOpcodeEffectOccurrence>(
+        reversedContributions, &SctInstructionSemanticContribution::effects);
+    expectOpcodeUsagesEqual(reversedOpcodes,
+        SctSemanticUsageIndex::build(reversedContributions).opcodeUsages());
+    expectEffectsEqual(reversedEffects,
+        SctOpcodeEffectIndex::build(reversedContributions).effects());
+
+    auto edited = firstScript.front();
+    const auto unchangedBefore = SctInstructionSemanticAnalyzer::build(secondScript[1]);
     edited.opcode = 12u;
     edited.fixedParameters.clear();
     const auto editedContribution = SctInstructionSemanticAnalyzer::build(edited);
-    const auto unchangedAfter = SctInstructionSemanticAnalyzer::build(script[1]);
+    const auto unchangedAfter = SctInstructionSemanticAnalyzer::build(secondScript[1]);
     EXPECT_NE(editedContribution.opcode.opcode, contributions.front().opcode.opcode);
     EXPECT_EQ(unchangedBefore.opcode.opcode, unchangedAfter.opcode.opcode);
-    EXPECT_EQ(unchangedBefore.references.size(), unchangedAfter.references.size());
+    expectReferenceUsagesEqual(unchangedBefore.references, unchangedAfter.references);
+    expectEffectsEqual(unchangedBefore.effects, unchangedAfter.effects);
 }
 
 TEST(SctOpaqueContextIndex, LabelsSwitchCrossingsWithoutAssigningOwnership) {
