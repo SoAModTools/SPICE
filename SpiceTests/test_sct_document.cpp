@@ -120,11 +120,11 @@ TEST(SctDocumentImporter, IsDeterministicAndClaimsEveryDecodedPayloadByte) {
     ASSERT_EQ(secondScript.instructions.size(), 1u);
     EXPECT_EQ(first.document->sections[0].id, second.document->sections[0].id);
     EXPECT_EQ(firstScript.instructions[0].id, secondScript.instructions[0].id);
-    EXPECT_EQ(first.context.receipt.source.byteOrder, SctSourceByteOrder::BigEndian);
-    ASSERT_TRUE(first.context.receipt.declaredSourcePlatform.has_value());
-    EXPECT_EQ(*first.context.receipt.declaredSourcePlatform, SctPlatform::GameCube);
+    EXPECT_EQ(first.context.receipt().source.byteOrder, SctSourceByteOrder::BigEndian);
+    ASSERT_TRUE(first.context.receipt().declaredSourcePlatform.has_value());
+    EXPECT_EQ(*first.context.receipt().declaredSourcePlatform, SctPlatform::GameCube);
 
-    EXPECT_TRUE(first.context.receipt.sourceMap.hasCompleteLeafCoverage());
+    EXPECT_TRUE(first.context.receipt().sourceMap.hasCompleteLeafCoverage());
 }
 
 TEST(SctDocumentImporter, RecordsEncodingObservationsWithoutInferringAPlatform) {
@@ -132,8 +132,8 @@ TEST(SctDocumentImporter, RecordsEncodingObservationsWithoutInferringAPlatform) 
     parsed.file.detectedEndian = "little";
     const auto imported = SctDocumentImporter::import(parsed);
     ASSERT_TRUE(imported.document.has_value());
-    EXPECT_EQ(imported.context.receipt.source.byteOrder, SctSourceByteOrder::LittleEndian);
-    EXPECT_FALSE(imported.context.receipt.declaredSourcePlatform.has_value());
+    EXPECT_EQ(imported.context.receipt().source.byteOrder, SctSourceByteOrder::LittleEndian);
+    EXPECT_FALSE(imported.context.receipt().declaredSourcePlatform.has_value());
 }
 
 TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferences) {
@@ -145,7 +145,7 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     ASSERT_EQ(2u, imported.document->sections.size());
     const auto& stringContent = std::get<SctStringSectionContent>(imported.document->sections[1].content);
@@ -253,7 +253,7 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    const auto referenceEvidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto referenceEvidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(referenceEvidence);
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 3u);
@@ -324,7 +324,7 @@ TEST(SctDocumentImporter, ConvertsFooterSctStringOffsetsForOpcodes24And25) {
 
     const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     ASSERT_EQ(1u, imported.document->footerEntries.size());
     EXPECT_EQ(SctTextKind::SctString, imported.document->footerEntries.front().kind);
@@ -388,7 +388,7 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
 
     const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 5u);
@@ -438,7 +438,7 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
 
     const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     const auto& canonical = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions[0];
     ASSERT_EQ(canonical.fixedParameters.size(), 1u);
@@ -490,7 +490,7 @@ TEST(SctDocumentImporter, FailedParseDoesNotProduceDocument) {
 TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingTheContract) {
     const auto imported = SctDocumentImporter::import(makeOpcode265Parse(), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     auto document = *imported.document;
     const auto stringId = document.allocateStringId();

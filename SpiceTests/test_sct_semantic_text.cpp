@@ -353,9 +353,9 @@ TEST(SctSemanticText, ImportEncodingIsIndependentOfDeclaredSourcePlatform) {
     ASSERT_NE(message, nullptr);
     ASSERT_EQ(message->body.elements.size(), 1u);
     EXPECT_EQ(std::get<SctTextChunk>(message->body.elements.front()).utf8, "Hi");
-    ASSERT_EQ(imported.context.receipt.text.size(), 1u);
-    EXPECT_EQ(imported.context.receipt.text.front().selectedEncoding, kSctShiftJis8140Encoding);
-    EXPECT_EQ(imported.context.receipt.text.front().disposition,
+    ASSERT_EQ(imported.context.receipt().text.size(), 1u);
+    EXPECT_EQ(imported.context.receipt().text.front().selectedEncoding, kSctShiftJis8140Encoding);
+    EXPECT_EQ(imported.context.receipt().text.front().disposition,
         SctTextImportDisposition::Semantic);
 }
 
@@ -370,8 +370,8 @@ TEST(SctSemanticText, ConservativeFooterImportPreservesConflictingInterpretation
             &imported.document->footerEntries.front().value);
         ASSERT_NE(opaque, nullptr);
         EXPECT_EQ(opaque->bytes, (std::vector<std::uint8_t>{0x82u, 0xa0u, 0u}));
-        ASSERT_EQ(imported.context.receipt.text.size(), 1u);
-        const auto& observation = imported.context.receipt.text.front();
+        ASSERT_EQ(imported.context.receipt().text.size(), 1u);
+        const auto& observation = imported.context.receipt().text.front();
         EXPECT_EQ(observation.disposition,
             SctTextImportDisposition::OpaqueConflictingInterpretations);
         EXPECT_EQ(observation.selectedEncoding, kSctWindows1252Byte7FEncoding);
@@ -404,15 +404,15 @@ TEST(SctSemanticText, ExplicitFooterTrustPromotesSelectedInterpretationAndChange
     ASSERT_EQ(trusted.document->footerEntries.size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctMessage>(
         trusted.document->footerEntries.front().value));
-    ASSERT_EQ(trusted.context.receipt.text.size(), 1u);
-    EXPECT_EQ(trusted.context.receipt.text.front().disposition,
+    ASSERT_EQ(trusted.context.receipt().text.size(), 1u);
+    EXPECT_EQ(trusted.context.receipt().text.front().disposition,
         SctTextImportDisposition::Semantic);
-    EXPECT_EQ(trusted.context.receipt.footerTextPromotion,
+    EXPECT_EQ(trusted.context.receipt().footerTextPromotion,
         SctFooterTextPromotionPolicy::TrustSelectedEncoding);
 
     const auto conservative = SctDocumentImporter::import(parsed,
         {{SctPlatform::Dreamcast}, kSctWindows1252Byte7FEncoding});
-    EXPECT_NE(conservative.context.receipt.lineage, trusted.context.receipt.lineage);
+    EXPECT_NE(conservative.context.receipt().lineage, trusted.context.receipt().lineage);
 }
 
 TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFailures) {
@@ -423,8 +423,8 @@ TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFa
     ASSERT_EQ(ascii.document->footerEntries.size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctPlainText>(
         ascii.document->footerEntries.front().value));
-    ASSERT_EQ(ascii.context.receipt.text.size(), 1u);
-    EXPECT_EQ(ascii.context.receipt.text.front().disposition,
+    ASSERT_EQ(ascii.context.receipt().text.size(), 1u);
+    EXPECT_EQ(ascii.context.receipt().text.front().disposition,
         SctTextImportDisposition::Semantic);
 
     const auto failed = SctDocumentImporter::import(
@@ -434,7 +434,7 @@ TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFa
     ASSERT_EQ(failed.document->footerEntries.size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctOpaqueText>(
         failed.document->footerEntries.front().value));
-    EXPECT_EQ(failed.context.receipt.text.front().disposition,
+    EXPECT_EQ(failed.context.receipt().text.front().disposition,
         SctTextImportDisposition::OpaqueDecodeFailed);
 
     const auto malformed = SctDocumentImporter::import(
@@ -444,21 +444,21 @@ TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFa
     ASSERT_TRUE(malformed.document.has_value());
     EXPECT_TRUE(std::holds_alternative<SctOpaqueText>(
         malformed.document->footerEntries.front().value));
-    EXPECT_EQ(malformed.context.receipt.text.front().disposition,
+    EXPECT_EQ(malformed.context.receipt().text.front().disposition,
         SctTextImportDisposition::OpaqueDecodeFailed);
 }
 
 TEST(SctHeaderProvenance, MaterializesReceiptCanonicalCrossEndianAndExplicitHeaders) {
     SctDocument document;
     const std::array<std::uint8_t, 8> raw{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0};
-    SctDocumentImportContext context;
-    context.receipt.lineage.sha256[0] = 1u;
-    context.revisionProvenance.importLineage = context.receipt.lineage;
-    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    context.receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
-    context.receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
-    context.receipt.source.header = {raw, {0x1234, 0x5678, 0x9abc, 0xdef0}, true};
-    const auto evidence = context.bind(context.revisionProvenance);
+    SctDocumentImportReceipt receipt;
+    receipt.lineage.sha256[0] = 1u;
+    receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
+    receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
+    receipt.source.header = {raw, {0x1234, 0x5678, 0x9abc, 0xdef0}, true};
+    SctDocumentImportContext context{std::move(receipt)};
+    const auto evidence = context.bind(context.revisionProvenance());
     ASSERT_TRUE(evidence);
 
     SctDocumentExportOptions same{SctPlatform::GameCube, kSctShiftJisByte7FEncoding};
@@ -508,10 +508,10 @@ TEST(SctHeaderProvenance, ImportClaimsHeaderAsReceiptObservationNotOpaqueDocumen
     parsed.file.originalPayloadBytes = {0x07, 0xd2, 0, 6, 0, 14, 0x12, 0x34, 0, 0, 0, 0};
     const auto imported = SctDocumentImporter::import(parsed);
     ASSERT_TRUE(imported.document.has_value());
-    EXPECT_TRUE(imported.context.receipt.source.header.available);
-    EXPECT_EQ(imported.context.receipt.source.header.values, (SctHeaderValues{2002, 6, 14, 0x1234}));
+    EXPECT_TRUE(imported.context.receipt().source.header.available);
+    EXPECT_EQ(imported.context.receipt().source.header.values, (SctHeaderValues{2002, 6, 14, 0x1234}));
     EXPECT_TRUE(imported.document->opaqueAttachments.empty());
-    const auto records = imported.context.receipt.sourceMap.records();
+    const auto records = imported.context.receipt().sourceMap.records();
     const auto headerCoverage = std::find_if(records.begin(), records.end(), [](const auto& item) {
             return item.span.offset == 0u && item.span.size == 8u;
         });

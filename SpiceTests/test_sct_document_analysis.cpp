@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <future>
 #include <variant>
 
 using namespace spice::sct;
@@ -134,7 +135,7 @@ SctCanonicalExpression variableExpression() {
 TEST(SctImportedSourceMap, ProvidesExactCoverageTopologyAndImportedCrossings) {
     const auto imported = SctDocumentImporter::import(importedGapParse());
     ASSERT_TRUE(imported.document.has_value());
-    ASSERT_TRUE(imported.context.receipt.sourceMap.hasCompleteLeafCoverage());
+    ASSERT_TRUE(imported.context.receipt().sourceMap.hasCompleteLeafCoverage());
     ASSERT_EQ(imported.document->sections.size(), 1u);
     const auto& script = std::get<SctScriptSectionContent>(imported.document->sections[0].content);
     ASSERT_EQ(script.instructions.size(), 2u);
@@ -143,21 +144,21 @@ TEST(SctImportedSourceMap, ProvidesExactCoverageTopologyAndImportedCrossings) {
     const SctDocumentEntityId source{script.instructions[0].id};
     const SctDocumentEntityId target{script.instructions[1].id};
     const SctDocumentEntityId gap{imported.document->opaqueAttachments[0].id};
-    EXPECT_EQ(imported.context.receipt.sourceMap.location(source)->primarySpan, (SctImportedByteSpan{32u, 8u}));
-    EXPECT_EQ(imported.context.receipt.sourceMap.location(target)->primarySpan, (SctImportedByteSpan{52u, 4u}));
-    EXPECT_EQ(imported.context.receipt.sourceMap.location(gap)->primarySpan, (SctImportedByteSpan{40u, 12u}));
-    EXPECT_EQ(imported.context.receipt.sourceMap.previousSemanticEntity(gap), source);
-    EXPECT_EQ(imported.context.receipt.sourceMap.nextSemanticEntity(gap), target);
-    EXPECT_EQ(imported.context.receipt.sourceMap.relationship(source, target), SctSourceRelationship::Before);
-    EXPECT_EQ(imported.context.receipt.sourceMap.relationship(
+    EXPECT_EQ(imported.context.receipt().sourceMap.location(source)->primarySpan, (SctImportedByteSpan{32u, 8u}));
+    EXPECT_EQ(imported.context.receipt().sourceMap.location(target)->primarySpan, (SctImportedByteSpan{52u, 4u}));
+    EXPECT_EQ(imported.context.receipt().sourceMap.location(gap)->primarySpan, (SctImportedByteSpan{40u, 12u}));
+    EXPECT_EQ(imported.context.receipt().sourceMap.previousSemanticEntity(gap), source);
+    EXPECT_EQ(imported.context.receipt().sourceMap.nextSemanticEntity(gap), target);
+    EXPECT_EQ(imported.context.receipt().sourceMap.relationship(source, target), SctSourceRelationship::Before);
+    EXPECT_EQ(imported.context.receipt().sourceMap.relationship(
         SctDocumentEntityId{imported.document->sections[0].id}, source),
         SctSourceRelationship::Contains);
-    EXPECT_TRUE(imported.context.receipt.sourceMap.semanticEntitiesBetween(source, target).empty());
-    const auto containingGap = imported.context.receipt.sourceMap.recordsContaining({40u, 12u});
+    EXPECT_TRUE(imported.context.receipt().sourceMap.semanticEntitiesBetween(source, target).empty());
+    const auto containingGap = imported.context.receipt().sourceMap.recordsContaining({40u, 12u});
     EXPECT_TRUE(std::any_of(containingGap.begin(), containingGap.end(), [](const auto& record) {
         return record.role == SctSourceSpanRole::SectionPayload;
     }));
-    const auto sourceRecords = imported.context.receipt.sourceMap.recordsFor(source);
+    const auto sourceRecords = imported.context.receipt().sourceMap.recordsFor(source);
     EXPECT_TRUE(std::any_of(sourceRecords.begin(), sourceRecords.end(), [](const auto& record) {
         return record.role == SctSourceSpanRole::Instruction
             && record.layer == SctSourceSpanLayer::Envelope && record.primaryEntityLocation;
@@ -167,7 +168,7 @@ TEST(SctImportedSourceMap, ProvidesExactCoverageTopologyAndImportedCrossings) {
             && record.layer == SctSourceSpanLayer::Leaf && !record.primaryEntityLocation;
     }));
 
-    const auto atGap = imported.context.receipt.sourceMap.recordsAt(44u);
+    const auto atGap = imported.context.receipt().sourceMap.recordsAt(44u);
     EXPECT_TRUE(std::any_of(atGap.begin(), atGap.end(), [](const auto& record) {
         return record.role == SctSourceSpanRole::SectionPayload
             && record.layer == SctSourceSpanLayer::Envelope;
@@ -177,7 +178,7 @@ TEST(SctImportedSourceMap, ProvidesExactCoverageTopologyAndImportedCrossings) {
             && record.layer == SctSourceSpanLayer::Leaf;
     }));
 
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence.has_value());
     const auto analysis = SctDocumentAnalysis::build(*imported.document, &*evidence);
     ASSERT_EQ(analysis.controlFlow.importedEdges().size(), 1u);
@@ -198,7 +199,7 @@ TEST(SctImportedSourceMap, ProvidesExactCoverageTopologyAndImportedCrossings) {
     EXPECT_EQ(editedAnalysis.controlFlow.currentEdges()[0].targetInstruction, editedInstructions[0].id);
     ASSERT_EQ(editedAnalysis.controlFlow.importedEdges().size(), 1u);
     EXPECT_EQ(editedAnalysis.controlFlow.importedEdges()[0].targetInstruction, editedInstructions[1].id);
-    EXPECT_EQ(imported.context.receipt.sourceMap.location(target)->primarySpan, (SctImportedByteSpan{52u, 4u}));
+    EXPECT_EQ(imported.context.receipt().sourceMap.location(target)->primarySpan, (SctImportedByteSpan{52u, 4u}));
 }
 
 TEST(SctControlFlowIndex, DerivesStableIdEdgesAndReflectsDocumentEdits) {
@@ -278,15 +279,51 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
         usage.opaqueExpressions()[0].source.owner));
 }
 
+TEST(SctInstructionSemanticAnalyzer, ContributionsComposeIntoWholeDocumentIndexes) {
+    auto document = controlFlowDocument();
+    const auto& script = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    std::vector<SctInstructionSemanticContribution> contributions;
+    for (const auto& value : script) {
+        contributions.push_back(SctInstructionSemanticAnalyzer::build(value));
+    }
+
+    const auto directUsage = SctSemanticUsageIndex::build(document);
+    const auto composedUsage = SctSemanticUsageIndex::build(contributions);
+    EXPECT_EQ(composedUsage.opcodeUsages().size(), directUsage.opcodeUsages().size());
+    EXPECT_EQ(composedUsage.referenceUsages().size(), directUsage.referenceUsages().size());
+    EXPECT_EQ(composedUsage.variableUsages().size(), directUsage.variableUsages().size());
+    EXPECT_EQ(composedUsage.unresolvedReferences().size(), directUsage.unresolvedReferences().size());
+    EXPECT_EQ(composedUsage.opaqueParameters().size(), directUsage.opaqueParameters().size());
+    EXPECT_EQ(composedUsage.opaqueExpressions().size(), directUsage.opaqueExpressions().size());
+
+    const auto directEffects = SctOpcodeEffectIndex::build(document);
+    const auto composedEffects = SctOpcodeEffectIndex::build(contributions);
+    EXPECT_EQ(composedEffects.effects().size(), directEffects.effects().size());
+    EXPECT_EQ(composedEffects.usableEffects().size(), directEffects.usableEffects().size());
+
+    auto edited = script.front();
+    const auto unchangedBefore = SctInstructionSemanticAnalyzer::build(script[1]);
+    edited.opcode = 12u;
+    edited.fixedParameters.clear();
+    const auto editedContribution = SctInstructionSemanticAnalyzer::build(edited);
+    const auto unchangedAfter = SctInstructionSemanticAnalyzer::build(script[1]);
+    EXPECT_NE(editedContribution.opcode.opcode, contributions.front().opcode.opcode);
+    EXPECT_EQ(unchangedBefore.opcode.opcode, unchangedAfter.opcode.opcode);
+    EXPECT_EQ(unchangedBefore.references.size(), unchangedAfter.references.size());
+}
+
 TEST(SctOpaqueContextIndex, LabelsSwitchCrossingsWithoutAssigningOwnership) {
     const auto imported = SctDocumentImporter::import(importedGapParse());
     ASSERT_TRUE(imported.document.has_value());
     auto context = imported.context;
-    ASSERT_EQ(context.receipt.controlFlow.size(), 1u);
-    context.receipt.controlFlow[0].kind = SctControlFlowKind::SwitchCase;
-    context.receipt.controlFlow[0].origin = SctParameterSite{context.receipt.controlFlow[0].sourceInstruction,
+    auto receipt = context.receipt();
+    ASSERT_EQ(receipt.controlFlow.size(), 1u);
+    receipt.controlFlow[0].kind = SctControlFlowKind::SwitchCase;
+    receipt.controlFlow[0].origin = SctParameterSite{receipt.controlFlow[0].sourceInstruction,
         {3u, 0u}};
-    const auto evidence = context.bind(context.revisionProvenance);
+    context = SctDocumentImportContext{std::move(receipt)};
+    const auto evidence = context.bind(context.revisionProvenance());
     ASSERT_TRUE(evidence);
 
     const auto flow = SctControlFlowIndex::build(*imported.document, &*evidence);
@@ -445,14 +482,66 @@ TEST(SctImportedSourceMap, BuilderRejectsEveryUnsafeConstructionClass) {
     EXPECT_TRUE(hasIssue(illegalOverlap, SctSourceMapIssueCode::IllegalEnvelopeOverlap));
 }
 
+TEST(SctImportedSourceMap, NeighborhoodsExposeTargetedSitesWithoutInferringOwnership) {
+    const SctInstructionId instructionId{1u};
+    const SctOpaqueAttachmentId attachmentId{1u};
+    const SctParameterSite firstParameter{instructionId, {0u, std::nullopt}};
+    const SctParameterSite secondParameter{instructionId, {1u, std::nullopt}};
+    const SctExpressionSite expression{instructionId, SctParameterAddress{0u, std::nullopt}, {}};
+    const SctDocumentEntityId instructionEntity{instructionId};
+    const SctDocumentEntityId attachmentEntity{attachmentId};
+    auto built = SctImportedSourceMap::build(16u, {
+        {{0u, 16u}, SctSourceSpanRole::Instruction, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, instructionEntity, std::nullopt,
+            std::nullopt, SctSourceRegion::SectionPayload, true},
+        {{0u, 4u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{firstParameter}},
+        {{4u, 8u}, SctSourceSpanRole::Expression, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{expression}},
+        {{4u, 4u}, SctSourceSpanRole::DerivedPadding, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::DerivedLayout},
+        {{8u, 4u}, SctSourceSpanRole::OpaqueAttachment, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::OpaqueAttachment, attachmentEntity, std::nullopt,
+            std::nullopt, SctSourceRegion::SectionPayload, true},
+        {{12u, 4u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{secondParameter}},
+    });
+    ASSERT_TRUE(built.map);
+
+    std::optional<SctSourceRecordOrdinal> attachmentOrdinal;
+    const auto records = built.map->records();
+    for (std::uint32_t ordinal = 0; ordinal < records.size(); ++ordinal) {
+        if (records[ordinal].target == std::optional<SctImportedSourceTarget>{attachmentEntity}) {
+            attachmentOrdinal = SctSourceRecordOrdinal{ordinal};
+            break;
+        }
+    }
+    ASSERT_TRUE(attachmentOrdinal);
+    const auto neighborhood = built.map->neighborhood(*attachmentOrdinal);
+    ASSERT_TRUE(neighborhood);
+    ASSERT_TRUE(neighborhood->precedingTargetedLeaf);
+    ASSERT_TRUE(neighborhood->followingTargetedLeaf);
+    EXPECT_EQ(neighborhood->precedingTargetedLeaf->target,
+        std::optional<SctImportedSourceTarget>{firstParameter});
+    EXPECT_EQ(neighborhood->followingTargetedLeaf->target,
+        std::optional<SctImportedSourceTarget>{secondParameter});
+    ASSERT_EQ(neighborhood->containingTargetedEnvelopes.size(), 2u);
+    EXPECT_EQ(neighborhood->containingTargetedEnvelopes[0].target,
+        std::optional<SctImportedSourceTarget>{expression});
+    EXPECT_EQ(neighborhood->containingTargetedEnvelopes[1].target,
+        std::optional<SctImportedSourceTarget>{instructionEntity});
+    EXPECT_FALSE(built.map->neighborhood({0u, 4u}).precedingTargetedLeaf);
+    EXPECT_FALSE(built.map->recordSummary({999u}));
+}
+
 TEST(SctImportLineage, BindingRejectsOtherImportsAndTracksHistoricalAddressability) {
     const auto first = SctDocumentImporter::import(importedGapParse());
     auto secondParse = importedGapParse();
     secondParse.file.originalPayloadBytes[0] = 1u;
     const auto second = SctDocumentImporter::import(secondParse);
     ASSERT_TRUE(first.document && second.document);
-    EXPECT_NE(first.context.receipt.lineage, second.context.receipt.lineage);
-    EXPECT_FALSE(first.context.bind(second.context.revisionProvenance));
+    EXPECT_NE(first.context.receipt().lineage, second.context.receipt().lineage);
+    EXPECT_FALSE(first.context.bind(second.context.revisionProvenance()));
 
     const auto platformVariant = SctDocumentImporter::import(importedGapParse(),
         {{SctPlatform::Dreamcast}, std::nullopt});
@@ -462,25 +551,226 @@ TEST(SctImportLineage, BindingRejectsOtherImportsAndTracksHistoricalAddressabili
     wrapperParse.file.originalCompressedAklz = true;
     const auto wrapperVariant = SctDocumentImporter::import(wrapperParse);
     ASSERT_TRUE(platformVariant.document && encodingVariant.document && wrapperVariant.document);
-    EXPECT_NE(first.context.receipt.lineage, platformVariant.context.receipt.lineage);
-    EXPECT_NE(first.context.receipt.lineage, encodingVariant.context.receipt.lineage);
-    EXPECT_NE(first.context.receipt.lineage, wrapperVariant.context.receipt.lineage);
+    EXPECT_NE(first.context.receipt().lineage, platformVariant.context.receipt().lineage);
+    EXPECT_NE(first.context.receipt().lineage, encodingVariant.context.receipt().lineage);
+    EXPECT_NE(first.context.receipt().lineage, wrapperVariant.context.receipt().lineage);
 
-    const auto evidence = first.context.bind(first.context.revisionProvenance);
+    const auto evidence = first.context.bind(first.context.revisionProvenance());
     ASSERT_TRUE(evidence);
-    EXPECT_EQ(SctDocumentAnalysis::build(*first.document, &*evidence).importedSiteAddressability,
-        SctDocumentAnalysis::ImportedSiteAddressability::FullyAddressable);
+    const auto originalAnalysis = SctDocumentAnalysis::build(*first.document, &*evidence);
+    ASSERT_TRUE(originalAnalysis.importedSites);
+    EXPECT_EQ(originalAnalysis.importedSites->summary(),
+        SctImportedAddressabilitySummary::FullyAddressable);
 
     auto partiallyEdited = *first.document;
     auto& instructions = std::get<SctScriptSectionContent>(
         partiallyEdited.sections.front().content).instructions;
     instructions.erase(instructions.begin() + 1);
-    EXPECT_EQ(SctDocumentAnalysis::build(partiallyEdited, &*evidence).importedSiteAddressability,
-        SctDocumentAnalysis::ImportedSiteAddressability::PartiallyAddressable);
+    const auto partialAnalysis = SctDocumentAnalysis::build(partiallyEdited, &*evidence);
+    ASSERT_TRUE(partialAnalysis.importedSites);
+    EXPECT_EQ(partialAnalysis.importedSites->summary(),
+        SctImportedAddressabilitySummary::PartiallyAddressable);
 
     SctDocument unrelated;
-    EXPECT_EQ(SctDocumentAnalysis::build(unrelated, &*evidence).importedSiteAddressability,
-        SctDocumentAnalysis::ImportedSiteAddressability::NoLongerAddressable);
+    const auto unrelatedAnalysis = SctDocumentAnalysis::build(unrelated, &*evidence);
+    ASSERT_TRUE(unrelatedAnalysis.importedSites);
+    EXPECT_EQ(unrelatedAnalysis.importedSites->summary(),
+        SctImportedAddressabilitySummary::NoLongerAddressable);
+}
+
+TEST(SctImportLineage, BoundEvidenceOwnsImmutableReceiptAcrossContextLifetime) {
+    SctDocument document;
+    const auto evidence = [&]() {
+        auto imported = SctDocumentImporter::import(importedGapParse(),
+            {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
+        EXPECT_TRUE(imported.document.has_value());
+        document = *imported.document;
+        auto movedContext = std::move(imported.context);
+        auto copiedContext = movedContext;
+        const auto bound = copiedContext.bind(copiedContext.revisionProvenance());
+        EXPECT_TRUE(bound.has_value());
+        return *bound;
+    }();
+
+    EXPECT_TRUE(evidence.receipt().sourceMap.hasCompleteLeafCoverage());
+    const auto analysis = SctDocumentAnalysis::build(document, &evidence);
+    ASSERT_TRUE(analysis.importedSites);
+    EXPECT_EQ(analysis.importedSites->summary(),
+        SctImportedAddressabilitySummary::FullyAddressable);
+    EXPECT_TRUE(SctDocumentValidator::validateForTarget(document,
+        SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &evidence).validForTarget);
+    EXPECT_TRUE(SctReferenceRepair::analyze(document, &evidence).diagnostics.empty());
+
+    const SctDocumentExportOptions options{SctPlatform::GameCube,
+        kSctShiftJisByte7FEncoding, SctDocumentOutputByteOrder::BigEndian};
+    EXPECT_TRUE(SctDocumentLayoutEngine::layout(document, options, &evidence).success);
+    EXPECT_TRUE(SctDocumentExporter::exportDocument(document, options, &evidence).success);
+
+    std::array<std::future<std::size_t>, 4> reads;
+    for (auto& read : reads) {
+        read = std::async(std::launch::async, [evidence] {
+            return evidence.receipt().sourceMap.records().size();
+        });
+    }
+    for (auto& read : reads) EXPECT_GT(read.get(), 0u);
+}
+
+TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSites) {
+    SctDocument document;
+    const auto scriptSectionId = document.allocateSectionId();
+    const auto instructionId = document.allocateInstructionId();
+    SctCanonicalExpressionNode expressionRoot;
+    expressionRoot.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
+    expressionRoot.encodingCode = 7u;
+    expressionRoot.children = {
+        {SctCanonicalExpressionNodeKind::DecimalLiteral, 0x08000001u},
+        {SctCanonicalExpressionNodeKind::DecimalLiteral, 0x08000002u},
+    };
+    auto scripted = instruction(instructionId, 3u);
+    scripted.scheduledExpression = SctExpressionFactory::encodedDecimalLiteral(1);
+    scripted.fixedParameters = {parameter(0u, SctCanonicalExpression{
+        expressionRoot, SctExpressionTermination::InlineValue})};
+    scripted.repeatedParameterGroups = {{{parameter(3u, SctEncodedWordValue{4u})}}};
+    document.sections.push_back({scriptSectionId, "SCRIPT",
+        SctScriptSectionContent{{scripted}}});
+
+    const auto stringSectionId = document.allocateSectionId();
+    const auto stringId = document.allocateStringId();
+    SctMessage message;
+    message.headerUtf8 = "Head";
+    message.body.elements.push_back(SctTextChunk{"Body"});
+    document.sections.push_back({stringSectionId, "TEXT", SctStringSectionContent{
+        SctDocumentString{stringId, message, SctTextKind::SctString}, {9u, 0x1du}}});
+
+    const auto footerId = document.allocateFooterEntryId();
+    document.footerEntries.push_back(
+        {footerId, SctTextKind::PlainString, SctPlainText{"Plain"}});
+
+    const SctParameterSite fixedSite{instructionId, {0u, std::nullopt}};
+    const SctParameterSite repeatedSite{instructionId, {3u, 0u}};
+    const SctExpressionSite scheduledSite{instructionId, SctScheduledExpressionSite{}, {}};
+    const SctExpressionSite childSite{instructionId,
+        SctParameterAddress{0u, std::nullopt}, {1u}};
+    const SctTextSite headerSite{SctTextEntityId{stringId}, SctTextRegion::Header,
+        std::nullopt, {0u, 2u}};
+    const SctTextSite bodySite{SctTextEntityId{stringId}, SctTextRegion::Body,
+        0u, {0u, 2u}};
+    const SctTextSite plainSite{SctTextEntityId{footerId}, SctTextRegion::Body,
+        std::nullopt, {0u, 2u}};
+    const SctDocumentEntityId instructionEntity{instructionId};
+    const SctDocumentEntityId stringEntity{stringId};
+    const SctDocumentEntityId footerEntity{footerId};
+    auto sourceMap = SctImportedSourceMap::build(20u, {
+        {{0u, 8u}, SctSourceSpanRole::Instruction, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, instructionEntity, std::nullopt,
+            std::nullopt, SctSourceRegion::SectionPayload, true},
+        {{0u, 2u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{fixedSite}},
+        {{0u, 1u}, SctSourceSpanRole::Expression, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{childSite}},
+        {{2u, 2u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{repeatedSite}},
+        {{4u, 4u}, SctSourceSpanRole::Expression, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{scheduledSite}},
+        {{8u, 8u}, SctSourceSpanRole::IndexedStringRecord, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, stringEntity, std::nullopt,
+            std::nullopt, SctSourceRegion::SectionPayload, true},
+        {{8u, 2u}, SctSourceSpanRole::TextElement, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{headerSite}},
+        {{10u, 2u}, SctSourceSpanRole::TextElement, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{bodySite}},
+        {{16u, 4u}, SctSourceSpanRole::FooterEntry, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, footerEntity, std::nullopt,
+            std::nullopt, SctSourceRegion::Footer, true},
+        {{16u, 2u}, SctSourceSpanRole::TextElement, SctSourceSpanLayer::Envelope,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{plainSite}},
+        {{0u, 20u}, SctSourceSpanRole::DerivedPadding, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::DerivedLayout},
+    });
+    ASSERT_TRUE(sourceMap.map);
+
+    const auto assess = [&](const SctDocument& candidate) {
+        const auto entities = SctDocumentIndex::build(candidate);
+        return SctImportedSiteAddressabilityIndex::build(candidate, entities, *sourceMap.map);
+    };
+    const auto exact = assess(document);
+    EXPECT_EQ(exact.summary(), SctImportedAddressabilitySummary::FullyAddressable);
+    ASSERT_NE(exact.find(childSite), nullptr);
+    EXPECT_EQ(exact.find(childSite)->addressability, SctImportedSiteAddressability::ExactSite);
+    EXPECT_EQ(exact.find(repeatedSite)->addressability, SctImportedSiteAddressability::ExactSite);
+    EXPECT_EQ(exact.find(scheduledSite)->addressability, SctImportedSiteAddressability::ExactSite);
+    EXPECT_EQ(exact.find(plainSite)->addressability, SctImportedSiteAddressability::ExactSite);
+
+    auto changedChild = document;
+    auto& changedExpression = std::get<SctCanonicalExpression>(
+        std::get<SctScriptSectionContent>(changedChild.sections[0].content)
+            .instructions[0].fixedParameters[0].value);
+    std::get<SctCanonicalExpressionNode>(changedExpression.root).children.pop_back();
+    EXPECT_EQ(assess(changedChild).find(childSite)->addressability,
+        SctImportedSiteAddressability::ParentSiteOnly);
+
+    auto changedOwner = document;
+    std::get<SctScriptSectionContent>(changedOwner.sections[0].content)
+        .instructions[0].fixedParameters[0].value = SctEncodedWordValue{0u};
+    EXPECT_EQ(assess(changedOwner).find(childSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+
+    auto removedScheduled = document;
+    std::get<SctScriptSectionContent>(removedScheduled.sections[0].content)
+        .instructions[0].scheduledExpression.reset();
+    EXPECT_EQ(assess(removedScheduled).find(scheduledSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+
+    auto removedRepeated = document;
+    std::get<SctScriptSectionContent>(removedRepeated.sections[0].content)
+        .instructions[0].repeatedParameterGroups.clear();
+    EXPECT_EQ(assess(removedRepeated).find(repeatedSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+
+    auto removedParameter = document;
+    std::get<SctScriptSectionContent>(removedParameter.sections[0].content)
+        .instructions[0].fixedParameters.clear();
+    EXPECT_EQ(assess(removedParameter).find(fixedSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+    EXPECT_EQ(assess(removedParameter).find(childSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+
+    auto changedText = document;
+    auto& changedMessage = std::get<SctMessage>(
+        std::get<SctStringSectionContent>(changedText.sections[1].content).string.value);
+    *changedMessage.headerUtf8 = "H";
+    std::get<SctTextChunk>(changedMessage.body.elements[0]).utf8 = "B";
+    EXPECT_EQ(assess(changedText).find(headerSite)->addressability,
+        SctImportedSiteAddressability::ParentSiteOnly);
+    EXPECT_EQ(assess(changedText).find(bodySite)->addressability,
+        SctImportedSiteAddressability::ParentSiteOnly);
+    changedMessage.body.elements.clear();
+    EXPECT_EQ(assess(changedText).find(bodySite)->addressability,
+        SctImportedSiteAddressability::ParentSiteOnly);
+    changedMessage.headerUtf8.reset();
+    EXPECT_EQ(assess(changedText).find(headerSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+
+    auto changedPlain = document;
+    std::get<SctPlainText>(changedPlain.footerEntries[0].value).utf8 = "P";
+    EXPECT_EQ(assess(changedPlain).find(plainSite)->addressability,
+        SctImportedSiteAddressability::ParentSiteOnly);
+    changedPlain.footerEntries[0].value = SctOpaqueText{{'P'}};
+    EXPECT_EQ(assess(changedPlain).find(plainSite)->addressability,
+        SctImportedSiteAddressability::OwningEntityOnly);
+
+    auto removedEntities = document;
+    std::get<SctScriptSectionContent>(removedEntities.sections[0].content).instructions.clear();
+    removedEntities.sections.erase(removedEntities.sections.begin() + 1u);
+    removedEntities.footerEntries.clear();
+    const auto missing = assess(removedEntities);
+    EXPECT_EQ(missing.find(fixedSite)->addressability,
+        SctImportedSiteAddressability::MissingEntity);
+    EXPECT_EQ(missing.find(headerSite)->addressability,
+        SctImportedSiteAddressability::MissingEntity);
+    EXPECT_EQ(missing.find(plainSite)->addressability,
+        SctImportedSiteAddressability::MissingEntity);
+    EXPECT_EQ(missing.summary(), SctImportedAddressabilitySummary::NoLongerAddressable);
 }
 
 TEST(SctImportedSourceMap, RecordsExactInstructionExpressionAndTextSitesInBothByteOrders) {
@@ -523,7 +813,7 @@ TEST(SctImportedSourceMap, RecordsExactInstructionExpressionAndTextSitesInBothBy
         const auto imported = SctDocumentImporter::import(parsed,
             {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
         ASSERT_TRUE(imported.document);
-        const auto records = imported.context.receipt.sourceMap.records();
+        const auto records = imported.context.receipt().sourceMap.records();
 
         EXPECT_TRUE(std::any_of(records.begin(), records.end(), [](const auto& record) {
             return record.role == SctSourceSpanRole::InstructionModifier

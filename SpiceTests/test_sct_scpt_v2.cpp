@@ -72,7 +72,7 @@ TEST(SctScptV2, FourthInlineValuePreservesBoundaryInBothByteOrders) {
         const auto imported = SctDocumentImporter::import(parsed,
             {SctPlatform::GameCube, kSctShiftJisByte7FEncoding});
         ASSERT_TRUE(imported.document);
-        const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+        const auto evidence = imported.context.bind(imported.context.revisionProvenance());
         ASSERT_TRUE(evidence);
         const SctDocumentExportOptions options(SctPlatform::GameCube,
             kSctShiftJisByte7FEncoding, little ? SctDocumentOutputByteOrder::LittleEndian

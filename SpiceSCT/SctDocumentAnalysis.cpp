@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <functional>
 #include <limits>
-#include <set>
 #include <type_traits>
 
 namespace spice::sct {
@@ -192,15 +191,6 @@ SctOpcodeEffectUsability combineUsability(SctOpcodeEffectUsability left,
     return rank(left) >= rank(right) ? left : right;
 }
 
-const SctCanonicalExpression* expressionAt(const SctDocumentInstruction& instruction,
-    const SctExpressionOwner& owner) {
-    if (std::holds_alternative<SctScheduledExpressionSite>(owner)) {
-        return instruction.scheduledExpression ? &*instruction.scheduledExpression : nullptr;
-    }
-    const auto* parameter = findParameter(instruction, std::get<SctParameterAddress>(owner));
-    return parameter == nullptr ? nullptr : std::get_if<SctCanonicalExpression>(&parameter->value);
-}
-
 const SctCanonicalExpressionNode* expressionNodeAt(const SctCanonicalExpression& expression,
     std::span<const std::uint32_t> path) {
     const auto* node = std::get_if<SctCanonicalExpressionNode>(&expression.root);
@@ -321,14 +311,16 @@ std::vector<SctControlFlowEdge> SctControlFlowIndex::currentInbound(SctInstructi
     return result;
 }
 
-SctSemanticUsageIndex SctSemanticUsageIndex::build(const SctDocument& document) {
-    SctSemanticUsageIndex result;
+SctInstructionSemanticContribution SctInstructionSemanticAnalyzer::build(
+    const SctDocumentInstruction& instruction) {
+    SctInstructionSemanticContribution result;
+    result.opcode = {instruction.opcode, instruction.id};
     std::function<void(SctInstructionId, const SctExpressionOwner&,
         const SctCanonicalExpressionNode&, std::vector<std::uint32_t>&)> recordNode;
     recordNode = [&](SctInstructionId instruction, const SctExpressionOwner& owner,
         const SctCanonicalExpressionNode& node, std::vector<std::uint32_t>& path) {
         if (const auto kind = variableKind(node.kind)) {
-            result.variableUsages_.push_back({{*kind, node.encodingCode & 0x00ffffffu},
+            result.variables.push_back({{*kind, node.encodingCode & 0x00ffffffu},
                 node.kind, {instruction, owner, path}});
         }
         for (std::size_t child = 0; child < node.children.size(); ++child) {
@@ -340,7 +332,7 @@ SctSemanticUsageIndex SctSemanticUsageIndex::build(const SctDocument& document) 
     const auto recordExpression = [&](SctInstructionId instruction, SctExpressionOwner owner,
         const SctCanonicalExpression& expression) {
         if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
-            result.opaqueExpressions_.push_back({{instruction, std::move(owner), {}}, opaque->words.size()});
+            result.opaqueExpressions.push_back({{instruction, std::move(owner), {}}, opaque->words.size()});
             return;
         }
         std::vector<std::uint32_t> path;
@@ -353,40 +345,100 @@ SctSemanticUsageIndex SctSemanticUsageIndex::build(const SctDocument& document) 
         std::visit([&](const auto& value) {
             using T = std::decay_t<decltype(value)>;
             if constexpr (std::is_same_v<T, SctInstructionReference>) {
-                result.referenceUsages_.push_back({site, SctDocumentReferenceTarget{value.target}});
+                result.references.push_back({site, SctDocumentReferenceTarget{value.target}});
             } else if constexpr (std::is_same_v<T, SctStringReference>) {
-                result.referenceUsages_.push_back({site, SctDocumentReferenceTarget{value.target}});
+                result.references.push_back({site, SctDocumentReferenceTarget{value.target}});
             } else if constexpr (std::is_same_v<T, SctFooterEntryReference>) {
-                result.referenceUsages_.push_back({site, SctDocumentReferenceTarget{value.target}});
+                result.references.push_back({site, SctDocumentReferenceTarget{value.target}});
             } else if constexpr (std::is_same_v<T, SctCanonicalExpression>) {
                 recordExpression(instruction, site.parameter, value);
             } else if constexpr (std::is_same_v<T, SctUnresolvedReferenceValue>) {
-                result.unresolvedReferences_.push_back({site, value.expectedTarget,
+                result.unresolvedReferences.push_back({site, value.expectedTarget,
                     value.encodedWords.size()});
             } else if constexpr (std::is_same_v<T, SctOpaqueParameterValue>) {
-                result.opaqueParameters_.push_back({site, value.words.size()});
+                result.opaqueParameters.push_back({site, value.words.size()});
             }
         }, parameter.value);
     };
 
+    if (instruction.scheduledExpression) {
+        recordExpression(instruction.id, SctScheduledExpressionSite{},
+            *instruction.scheduledExpression);
+    }
+    for (const auto& parameter : instruction.fixedParameters) {
+        recordParameter(instruction.id, parameter, std::nullopt);
+    }
+    for (std::size_t group = 0; group < instruction.repeatedParameterGroups.size(); ++group) {
+        for (const auto& parameter : instruction.repeatedParameterGroups[group].parameters) {
+            recordParameter(instruction.id, parameter, static_cast<std::uint32_t>(group));
+        }
+    }
+
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) return result;
+    const auto& rule = schema->semantic.effect;
+    switch (rule.kind) {
+    case SctOpcodeEffectKind::LoadScript:
+    case SctOpcodeEffectKind::LoadMld:
+        result.effects.push_back({SctResourceLoadEffect{instruction.id,
+            rule.kind == SctOpcodeEffectKind::LoadMld ? SctResourceKind::Mld
+                                                      : SctResourceKind::Script,
+            {instruction.id, {rule.firstParameter, std::nullopt}}, rule.confidence},
+            parameterUsability(instruction, *schema, {rule.firstParameter, std::nullopt})});
+        break;
+    case SctOpcodeEffectKind::SelectGroundVariant:
+        if (rule.secondParameter) {
+            result.effects.push_back({SctGroundVariantSelectionEffect{instruction.id,
+                {instruction.id, {rule.firstParameter, std::nullopt}},
+                {instruction.id, {*rule.secondParameter, std::nullopt}}, rule.confidence},
+                combineUsability(
+                    parameterUsability(instruction, *schema, {rule.firstParameter, std::nullopt}),
+                    parameterUsability(instruction, *schema, {*rule.secondParameter, std::nullopt}))});
+        }
+        break;
+    case SctOpcodeEffectKind::None:
+        break;
+    }
+    return result;
+}
+
+namespace {
+
+std::vector<SctInstructionSemanticContribution> semanticContributions(
+    const SctDocument& document) {
+    std::vector<SctInstructionSemanticContribution> result;
     for (const auto& section : document.sections) {
         const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
         if (script == nullptr) continue;
         for (const auto& instruction : script->instructions) {
-            result.opcodeUsages_.push_back({instruction.opcode, instruction.id});
-            if (instruction.scheduledExpression) {
-                recordExpression(instruction.id, SctScheduledExpressionSite{},
-                    *instruction.scheduledExpression);
-            }
-            for (const auto& parameter : instruction.fixedParameters) {
-                recordParameter(instruction.id, parameter, std::nullopt);
-            }
-            for (std::size_t group = 0; group < instruction.repeatedParameterGroups.size(); ++group) {
-                for (const auto& parameter : instruction.repeatedParameterGroups[group].parameters) {
-                    recordParameter(instruction.id, parameter, static_cast<std::uint32_t>(group));
-                }
-            }
+            result.push_back(SctInstructionSemanticAnalyzer::build(instruction));
         }
+    }
+    return result;
+}
+
+} // namespace
+
+SctSemanticUsageIndex SctSemanticUsageIndex::build(const SctDocument& document) {
+    const auto contributions = semanticContributions(document);
+    return build(contributions);
+}
+
+SctSemanticUsageIndex SctSemanticUsageIndex::build(
+    std::span<const SctInstructionSemanticContribution> contributions) {
+    SctSemanticUsageIndex result;
+    for (const auto& contribution : contributions) {
+        result.opcodeUsages_.push_back(contribution.opcode);
+        result.referenceUsages_.insert(result.referenceUsages_.end(),
+            contribution.references.begin(), contribution.references.end());
+        result.variableUsages_.insert(result.variableUsages_.end(),
+            contribution.variables.begin(), contribution.variables.end());
+        result.unresolvedReferences_.insert(result.unresolvedReferences_.end(),
+            contribution.unresolvedReferences.begin(), contribution.unresolvedReferences.end());
+        result.opaqueParameters_.insert(result.opaqueParameters_.end(),
+            contribution.opaqueParameters.begin(), contribution.opaqueParameters.end());
+        result.opaqueExpressions_.insert(result.opaqueExpressions_.end(),
+            contribution.opaqueExpressions.begin(), contribution.opaqueExpressions.end());
     }
     return result;
 }
@@ -429,6 +481,7 @@ SctOpaqueContextIndex SctOpaqueContextIndex::build(const SctDocument& document,
             location->region, location->containingSection,
             receipt.sourceMap.previousSemanticEntity(SctDocumentEntityId{attachment.id}),
             receipt.sourceMap.nextSemanticEntity(SctDocumentEntityId{attachment.id})};
+        context.sourceNeighborhood = receipt.sourceMap.neighborhood(location->primarySpan);
         bool hasSwitch = false;
         for (const auto& edge : controlFlow.importedEdges()) {
             if (std::find(edge.crossedOpaqueAttachments.begin(), edge.crossedOpaqueAttachments.end(),
@@ -457,37 +510,16 @@ const SctOpaqueContextRecord* SctOpaqueContextIndex::find(SctOpaqueAttachmentId 
 }
 
 SctOpcodeEffectIndex SctOpcodeEffectIndex::build(const SctDocument& document) {
+    const auto contributions = semanticContributions(document);
+    return build(contributions);
+}
+
+SctOpcodeEffectIndex SctOpcodeEffectIndex::build(
+    std::span<const SctInstructionSemanticContribution> contributions) {
     SctOpcodeEffectIndex result;
-    for (const auto& section : document.sections) {
-        const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
-        if (script == nullptr) continue;
-        for (const auto& instruction : script->instructions) {
-            const auto* schema = findSctOpcodeSchema(instruction.opcode);
-            if (schema == nullptr) continue;
-            const auto& rule = schema->semantic.effect;
-            switch (rule.kind) {
-            case SctOpcodeEffectKind::LoadScript:
-            case SctOpcodeEffectKind::LoadMld:
-                result.effects_.push_back({SctResourceLoadEffect{instruction.id,
-                    rule.kind == SctOpcodeEffectKind::LoadMld ? SctResourceKind::Mld
-                                                              : SctResourceKind::Script,
-                    {instruction.id, {rule.firstParameter, std::nullopt}}, rule.confidence},
-                    parameterUsability(instruction, *schema, {rule.firstParameter, std::nullopt})});
-                break;
-            case SctOpcodeEffectKind::SelectGroundVariant:
-                if (rule.secondParameter) {
-                    result.effects_.push_back({SctGroundVariantSelectionEffect{instruction.id,
-                        {instruction.id, {rule.firstParameter, std::nullopt}},
-                        {instruction.id, {*rule.secondParameter, std::nullopt}}, rule.confidence},
-                        combineUsability(
-                            parameterUsability(instruction, *schema, {rule.firstParameter, std::nullopt}),
-                            parameterUsability(instruction, *schema, {*rule.secondParameter, std::nullopt}))});
-                }
-                break;
-            case SctOpcodeEffectKind::None:
-                break;
-            }
-        }
+    for (const auto& contribution : contributions) {
+        result.effects_.insert(result.effects_.end(),
+            contribution.effects.begin(), contribution.effects.end());
     }
     return result;
 }
@@ -510,69 +542,136 @@ std::vector<SctOpcodeEffectOccurrence> SctOpcodeEffectIndex::usableEffects() con
     return result;
 }
 
+SctImportedSiteAddressabilityIndex SctImportedSiteAddressabilityIndex::build(
+    const SctDocument& document, const SctDocumentIndex& entities,
+    const SctImportedSourceMap& sourceMap) {
+    SctImportedSiteAddressabilityIndex result;
+    const auto entityExists = [&](const SctDocumentEntityId& entity) {
+        return std::visit([&](const auto& id) -> bool {
+            using Id = std::decay_t<decltype(id)>;
+            if constexpr (std::is_same_v<Id, std::monostate>) return false;
+            else return entities.find(document, id) != nullptr;
+        }, entity);
+    };
+    const auto classify = [&](const SctImportedSourceTarget& target) {
+        return std::visit([&](const auto& value) -> SctImportedSiteAddressability {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, SctDocumentEntityId>) {
+                return entityExists(value) ? SctImportedSiteAddressability::ExactSite
+                                           : SctImportedSiteAddressability::MissingEntity;
+            } else if constexpr (std::is_same_v<T, SctParameterSite>) {
+                const auto* instruction = entities.find(document, value.instruction);
+                if (instruction == nullptr) return SctImportedSiteAddressability::MissingEntity;
+                return findParameter(*instruction, value.parameter) != nullptr
+                    ? SctImportedSiteAddressability::ExactSite
+                    : SctImportedSiteAddressability::OwningEntityOnly;
+            } else if constexpr (std::is_same_v<T, SctExpressionSite>) {
+                const auto* instruction = entities.find(document, value.instruction);
+                if (instruction == nullptr) return SctImportedSiteAddressability::MissingEntity;
+                if (const auto* parameterOwner = std::get_if<SctParameterAddress>(&value.owner)) {
+                    const auto* parameter = findParameter(*instruction, *parameterOwner);
+                    if (parameter == nullptr) return SctImportedSiteAddressability::OwningEntityOnly;
+                    const auto* expression = std::get_if<SctCanonicalExpression>(&parameter->value);
+                    if (expression == nullptr) return SctImportedSiteAddressability::OwningEntityOnly;
+                    return expressionSiteAddressable(*expression, value.childPath)
+                        ? SctImportedSiteAddressability::ExactSite
+                        : SctImportedSiteAddressability::ParentSiteOnly;
+                }
+                if (!instruction->scheduledExpression) {
+                    return SctImportedSiteAddressability::OwningEntityOnly;
+                }
+                return expressionSiteAddressable(*instruction->scheduledExpression, value.childPath)
+                    ? SctImportedSiteAddressability::ExactSite
+                    : SctImportedSiteAddressability::ParentSiteOnly;
+            } else {
+                const SctTextValue* text = std::visit([&](const auto& id) -> const SctTextValue* {
+                    const auto* entity = entities.find(document, id);
+                    return entity == nullptr ? nullptr : &entity->value;
+                }, value.text);
+                if (text == nullptr) return SctImportedSiteAddressability::MissingEntity;
+                if (const auto* plain = std::get_if<SctPlainText>(text)) {
+                    if (value.region != SctTextRegion::Body) {
+                        return SctImportedSiteAddressability::OwningEntityOnly;
+                    }
+                    return value.utf8Range.offset + value.utf8Range.size <= plain->utf8.size()
+                        ? SctImportedSiteAddressability::ExactSite
+                        : SctImportedSiteAddressability::ParentSiteOnly;
+                }
+                const auto* message = std::get_if<SctMessage>(text);
+                if (message == nullptr) {
+                    return SctImportedSiteAddressability::OwningEntityOnly;
+                }
+                if (value.region == SctTextRegion::Header) {
+                    if (!message->headerUtf8) {
+                        return SctImportedSiteAddressability::OwningEntityOnly;
+                    }
+                    return value.utf8Range.offset + value.utf8Range.size
+                            <= message->headerUtf8->size()
+                        ? SctImportedSiteAddressability::ExactSite
+                        : SctImportedSiteAddressability::ParentSiteOnly;
+                }
+                if (!value.elementOrdinal) {
+                    return value.utf8Range.size == 0u
+                        ? SctImportedSiteAddressability::ExactSite
+                        : SctImportedSiteAddressability::ParentSiteOnly;
+                }
+                if (*value.elementOrdinal >= message->body.elements.size()) {
+                    return SctImportedSiteAddressability::ParentSiteOnly;
+                }
+                const auto* chunk = std::get_if<SctTextChunk>(
+                    &message->body.elements[*value.elementOrdinal]);
+                if (chunk == nullptr) {
+                    return value.utf8Range.size == 0u
+                        ? SctImportedSiteAddressability::ExactSite
+                        : SctImportedSiteAddressability::ParentSiteOnly;
+                }
+                return value.utf8Range.offset + value.utf8Range.size <= chunk->utf8.size()
+                    ? SctImportedSiteAddressability::ExactSite
+                    : SctImportedSiteAddressability::ParentSiteOnly;
+            }
+        }, target);
+    };
+
+    for (const auto& sourceRecord : sourceMap.records()) {
+        if (!sourceRecord.target || result.recordIndex_.contains(*sourceRecord.target)) continue;
+        const auto index = result.records_.size();
+        result.recordIndex_.emplace(*sourceRecord.target, index);
+        result.records_.push_back({*sourceRecord.target, classify(*sourceRecord.target)});
+    }
+    if (result.records_.empty()) {
+        result.summary_ = SctImportedAddressabilitySummary::NoSites;
+    } else if (std::all_of(result.records_.begin(), result.records_.end(), [](const auto& record) {
+                   return record.addressability == SctImportedSiteAddressability::ExactSite;
+               })) {
+        result.summary_ = SctImportedAddressabilitySummary::FullyAddressable;
+    } else if (std::all_of(result.records_.begin(), result.records_.end(), [](const auto& record) {
+                   return record.addressability == SctImportedSiteAddressability::MissingEntity;
+               })) {
+        result.summary_ = SctImportedAddressabilitySummary::NoLongerAddressable;
+    } else {
+        result.summary_ = SctImportedAddressabilitySummary::PartiallyAddressable;
+    }
+    return result;
+}
+
+const SctImportedSiteAddressabilityRecord* SctImportedSiteAddressabilityIndex::find(
+    const SctImportedSourceTarget& target) const noexcept {
+    const auto found = recordIndex_.find(target);
+    return found == recordIndex_.end() ? nullptr : &records_[found->second];
+}
+
 SctDocumentAnalysis SctDocumentAnalysis::build(const SctDocument& document,
     const SctBoundImportEvidence* evidence) {
     SctDocumentAnalysis result;
     result.entities = SctDocumentIndex::build(document);
     result.controlFlow = SctControlFlowIndex::build(document, evidence);
-    result.usage = SctSemanticUsageIndex::build(document);
+    const auto contributions = semanticContributions(document);
+    result.usage = SctSemanticUsageIndex::build(contributions);
     result.opaqueContext = SctOpaqueContextIndex::build(document, evidence, result.controlFlow);
-    result.effects = SctOpcodeEffectIndex::build(document);
+    result.effects = SctOpcodeEffectIndex::build(contributions);
     if (evidence != nullptr) {
-        std::size_t total = 0;
-        std::size_t addressable = 0;
-        const auto targetAddressable = [&](const SctImportedSourceTarget& target) {
-            return std::visit([&](const auto& value) -> bool {
-                using T = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<T, SctDocumentEntityId>) {
-                    return std::visit([&](const auto& id) -> bool {
-                        using Id = std::decay_t<decltype(id)>;
-                        if constexpr (std::is_same_v<Id, std::monostate>) return false;
-                        else return result.entities.find(document, id) != nullptr;
-                    }, value);
-                } else if constexpr (std::is_same_v<T, SctParameterSite>) {
-                    const auto* instruction = result.entities.find(document, value.instruction);
-                    return instruction != nullptr && findParameter(*instruction, value.parameter) != nullptr;
-                } else if constexpr (std::is_same_v<T, SctExpressionSite>) {
-                    const auto* instruction = result.entities.find(document, value.instruction);
-                    if (instruction == nullptr) return false;
-                    const auto* expression = expressionAt(*instruction, value.owner);
-                    return expression != nullptr && expressionSiteAddressable(*expression, value.childPath);
-                } else {
-                    const SctTextValue* text = std::visit([&](const auto& id) -> const SctTextValue* {
-                        const auto* entity = result.entities.find(document, id);
-                        return entity == nullptr ? nullptr : &entity->value;
-                    }, value.text);
-                    if (text == nullptr) return false;
-                    if (const auto* plain = std::get_if<SctPlainText>(text)) {
-                        return value.region == SctTextRegion::Body
-                            && value.utf8Range.offset + value.utf8Range.size <= plain->utf8.size();
-                    }
-                    const auto* message = std::get_if<SctMessage>(text);
-                    if (message == nullptr) return value.utf8Range.size == 0u;
-                    if (value.region == SctTextRegion::Header) {
-                        return message->headerUtf8
-                            && value.utf8Range.offset + value.utf8Range.size <= message->headerUtf8->size();
-                    }
-                    if (!value.elementOrdinal) return value.utf8Range.size == 0u;
-                    if (*value.elementOrdinal >= message->body.elements.size()) return false;
-                    const auto* chunk = std::get_if<SctTextChunk>(
-                        &message->body.elements[*value.elementOrdinal]);
-                    return chunk == nullptr ? value.utf8Range.size == 0u
-                        : value.utf8Range.offset + value.utf8Range.size <= chunk->utf8.size();
-                }
-            }, target);
-        };
-        std::set<SctImportedSourceTarget> observed;
-        for (const auto& record : evidence->receipt().sourceMap.records()) {
-            if (!record.target || !observed.insert(*record.target).second) continue;
-            ++total;
-            if (targetAddressable(*record.target)) ++addressable;
-        }
-        result.importedSiteAddressability = total != 0u && addressable == total
-            ? ImportedSiteAddressability::FullyAddressable
-            : addressable == 0u ? ImportedSiteAddressability::NoLongerAddressable
-                                : ImportedSiteAddressability::PartiallyAddressable;
+        result.importedSites = SctImportedSiteAddressabilityIndex::build(
+            document, result.entities, evidence->receipt().sourceMap);
     }
     return result;
 }

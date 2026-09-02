@@ -38,7 +38,7 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     ASSERT_TRUE(parsed.parseOk);
     auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
 
     auto candidateResult = SctDocumentBuilder::reconstitute(std::move(*imported.document));

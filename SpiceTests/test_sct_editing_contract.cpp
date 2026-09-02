@@ -108,14 +108,14 @@ void acceptProvisionalSuggestions(SctInstructionDraft& draft) {
 TEST(SctDocumentImporter, OrdinaryIndexPaddingIsDerivedAndDoesNotBlockRenames) {
     const auto imported = SctDocumentImporter::import(makeLabelParse("A"), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     EXPECT_TRUE(std::none_of(imported.document->opaqueAttachments.begin(),
         imported.document->opaqueAttachments.end(), [](const auto& attachment) {
             return attachment.reason == SctOpaqueReason::Padding;
         }));
-    EXPECT_TRUE(std::any_of(imported.context.receipt.sourceMap.records().begin(),
-        imported.context.receipt.sourceMap.records().end(),
+    EXPECT_TRUE(std::any_of(imported.context.receipt().sourceMap.records().begin(),
+        imported.context.receipt().sourceMap.records().end(),
         [](const auto& provenance) { return provenance.coverageKind == SctSourceCoverageKind::DerivedLayout; }));
 
     for (const std::string name : {std::string{}, std::string{"B"}, std::string{"LONGER_NAME"},
@@ -140,7 +140,7 @@ TEST(SctDocumentImporter, UnusualIndexSuffixIsPreservedAndOnlyOverlappingGrowthI
     const auto imported = SctDocumentImporter::import(
         makeLabelParse("A", {0x7e, 0x55}), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     const auto padding = std::find_if(imported.document->opaqueAttachments.begin(),
         imported.document->opaqueAttachments.end(), [](const auto& attachment) {
@@ -438,7 +438,7 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
 }
 
@@ -486,7 +486,7 @@ TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText)
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
-    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
     auto document = *imported.document;
     auto& indexedString = std::get<SctStringSectionContent>(document.sections.front().content).string;
@@ -774,11 +774,11 @@ TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocument
     EXPECT_EQ(references[0].source.parameter, (SctParameterAddress{3, 0u}));
     EXPECT_EQ(references[1].source.parameter, (SctParameterAddress{3, 1u}));
 
-    SctDocumentImportContext context;
-    context.receipt.lineage.sha256[0] = 1u;
-    context.revisionProvenance.importLineage = context.receipt.lineage;
-    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    const auto evidence = context.bind(context.revisionProvenance);
+    SctDocumentImportReceipt receipt;
+    receipt.lineage.sha256[0] = 1u;
+    receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    SctDocumentImportContext context{std::move(receipt)};
+    const auto evidence = context.bind(context.revisionProvenance());
     ASSERT_TRUE(evidence);
     const auto first = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &*evidence);
     const auto second = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &*evidence);

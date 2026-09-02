@@ -4,12 +4,15 @@
 #include "SctDocumentIndex.h"
 
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <span>
 #include <variant>
 #include <vector>
 
 namespace spice::sct {
+
+struct SctInstructionSemanticContribution;
 
 struct SctControlFlowEdge {
     SctInstructionId sourceInstruction;
@@ -85,6 +88,8 @@ struct SctOpaqueExpressionUsage {
 class SctSemanticUsageIndex {
 public:
     [[nodiscard]] static SctSemanticUsageIndex build(const SctDocument& document);
+    [[nodiscard]] static SctSemanticUsageIndex build(
+        std::span<const SctInstructionSemanticContribution> contributions);
 
     [[nodiscard]] std::span<const SctOpcodeUsage> opcodeUsages() const noexcept { return opcodeUsages_; }
     [[nodiscard]] std::span<const SctReferenceUsage> referenceUsages() const noexcept { return referenceUsages_; }
@@ -134,6 +139,7 @@ struct SctOpaqueContextRecord {
     std::optional<SctSectionId> containingSection;
     std::optional<SctDocumentEntityId> previousSemanticEntity;
     std::optional<SctDocumentEntityId> nextSemanticEntity;
+    SctSourceRecordNeighborhood sourceNeighborhood;
     std::vector<SctControlFlowEdgeKey> crossingImportedEdges;
     std::vector<SctOpaqueInterpretation> interpretations;
 };
@@ -180,15 +186,75 @@ struct SctOpcodeEffectOccurrence {
     SctOpcodeEffectUsability usability = SctOpcodeEffectUsability::Usable;
 };
 
+struct SctInstructionSemanticContribution {
+    SctOpcodeUsage opcode;
+    std::vector<SctReferenceUsage> references;
+    std::vector<SctVariableUsage> variables;
+    std::vector<SctUnresolvedReferenceUsage> unresolvedReferences;
+    std::vector<SctOpaqueParameterUsage> opaqueParameters;
+    std::vector<SctOpaqueExpressionUsage> opaqueExpressions;
+    std::vector<SctOpcodeEffectOccurrence> effects;
+};
+
+class SctInstructionSemanticAnalyzer {
+public:
+    [[nodiscard]] static SctInstructionSemanticContribution build(
+        const SctDocumentInstruction& instruction);
+};
+
 class SctOpcodeEffectIndex {
 public:
     [[nodiscard]] static SctOpcodeEffectIndex build(const SctDocument& document);
+    [[nodiscard]] static SctOpcodeEffectIndex build(
+        std::span<const SctInstructionSemanticContribution> contributions);
     [[nodiscard]] std::span<const SctOpcodeEffectOccurrence> effects() const noexcept { return effects_; }
     [[nodiscard]] std::vector<SctOpcodeEffectOccurrence> effectsForInstruction(SctInstructionId id) const;
     [[nodiscard]] std::vector<SctOpcodeEffectOccurrence> usableEffects() const;
 
 private:
     std::vector<SctOpcodeEffectOccurrence> effects_;
+};
+
+enum class SctImportedSiteAddressability {
+    ExactSite,
+    ParentSiteOnly,
+    OwningEntityOnly,
+    MissingEntity,
+};
+
+enum class SctImportedAddressabilitySummary {
+    NoSites,
+    FullyAddressable,
+    PartiallyAddressable,
+    NoLongerAddressable,
+};
+
+struct SctImportedSiteAddressabilityRecord {
+    SctImportedSourceTarget importedTarget;
+    SctImportedSiteAddressability addressability =
+        SctImportedSiteAddressability::MissingEntity;
+};
+
+class SctImportedSiteAddressabilityIndex {
+public:
+    [[nodiscard]] static SctImportedSiteAddressabilityIndex build(
+        const SctDocument& document, const SctDocumentIndex& entities,
+        const SctImportedSourceMap& sourceMap);
+
+    [[nodiscard]] std::span<const SctImportedSiteAddressabilityRecord> records() const noexcept {
+        return records_;
+    }
+    [[nodiscard]] const SctImportedSiteAddressabilityRecord* find(
+        const SctImportedSourceTarget& target) const noexcept;
+    [[nodiscard]] SctImportedAddressabilitySummary summary() const noexcept {
+        return summary_;
+    }
+
+private:
+    std::vector<SctImportedSiteAddressabilityRecord> records_;
+    std::map<SctImportedSourceTarget, std::size_t> recordIndex_;
+    SctImportedAddressabilitySummary summary_ =
+        SctImportedAddressabilitySummary::NoSites;
 };
 
 // A revision-scoped collection of derived views. Rebuild after mutating document.
@@ -198,12 +264,7 @@ struct SctDocumentAnalysis {
     SctSemanticUsageIndex usage;
     SctOpaqueContextIndex opaqueContext;
     SctOpcodeEffectIndex effects;
-    enum class ImportedSiteAddressability {
-        NotProvided,
-        FullyAddressable,
-        PartiallyAddressable,
-        NoLongerAddressable,
-    } importedSiteAddressability = ImportedSiteAddressability::NotProvided;
+    std::optional<SctImportedSiteAddressabilityIndex> importedSites;
 
     [[nodiscard]] static SctDocumentAnalysis build(const SctDocument& document,
         const SctBoundImportEvidence* evidence = nullptr);

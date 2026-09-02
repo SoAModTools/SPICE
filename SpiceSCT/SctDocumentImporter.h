@@ -7,8 +7,10 @@
 #include "SctSourceMap.h"
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace spice::sct {
@@ -89,21 +91,32 @@ public:
     [[nodiscard]] SctImportLineageId lineage() const noexcept { return receipt_->lineage; }
 
 private:
-    friend struct SctDocumentImportContext;
-    explicit SctBoundImportEvidence(const SctDocumentImportReceipt& receipt) noexcept
-        : receipt_(&receipt) {}
-    const SctDocumentImportReceipt* receipt_ = nullptr;
+    friend class SctDocumentImportContext;
+    explicit SctBoundImportEvidence(
+        std::shared_ptr<const SctDocumentImportReceipt> receipt) noexcept
+        : receipt_(std::move(receipt)) {}
+    std::shared_ptr<const SctDocumentImportReceipt> receipt_;
 };
 
-struct SctDocumentImportContext {
-    SctDocumentImportReceipt receipt;
-    SctDocumentRevisionProvenance revisionProvenance;
+class SctDocumentImportContext {
+public:
+    SctDocumentImportContext();
+    explicit SctDocumentImportContext(SctDocumentImportReceipt receipt);
+
+    [[nodiscard]] const SctDocumentImportReceipt& receipt() const noexcept { return *receipt_; }
+    [[nodiscard]] const SctDocumentRevisionProvenance& revisionProvenance() const noexcept {
+        return revisionProvenance_;
+    }
 
     [[nodiscard]] std::optional<SctBoundImportEvidence> bind(
         const SctDocumentRevisionProvenance& revision) const noexcept {
-        if (revision.importLineage != receipt.lineage) return std::nullopt;
-        return SctBoundImportEvidence{receipt};
+        if (revision.importLineage != receipt_->lineage) return std::nullopt;
+        return SctBoundImportEvidence{receipt_};
     }
+
+private:
+    std::shared_ptr<const SctDocumentImportReceipt> receipt_;
+    SctDocumentRevisionProvenance revisionProvenance_;
 };
 
 struct SctDocumentImportResult {

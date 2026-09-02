@@ -65,6 +65,42 @@ SctImportedSourceMap::SctImportedSourceMap(std::uint32_t decodedPayloadSize,
         if (left.layer != right.layer) return left.layer == SctSourceSpanLayer::Envelope;
         return left.span.size > right.span.size;
     });
+    buildIndexes();
+}
+
+void SctImportedSourceMap::buildIndexes() {
+    std::uint64_t prefixMaximumEnd = 0;
+    for (std::uint32_t ordinal = 0; ordinal < records_.size(); ++ordinal) {
+        const auto& record = records_[ordinal];
+        prefixMaximumEnd = std::max(prefixMaximumEnd, record.span.endOffset());
+        intervalPrefixMaximumEnd_.push_back(prefixMaximumEnd);
+        if (record.target) targetRecordOrdinals_[*record.target].push_back(ordinal);
+        if (record.primaryEntityLocation) {
+            if (const auto* entity = targetEntity(record.target)) {
+                primaryEntityOrdinals_.emplace(*entity, ordinal);
+                if (isSemanticAdjacencyEntity(*entity)) {
+                    semanticLocations_.push_back({*entity, record.span, record.containingSection,
+                        record.sectionRelativeOffset, record.region});
+                }
+            }
+        }
+        if (record.layer == SctSourceSpanLayer::Leaf) {
+            leafOrdinals_.push_back(ordinal);
+            if (record.target) targetedLeafOrdinals_.push_back(ordinal);
+        } else if (record.target) {
+            targetedEnvelopeOrdinals_.push_back(ordinal);
+        }
+    }
+    std::stable_sort(semanticLocations_.begin(), semanticLocations_.end(),
+        [](const auto& left, const auto& right) {
+            if (left.primarySpan.offset != right.primarySpan.offset) {
+                return left.primarySpan.offset < right.primarySpan.offset;
+            }
+            return left.primarySpan.size < right.primarySpan.size;
+        });
+    for (std::size_t index = 0; index < semanticLocations_.size(); ++index) {
+        semanticOrderIndex_.emplace(semanticLocations_[index].entity, index);
+    }
 }
 
 SctImportedSourceMap::BuildResult SctImportedSourceMap::build(
@@ -173,78 +209,140 @@ SctImportedSourceMap::BuildResult SctImportedSourceMap::build(
 std::vector<SctSourceSpanRecord> SctImportedSourceMap::recordsFor(
     const SctImportedSourceTarget& target) const {
     std::vector<SctSourceSpanRecord> result;
-    for (const auto& record : records_) if (record.target == target) result.push_back(record);
+    const auto found = targetRecordOrdinals_.find(target);
+    if (found == targetRecordOrdinals_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto ordinal : found->second) result.push_back(records_[ordinal]);
     return result;
 }
 
 std::vector<SctSourceSpanRecord> SctImportedSourceMap::recordsAt(std::uint32_t offset) const {
     std::vector<SctSourceSpanRecord> result;
-    for (const auto& record : records_) {
+    const auto after = std::upper_bound(records_.begin(), records_.end(), offset,
+        [](std::uint32_t value, const auto& record) { return value < record.span.offset; });
+    std::size_t index = static_cast<std::size_t>(after - records_.begin());
+    while (index != 0u) {
+        --index;
+        if (intervalPrefixMaximumEnd_[index] <= offset) break;
+        const auto& record = records_[index];
         if (record.span.size != 0u && offset >= record.span.offset
             && static_cast<std::uint64_t>(offset) < record.span.endOffset()) {
             result.push_back(record);
         }
     }
+    std::reverse(result.begin(), result.end());
     return result;
 }
 
 std::vector<SctSourceSpanRecord> SctImportedSourceMap::recordsContaining(
     SctImportedByteSpan span) const {
     std::vector<SctSourceSpanRecord> result;
-    for (const auto& record : records_) if (contains(record.span, span)) result.push_back(record);
+    const auto after = std::upper_bound(records_.begin(), records_.end(), span.offset,
+        [](std::uint32_t value, const auto& record) { return value < record.span.offset; });
+    std::size_t index = static_cast<std::size_t>(after - records_.begin());
+    while (index != 0u) {
+        --index;
+        if (intervalPrefixMaximumEnd_[index] < span.endOffset()) break;
+        if (contains(records_[index].span, span)) result.push_back(records_[index]);
+    }
+    std::reverse(result.begin(), result.end());
+    return result;
+}
+
+SctSourceRecordSummary SctImportedSourceMap::summarize(std::uint32_t ordinal) const {
+    const auto& record = records_[ordinal];
+    return {{ordinal}, record.span, record.role, record.layer, record.target};
+}
+
+std::optional<SctSourceRecordSummary> SctImportedSourceMap::recordSummary(
+    SctSourceRecordOrdinal ordinal) const {
+    if (ordinal.value >= records_.size()) return std::nullopt;
+    return summarize(ordinal.value);
+}
+
+SctSourceRecordNeighborhood SctImportedSourceMap::neighborhood(
+    SctImportedByteSpan span) const {
+    return neighborhood(span, std::nullopt);
+}
+
+std::optional<SctSourceRecordNeighborhood> SctImportedSourceMap::neighborhood(
+    SctSourceRecordOrdinal ordinal) const {
+    if (ordinal.value >= records_.size()) return std::nullopt;
+    return neighborhood(records_[ordinal.value].span, ordinal.value);
+}
+
+SctSourceRecordNeighborhood SctImportedSourceMap::neighborhood(
+    SctImportedByteSpan span, std::optional<std::uint32_t> excludedOrdinal) const {
+    SctSourceRecordNeighborhood result;
+    for (const auto ordinal : targetedLeafOrdinals_) {
+        if (excludedOrdinal && ordinal == *excludedOrdinal) continue;
+        const auto& record = records_[ordinal];
+        if (record.span.endOffset() <= span.offset) {
+            result.precedingTargetedLeaf = summarize(ordinal);
+            continue;
+        }
+        if (record.span.offset >= span.endOffset()) {
+            result.followingTargetedLeaf = summarize(ordinal);
+            break;
+        }
+    }
+    for (const auto ordinal : targetedEnvelopeOrdinals_) {
+        if (excludedOrdinal && ordinal == *excludedOrdinal) continue;
+        if (contains(records_[ordinal].span, span)) {
+            result.containingTargetedEnvelopes.push_back(summarize(ordinal));
+        }
+    }
+    std::stable_sort(result.containingTargetedEnvelopes.begin(),
+        result.containingTargetedEnvelopes.end(), [](const auto& left, const auto& right) {
+            if (left.span.size != right.span.size) return left.span.size < right.span.size;
+            return left.ordinal.value > right.ordinal.value;
+        });
     return result;
 }
 
 std::optional<SctSourceEntityLocation> SctImportedSourceMap::location(
     const SctDocumentEntityId& entity) const {
-    for (const auto& record : records_) {
-        if (record.primaryEntityLocation && sameEntity(record.target, entity)) {
-            return SctSourceEntityLocation{entity, record.span, record.containingSection,
-                record.sectionRelativeOffset, record.region};
-        }
-    }
-    return std::nullopt;
-}
-
-std::vector<SctSourceEntityLocation> SctImportedSourceMap::semanticLocations() const {
-    std::vector<SctSourceEntityLocation> result;
-    for (const auto& record : records_) {
-        const auto* entity = targetEntity(record.target);
-        if (!record.primaryEntityLocation || entity == nullptr
-            || !isSemanticAdjacencyEntity(*entity)) continue;
-        result.push_back({*entity, record.span, record.containingSection,
-            record.sectionRelativeOffset, record.region});
-    }
-    std::stable_sort(result.begin(), result.end(), [](const auto& left, const auto& right) {
-        if (left.primarySpan.offset != right.primarySpan.offset) {
-            return left.primarySpan.offset < right.primarySpan.offset;
-        }
-        return left.primarySpan.size < right.primarySpan.size;
-    });
-    return result;
+    const auto found = primaryEntityOrdinals_.find(entity);
+    if (found == primaryEntityOrdinals_.end()) return std::nullopt;
+    const auto& record = records_[found->second];
+    return SctSourceEntityLocation{entity, record.span, record.containingSection,
+        record.sectionRelativeOffset, record.region};
 }
 
 std::optional<SctDocumentEntityId> SctImportedSourceMap::previousSemanticEntity(
     const SctDocumentEntityId& entity) const {
+    if (const auto semantic = semanticOrderIndex_.find(entity);
+        semantic != semanticOrderIndex_.end()) {
+        return semantic->second == 0u
+            ? std::nullopt
+            : std::optional<SctDocumentEntityId>{semanticLocations_[semantic->second - 1u].entity};
+    }
     const auto target = location(entity);
     if (!target) return std::nullopt;
-    const auto ordered = semanticLocations();
-    std::optional<SctDocumentEntityId> result;
-    for (const auto& candidate : ordered) {
-        if (candidate.primarySpan.offset >= target->primarySpan.offset) break;
-        result = candidate.entity;
-    }
-    return result;
+    const auto found = std::lower_bound(semanticLocations_.begin(), semanticLocations_.end(),
+        target->primarySpan.offset, [](const auto& candidate, std::uint32_t offset) {
+            return candidate.primarySpan.offset < offset;
+        });
+    if (found == semanticLocations_.begin()) return std::nullopt;
+    return std::prev(found)->entity;
 }
 
 std::optional<SctDocumentEntityId> SctImportedSourceMap::nextSemanticEntity(
     const SctDocumentEntityId& entity) const {
+    if (const auto semantic = semanticOrderIndex_.find(entity);
+        semantic != semanticOrderIndex_.end()) {
+        return semantic->second + 1u >= semanticLocations_.size()
+            ? std::nullopt
+            : std::optional<SctDocumentEntityId>{semanticLocations_[semantic->second + 1u].entity};
+    }
     const auto target = location(entity);
     if (!target) return std::nullopt;
-    for (const auto& candidate : semanticLocations()) {
-        if (candidate.primarySpan.offset > target->primarySpan.offset) return candidate.entity;
-    }
-    return std::nullopt;
+    const auto found = std::upper_bound(semanticLocations_.begin(), semanticLocations_.end(),
+        target->primarySpan.offset, [](std::uint32_t offset, const auto& candidate) {
+            return offset < candidate.primarySpan.offset;
+        });
+    return found == semanticLocations_.end()
+        ? std::nullopt : std::optional<SctDocumentEntityId>{found->entity};
 }
 
 std::vector<SctDocumentEntityId> SctImportedSourceMap::semanticEntitiesBetween(
@@ -255,10 +353,13 @@ std::vector<SctDocumentEntityId> SctImportedSourceMap::semanticEntitiesBetween(
     if (!firstLocation || !secondLocation) return result;
     const auto low = std::min(firstLocation->primarySpan.offset, secondLocation->primarySpan.offset);
     const auto high = std::max(firstLocation->primarySpan.offset, secondLocation->primarySpan.offset);
-    for (const auto& candidate : semanticLocations()) {
-        if (candidate.primarySpan.offset > low && candidate.primarySpan.offset < high) {
-            result.push_back(candidate.entity);
-        }
+    const auto begin = std::upper_bound(semanticLocations_.begin(), semanticLocations_.end(), low,
+        [](std::uint32_t offset, const auto& candidate) {
+            return offset < candidate.primarySpan.offset;
+        });
+    for (auto found = begin; found != semanticLocations_.end()
+         && found->primarySpan.offset < high; ++found) {
+        result.push_back(found->entity);
     }
     return result;
 }
@@ -278,8 +379,9 @@ std::optional<SctSourceRelationship> SctImportedSourceMap::relationship(
 
 bool SctImportedSourceMap::hasCompleteLeafCoverage() const noexcept {
     std::uint64_t expected = 0;
-    for (const auto& record : records_) {
-        if (record.layer != SctSourceSpanLayer::Leaf || record.span.size == 0u) continue;
+    for (const auto ordinal : leafOrdinals_) {
+        const auto& record = records_[ordinal];
+        if (record.span.size == 0u) continue;
         if (record.span.offset != expected) return false;
         expected = record.span.endOffset();
         if (expected > decodedPayloadSize_) return false;

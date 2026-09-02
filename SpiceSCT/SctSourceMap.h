@@ -4,6 +4,7 @@
 #include "SctModel.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <vector>
@@ -93,6 +94,25 @@ struct SctSourceSpanRecord {
 
 using SctImportedSourceTarget = SctSourceSpanRecord::Target;
 
+struct SctSourceRecordOrdinal {
+    std::uint32_t value = 0;
+    auto operator<=>(const SctSourceRecordOrdinal&) const = default;
+};
+
+struct SctSourceRecordSummary {
+    SctSourceRecordOrdinal ordinal;
+    SctImportedByteSpan span;
+    SctSourceSpanRole role = SctSourceSpanRole::OpaqueAttachment;
+    SctSourceSpanLayer layer = SctSourceSpanLayer::Leaf;
+    std::optional<SctImportedSourceTarget> target;
+};
+
+struct SctSourceRecordNeighborhood {
+    std::optional<SctSourceRecordSummary> precedingTargetedLeaf;
+    std::optional<SctSourceRecordSummary> followingTargetedLeaf;
+    std::vector<SctSourceRecordSummary> containingTargetedEnvelopes;
+};
+
 enum class SctSourceMapIssueCode {
     OutOfBounds,
     LeafGap,
@@ -147,6 +167,12 @@ public:
     [[nodiscard]] std::vector<SctSourceSpanRecord> recordsAt(std::uint32_t offset) const;
     [[nodiscard]] std::vector<SctSourceSpanRecord> recordsContaining(
         SctImportedByteSpan span) const;
+    [[nodiscard]] std::optional<SctSourceRecordSummary> recordSummary(
+        SctSourceRecordOrdinal ordinal) const;
+    [[nodiscard]] SctSourceRecordNeighborhood neighborhood(
+        SctImportedByteSpan span) const;
+    [[nodiscard]] std::optional<SctSourceRecordNeighborhood> neighborhood(
+        SctSourceRecordOrdinal ordinal) const;
     [[nodiscard]] std::optional<SctSourceEntityLocation> location(
         const SctDocumentEntityId& entity) const;
     [[nodiscard]] std::optional<SctDocumentEntityId> previousSemanticEntity(
@@ -164,10 +190,21 @@ private:
     SctImportedSourceMap() = default;
     explicit SctImportedSourceMap(std::uint32_t decodedPayloadSize,
         std::vector<SctSourceSpanRecord> records);
-    [[nodiscard]] std::vector<SctSourceEntityLocation> semanticLocations() const;
+    void buildIndexes();
+    [[nodiscard]] SctSourceRecordSummary summarize(std::uint32_t ordinal) const;
+    [[nodiscard]] SctSourceRecordNeighborhood neighborhood(
+        SctImportedByteSpan span, std::optional<std::uint32_t> excludedOrdinal) const;
 
     std::uint32_t decodedPayloadSize_ = 0;
     std::vector<SctSourceSpanRecord> records_;
+    std::map<SctImportedSourceTarget, std::vector<std::uint32_t>> targetRecordOrdinals_;
+    std::map<SctDocumentEntityId, std::uint32_t> primaryEntityOrdinals_;
+    std::vector<SctSourceEntityLocation> semanticLocations_;
+    std::map<SctDocumentEntityId, std::size_t> semanticOrderIndex_;
+    std::vector<std::uint64_t> intervalPrefixMaximumEnd_;
+    std::vector<std::uint32_t> leafOrdinals_;
+    std::vector<std::uint32_t> targetedLeafOrdinals_;
+    std::vector<std::uint32_t> targetedEnvelopeOrdinals_;
 };
 
 struct SctImportedSourceMap::BuildResult {

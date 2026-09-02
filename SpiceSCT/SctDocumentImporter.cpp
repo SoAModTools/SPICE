@@ -376,7 +376,8 @@ SctExpectedReferenceTarget expectedTextTarget(const SctOpcodeTextReferenceRule& 
 SctDocumentParameter unresolvedReference(const SctParameter& parameter,
     const SctInstruction& instruction, const SctOpcodeSchema& schema,
     SctExpectedReferenceTarget expected, std::optional<std::uint32_t> operandOffset,
-    std::optional<std::int64_t> targetOffset, SctDocumentImportResult& result,
+    std::optional<std::int64_t> targetOffset, SctDocumentImportReceipt& receipt,
+    SctDocumentImportResult& result,
     SctInstructionId entityId, std::uint32_t dataStart, std::string message) {
     const auto address = parameterAddress(schema, parameter.index);
     const auto absoluteOperand = operandOffset
@@ -384,7 +385,7 @@ SctDocumentParameter unresolvedReference(const SctParameter& parameter,
     const auto absoluteTarget = targetOffset
         ? std::optional<std::int64_t>{static_cast<std::int64_t>(dataStart) + *targetOffset}
         : std::nullopt;
-    result.context.receipt.unresolvedReferences.push_back({entityId, address,
+    receipt.unresolvedReferences.push_back({entityId, address,
         dataStart + instruction.payloadOffset, absoluteOperand, absoluteTarget});
     addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
         std::move(message), SctDocumentEntityId{entityId});
@@ -393,7 +394,8 @@ SctDocumentParameter unresolvedReference(const SctParameter& parameter,
 
 SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstruction& instruction,
     const SctSection& section, const SctOpcodeSchema& schema, const InstructionMap& instructionIds,
-    const StringMap& stringIds, const SctFooter* footer, const FooterMap& footerIds, SctDocumentImportResult& result,
+    const StringMap& stringIds, const SctFooter* footer, const FooterMap& footerIds,
+    SctDocumentImportReceipt& receipt, SctDocumentImportResult& result,
     SctInstructionId entityId, std::uint32_t dataStart) {
     SctDocumentParameter converted;
     converted.schemaIndex = sctOpcodeBaseParameterIndex(schema, parameter.index);
@@ -416,7 +418,7 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
             return unresolvedReference(parameter, instruction, schema, expectedInstructionTarget(),
                 operandOffset, target.payloadOffset
                     ? std::optional<std::int64_t>{static_cast<std::int64_t>(*target.payloadOffset)} : calculated,
-                result, entityId, dataStart,
+                receipt, result, entityId, dataStart,
                 "Control-flow target could not be resolved to an instruction ID.");
         }
     }
@@ -429,7 +431,7 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
                 return converted;
             }
             return unresolvedReference(parameter, instruction, schema, expectedTextTarget(*textReference),
-                operandOffset, calculatedTarget, result, entityId,
+                operandOffset, calculatedTarget, receipt, result, entityId,
                 dataStart,
                 "Indexed SCT string target could not be resolved to a string ID.");
         }
@@ -440,7 +442,7 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
             }
         }
         return unresolvedReference(parameter, instruction, schema, expectedTextTarget(*textReference),
-            operandOffset, calculatedTarget, result, entityId,
+            operandOffset, calculatedTarget, receipt, result, entityId,
             dataStart,
             "Footer target could not be resolved to a footer-entry ID.");
     }
@@ -684,26 +686,35 @@ SctOpaqueAttachmentId addAttachment(SctDocument& document,
 
 } // namespace
 
+SctDocumentImportContext::SctDocumentImportContext()
+    : receipt_(std::make_shared<const SctDocumentImportReceipt>()) {}
+
+SctDocumentImportContext::SctDocumentImportContext(SctDocumentImportReceipt receipt)
+    : receipt_(std::make_shared<const SctDocumentImportReceipt>(std::move(receipt))),
+      revisionProvenance_{receipt_->lineage} {}
+
 SctDocumentImportResult SctDocumentImporter::import(
     const SctParseResult& parsed,
     const SctDocumentImportOptions& options) {
     SctDocumentImportResult result;
+    SctDocumentImportReceipt receipt;
     std::vector<SctSourceSpanRecord> sourceRecords;
-    result.context.receipt.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
+    receipt.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
         : parsed.file.detectedEndian == "little" ? SctSourceByteOrder::LittleEndian : SctSourceByteOrder::Unknown;
-    result.context.receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
-    result.context.receipt.declaredSourcePlatform = options.declaredSourcePlatform;
-    result.context.receipt.sourceTextEncoding = options.sourceTextEncoding;
-    result.context.receipt.footerTextPromotion = options.footerTextPromotion;
+    receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
+    receipt.declaredSourcePlatform = options.declaredSourcePlatform;
+    receipt.sourceTextEncoding = options.sourceTextEncoding;
+    receipt.footerTextPromotion = options.footerTextPromotion;
     if (!parsed.parseOk) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::ParseFailed,
             "A canonical document cannot be imported from a failed parse.");
+        result.context = SctDocumentImportContext{std::move(receipt)};
         return result;
     }
     const auto& bytes = parsed.file.originalPayloadBytes;
     std::vector<std::uint8_t> lineageBytes(bytes.begin(), bytes.end());
     lineageBytes.push_back(0x53u);
-    lineageBytes.push_back(static_cast<std::uint8_t>(result.context.receipt.source.wrapper));
+    lineageBytes.push_back(static_cast<std::uint8_t>(receipt.source.wrapper));
     lineageBytes.push_back(options.declaredSourcePlatform
         ? static_cast<std::uint8_t>(*options.declaredSourcePlatform) : 0xffu);
     lineageBytes.push_back(options.sourceTextEncoding
@@ -711,24 +722,24 @@ SctDocumentImportResult SctDocumentImporter::import(
     lineageBytes.push_back(options.sourceTextEncoding
         ? static_cast<std::uint8_t>(options.sourceTextEncoding->messageSpace) : 0xffu);
     lineageBytes.push_back(static_cast<std::uint8_t>(options.footerTextPromotion));
-    result.context.receipt.lineage.sha256 = detail::sha256(lineageBytes);
-    result.context.revisionProvenance.importLineage = result.context.receipt.lineage;
+    receipt.lineage.sha256 = detail::sha256(lineageBytes);
     const std::uint64_t dataStart64 = 12ull + (20ull * parsed.file.sections.size());
     if (bytes.size() < dataStart64) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
             "Decoded SCT payload is shorter than its physical index table.");
+        result.context = SctDocumentImportContext{std::move(receipt)};
         return result;
     }
     const auto dataStart = static_cast<std::uint32_t>(dataStart64);
     if (bytes.size() >= 8u) {
-        auto& header = result.context.receipt.source.header;
+        auto& header = receipt.source.header;
         std::copy_n(bytes.begin(), 8u, header.rawBytes.begin());
-        if (result.context.receipt.source.byteOrder != SctSourceByteOrder::Unknown) {
+        if (receipt.source.byteOrder != SctSourceByteOrder::Unknown) {
             header.values = {
-                readHeaderU16(bytes, 0u, result.context.receipt.source.byteOrder),
-                readHeaderU16(bytes, 2u, result.context.receipt.source.byteOrder),
-                readHeaderU16(bytes, 4u, result.context.receipt.source.byteOrder),
-                readHeaderU16(bytes, 6u, result.context.receipt.source.byteOrder),
+                readHeaderU16(bytes, 0u, receipt.source.byteOrder),
+                readHeaderU16(bytes, 2u, receipt.source.byteOrder),
+                readHeaderU16(bytes, 4u, receipt.source.byteOrder),
+                readHeaderU16(bytes, 6u, receipt.source.byteOrder),
             };
             header.available = true;
         }
@@ -737,6 +748,7 @@ SctDocumentImportResult SctDocumentImporter::import(
         if (section.startOffset > section.endOffset || section.endOffset > bytes.size()) {
             addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
                 "A physical section has contradictory decoded-payload bounds.");
+            result.context = SctDocumentImportContext{std::move(receipt)};
             return result;
         }
     }
@@ -797,7 +809,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                 if (const auto found = instructionIds.find(*edge.toPayloadOffset);
                     found != instructionIds.end()) targetId = found->second;
             }
-            result.context.receipt.controlFlow.push_back({sourceId->second, *kind, edge.confidence,
+            receipt.controlFlow.push_back({sourceId->second, *kind, edge.confidence,
                 controlFlowOrigin(*sourceInstruction, *kind, switchOrdinal, sourceId->second),
                 targetId, edge.toPayloadOffset
                     ? std::optional<std::uint32_t>{dataStart + *edge.toPayloadOffset}
@@ -813,13 +825,13 @@ SctDocumentImportResult SctDocumentImporter::import(
             if (sourceId == instructionIds.end() || schema == nullptr) continue;
             if (schema->semantic.controlRole != SctOpcodeControlRole::None
                 && schema->semantic.controlRole != SctOpcodeControlRole::CallSubscript) continue;
-            const bool alreadyObserved = std::any_of(result.context.receipt.controlFlow.begin(),
-                result.context.receipt.controlFlow.end(), [&](const auto& observation) {
+            const bool alreadyObserved = std::any_of(receipt.controlFlow.begin(),
+                receipt.controlFlow.end(), [&](const auto& observation) {
                     return observation.sourceInstruction == sourceId->second
                         && observation.kind == SctControlFlowKind::Fallthrough;
                 });
             if (alreadyObserved) continue;
-            result.context.receipt.controlFlow.push_back({sourceId->second,
+            receipt.controlFlow.push_back({sourceId->second,
                 SctControlFlowKind::Fallthrough, SctSemanticConfidence::Known, std::nullopt,
                 targetId == instructionIds.end() ? std::nullopt
                     : std::optional<SctInstructionId>{targetId->second},
@@ -912,6 +924,7 @@ SctDocumentImportResult SctDocumentImporter::import(
         if (footer->payloadStartOffset > footer->payloadEndOffset || footer->payloadEndOffset > dataSize) {
             addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
                 "The parsed footer has contradictory decoded-payload bounds.");
+            result.context = SctDocumentImportContext{std::move(receipt)};
             return result;
         }
     }
@@ -968,7 +981,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                     "Indexed SCT string remained opaque: " + textDecision.reason,
                     SctDocumentEntityId{stringId});
             }
-            result.context.receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextEncoding,
+            receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextEncoding,
                 textDecision.disposition, std::move(textDecision.viableAlternativeConventions),
                 std::move(textDecision.reason)});
             const bool validPreamble = entry.preambleWords.size() >= 2u
@@ -1034,7 +1047,8 @@ SctDocumentImportResult SctDocumentImporter::import(
                         continue;
                     }
                     auto canonical = makeParameter(parameter, instruction, sourceSection, *schema,
-                        instructionIds, stringIds, footer, footerIds, result, converted.id, dataStart);
+                        instructionIds, stringIds, footer, footerIds, receipt, result,
+                        converted.id, dataStart);
                     if (repeated && parameter.index >= repeated->firstParameter) {
                         const auto width = repeated->lastParameter - repeated->firstParameter + 1;
                         const auto ordinal = (parameter.index - repeated->firstParameter) / width;
@@ -1112,7 +1126,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                     "Footer text remained opaque: " + textDecision.reason,
                     SctDocumentEntityId{id});
             }
-            result.context.receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextEncoding,
+            receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextEncoding,
                 textDecision.disposition, std::move(textDecision.viableAlternativeConventions),
                 std::move(textDecision.reason)});
             const auto local = entry.payloadOffset - footer->payloadStartOffset;
@@ -1162,12 +1176,14 @@ SctDocumentImportResult SctDocumentImporter::import(
         if (begin > totalCoverage.size() || size > totalCoverage.size() - begin) {
             addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
                 "An imported source claim exceeds the decoded SCT payload.");
+            result.context = SctDocumentImportContext{std::move(receipt)};
             return result;
         }
         for (std::size_t pos = begin; pos < begin + size; ++pos) {
             if (totalCoverage[pos] != 0) {
                 addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
                     "Contradictory physical bounds prevent lossless decoded-payload coverage.");
+                result.context = SctDocumentImportContext{std::move(receipt)};
                 return result;
             }
             totalCoverage[pos] = 1;
@@ -1193,10 +1209,12 @@ SctDocumentImportResult SctDocumentImporter::import(
             addDiagnostic(result, SctDiagnosticSeverity::Error,
                 SctDiagnosticCode::UnsafePhysicalStructure, issue.message);
         }
+        result.context = SctDocumentImportContext{std::move(receipt)};
         return result;
     }
-    result.context.receipt.sourceMap = std::move(*sourceMap.map);
+    receipt.sourceMap = std::move(*sourceMap.map);
     result.document = std::move(document);
+    result.context = SctDocumentImportContext{std::move(receipt)};
     return result;
 }
 
