@@ -14,8 +14,11 @@ namespace spice::sct {
 
 enum class SctRuntimeProfileId {
     GameCubeUsRetail20021219,
+    GameCubeJpRetail20021112,
+    GameCubeEuRetail20030305,
     DreamcastUsRetailDisc1,
     DreamcastJpRetailDisc1,
+    DreamcastEuRetailDisc1,
     DreamcastCustomEuDerived2026,
 };
 
@@ -151,7 +154,62 @@ enum class SctExternalDomainKind {
     ObjectTable,
     WorldCoordinates,
     DestinationCapacity,
+    ItemTable,
+    AbilityTable,
+    AudioResourceTable,
     UnknownExternalConsumer,
+};
+
+enum class SctRuntimeValueDispositionKind {
+    EvaluatedAndDiscarded,
+    Stored,
+    ForwardedToCallee,
+    UsedForLookup,
+    UsedForIndexedAccess,
+    UsedForControlDecision,
+};
+
+struct SctRuntimeValueDispositionFact {
+    SctRuntimeValueDispositionKind disposition = SctRuntimeValueDispositionKind::Stored;
+    auto operator<=>(const SctRuntimeValueDispositionFact&) const = default;
+};
+
+enum class SctRuntimeArithmeticOperation {
+    Add,
+    Multiply,
+    ShiftLeft,
+    ShiftRight,
+};
+
+struct SctRuntimeArithmeticFact {
+    SctRuntimeArithmeticOperation operation = SctRuntimeArithmeticOperation::Add;
+    SctRuntimeScalarValue scalar = std::int64_t{0};
+    auto operator<=>(const SctRuntimeArithmeticFact&) const = default;
+};
+
+enum class SctRuntimeComparisonKind {
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+    Zero,
+    Nonzero,
+};
+
+struct SctRuntimeComparisonFact {
+    SctRuntimeComparisonKind comparison = SctRuntimeComparisonKind::Equal;
+    std::optional<SctRuntimeScalarValue> operand;
+    auto operator<=>(const SctRuntimeComparisonFact&) const = default;
+};
+
+using SctRuntimeValueFlowStep = std::variant<SctValueConversionFact, SctBitMaskFact,
+    SctRuntimeArithmeticFact, SctRuntimeComparisonFact>;
+
+struct SctRuntimeValueFlowFact {
+    std::vector<SctRuntimeValueFlowStep> steps;
+    auto operator<=>(const SctRuntimeValueFlowFact&) const = default;
 };
 
 struct SctExternalDomainFact {
@@ -201,7 +259,14 @@ struct SctRuntimeCapacityFact {
 
 using SctRuntimeFactPayload = std::variant<SctValueConversionFact, SctBitMaskFact,
     SctSpecialEncodedValueFact, SctNumericDomainFact, SctExternalDomainFact,
-    SctParameterRelationshipFact, SctRuntimeOutcomeFact, SctRuntimeCapacityFact>;
+    SctParameterRelationshipFact, SctRuntimeOutcomeFact, SctRuntimeCapacityFact,
+    SctRuntimeValueDispositionFact, SctRuntimeArithmeticFact,
+    SctRuntimeComparisonFact, SctRuntimeValueFlowFact>;
+
+enum class SctRuntimeFactResolution {
+    Confirmed,
+    ProducerConfirmedFinalConsumerUnresolved,
+};
 
 enum class SctRuntimeConditionProjection {
     EncodedWord,
@@ -242,6 +307,7 @@ struct SctOpcodeParameterFactRecord {
     std::string_view sourceRecordId;
     std::uint16_t opcode = 0;
     std::uint32_t schemaIndex = 0;
+    SctRuntimeFactResolution resolution = SctRuntimeFactResolution::Confirmed;
     std::optional<SctRuntimeFactCondition> condition;
     std::vector<SctProfiledRuntimeBehavior> behaviors;
     std::string_view summary;
@@ -270,22 +336,31 @@ enum class SctRuntimeFactAgreement {
     SingleProfile,
     Uniform,
     Divergent,
-    PartialAvailability,
+};
+
+enum class SctRuntimeFactCoverage {
+    None,
+    Partial,
+    Complete,
 };
 
 struct SctOpcodeParameterFactQueryResult {
     SctRuntimeFactQueryStatus status = SctRuntimeFactQueryStatus::NoConfirmedFacts;
     SctRuntimeFactAgreement agreement = SctRuntimeFactAgreement::NoEvidence;
+    SctRuntimeFactCoverage coverage = SctRuntimeFactCoverage::None;
     std::vector<SctRuntimeProfileId> selectedProfiles;
-    std::vector<SctRuntimeProfileId> availableProfiles;
+    std::vector<SctRuntimeProfileId> opcodeAvailableProfiles;
+    std::vector<SctRuntimeProfileId> evidencedProfiles;
     std::vector<SctOpcodeParameterFactRecord> records;
 };
 
 struct SctOpcodeRuntimeFactQueryResult {
     SctRuntimeFactQueryStatus status = SctRuntimeFactQueryStatus::NoConfirmedFacts;
     SctRuntimeFactAgreement agreement = SctRuntimeFactAgreement::NoEvidence;
+    SctRuntimeFactCoverage coverage = SctRuntimeFactCoverage::None;
     std::vector<SctRuntimeProfileId> selectedProfiles;
-    std::vector<SctRuntimeProfileId> availableProfiles;
+    std::vector<SctRuntimeProfileId> opcodeAvailableProfiles;
+    std::vector<SctRuntimeProfileId> evidencedProfiles;
     std::vector<SctOpcodeRuntimeFactRecord> records;
 };
 
