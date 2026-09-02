@@ -658,6 +658,11 @@ SctDocumentAnalysis SctDocumentAnalysis::build(const SctDocument& document,
     const SctBoundImportEvidence* evidence) {
     SctDocumentAnalysis result;
     result.entities = SctDocumentIndex::build(document);
+    result.stringGroups = SctIndexedStringGroupIndex::build(document,
+        evidence == nullptr
+            ? std::span<const SctImportedIndexedStringGroupObservation>{}
+            : std::span<const SctImportedIndexedStringGroupObservation>{
+                evidence->receipt().indexedStringGroups});
     result.controlFlow = SctControlFlowIndex::build(document, evidence);
     const auto contributions = semanticContributions(document);
     result.usage = SctSemanticUsageIndex::build(contributions);

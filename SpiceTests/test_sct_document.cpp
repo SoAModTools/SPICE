@@ -592,8 +592,8 @@ TEST(SctDocumentValidator, RejectsInvalidNamesRepeatedGroupsAndExpressionArity) 
 TEST(SctDocumentValidator, RejectsZeroDuplicateOutOfAllocatorIdsAndBrokenAttachments) {
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
-    document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
-    document.sections.push_back({sectionId, "B", SctLabelSectionContent{}});
+    document.sections.push_back({sectionId, "A", SctOpaqueSectionContent{}});
+    document.sections.push_back({sectionId, "B", SctOpaqueSectionContent{}});
     const auto invalidStringSection = document.allocateSectionId();
     document.sections.push_back({invalidStringSection, "STRING",
         SctStringSectionContent{SctDocumentString{SctStringId{},

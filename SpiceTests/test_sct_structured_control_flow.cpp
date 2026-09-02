@@ -145,7 +145,7 @@ const SctStructuredRegion* regionOf(
 
 TEST(SctStructuredControlFlow, EmptyAndNonScriptDocumentsProduceNoSections) {
     SctDocument document;
-    document.sections.push_back({document.allocateSectionId(), "label", SctLabelSectionContent{}});
+    document.sections.push_back({document.allocateSectionId(), "label", SctOpaqueSectionContent{}});
     EXPECT_TRUE(analyze(document).sections().empty());
 }
 

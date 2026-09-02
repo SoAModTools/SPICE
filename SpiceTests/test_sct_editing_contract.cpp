@@ -185,9 +185,9 @@ TEST(SctDocumentBuilder, ReconstitutesSparseIdsAndRejectsInvalidIdentityState) {
     EXPECT_EQ(rebuilt.document->allocateOpaqueAttachmentId().value(), 12u);
 
     SctDocument invalid;
-    invalid.sections.push_back({SctSectionId{}, "ZERO", SctLabelSectionContent{}});
-    invalid.sections.push_back({SctSectionId{2}, "A", SctLabelSectionContent{}});
-    invalid.sections.push_back({SctSectionId{2}, "B", SctLabelSectionContent{}});
+    invalid.sections.push_back({SctSectionId{}, "ZERO", SctOpaqueSectionContent{}});
+    invalid.sections.push_back({SctSectionId{2}, "A", SctOpaqueSectionContent{}});
+    invalid.sections.push_back({SctSectionId{2}, "B", SctOpaqueSectionContent{}});
     const auto rejected = SctDocumentBuilder::reconstitute(std::move(invalid));
     EXPECT_FALSE(rejected.document.has_value());
     EXPECT_EQ(rejected.diagnostics.size(), 2u);

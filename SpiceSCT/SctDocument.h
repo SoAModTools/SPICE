@@ -243,10 +243,12 @@ struct SctStringSectionContent {
     SctDocumentString string;
     std::vector<std::uint32_t> preambleWords{9u, 0x0000001du};
 };
-struct SctLabelSectionContent {};
+struct SctStringGroupMarkerSectionContent {
+    std::vector<std::uint32_t> preambleWords{9u, 0x0000001du};
+};
 struct SctOpaqueSectionContent {};
 using SctDocumentSectionContent = std::variant<SctScriptSectionContent, SctStringSectionContent,
-    SctLabelSectionContent, SctOpaqueSectionContent>;
+    SctStringGroupMarkerSectionContent, SctOpaqueSectionContent>;
 
 struct SctDocumentSection {
     SctSectionId id;

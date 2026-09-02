@@ -300,8 +300,8 @@ TEST(SctDocumentWorkflow, ClassifiesUnavailableInspectableStructuralAndExportRea
 
     SctDocument invalid;
     const auto duplicate = invalid.allocateSectionId();
-    invalid.sections.push_back({duplicate, "A", SctLabelSectionContent{}});
-    invalid.sections.push_back({duplicate, "B", SctLabelSectionContent{}});
+    invalid.sections.push_back({duplicate, "A", SctOpaqueSectionContent{}});
+    invalid.sections.push_back({duplicate, "B", SctOpaqueSectionContent{}});
     EXPECT_EQ(SctDocumentWorkflow::assessForExport(invalid, gameCubeOptions()).readiness,
         SctDocumentReadiness::Inspectable);
 
@@ -335,7 +335,7 @@ TEST(SctDocumentWorkflow, ClassifiesUnavailableInspectableStructuralAndExportRea
     SctDocument blocked;
     const auto blockedSection = blocked.allocateSectionId();
     const auto attachmentId = blocked.allocateOpaqueAttachmentId();
-    blocked.sections.push_back({blockedSection, "LABEL", SctLabelSectionContent{}});
+    blocked.sections.push_back({blockedSection, "LABEL", SctOpaqueSectionContent{}});
     blocked.opaqueAttachments.push_back({attachmentId, {0xaa}, blockedSection,
         SctOpaquePlacement::FixedOffset, 0u, 1u, SctOpaqueRelocationSupport::FixedOnly,
         SctOpaqueReason::Gap});
@@ -362,9 +362,9 @@ TEST(SctDocumentEntityFactory, ConstructsDetachedEntitiesWithoutConsumingIdsOnFa
     ASSERT_TRUE(script.section.has_value());
     EXPECT_TRUE(std::holds_alternative<SctScriptSectionContent>(script.section->content));
     EXPECT_TRUE(document.sections.empty());
-    const auto label = SctDocumentEntityFactory::createLabelSection(document, "LABEL");
-    ASSERT_TRUE(label.section.has_value());
-    EXPECT_TRUE(std::holds_alternative<SctLabelSectionContent>(label.section->content));
+    const auto marker = SctDocumentEntityFactory::createStringGroupMarkerSection(document, "LABEL");
+    ASSERT_TRUE(marker.section.has_value());
+    EXPECT_TRUE(std::holds_alternative<SctStringGroupMarkerSectionContent>(marker.section->content));
 
     const auto indexed = SctDocumentEntityFactory::createIndexedStringSection(
         document, "STRING", message("hello"));

@@ -19,6 +19,7 @@
 #include "SctDocumentBuilder.h"
 #include "SctDocumentIndex.h"
 #include "SctSourceMap.h"
+#include "SctStringGroups.h"
 #include "SctDocumentAnalysis.h"
 #include "SctStructuredControlFlow.h"
 #include "SctInstructionFactory.h"

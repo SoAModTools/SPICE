@@ -121,6 +121,7 @@
     <ClInclude Include="SctDocumentBuilder.h" />
     <ClInclude Include="SctDocumentIndex.h" />
     <ClInclude Include="SctSourceMap.h" />
+    <ClInclude Include="SctStringGroups.h" />
     <ClInclude Include="SctSha256.h" />
     <ClInclude Include="SctDocumentAnalysis.h" />
     <ClInclude Include="SctStructuredControlFlow.h" />
@@ -149,6 +150,7 @@
     <ClCompile Include="SctDocumentBuilder.cpp" />
     <ClCompile Include="SctDocumentIndex.cpp" />
     <ClCompile Include="SctSourceMap.cpp" />
+    <ClCompile Include="SctStringGroups.cpp" />
     <ClCompile Include="SctSha256.cpp" />
     <ClCompile Include="SctDocumentAnalysis.cpp" />
     <ClCompile Include="SctStructuredControlFlow.cpp" />

@@ -50,6 +50,7 @@ enum class SctSourceSpanRole {
     ExpressionTerminator,
     TextElement,
     TextTerminator,
+    IndexedStringGroupMarkerPreamble,
     IndexedStringPreamble,
     IndexedStringRecord,
     FooterRegion,

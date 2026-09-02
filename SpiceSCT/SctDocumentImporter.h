@@ -5,6 +5,7 @@
 #include "SctModel.h"
 #include "SctOpcodeMetadata.h"
 #include "SctSourceMap.h"
+#include "SctStringGroups.h"
 
 #include <array>
 #include <memory>
@@ -81,6 +82,7 @@ struct SctDocumentImportReceipt {
         SctFooterTextPromotionPolicy::PreserveAmbiguous;
     SctImportedSourceMap sourceMap;
     std::vector<SctImportedControlFlowObservation> controlFlow;
+    std::vector<SctImportedIndexedStringGroupObservation> indexedStringGroups;
     std::vector<SctTextImportObservation> text;
     std::vector<SctUnresolvedReferenceObservation> unresolvedReferences;
 };

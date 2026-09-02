@@ -280,6 +280,17 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                     SctDocumentEntityId{section.id});
             }
         }
+        if (const auto* marker = std::get_if<SctStringGroupMarkerSectionContent>(&section.content)) {
+            const auto stop = std::find(marker->preambleWords.begin(),
+                marker->preambleWords.end(), 0x0000001du);
+            if (marker->preambleWords.size() < 2u || marker->preambleWords.front() != 9u
+                || stop == marker->preambleWords.end()
+                || stop != marker->preambleWords.end() - 1u) {
+                error(result, SctDiagnosticCode::InvalidContent,
+                    "Indexed-string group marker preamble must begin with opcode 9 and end at its first exact 0x1d word.",
+                    SctDocumentEntityId{section.id});
+            }
+        }
         if (const auto* script = std::get_if<SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) recordId(result, instruction.id, instructionIds,
                 document.nextInstructionIdValue(), "Instruction");

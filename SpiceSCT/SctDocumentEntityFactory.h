@@ -32,8 +32,9 @@ class SctDocumentEntityFactory {
 public:
     [[nodiscard]] static SctSectionFactoryResult createScriptSection(
         SctDocument& document, std::string nameBytes);
-    [[nodiscard]] static SctSectionFactoryResult createLabelSection(
-        SctDocument& document, std::string nameBytes);
+    [[nodiscard]] static SctSectionFactoryResult createStringGroupMarkerSection(
+        SctDocument& document, std::string nameBytes,
+        std::vector<std::uint32_t> preambleWords = {9u, 0x0000001du});
     [[nodiscard]] static SctSectionFactoryResult createIndexedStringSection(
         SctDocument& document, std::string nameBytes, SctTextValue value,
         std::vector<std::uint32_t> preambleWords = {9u, 0x0000001du});

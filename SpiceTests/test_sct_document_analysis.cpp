@@ -169,7 +169,7 @@ SctDocument semanticCompositionDocument() {
 
     document.sections.push_back({firstSection, "FIRST",
         SctScriptSectionContent{{std::move(rich), std::move(loadMld)}}});
-    document.sections.push_back({labelSection, "BETWEEN", SctLabelSectionContent{}});
+    document.sections.push_back({labelSection, "BETWEEN", SctOpaqueSectionContent{}});
     document.sections.push_back({secondSection, "SECOND", SctScriptSectionContent{{
         std::move(ground), std::move(loadScript), std::move(secondRich),
         instruction(targetId, 12u)}}});
@@ -647,7 +647,7 @@ TEST(SctDocumentIndex, RetainedAnalysisOwnsOnlyRevisionLocations) {
 
     auto changedLayout = controlFlowDocument();
     changedLayout.sections.insert(changedLayout.sections.begin(),
-        {changedLayout.allocateSectionId(), "INSERTED", SctLabelSectionContent{}});
+        {changedLayout.allocateSectionId(), "INSERTED", SctOpaqueSectionContent{}});
     EXPECT_EQ(retained.entities.find(changedLayout, sectionId), nullptr);
     EXPECT_EQ(retained.entities.find(changedLayout, instructionId), nullptr);
 }

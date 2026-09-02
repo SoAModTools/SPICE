@@ -322,7 +322,7 @@ TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejects
     const auto sectionId = document.allocateSectionId();
     const auto paddingId = document.allocateOpaqueAttachmentId();
     const auto contentId = document.allocateOpaqueAttachmentId();
-    document.sections.push_back({sectionId, "A", SctLabelSectionContent{}});
+    document.sections.push_back({sectionId, "A", SctOpaqueSectionContent{}});
     document.opaqueAttachments.push_back({paddingId, std::vector<std::uint8_t>(15, 0), sectionId,
         SctOpaquePlacement::FixedOffset, 17, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Padding});
     document.opaqueAttachments.push_back({contentId, {0xaa, 0xbb}, sectionId,
@@ -371,7 +371,7 @@ TEST(SctDocumentExporter, PlacesSupportedRelativeOpaqueAttachmentsAndReportsRelo
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
     const auto attachmentId = document.allocateOpaqueAttachmentId();
-    document.sections.push_back({sectionId, "LABEL", SctLabelSectionContent{}});
+    document.sections.push_back({sectionId, "LABEL", SctOpaqueSectionContent{}});
     document.opaqueAttachments.push_back({attachmentId, {0xde, 0xad}, sectionId,
         SctOpaquePlacement::Before, std::nullopt, 1, SctOpaqueRelocationSupport::Relocatable,
         SctOpaqueReason::Preamble});

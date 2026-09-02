@@ -45,9 +45,19 @@ SctSectionFactoryResult SctDocumentEntityFactory::createScriptSection(
     return createSimpleSection(document, std::move(nameBytes), SctScriptSectionContent{});
 }
 
-SctSectionFactoryResult SctDocumentEntityFactory::createLabelSection(
-    SctDocument& document, std::string nameBytes) {
-    return createSimpleSection(document, std::move(nameBytes), SctLabelSectionContent{});
+SctSectionFactoryResult SctDocumentEntityFactory::createStringGroupMarkerSection(
+    SctDocument& document, std::string nameBytes, std::vector<std::uint32_t> preambleWords) {
+    SctSectionFactoryResult result;
+    if (invalidName(result, nameBytes)) return result;
+    SctDocument validationDocument;
+    const auto sectionId = validationDocument.allocateSectionId();
+    validationDocument.sections.push_back({sectionId, nameBytes,
+        SctStringGroupMarkerSectionContent{preambleWords}});
+    appendValidation(result, SctDocumentValidator::validateDocument(validationDocument));
+    if (hasErrors(result)) return result;
+    result.section = SctDocumentSection{document.allocateSectionId(), std::move(nameBytes),
+        SctStringGroupMarkerSectionContent{std::move(preambleWords)}};
+    return result;
 }
 
 SctSectionFactoryResult SctDocumentEntityFactory::createIndexedStringSection(

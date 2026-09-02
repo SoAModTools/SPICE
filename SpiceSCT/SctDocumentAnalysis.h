@@ -2,6 +2,7 @@
 
 #include "SctDocumentImporter.h"
 #include "SctDocumentIndex.h"
+#include "SctStringGroups.h"
 #include "SctStructuredControlFlow.h"
 
 #include <cstddef>
@@ -269,6 +270,7 @@ private:
 // A revision-scoped collection of derived views. Rebuild after mutating document.
 struct SctDocumentAnalysis {
     SctDocumentIndex entities;
+    SctIndexedStringGroupIndex stringGroups;
     SctControlFlowIndex controlFlow;
     SctSemanticUsageIndex usage;
     SctOpaqueContextIndex opaqueContext;

@@ -9,6 +9,7 @@
 #include <numeric>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace spice::sct {
 namespace {
@@ -50,6 +51,31 @@ std::uint16_t readHeaderU16(const std::vector<std::uint8_t>& bytes, std::size_t 
     }
     return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8)
         | bytes[offset + 1]);
+}
+
+std::optional<std::vector<std::uint32_t>> decodeMarkerPreamble(
+    const std::vector<std::uint8_t>& bytes, std::uint32_t begin, std::uint32_t end,
+    SctSourceByteOrder order) {
+    if (order == SctSourceByteOrder::Unknown || begin > end || end > bytes.size()
+        || ((end - begin) % 4u) != 0u) return std::nullopt;
+    std::vector<std::uint32_t> words;
+    words.reserve((end - begin) / 4u);
+    for (std::uint32_t offset = begin; offset < end; offset += 4u) {
+        std::uint32_t value = 0;
+        if (order == SctSourceByteOrder::LittleEndian) {
+            value = static_cast<std::uint32_t>(bytes[offset])
+                | (static_cast<std::uint32_t>(bytes[offset + 1u]) << 8u)
+                | (static_cast<std::uint32_t>(bytes[offset + 2u]) << 16u)
+                | (static_cast<std::uint32_t>(bytes[offset + 3u]) << 24u);
+        } else {
+            value = (static_cast<std::uint32_t>(bytes[offset]) << 24u)
+                | (static_cast<std::uint32_t>(bytes[offset + 1u]) << 16u)
+                | (static_cast<std::uint32_t>(bytes[offset + 2u]) << 8u)
+                | static_cast<std::uint32_t>(bytes[offset + 3u]);
+        }
+        words.push_back(value);
+    }
+    return words;
 }
 
 bool sameCommandArgument(const SctMessageCommandArgument& left,
@@ -723,6 +749,47 @@ SctDocumentImportResult SctDocumentImporter::import(
         }
     }
 
+    std::unordered_set<std::size_t> groupMarkerSectionIndexes;
+    for (const auto& sourceGroup : parsed.file.stringGroups) {
+        if (sourceGroup.stringSectionIndexes.empty()) continue;
+        SctImportedIndexedStringGroupObservation observation;
+        observation.ordinal = receipt.indexedStringGroups.size();
+        observation.basis = sourceGroup.labelSectionIndex
+            ? SctIndexedStringGroupBasis::ExplicitMarker
+            : SctIndexedStringGroupBasis::UnmarkedContiguousRun;
+        observation.confidence = SctSemanticConfidence::Heuristic;
+        bool complete = true;
+        std::optional<std::size_t> markerIndex;
+        if (sourceGroup.labelSectionIndex) {
+            const auto index = static_cast<std::size_t>(*sourceGroup.labelSectionIndex);
+            if (index >= sectionIds.size()) {
+                complete = false;
+            } else {
+                observation.markerSection = sectionIds[index];
+                markerIndex = index;
+            }
+        }
+        for (const auto sourceIndex : sourceGroup.stringSectionIndexes) {
+            const auto index = static_cast<std::size_t>(sourceIndex);
+            if (index >= parsed.file.sections.size()) {
+                complete = false;
+                break;
+            }
+            const auto& sourceSection = parsed.file.sections[index];
+            const auto string = stringIds.find(sourceSection.startOffset - dataStart);
+            if (string == stringIds.end()) {
+                complete = false;
+                break;
+            }
+            observation.memberSections.push_back(sectionIds[index]);
+            observation.strings.push_back(string->second);
+        }
+        if (complete && !observation.strings.empty()) {
+            if (markerIndex) groupMarkerSectionIndexes.insert(*markerIndex);
+            receipt.indexedStringGroups.push_back(std::move(observation));
+        }
+    }
+
     InstructionMap instructionIds;
     for (const auto& section : parsed.file.sections) {
         std::vector<int> owners(section.endOffset - section.startOffset, -1);
@@ -970,8 +1037,33 @@ SctDocumentImportResult SctDocumentImporter::import(
                         targetSection.id, entry.textStartOffset, SctSourceRegion::SectionPayload);
                 }
             }
+        } else if (sourceSection.kind == SctSectionKind::Label
+            && groupMarkerSectionIndexes.contains(sectionIndex)) {
+            const auto preambleWords = decodeMarkerPreamble(bytes, sourceSection.startOffset,
+                sourceSection.endOffset, receipt.source.byteOrder);
+            const auto sectionSize = static_cast<std::size_t>(
+                sourceSection.endOffset - sourceSection.startOffset);
+            if (!preambleWords || preambleWords->size() < 2u
+                || preambleWords->front() != 9u || preambleWords->back() != 0x0000001du
+                || std::find(preambleWords->begin(), preambleWords->end() - 1u, 0x0000001du)
+                    != preambleWords->end() - 1u
+                || !ledger.claim(0u, sectionSize)) {
+                addDiagnostic(result, SctDiagnosticSeverity::Warning,
+                    SctDiagnosticCode::OverlappingSourceClaims,
+                    "Indexed-string group marker could not be promoted safely; its bytes remain opaque.",
+                    SctDocumentEntityId{targetSection.id});
+                targetSection.content = SctOpaqueSectionContent{};
+            } else {
+                targetSection.content = SctStringGroupMarkerSectionContent{*preambleWords};
+                addSourceRecord(sourceRecords, sourceSection.startOffset,
+                    static_cast<std::uint32_t>(sectionSize),
+                    SctSourceSpanRole::IndexedStringGroupMarkerPreamble,
+                    SctSourceCoverageKind::SemanticEntity,
+                    SctDocumentEntityId{targetSection.id}, targetSection.id, 0u,
+                    SctSourceRegion::SectionPayload);
+            }
         } else if (sourceSection.kind == SctSectionKind::Label) {
-            targetSection.content = SctLabelSectionContent{};
+            targetSection.content = SctOpaqueSectionContent{};
         } else if (!sourceSection.instructions.empty() || sourceSection.kind == SctSectionKind::Script) {
             SctScriptSectionContent script;
             const auto instructionOrder = physicalInstructionOrder(sourceSection);

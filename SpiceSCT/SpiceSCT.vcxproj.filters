@@ -89,6 +89,9 @@
     <ClInclude Include="SctSourceMap.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctStringGroups.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SctSha256.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -167,6 +170,9 @@
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctSourceMap.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SctStringGroups.cpp">
       <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctSha256.cpp">

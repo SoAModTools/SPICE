@@ -526,6 +526,17 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
                 cursor = fixedEndFor(instructionAnchor, cursor);
                 if (!placeAttachments(instructionAnchor, SctOpaquePlacement::After, cursor)) return result;
             }
+        } else if (const auto* marker = std::get_if<SctStringGroupMarkerSectionContent>(&section.content)) {
+            const auto preambleBytes = encodeWords(marker->preambleWords, options.byteOrder);
+            const auto preambleOffset = canvas.placeAtFirstFit(cursor, preambleBytes);
+            if (!preambleOffset) return result;
+            if (*preambleOffset != sectionStart) {
+                addDiagnostic(result.diagnostics, SctDiagnosticCode::OpaquePlacementUnsatisfied,
+                    "Indexed-string group marker could not begin at its physical section start.",
+                    SctDocumentEntityId{section.id});
+                return result;
+            }
+            cursor = *preambleOffset + static_cast<std::uint32_t>(preambleBytes.size());
         } else if (const auto* stringContent = std::get_if<SctStringSectionContent>(&section.content)) {
             const auto& string = stringContent->string;
             if (!placedStrings.insert(string.id.value()).second) {
