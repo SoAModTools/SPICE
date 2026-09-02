@@ -33,7 +33,8 @@ SctParseResult makeOpcode265Parse() {
     expression.rawWords = {0x08002a00u, 0x1du};
     expression.expression = SctExpression{};
     expression.expression->hitStopCode = true;
-    expression.expression->ast = SctScptAstNode{SctScptAstNodeKind::DecimalLiteral, {}, {}, {0x08002a00u}, {}};
+    expression.expression->program = SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08002a00u, {}}}};
     SctParameter footer;
     footer.index = 1;
     footer.rawWords = {0};
@@ -293,8 +294,8 @@ TEST(SctDocumentImporter, ConvertsFooterSctStringOffsetsForOpcodes24And25) {
     expression.index = 0u;
     expression.rawWords = {0x00800000u};
     expression.expression = SctExpression{};
-    expression.expression->ast = SctScptAstNode{
-        SctScptAstNodeKind::NoLoopValue, {}, {}, {0x00800000u}, {}};
+    expression.expression->program = SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::InlineValue, 0x00800000u, {}}}};
     SctParameter reference;
     reference.index = 1u;
     reference.rawWords = {0u};
@@ -356,7 +357,8 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
         parameter.rawWords = {0x08000100u, 0x1du};
         parameter.expression = SctExpression{};
         parameter.expression->hitStopCode = true;
-        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::DecimalLiteral, {}, {}, {0x08000100u}, {}};
+        parameter.expression->program = SctTypedScptProgram{{
+            SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}}}};
         return parameter;
     };
     const auto raw = [](std::uint32_t index, std::uint32_t value) {
@@ -426,7 +428,8 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
         parameter.rawWords = {encoded, 0x1du};
         parameter.expression = SctExpression{};
         parameter.expression->hitStopCode = true;
-        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::DecimalLiteral, {}, {}, {encoded}, {}};
+        parameter.expression->program = SctTypedScptProgram{{
+            SctScptValueOperation{SctScptValueKind::DecimalLiteral, encoded, {}}}};
         return parameter;
     };
     auto count = SctParameter{};
@@ -477,7 +480,7 @@ TEST(SctDocumentImporter, PreservesAmbiguousScptAsOpaqueExpression) {
         imported.document->sections[0].content).instructions[0];
     const auto* expression = std::get_if<SctCanonicalExpression>(&instruction.fixedParameters[0].value);
     ASSERT_NE(expression, nullptr);
-    EXPECT_TRUE(std::holds_alternative<SctOpaqueExpression>(expression->root));
+    EXPECT_TRUE(std::holds_alternative<SctOpaqueExpression>(expression->body));
 }
 
 TEST(SctDocumentImporter, FailedParseDoesNotProduceDocument) {
@@ -567,8 +570,9 @@ TEST(SctDocumentValidator, RejectsInvalidNamesRepeatedGroupsAndExpressionArity) 
     SctDocumentInstruction instruction;
     instruction.id = instructionId;
     instruction.opcode = 3;
-    SctCanonicalExpression expression;
-    expression.root = SctCanonicalExpressionNode{SctCanonicalExpressionNodeKind::ArithmeticOperator, 0x14, {}, {}};
+    SctCanonicalExpression expression{SctTypedScptProgram{{
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x17u}}},
+        SctExpressionTermination::StopCode};
     instruction.fixedParameters.push_back({0, expression});
     instruction.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{1}}}});
     document.sections.push_back({sectionId, std::string(17, 'X'), SctScriptSectionContent{{instruction}}});

@@ -103,15 +103,15 @@ std::vector<SctOpaqueAttachmentId> crossedAttachments(const SctImportedSourceMap
     return result;
 }
 
-std::optional<SctVariableKind> variableKind(SctCanonicalExpressionNodeKind kind) {
+std::optional<SctVariableKind> variableKind(SctScptValueKind kind) {
     switch (kind) {
-    case SctCanonicalExpressionNodeKind::IntVariable:
-    case SctCanonicalExpressionNodeKind::NegatedIntVariable:
-    case SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison:
+    case SctScptValueKind::DirectIntVariable:
+    case SctScptValueKind::NegatedIntVariable:
+    case SctScptValueKind::NegatedIntVariableLow16Comparison:
         return SctVariableKind::Integer;
-    case SctCanonicalExpressionNodeKind::FloatVariable: return SctVariableKind::Float;
-    case SctCanonicalExpressionNodeKind::BitVariable: return SctVariableKind::Bit;
-    case SctCanonicalExpressionNodeKind::ByteVariable: return SctVariableKind::Byte;
+    case SctScptValueKind::FloatVariable: return SctVariableKind::Float;
+    case SctScptValueKind::BitVariable: return SctVariableKind::Bit;
+    case SctScptValueKind::ByteVariable: return SctVariableKind::Byte;
     default: return std::nullopt;
     }
 }
@@ -151,7 +151,7 @@ SctOpcodeEffectUsability parameterUsability(const SctDocumentInstruction& instru
         return SctOpcodeEffectUsability::OpaqueInput;
     }
     if (const auto* expression = std::get_if<SctCanonicalExpression>(&value->value)) {
-        return std::holds_alternative<SctOpaqueExpression>(expression->root)
+        return std::holds_alternative<SctOpaqueExpression>(expression->body)
             ? SctOpcodeEffectUsability::OpaqueInput : SctOpcodeEffectUsability::Usable;
     }
     const auto* contract = sctOpcodeParameterSchema(schema, address.schemaIndex);
@@ -191,20 +191,10 @@ SctOpcodeEffectUsability combineUsability(SctOpcodeEffectUsability left,
     return rank(left) >= rank(right) ? left : right;
 }
 
-const SctCanonicalExpressionNode* expressionNodeAt(const SctCanonicalExpression& expression,
-    std::span<const std::uint32_t> path) {
-    const auto* node = std::get_if<SctCanonicalExpressionNode>(&expression.root);
-    for (const auto child : path) {
-        if (node == nullptr || child >= node->children.size()) return nullptr;
-        node = &node->children[child];
-    }
-    return node;
-}
-
-bool expressionSiteAddressable(const SctCanonicalExpression& expression,
-    std::span<const std::uint32_t> path) {
-    if (path.empty()) return true;
-    return expressionNodeAt(expression, path) != nullptr;
+bool expressionOperationAddressable(const SctCanonicalExpression& expression,
+    std::uint32_t ordinal) {
+    const auto* program = std::get_if<SctTypedScptProgram>(&expression.body);
+    return program != nullptr && ordinal < program->operations.size();
 }
 
 } // namespace
@@ -315,29 +305,22 @@ SctInstructionSemanticContribution SctInstructionSemanticAnalyzer::build(
     const SctDocumentInstruction& instruction) {
     SctInstructionSemanticContribution result;
     result.opcode = {instruction.opcode, instruction.id};
-    std::function<void(SctInstructionId, const SctExpressionOwner&,
-        const SctCanonicalExpressionNode&, std::vector<std::uint32_t>&)> recordNode;
-    recordNode = [&](SctInstructionId instruction, const SctExpressionOwner& owner,
-        const SctCanonicalExpressionNode& node, std::vector<std::uint32_t>& path) {
-        if (const auto kind = variableKind(node.kind)) {
-            result.variables.push_back({{*kind, node.encodingCode & 0x00ffffffu},
-                node.kind, {instruction, owner, path}});
-        }
-        for (std::size_t child = 0; child < node.children.size(); ++child) {
-            path.push_back(static_cast<std::uint32_t>(child));
-            recordNode(instruction, owner, node.children[child], path);
-            path.pop_back();
-        }
-    };
     const auto recordExpression = [&](SctInstructionId instruction, SctExpressionOwner owner,
         const SctCanonicalExpression& expression) {
-        if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
-            result.opaqueExpressions.push_back({{instruction, std::move(owner), {}}, opaque->words.size()});
+        const SctExpressionSite expressionSite{instruction, owner};
+        if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.body)) {
+            result.opaqueExpressions.push_back({expressionSite, opaque->words.size()});
             return;
         }
-        std::vector<std::uint32_t> path;
-        recordNode(instruction, owner,
-            std::get<SctCanonicalExpressionNode>(expression.root), path);
+        const auto& program = std::get<SctTypedScptProgram>(expression.body);
+        for (std::uint32_t ordinal = 0; ordinal < program.operations.size(); ++ordinal) {
+            const auto* value = std::get_if<SctScptValueOperation>(&program.operations[ordinal]);
+            if (value == nullptr) continue;
+            if (const auto kind = variableKind(value->kind)) {
+                result.variables.push_back({{*kind, value->encodingWord & 0x00ffffffu},
+                    value->kind, {expressionSite, ordinal}});
+            }
+        }
     };
     const auto recordParameter = [&](SctInstructionId instruction,
         const SctDocumentParameter& parameter, std::optional<std::uint32_t> group) {
@@ -572,15 +555,26 @@ SctImportedSiteAddressabilityIndex SctImportedSiteAddressabilityIndex::build(
                     const auto* parameter = findParameter(*instruction, *parameterOwner);
                     if (parameter == nullptr) return SctImportedSiteAddressability::OwningEntityOnly;
                     const auto* expression = std::get_if<SctCanonicalExpression>(&parameter->value);
-                    if (expression == nullptr) return SctImportedSiteAddressability::OwningEntityOnly;
-                    return expressionSiteAddressable(*expression, value.childPath)
-                        ? SctImportedSiteAddressability::ExactSite
-                        : SctImportedSiteAddressability::ParentSiteOnly;
+                    return expression == nullptr ? SctImportedSiteAddressability::OwningEntityOnly
+                                                 : SctImportedSiteAddressability::ExactSite;
                 }
-                if (!instruction->scheduledExpression) {
-                    return SctImportedSiteAddressability::OwningEntityOnly;
+                return instruction->scheduledExpression
+                    ? SctImportedSiteAddressability::ExactSite
+                    : SctImportedSiteAddressability::OwningEntityOnly;
+            } else if constexpr (std::is_same_v<T, SctExpressionOperationSite>) {
+                const auto& expressionSite = value.expression;
+                const auto* instruction = entities.find(document, expressionSite.instruction);
+                if (instruction == nullptr) return SctImportedSiteAddressability::MissingEntity;
+                const SctCanonicalExpression* expression = nullptr;
+                if (const auto* parameterOwner = std::get_if<SctParameterAddress>(&expressionSite.owner)) {
+                    const auto* parameter = findParameter(*instruction, *parameterOwner);
+                    if (parameter == nullptr) return SctImportedSiteAddressability::OwningEntityOnly;
+                    expression = std::get_if<SctCanonicalExpression>(&parameter->value);
+                } else if (instruction->scheduledExpression) {
+                    expression = &*instruction->scheduledExpression;
                 }
-                return expressionSiteAddressable(*instruction->scheduledExpression, value.childPath)
+                if (expression == nullptr) return SctImportedSiteAddressability::OwningEntityOnly;
+                return expressionOperationAddressable(*expression, value.operationOrdinal)
                     ? SctImportedSiteAddressability::ExactSite
                     : SctImportedSiteAddressability::ParentSiteOnly;
             } else {

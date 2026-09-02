@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SctScptProgram.h"
 #include "SctTextContract.h"
 
 #include <bit>
@@ -75,66 +76,11 @@ struct SctExpressionTraceEntry {
     std::string interpretedValue;
 };
 
-enum class SctScptAstNodeKind {
-    Unknown,
-    NoLoopValue,
-    FloatLiteral,
-    DecimalLiteral,
-    IntVariable,
-    NegatedIntVariable,
-    NegatedIntVariableLow16Comparison,
-    FloatVariable,
-    BitVariable,
-    ByteVariable,
-    SecondaryValue,
-    CompareOp,
-    ArithmeticOp,
-    AssignmentOp,
-    Stop,
-};
-
-enum class SctNumericLiteralEncoding {
-    Float32,
-    Decimal16_8,
-};
-
-struct SctNumericLiteral {
-    SctNumericLiteralEncoding encoding = SctNumericLiteralEncoding::Float32;
-    double value = 0.0;
-};
-
-struct SctScptAstNode {
-    SctScptAstNodeKind kind = SctScptAstNodeKind::Unknown;
-    std::string display;
-    std::string op;
-    std::vector<std::uint32_t> rawWords;
-    std::vector<SctScptAstNode> children;
-
-    [[nodiscard]] std::optional<SctNumericLiteral> numericLiteral() const noexcept {
-        if (kind == SctScptAstNodeKind::FloatLiteral && rawWords.size() >= 2u) {
-            return SctNumericLiteral{
-                .encoding = SctNumericLiteralEncoding::Float32,
-                .value = static_cast<double>(std::bit_cast<float>(rawWords[1])),
-            };
-        }
-        if (kind == SctScptAstNodeKind::DecimalLiteral && !rawWords.empty()) {
-            const auto payload = rawWords.front() & 0x00ffffffu;
-            const auto whole = static_cast<std::int16_t>((rawWords.front() >> 8u) & 0x0000ffffu);
-            const auto fraction = payload & 0x000000ffu;
-            return SctNumericLiteral{
-                .encoding = SctNumericLiteralEncoding::Decimal16_8,
-                .value = static_cast<double>(whole) + (static_cast<double>(fraction) / 256.0),
-            };
-        }
-        return std::nullopt;
-    }
-};
-
 struct SctExpression {
     std::string display;
     std::vector<SctExpressionTraceEntry> trace;
     bool hitStopCode = false;
-    std::optional<SctScptAstNode> ast;
+    std::optional<SctTypedScptProgram> program;
 };
 
 struct SctParameter {
@@ -167,7 +113,7 @@ struct SctInstruction {
         bool hitStopCode = false;
         std::string resolvedValue;
         std::vector<ScptTraceEntry> evaluationTrace;
-        std::optional<SctScptAstNode> ast;
+        std::optional<SctTypedScptProgram> program;
     };
 
     std::uint32_t offset = 0;

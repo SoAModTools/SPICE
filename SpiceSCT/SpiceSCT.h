@@ -11,6 +11,7 @@
 #include "SctParser.h"
 #include "SctOpcodeMetadata.h"
 #include "SctOpcodeParameterFacts.h"
+#include "SctScptProgram.h"
 #include "SctScptEncoding.h"
 #include "SctDocument.h"
 #include "SctTextBuilder.h"

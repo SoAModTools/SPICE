@@ -89,39 +89,35 @@ std::uint32_t requestedGroupCount(const SctOpcodeSchema& schema,
 
 SctCanonicalExpression SctExpressionFactory::encodedDecimalLiteral(
     std::int16_t whole, std::uint8_t fraction256) {
-    SctCanonicalExpressionNode node;
-    node.kind = SctCanonicalExpressionNodeKind::DecimalLiteral;
-    node.encodingCode = 0x08000000u
+    SctScptValueOperation value;
+    value.kind = SctScptValueKind::DecimalLiteral;
+    value.encodingWord = 0x08000000u
         | (static_cast<std::uint32_t>(static_cast<std::uint16_t>(whole)) << 8u)
         | fraction256;
-    return {std::move(node), SctExpressionTermination::StopCode};
+    return {SctTypedScptProgram{{std::move(value)}}, SctExpressionTermination::StopCode};
 }
 
 SctCanonicalExpression SctExpressionFactory::oneWordValue(SctExpressionOneWordValue value) {
-    SctCanonicalExpressionNode node;
-    node.kind = SctCanonicalExpressionNodeKind::NoLoopValue;
-    node.encodingCode = static_cast<std::uint32_t>(value);
-    return {std::move(node), SctExpressionTermination::InlineValue};
+    SctScptValueOperation operation{SctScptValueKind::InlineValue,
+        static_cast<std::uint32_t>(value), {}};
+    return {SctTypedScptProgram{{std::move(operation)}}, SctExpressionTermination::InlineValue};
 }
 
 SctCanonicalExpression SctExpressionFactory::secondaryValue(SctExpressionSecondaryValue value) {
-    SctCanonicalExpressionNode node;
-    node.kind = SctCanonicalExpressionNodeKind::SecondaryValue;
-    node.encodingCode = 0x50000000u | static_cast<std::uint32_t>(value);
-    return {std::move(node), SctExpressionTermination::StopCode};
+    SctScptValueOperation operation{SctScptValueKind::SecondaryValue,
+        0x50000000u | static_cast<std::uint32_t>(value), {}};
+    return {SctTypedScptProgram{{std::move(operation)}}, SctExpressionTermination::StopCode};
 }
 
 SctCanonicalExpression SctExpressionFactory::floatLiteral(float value) {
-    SctCanonicalExpressionNode node;
-    node.kind = SctCanonicalExpressionNodeKind::FloatLiteral;
-    node.encodingCode = 0x04000000u;
-    node.payloadWords.push_back(std::bit_cast<std::uint32_t>(value));
-    return {std::move(node), SctExpressionTermination::StopCode};
+    SctScptValueOperation operation{SctScptValueKind::FloatLiteral, 0x04000000u,
+        {std::bit_cast<std::uint32_t>(value)}};
+    return {SctTypedScptProgram{{std::move(operation)}}, SctExpressionTermination::StopCode};
 }
 
 namespace {
 SctExpressionBuildResult buildVariable(std::uint32_t prefix, std::uint32_t index,
-    std::uint32_t maximumIndex, SctCanonicalExpressionNodeKind requiredKind,
+    std::uint32_t maximumIndex, SctScptValueKind requiredKind,
     const char* domainMessage) {
     SctExpressionBuildResult result;
     if (index > maximumIndex) {
@@ -132,15 +128,15 @@ SctExpressionBuildResult buildVariable(std::uint32_t prefix, std::uint32_t index
     const auto classified = classifySctScptWord(prefix | index);
     const auto actualKind = [&]() {
         switch (classified.kind) {
-        case SctScptWordKind::DirectIntVariable: return SctCanonicalExpressionNodeKind::IntVariable;
-        case SctScptWordKind::NegatedIntVariable: return SctCanonicalExpressionNodeKind::NegatedIntVariable;
+        case SctScptWordKind::DirectIntVariable: return SctScptValueKind::DirectIntVariable;
+        case SctScptWordKind::NegatedIntVariable: return SctScptValueKind::NegatedIntVariable;
         case SctScptWordKind::NegatedIntVariableLow16Comparison:
-            return SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison;
-        case SctScptWordKind::SecondaryValue: return SctCanonicalExpressionNodeKind::SecondaryValue;
-        case SctScptWordKind::FloatVariable: return SctCanonicalExpressionNodeKind::FloatVariable;
-        case SctScptWordKind::BitVariable: return SctCanonicalExpressionNodeKind::BitVariable;
-        case SctScptWordKind::ByteVariable: return SctCanonicalExpressionNodeKind::ByteVariable;
-        default: return SctCanonicalExpressionNodeKind::Stop;
+            return SctScptValueKind::NegatedIntVariableLow16Comparison;
+        case SctScptWordKind::SecondaryValue: return SctScptValueKind::SecondaryValue;
+        case SctScptWordKind::FloatVariable: return SctScptValueKind::FloatVariable;
+        case SctScptWordKind::BitVariable: return SctScptValueKind::BitVariable;
+        case SctScptWordKind::ByteVariable: return SctScptValueKind::ByteVariable;
+        default: return SctScptValueKind::InlineValue;
         }
     }();
     if (actualKind != requiredKind) {
@@ -148,11 +144,10 @@ SctExpressionBuildResult buildVariable(std::uint32_t prefix, std::uint32_t index
             "SCPT input index is not in the requested runtime-selected variable domain.");
         return result;
     }
-    SctCanonicalExpressionNode node;
-    node.kind = actualKind;
-    node.encodingCode = prefix | index;
-    result.expression = SctCanonicalExpression{std::move(node), SctExpressionTermination::StopCode};
-    result.selectedNodeKind = actualKind;
+    SctScptValueOperation operation{actualKind, prefix | index, {}};
+    result.expression = SctCanonicalExpression{SctTypedScptProgram{{std::move(operation)}},
+        SctExpressionTermination::StopCode};
+    result.selectedValueKind = actualKind;
     return result;
 }
 } // namespace
@@ -169,7 +164,7 @@ SctExpressionBuildResult SctExpressionFactory::scaledDecimalLiteral(std::int32_t
     if (fraction < 0) { --whole; fraction += 256; }
     result.expression = encodedDecimalLiteral(static_cast<std::int16_t>(whole),
         static_cast<std::uint8_t>(fraction));
-    result.selectedNodeKind = SctCanonicalExpressionNodeKind::DecimalLiteral;
+    result.selectedValueKind = SctScptValueKind::DecimalLiteral;
     return result;
 }
 
@@ -181,85 +176,124 @@ SctExpressionBuildResult SctExpressionFactory::integerInput(std::uint32_t index)
         return result;
     }
     const auto classification = classifySctScptWord(0x50000000u | index);
-    SctCanonicalExpressionNodeKind kind;
+    SctScptValueKind kind;
     switch (classification.kind) {
-    case SctScptWordKind::DirectIntVariable: kind = SctCanonicalExpressionNodeKind::IntVariable; break;
-    case SctScptWordKind::NegatedIntVariable: kind = SctCanonicalExpressionNodeKind::NegatedIntVariable; break;
+    case SctScptWordKind::DirectIntVariable: kind = SctScptValueKind::DirectIntVariable; break;
+    case SctScptWordKind::NegatedIntVariable: kind = SctScptValueKind::NegatedIntVariable; break;
     case SctScptWordKind::NegatedIntVariableLow16Comparison:
-        kind = SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison; break;
-    case SctScptWordKind::SecondaryValue: kind = SctCanonicalExpressionNodeKind::SecondaryValue; break;
+        kind = SctScptValueKind::NegatedIntVariableLow16Comparison; break;
+    case SctScptWordKind::SecondaryValue: kind = SctScptValueKind::SecondaryValue; break;
     default:
         addError(result, SctDiagnosticCode::ExpressionInvalid,
             "SCPT integer-input index does not select a confirmed input form.");
         return result;
     }
-    SctCanonicalExpressionNode node{kind, 0x50000000u | index};
-    result.expression = SctCanonicalExpression{std::move(node), SctExpressionTermination::StopCode};
-    result.selectedNodeKind = kind;
+    SctScptValueOperation operation{kind, 0x50000000u | index, {}};
+    result.expression = SctCanonicalExpression{SctTypedScptProgram{{std::move(operation)}},
+        SctExpressionTermination::StopCode};
+    result.selectedValueKind = kind;
     return result;
 }
 
 SctExpressionBuildResult SctExpressionFactory::directIntegerVariable(std::uint32_t index) {
     return buildVariable(0x50000000u, index, 0x00ffffffu,
-        SctCanonicalExpressionNodeKind::IntVariable, "SCPT integer index exceeds 24 bits.");
+        SctScptValueKind::DirectIntVariable, "SCPT integer index exceeds 24 bits.");
 }
 SctExpressionBuildResult SctExpressionFactory::negatedIntegerVariable(std::uint32_t index) {
     return buildVariable(0x50000000u, index, 0x00ffffffu,
-        SctCanonicalExpressionNodeKind::NegatedIntVariable, "SCPT integer index exceeds 24 bits.");
+        SctScptValueKind::NegatedIntVariable, "SCPT integer index exceeds 24 bits.");
 }
 SctExpressionBuildResult SctExpressionFactory::low16ComparisonIntegerVariable(std::uint32_t index) {
     return buildVariable(0x50000000u, index, 0x00ffffffu,
-        SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison,
+        SctScptValueKind::NegatedIntVariableLow16Comparison,
         "SCPT integer index exceeds 24 bits.");
 }
 SctExpressionBuildResult SctExpressionFactory::floatVariable(std::uint32_t index) {
     return buildVariable(0x40000000u, index, 0x0fffffffu,
-        SctCanonicalExpressionNodeKind::FloatVariable, "SCPT float-variable index exceeds 28 bits.");
+        SctScptValueKind::FloatVariable, "SCPT float-variable index exceeds 28 bits.");
 }
 SctExpressionBuildResult SctExpressionFactory::bitVariable(std::uint32_t index) {
     return buildVariable(0x20000000u, index, 0x1fffffffu,
-        SctCanonicalExpressionNodeKind::BitVariable, "SCPT bit-variable index exceeds 29 bits.");
+        SctScptValueKind::BitVariable, "SCPT bit-variable index exceeds 29 bits.");
 }
 SctExpressionBuildResult SctExpressionFactory::byteVariable(std::uint32_t index) {
     return buildVariable(0x10000000u, index, 0x0fffffffu,
-        SctCanonicalExpressionNodeKind::ByteVariable, "SCPT byte-variable index exceeds 28 bits.");
+        SctScptValueKind::ByteVariable, "SCPT byte-variable index exceeds 28 bits.");
 }
 
 SctExpressionBuildResult SctExpressionFactory::binaryOperator(
     SctExpressionBinaryOperator operation,
     SctCanonicalExpression left, SctCanonicalExpression right) {
     SctExpressionBuildResult result;
-    const auto* leftNode = std::get_if<SctCanonicalExpressionNode>(&left.root);
-    const auto* rightNode = std::get_if<SctCanonicalExpressionNode>(&right.root);
-    if (leftNode == nullptr || rightNode == nullptr) {
+    const auto* leftProgram = std::get_if<SctTypedScptProgram>(&left.body);
+    const auto* rightProgram = std::get_if<SctTypedScptProgram>(&right.body);
+    if (leftProgram == nullptr || rightProgram == nullptr
+        || left.termination != SctExpressionTermination::StopCode
+        || right.termination != SctExpressionTermination::StopCode) {
         addError(result, SctDiagnosticCode::ExpressionInvalid,
-            "A typed SCPT operator cannot contain an opaque expression child.");
+            "A composed SCPT operator requires two typed stop-terminated program fragments.");
         return result;
     }
 
-    SctCanonicalExpressionNode node;
+    SctScptBinaryOperation binary;
     switch (operation) {
-    case SctExpressionBinaryOperator::Less: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x00u; break;
-    case SctExpressionBinaryOperator::LessOrEqual: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x01u; break;
-    case SctExpressionBinaryOperator::Greater: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x02u; break;
-    case SctExpressionBinaryOperator::GreaterOrEqual: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x03u; break;
-    case SctExpressionBinaryOperator::Equal: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x04u; break;
-    case SctExpressionBinaryOperator::NotEqual: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x05u; break;
-    case SctExpressionBinaryOperator::BitAnd: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x06u; break;
-    case SctExpressionBinaryOperator::BitOr: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x07u; break;
-    case SctExpressionBinaryOperator::LogicalAnd: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x08u; break;
-    case SctExpressionBinaryOperator::LogicalOr: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x09u; break;
-    case SctExpressionBinaryOperator::Assign: node.kind = SctCanonicalExpressionNodeKind::AssignmentOperator; node.encodingCode = 0x0au; break;
-    case SctExpressionBinaryOperator::Multiply: node.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator; node.encodingCode = 0x0bu; break;
-    case SctExpressionBinaryOperator::Divide: node.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator; node.encodingCode = 0x0cu; break;
-    case SctExpressionBinaryOperator::Modulo: node.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator; node.encodingCode = 0x0du; break;
-    case SctExpressionBinaryOperator::Add: node.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator; node.encodingCode = 0x0eu; break;
-    case SctExpressionBinaryOperator::Subtract: node.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator; node.encodingCode = 0x0fu; break;
+    case SctExpressionBinaryOperator::Less: binary = {SctScptBinaryOperationKind::Comparison, 0x00u}; break;
+    case SctExpressionBinaryOperator::LessOrEqual: binary = {SctScptBinaryOperationKind::Comparison, 0x01u}; break;
+    case SctExpressionBinaryOperator::Greater: binary = {SctScptBinaryOperationKind::Comparison, 0x02u}; break;
+    case SctExpressionBinaryOperator::GreaterOrEqual: binary = {SctScptBinaryOperationKind::Comparison, 0x03u}; break;
+    case SctExpressionBinaryOperator::Equal: binary = {SctScptBinaryOperationKind::Comparison, 0x04u}; break;
+    case SctExpressionBinaryOperator::NotEqual: binary = {SctScptBinaryOperationKind::Comparison, 0x05u}; break;
+    case SctExpressionBinaryOperator::BitAnd: binary = {SctScptBinaryOperationKind::Comparison, 0x06u}; break;
+    case SctExpressionBinaryOperator::BitOr: binary = {SctScptBinaryOperationKind::Comparison, 0x07u}; break;
+    case SctExpressionBinaryOperator::LogicalAnd: binary = {SctScptBinaryOperationKind::Comparison, 0x08u}; break;
+    case SctExpressionBinaryOperator::LogicalOr: binary = {SctScptBinaryOperationKind::Comparison, 0x09u}; break;
+    case SctExpressionBinaryOperator::Multiply: binary = {SctScptBinaryOperationKind::Arithmetic, 0x0bu}; break;
+    case SctExpressionBinaryOperator::Divide: binary = {SctScptBinaryOperationKind::Arithmetic, 0x0cu}; break;
+    case SctExpressionBinaryOperator::Modulo: binary = {SctScptBinaryOperationKind::Arithmetic, 0x0du}; break;
+    case SctExpressionBinaryOperator::Add: binary = {SctScptBinaryOperationKind::Arithmetic, 0x0eu}; break;
+    case SctExpressionBinaryOperator::Subtract: binary = {SctScptBinaryOperationKind::Arithmetic, 0x0fu}; break;
     }
-    node.children.push_back(*leftNode);
-    node.children.push_back(*rightNode);
-    result.expression = SctCanonicalExpression{std::move(node), SctExpressionTermination::StopCode};
+    SctTypedScptProgram combined;
+    combined.operations = leftProgram->operations;
+    combined.operations.insert(combined.operations.end(), rightProgram->operations.begin(),
+        rightProgram->operations.end());
+    combined.operations.push_back(binary);
+    result.expression = SctCanonicalExpression{std::move(combined), SctExpressionTermination::StopCode};
     return result;
+}
+
+SctExpressionBuildResult SctExpressionFactory::program(std::vector<SctScptOperation> operations,
+    SctExpressionTermination termination) {
+    SctExpressionBuildResult result;
+    const auto invalid = std::find_if(operations.begin(), operations.end(),
+        [](const auto& operation) { return !isSctScptOperationEncodingValid(operation); });
+    if (invalid != operations.end()) {
+        const auto ordinal = static_cast<std::uint32_t>(
+            std::distance(operations.begin(), invalid));
+        SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error,
+            SctDiagnosticCode::ExpressionInvalid,
+            "SCPT operation does not match its exact encoding or payload shape.",
+            SctDiagnosticLocation{SctDraftExpressionOperationSite{
+                SctDraftExpressionSite{}, ordinal}}};
+        result.diagnostics.push_back(std::move(diagnostic));
+        return result;
+    }
+    SctCanonicalExpression candidate{SctTypedScptProgram{std::move(operations)}, termination};
+    const auto words = encodeSctCanonicalExpressionWords(candidate);
+    const auto scan = scanSctScptWords(words);
+    if (!scan.complete || scan.wordCount != words.size()
+        || (scan.inlineValue != (termination == SctExpressionTermination::InlineValue))) {
+        addError(result, SctDiagnosticCode::ExpressionInvalid,
+            "SCPT operations and termination do not form exactly one lexical parameter.");
+        return result;
+    }
+    result.expression = std::move(candidate);
+    return result;
+}
+
+SctScptStackOverwritePreviousWithTopOperation
+SctExpressionFactory::stackOverwritePreviousWithTop() noexcept {
+    return {};
 }
 
 SctInstructionDraftResult SctInstructionFactory::createDraft(
@@ -456,9 +490,14 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
             return SctDraftParameterSite{draft.opcode, parameter->parameter};
         }
         if (const auto* expression = std::get_if<SctExpressionSite>(&location)) {
-            return SctDraftExpressionSite{draft.opcode, expression->owner, expression->childPath};
+            return SctDraftExpressionSite{draft.opcode, expression->owner};
         }
-        return SctDraftExpressionSite{draft.opcode, std::nullopt, {}};
+        if (const auto* operation = std::get_if<SctExpressionOperationSite>(&location)) {
+            return SctDraftExpressionOperationSite{
+                SctDraftExpressionSite{draft.opcode, operation->expression.owner},
+                operation->operationOrdinal};
+        }
+        return SctDraftExpressionSite{draft.opcode, std::nullopt};
     };
     for (const auto& diagnostic : validation.diagnostics) {
         if (diagnostic.code == SctDiagnosticCode::UnresolvedReference) continue;

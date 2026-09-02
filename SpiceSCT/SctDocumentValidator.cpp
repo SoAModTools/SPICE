@@ -14,17 +14,19 @@ namespace {
 void error(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
     std::optional<SctDocumentEntityId> entity = std::nullopt,
     std::optional<SctParameterAddress> parameter = std::nullopt,
-    std::vector<std::uint32_t> expressionPath = {}, bool expression = false) {
+    std::optional<std::uint32_t> expressionOperation = std::nullopt, bool expression = false) {
     SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(message)};
     const auto* instruction = entity ? std::get_if<SctInstructionId>(&*entity) : nullptr;
     if (instruction != nullptr && parameter) {
         diagnostic.primaryLocation = SctDiagnosticLocation{SctParameterSite{*instruction, *parameter}};
     }
     if (instruction != nullptr && expression) {
-        diagnostic.primaryLocation = SctDiagnosticLocation{SctExpressionSite{*instruction,
+        const SctExpressionSite site{*instruction,
             parameter ? SctExpressionOwner{*parameter}
-                      : SctExpressionOwner{SctScheduledExpressionSite{}},
-            std::move(expressionPath)}};
+                      : SctExpressionOwner{SctScheduledExpressionSite{}}};
+        diagnostic.primaryLocation = expressionOperation
+            ? SctDiagnosticLocation{SctExpressionOperationSite{site, *expressionOperation}}
+            : SctDiagnosticLocation{site};
     }
     if (!diagnostic.primaryLocation && entity) {
         diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
@@ -35,16 +37,20 @@ void error(SctDocumentValidationResult& result, SctDiagnosticCode code, std::str
 void warning(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
     std::optional<SctDocumentEntityId> entity = std::nullopt,
     std::optional<SctParameterAddress> parameter = std::nullopt,
-    bool expression = false) {
+    bool expression = false,
+    std::optional<std::uint32_t> expressionOperation = std::nullopt) {
     SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Warning, code, std::move(message)};
     const auto* instruction = entity ? std::get_if<SctInstructionId>(&*entity) : nullptr;
     if (instruction != nullptr && parameter) {
         diagnostic.primaryLocation = SctDiagnosticLocation{SctParameterSite{*instruction, *parameter}};
     }
     if (instruction != nullptr && expression) {
-        diagnostic.primaryLocation = SctDiagnosticLocation{SctExpressionSite{*instruction,
+        const SctExpressionSite site{*instruction,
             parameter ? SctExpressionOwner{*parameter}
-                      : SctExpressionOwner{SctScheduledExpressionSite{}}, {}}};
+                      : SctExpressionOwner{SctScheduledExpressionSite{}}};
+        diagnostic.primaryLocation = expressionOperation
+            ? SctDiagnosticLocation{SctExpressionOperationSite{site, *expressionOperation}}
+            : SctDiagnosticLocation{site};
     }
     if (!diagnostic.primaryLocation && entity) {
         diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
@@ -88,84 +94,22 @@ bool recordId(SctDocumentValidationResult& result, Id id, std::unordered_set<std
     return true;
 }
 
-bool validExpressionNode(const SctCanonicalExpressionNode& node, SctDocumentValidationResult& result,
-    SctDocumentEntityId entity, std::optional<SctParameterAddress> parameter,
-    const std::vector<std::uint32_t>& path) {
-    bool valid = true;
-    const bool binary = node.kind == SctCanonicalExpressionNodeKind::CompareOperator
-        || node.kind == SctCanonicalExpressionNodeKind::ArithmeticOperator
-        || node.kind == SctCanonicalExpressionNodeKind::AssignmentOperator;
-    if (binary && node.children.size() != 2) {
-        error(result, SctDiagnosticCode::ExpressionInvalid,
-            "A typed SCPT operator must have exactly two children.", entity, parameter, path, true);
-        valid = false;
-    }
-    if (!binary && !node.children.empty()) {
-        error(result, SctDiagnosticCode::ExpressionInvalid, "A typed SCPT leaf cannot have children.", entity, parameter, path, true);
-        valid = false;
-    }
-    if (node.kind == SctCanonicalExpressionNodeKind::FloatLiteral && node.payloadWords.size() != 1) {
-        error(result, SctDiagnosticCode::ExpressionInvalid,
-            "A float literal must preserve exactly one payload word.", entity, parameter, path, true);
-        valid = false;
-    }
-    if (node.kind != SctCanonicalExpressionNodeKind::FloatLiteral && !node.payloadWords.empty()) {
-        error(result, SctDiagnosticCode::ExpressionInvalid,
-            "Only a typed SCPT float literal may contain a payload word.", entity, parameter, path, true);
-        valid = false;
-    }
-    const auto classification = classifySctScptWord(node.encodingCode);
-    bool encodingMatches = true;
-    switch (node.kind) {
-    case SctCanonicalExpressionNodeKind::NoLoopValue:
-        encodingMatches = isSctScptInlineValue(node.encodingCode);
-        break;
-    case SctCanonicalExpressionNodeKind::FloatLiteral:
-        encodingMatches = classification.kind == SctScptWordKind::FloatLiteral; break;
-    case SctCanonicalExpressionNodeKind::DecimalLiteral:
-        encodingMatches = classification.kind == SctScptWordKind::DecimalLiteral; break;
-    case SctCanonicalExpressionNodeKind::IntVariable:
-        encodingMatches = classification.kind == SctScptWordKind::DirectIntVariable; break;
-    case SctCanonicalExpressionNodeKind::NegatedIntVariable:
-        encodingMatches = classification.kind == SctScptWordKind::NegatedIntVariable; break;
-    case SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison:
-        encodingMatches = classification.kind == SctScptWordKind::NegatedIntVariableLow16Comparison; break;
-    case SctCanonicalExpressionNodeKind::SecondaryValue:
-        encodingMatches = classification.kind == SctScptWordKind::SecondaryValue; break;
-    case SctCanonicalExpressionNodeKind::FloatVariable:
-        encodingMatches = classification.kind == SctScptWordKind::FloatVariable; break;
-    case SctCanonicalExpressionNodeKind::BitVariable:
-        encodingMatches = classification.kind == SctScptWordKind::BitVariable; break;
-    case SctCanonicalExpressionNodeKind::ByteVariable:
-        encodingMatches = classification.kind == SctScptWordKind::ByteVariable; break;
-    case SctCanonicalExpressionNodeKind::CompareOperator:
-        encodingMatches = classification.kind == SctScptWordKind::CompareOperator; break;
-    case SctCanonicalExpressionNodeKind::AssignmentOperator:
-        encodingMatches = classification.kind == SctScptWordKind::AssignmentOperator; break;
-    case SctCanonicalExpressionNodeKind::ArithmeticOperator:
-        encodingMatches = classification.kind == SctScptWordKind::ArithmeticOperator; break;
-    case SctCanonicalExpressionNodeKind::Stop:
-        encodingMatches = classification.kind == SctScptWordKind::Stop; break;
-    }
-    if (!encodingMatches) {
-        error(result, SctDiagnosticCode::ExpressionInvalid,
-            "Typed SCPT node kind does not match its exact encoding code.", entity, parameter, path, true);
-        valid = false;
-    }
-    for (std::size_t childIndex = 0; childIndex < node.children.size(); ++childIndex) {
-        auto childPath = path;
-        childPath.push_back(static_cast<std::uint32_t>(childIndex));
-        valid = validExpressionNode(node.children[childIndex], result, entity, parameter, childPath) && valid;
-    }
-    return valid;
+bool validExpressionOperation(const SctScptOperation& operation, std::uint32_t ordinal,
+    SctDocumentValidationResult& result, SctDocumentEntityId entity,
+    std::optional<SctParameterAddress> parameter) {
+    if (isSctScptOperationEncodingValid(operation)) return true;
+    error(result, SctDiagnosticCode::ExpressionInvalid,
+        "Typed SCPT operation does not match its exact encoding or payload shape.",
+        entity, parameter, ordinal, true);
+    return false;
 }
 
 void validateExpression(const SctCanonicalExpression& expression, SctDocumentValidationResult& result,
     SctDocumentEntityId entity, std::optional<SctParameterAddress> parameter = std::nullopt) {
-    if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
+    if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.body)) {
         if (opaque->words.empty()) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "An opaque SCPT fallback must contain the preserved encoded words.", entity, parameter, {}, true);
+                "An opaque SCPT fallback must contain the preserved encoded words.", entity, parameter, std::nullopt, true);
         } else {
             const auto scan = scanSctScptWords(opaque->words);
             if (!scan.complete || scan.wordCount != opaque->words.size()) {
@@ -173,36 +117,57 @@ void validateExpression(const SctCanonicalExpression& expression, SctDocumentVal
                     scan.error == SctScptScanError::TruncatedFloatPayload
                         ? "Opaque SCPT expression contains a truncated float payload."
                         : "Opaque SCPT expression does not contain exactly one complete parameter.",
-                    entity, parameter, {}, true);
+                    entity, parameter, std::nullopt, true);
             } else if ((scan.inlineValue && expression.termination != SctExpressionTermination::InlineValue)
                 || (!scan.inlineValue && expression.termination != SctExpressionTermination::StopCode)) {
                 error(result, SctDiagnosticCode::ExpressionInvalid,
                     "Opaque SCPT expression termination disagrees with its lexical boundary.",
-                    entity, parameter, {}, true);
+                    entity, parameter, std::nullopt, true);
             }
         }
     } else {
-        const auto& root = std::get<SctCanonicalExpressionNode>(expression.root);
-        validExpressionNode(root, result, entity, parameter, {});
-        const bool inlineValue = root.kind == SctCanonicalExpressionNodeKind::NoLoopValue;
-        const bool explicitStop = root.kind == SctCanonicalExpressionNodeKind::Stop;
-        if ((inlineValue && expression.termination != SctExpressionTermination::InlineValue)
-            || (!inlineValue && expression.termination != SctExpressionTermination::StopCode)
-            || (explicitStop && expression.termination != SctExpressionTermination::StopCode)) {
+        const auto& program = std::get<SctTypedScptProgram>(expression.body);
+        for (std::uint32_t ordinal = 0; ordinal < program.operations.size(); ++ordinal) {
+            validExpressionOperation(program.operations[ordinal], ordinal, result, entity, parameter);
+        }
+        const bool inlineValue = program.operations.size() == 1u
+            && std::holds_alternative<SctScptValueOperation>(program.operations.front())
+            && std::get<SctScptValueOperation>(program.operations.front()).kind
+                == SctScptValueKind::InlineValue;
+        if ((expression.termination == SctExpressionTermination::InlineValue && !inlineValue)
+            || (expression.termination == SctExpressionTermination::StopCode && inlineValue)) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "Typed SCPT expression termination is incompatible with its root encoding.", entity, parameter, {}, true);
+                "Typed SCPT program termination is incompatible with its operations.",
+                entity, parameter, std::nullopt, true);
         }
         const auto words = encodeSctCanonicalExpressionWords(expression);
         const auto scan = scanSctScptWords(words);
         if (!scan.complete || scan.wordCount != words.size()) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "Typed SCPT expression does not encode as exactly one complete parameter.", entity, parameter, {}, true);
+                "Typed SCPT program does not encode as exactly one complete parameter.",
+                entity, parameter, std::nullopt, true);
         }
-        if (sctCanonicalExpressionMaximumStackDepth(expression)
-            > kSctScptRuntimeStackWarningThreshold) {
-            warning(result, SctDiagnosticCode::ExpressionRuntimeStackDepth,
-                "SCPT expression exceeds the observed runtime stack-depth warning threshold.",
-                entity, parameter, true);
+        const auto analysis = analyzeSctScptProgram(program);
+        for (const auto& issue : analysis.issues) {
+            switch (issue.kind) {
+            case SctScptProgramIssueKind::LogicalStackUnderflow:
+                warning(result, SctDiagnosticCode::ExpressionLogicalStackUnderflow,
+                    "SCPT operation accesses outside the current logical value stack.",
+                    entity, parameter, true, issue.operationOrdinal);
+                break;
+            case SctScptProgramIssueKind::UndefinedReturnValue:
+                warning(result, SctDiagnosticCode::ExpressionUndefinedResult,
+                    "SCPT stack program does not define logical return slot zero.", entity, parameter, true);
+                break;
+            case SctScptProgramIssueKind::ResidualStackValues:
+                warning(result, SctDiagnosticCode::ExpressionResidualStackValues,
+                    "SCPT stack program leaves additional logical stack values after slot zero.", entity, parameter, true);
+                break;
+            case SctScptProgramIssueKind::RuntimeStackDepth:
+                warning(result, SctDiagnosticCode::ExpressionRuntimeStackDepth,
+                    "SCPT expression exceeds the observed runtime stack-depth warning threshold.", entity, parameter, true);
+                break;
+            }
         }
     }
 }

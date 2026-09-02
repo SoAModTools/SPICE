@@ -1,6 +1,9 @@
 #include "SctJsonExporter.h"
 
+#include "SctScptEncoding.h"
+
 #include <sstream>
+#include <type_traits>
 
 namespace spice::sct {
 namespace {
@@ -82,24 +85,19 @@ const char* toString(SctFooterEntryKind value) {
     }
 }
 
-const char* toString(SctScptAstNodeKind value) {
+const char* toString(SctScptValueKind value) {
     switch (value) {
-    case SctScptAstNodeKind::Unknown: return "unknown";
-    case SctScptAstNodeKind::NoLoopValue: return "no_loop_value";
-    case SctScptAstNodeKind::FloatLiteral: return "float_literal";
-    case SctScptAstNodeKind::DecimalLiteral: return "decimal_literal";
-    case SctScptAstNodeKind::IntVariable: return "int_variable";
-    case SctScptAstNodeKind::NegatedIntVariable: return "negated_int_variable";
-    case SctScptAstNodeKind::NegatedIntVariableLow16Comparison:
+    case SctScptValueKind::InlineValue: return "inline_value";
+    case SctScptValueKind::FloatLiteral: return "float_literal";
+    case SctScptValueKind::DecimalLiteral: return "decimal_literal";
+    case SctScptValueKind::DirectIntVariable: return "int_variable";
+    case SctScptValueKind::NegatedIntVariable: return "negated_int_variable";
+    case SctScptValueKind::NegatedIntVariableLow16Comparison:
         return "negated_int_variable_low16_comparison";
-    case SctScptAstNodeKind::FloatVariable: return "float_variable";
-    case SctScptAstNodeKind::BitVariable: return "bit_variable";
-    case SctScptAstNodeKind::ByteVariable: return "byte_variable";
-    case SctScptAstNodeKind::SecondaryValue: return "secondary_value";
-    case SctScptAstNodeKind::CompareOp: return "compare_op";
-    case SctScptAstNodeKind::ArithmeticOp: return "arithmetic_op";
-    case SctScptAstNodeKind::AssignmentOp: return "assignment_op";
-    case SctScptAstNodeKind::Stop: return "stop";
+    case SctScptValueKind::FloatVariable: return "float_variable";
+    case SctScptValueKind::BitVariable: return "bit_variable";
+    case SctScptValueKind::ByteVariable: return "byte_variable";
+    case SctScptValueKind::SecondaryValue: return "secondary_value";
     default: return "unknown";
     }
 }
@@ -162,18 +160,76 @@ void writeAttributes(std::ostringstream& out, const std::map<std::string, std::s
     out << '}';
 }
 
-void writeScptAstNode(std::ostringstream& out, const SctScptAstNode& node) {
-    out << "{\"kind\":\"" << toString(node.kind)
-        << "\",\"display\":\"" << jsonEscape(node.display)
-        << "\",\"op\":\"" << jsonEscape(node.op)
-        << "\",\"rawWords\":";
-    writeU32Array(out, node.rawWords);
-    out << ",\"children\":[";
-    for (std::size_t i = 0; i < node.children.size(); ++i) {
-        if (i != 0) {
-            out << ',';
+void writeScptOperation(std::ostringstream& out, const SctScptOperation& operation) {
+    std::visit([&](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, SctScptValueOperation>) {
+            out << "{\"kind\":\"value\",\"valueKind\":\"" << toString(value.kind)
+                << "\",\"encodingWord\":" << value.encodingWord << ",\"payloadWords\":";
+            writeU32Array(out, value.payloadWords);
+            out << '}';
+        } else if constexpr (std::is_same_v<T, SctScptBinaryOperation>) {
+            out << "{\"kind\":\""
+                << (value.kind == SctScptBinaryOperationKind::Comparison
+                    ? "comparison" : "arithmetic")
+                << "\",\"encodingWord\":" << value.encodingWord << '}';
+        } else if constexpr (std::is_same_v<T, SctScptStackOverwritePreviousWithTopOperation>) {
+            out << "{\"kind\":\"stack_overwrite_previous_with_top\",\"encodingWord\":"
+                << value.encodingWord << '}';
+        } else {
+            out << "{\"kind\":\"inert\",\"encodingWord\":" << value.encodingWord << '}';
         }
-        writeScptAstNode(out, node.children[i]);
+    }, operation);
+}
+
+const char* toString(SctScptComparisonMode mode) {
+    switch (mode) {
+    case SctScptComparisonMode::NotApplicable: return "not_applicable";
+    case SctScptComparisonMode::Floating: return "floating";
+    case SctScptComparisonMode::Low16Integer: return "low16_integer";
+    case SctScptComparisonMode::Unknown: return "unknown";
+    default: return "unknown";
+    }
+}
+
+const char* toString(SctScptProgramIssueKind kind) {
+    switch (kind) {
+    case SctScptProgramIssueKind::LogicalStackUnderflow: return "logical_stack_underflow";
+    case SctScptProgramIssueKind::UndefinedReturnValue: return "undefined_return_value";
+    case SctScptProgramIssueKind::ResidualStackValues: return "residual_stack_values";
+    case SctScptProgramIssueKind::RuntimeStackDepth: return "runtime_stack_depth";
+    default: return "unknown";
+    }
+}
+
+void writeScptDerivedNode(std::ostringstream& out,
+    const SctScptDerivedExpressionNode& node) {
+    out << "{\"operationOrdinal\":" << node.operationOrdinal
+        << ",\"comparisonMode\":\"" << toString(node.comparisonMode)
+        << "\",\"children\":[";
+    for (std::size_t i = 0; i < node.children.size(); ++i) {
+        if (i != 0) out << ',';
+        writeScptDerivedNode(out, node.children[i]);
+    }
+    out << "]}";
+}
+
+void writeScptProgramAnalysis(std::ostringstream& out,
+    const SctScptProgramAnalysis& analysis) {
+    out << "{\"maximumLogicalStackDepth\":" << analysis.maximumLogicalStackDepth
+        << ",\"returnedExpression\":";
+    if (analysis.returnedExpression) writeScptDerivedNode(out, *analysis.returnedExpression);
+    else out << "null";
+    out << ",\"conventionalTree\":";
+    if (analysis.conventionalTree) writeScptDerivedNode(out, *analysis.conventionalTree);
+    else out << "null";
+    out << ",\"issues\":[";
+    for (std::size_t i = 0; i < analysis.issues.size(); ++i) {
+        if (i != 0) out << ',';
+        out << "{\"kind\":\"" << toString(analysis.issues[i].kind)
+            << "\",\"operationOrdinal\":";
+        writeOptionalU32(out, analysis.issues[i].operationOrdinal);
+        out << '}';
     }
     out << "]}";
 }
@@ -189,9 +245,16 @@ void writeExpression(std::ostringstream& out, const SctExpression& expression) {
         out << "{\"rawWord\":" << expression.trace[i].rawWord
             << ",\"interpretedValue\":\"" << jsonEscape(expression.trace[i].interpretedValue) << "\"}";
     }
-    out << "],\"ast\":";
-    if (expression.ast.has_value()) {
-        writeScptAstNode(out, *expression.ast);
+    out << "],\"program\":";
+    if (expression.program.has_value()) {
+        out << "{\"operations\":[";
+        for (std::size_t i = 0; i < expression.program->operations.size(); ++i) {
+            if (i != 0) out << ',';
+            writeScptOperation(out, expression.program->operations[i]);
+        }
+        out << "],\"analysis\":";
+        writeScptProgramAnalysis(out, analyzeSctScptProgram(*expression.program));
+        out << '}';
     } else {
         out << "null";
     }

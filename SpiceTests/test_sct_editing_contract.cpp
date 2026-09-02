@@ -260,33 +260,34 @@ TEST(SctExpressionFactory, RejectsLossyVariableAndOpaqueOperatorConstruction) {
 
     const auto variable = SctExpressionFactory::integerInput(0x00ffffffu);
     ASSERT_TRUE(variable.expression.has_value());
-    EXPECT_EQ(std::get<SctCanonicalExpressionNode>(variable.expression->root).encodingCode, 0x50ffffffu);
+    EXPECT_EQ(std::get<SctScptValueOperation>(
+        std::get<SctTypedScptProgram>(variable.expression->body).operations.front()).encodingWord,
+        0x50ffffffu);
 }
 
-TEST(SctDocumentValidator, ReportsParameterGroupAndExpressionChildLocations) {
+TEST(SctDocumentValidator, ReportsParameterGroupAndExpressionOperationLocations) {
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
     SctDocumentInstruction instruction;
     instruction.id = document.allocateInstructionId();
     instruction.opcode = 100;
-    SctCanonicalExpressionNode invalidOperator;
-    invalidOperator.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
-    invalidOperator.encodingCode = 0x0eu;
-    invalidOperator.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::encodedDecimalLiteral(1).root));
-    instruction.fixedParameters.push_back({0, SctCanonicalExpression{invalidOperator, SctExpressionTermination::StopCode}});
+    const SctCanonicalExpression invalidExpression{SctTypedScptProgram{{
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x17u}}},
+        SctExpressionTermination::StopCode};
+    instruction.fixedParameters.push_back({0, invalidExpression});
     instruction.fixedParameters.push_back({1, SctExpressionFactory::encodedDecimalLiteral(0)});
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{instruction}}});
 
     const auto validation = SctDocumentValidator::validateDocument(document);
     const auto found = std::find_if(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::ExpressionInvalid && diagnostic.primaryLocation
-            && std::holds_alternative<SctExpressionSite>(*diagnostic.primaryLocation);
+            && std::holds_alternative<SctExpressionOperationSite>(*diagnostic.primaryLocation);
     });
     ASSERT_NE(found, validation.diagnostics.end());
-    const auto& site = std::get<SctExpressionSite>(*found->primaryLocation);
-    EXPECT_EQ(std::get<SctParameterAddress>(site.owner).schemaIndex, 0u);
-    EXPECT_FALSE(std::get<SctParameterAddress>(site.owner).repeatedGroupOrdinal.has_value());
-    EXPECT_TRUE(site.childPath.empty());
+    const auto& site = std::get<SctExpressionOperationSite>(*found->primaryLocation);
+    EXPECT_EQ(std::get<SctParameterAddress>(site.expression.owner).schemaIndex, 0u);
+    EXPECT_FALSE(std::get<SctParameterAddress>(site.expression.owner).repeatedGroupOrdinal.has_value());
+    EXPECT_EQ(site.operationOrdinal, 0u);
 }
 
 TEST(SctOpcodeAuthoringCatalog, CoversEveryOpcodeShapeWithoutInventingLegalDomains) {
@@ -376,9 +377,9 @@ TEST(SctInstructionFactory, RepresentsScheduledOpcode129AsAnInstructionModifier)
 }
 
 TEST(SctInstructionFactory, RejectsInvalidDraftExpressionsWithoutAssigningEntityIdentity) {
-    SctCanonicalExpression invalidExpression;
-    invalidExpression.root = SctCanonicalExpressionNode{
-        SctCanonicalExpressionNodeKind::ArithmeticOperator, 0x0eu, {}, {}};
+    SctCanonicalExpression invalidExpression{SctTypedScptProgram{{
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x17u}}},
+        SctExpressionTermination::StopCode};
 
     SctInstructionFactoryRequest request;
     request.opcode = 12;
@@ -395,7 +396,8 @@ TEST(SctInstructionFactory, RejectsInvalidDraftExpressionsWithoutAssigningEntity
         [](const auto& diagnostic) {
             return diagnostic.code == SctDiagnosticCode::ExpressionInvalid
                 && diagnostic.primaryLocation
-                && std::holds_alternative<SctDraftExpressionSite>(*diagnostic.primaryLocation);
+                && std::holds_alternative<SctDraftExpressionOperationSite>(
+                    *diagnostic.primaryLocation);
         }));
 }
 
@@ -542,20 +544,22 @@ TEST(SctDocumentEditing, TypedExpressionEditsExportAndReimport) {
     const auto& result = std::get<SctScriptSectionContent>(
         reimported.document->sections.front().content).instructions.front();
     const auto& editedExpression = std::get<SctCanonicalExpression>(result.fixedParameters[0].value);
-    const auto& operation = std::get<SctCanonicalExpressionNode>(editedExpression.root);
-    EXPECT_EQ(operation.kind, SctCanonicalExpressionNodeKind::ArithmeticOperator);
-    EXPECT_EQ(operation.encodingCode, 0x0eu);
-    ASSERT_EQ(operation.children.size(), 2u);
-    EXPECT_EQ(operation.children[0].kind, SctCanonicalExpressionNodeKind::NegatedIntVariable);
-    EXPECT_EQ(operation.children[0].encodingCode, 0x50000008u);
-    EXPECT_EQ(operation.children[1].kind, SctCanonicalExpressionNodeKind::DecimalLiteral);
-    EXPECT_EQ(operation.children[1].encodingCode, 0x08000c80u);
+    const auto& operations = std::get<SctTypedScptProgram>(editedExpression.body).operations;
+    ASSERT_EQ(operations.size(), 3u);
+    EXPECT_EQ(std::get<SctScptValueOperation>(operations[0]).kind,
+        SctScptValueKind::NegatedIntVariable);
+    EXPECT_EQ(std::get<SctScptValueOperation>(operations[0]).encodingWord, 0x50000008u);
+    EXPECT_EQ(std::get<SctScptValueOperation>(operations[1]).kind,
+        SctScptValueKind::DecimalLiteral);
+    EXPECT_EQ(std::get<SctScptValueOperation>(operations[1]).encodingWord, 0x08000c80u);
+    EXPECT_EQ(std::get<SctScptBinaryOperation>(operations[2]).encodingWord, 0x0eu);
 
     const auto& floatExpression = std::get<SctCanonicalExpression>(result.fixedParameters[1].value);
-    const auto& floatNode = std::get<SctCanonicalExpressionNode>(floatExpression.root);
-    EXPECT_EQ(floatNode.kind, SctCanonicalExpressionNodeKind::FloatLiteral);
-    ASSERT_EQ(floatNode.payloadWords.size(), 1u);
-    EXPECT_EQ(floatNode.payloadWords.front(), 0x3fc00000u);
+    const auto& floatValue = std::get<SctScptValueOperation>(
+        std::get<SctTypedScptProgram>(floatExpression.body).operations.front());
+    EXPECT_EQ(floatValue.kind, SctScptValueKind::FloatLiteral);
+    ASSERT_EQ(floatValue.payloadWords.size(), 1u);
+    EXPECT_EQ(floatValue.payloadWords.front(), 0x3fc00000u);
 }
 
 TEST(SctDocumentEditing, RepeatedGroupsCanBeAddedRemovedAndReordered) {
@@ -591,8 +595,10 @@ TEST(SctDocumentEditing, RepeatedGroupsCanBeAddedRemovedAndReordered) {
     ASSERT_EQ(result.repeatedParameterGroups.size(), 2u);
     const auto& first = std::get<SctCanonicalExpression>(result.repeatedParameterGroups[0].parameters[0].value);
     const auto& second = std::get<SctCanonicalExpression>(result.repeatedParameterGroups[1].parameters[0].value);
-    EXPECT_EQ(std::get<SctCanonicalExpressionNode>(first.root).encodingCode, 0x08001400u);
-    EXPECT_EQ(std::get<SctCanonicalExpressionNode>(second.root).encodingCode, 0x08001e00u);
+    EXPECT_EQ(std::get<SctScptValueOperation>(
+        std::get<SctTypedScptProgram>(first.body).operations.front()).encodingWord, 0x08001400u);
+    EXPECT_EQ(std::get<SctScptValueOperation>(
+        std::get<SctTypedScptProgram>(second.body).operations.front()).encodingWord, 0x08001e00u);
 }
 
 TEST(SctDocumentEditing, MovesTargetsAcrossSectionsAndRetargetsSwitchAndCallReferences) {
@@ -718,31 +724,26 @@ TEST(SctDocumentValidator, LocatesNestedExpressionErrorsInsideRepeatedGroups) {
     instruction.fixedParameters.push_back({0, SctExpressionFactory::encodedDecimalLiteral(0)});
     instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::encodedDecimalLiteral(1)}}});
 
-    SctCanonicalExpressionNode invalidChild;
-    invalidChild.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
-    invalidChild.encodingCode = 0x0eu;
-    invalidChild.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::encodedDecimalLiteral(2).root));
-    SctCanonicalExpressionNode root;
-    root.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
-    root.encodingCode = 0x0eu;
-    root.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::encodedDecimalLiteral(3).root));
-    root.children.push_back(std::move(invalidChild));
     instruction.repeatedParameterGroups.push_back({{{2,
-        SctCanonicalExpression{std::move(root), SctExpressionTermination::StopCode}}}});
+        SctCanonicalExpression{SctTypedScptProgram{{
+            SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000300u, {}},
+            SctScptBinaryOperation{SctScptBinaryOperationKind::Arithmetic, 0x17u}}},
+            SctExpressionTermination::StopCode}}}});
     document.sections.push_back({sectionId, "INVALID", SctScriptSectionContent{{instruction}}});
 
     const auto validation = SctDocumentValidator::validateDocument(document);
     const auto found = std::find_if(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::ExpressionInvalid
             && diagnostic.primaryLocation
-            && std::holds_alternative<SctExpressionSite>(*diagnostic.primaryLocation)
+            && std::holds_alternative<SctExpressionOperationSite>(*diagnostic.primaryLocation)
             && std::get<SctParameterAddress>(
-                std::get<SctExpressionSite>(*diagnostic.primaryLocation).owner).repeatedGroupOrdinal == 1u;
+                std::get<SctExpressionOperationSite>(*diagnostic.primaryLocation)
+                    .expression.owner).repeatedGroupOrdinal == 1u;
     });
     ASSERT_NE(found, validation.diagnostics.end());
-    const auto& expressionSite = std::get<SctExpressionSite>(*found->primaryLocation);
-    EXPECT_EQ(std::get<SctParameterAddress>(expressionSite.owner).schemaIndex, 2u);
-    EXPECT_EQ(expressionSite.childPath, std::vector<std::uint32_t>({1u}));
+    const auto& operationSite = std::get<SctExpressionOperationSite>(*found->primaryLocation);
+    EXPECT_EQ(std::get<SctParameterAddress>(operationSite.expression.owner).schemaIndex, 2u);
+    EXPECT_EQ(operationSite.operationOrdinal, 1u);
 }
 
 TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocumentOrder) {

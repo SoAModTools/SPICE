@@ -74,15 +74,15 @@ SctDocument controlFlowDocument() {
 
     auto branch = instruction(ids[0], 0u);
     branch.fixedParameters = {
-        parameter(0u, SctCanonicalExpression{SctCanonicalExpressionNode{},
-            SctExpressionTermination::InlineValue}),
+        parameter(0u, SctExpressionFactory::oneWordValue(
+            SctExpressionOneWordValue::Value7F7FFFFF)),
         parameter(1u, SctInstructionReference{ids[6]}),
     };
 
     auto switchInstruction = instruction(ids[1], 3u);
     switchInstruction.fixedParameters = {
-        parameter(0u, SctCanonicalExpression{SctCanonicalExpressionNode{},
-            SctExpressionTermination::InlineValue}),
+        parameter(0u, SctExpressionFactory::oneWordValue(
+            SctExpressionOneWordValue::Value7F7FFFFF)),
     };
     switchInstruction.repeatedParameterGroups = {
         {{parameter(2u, SctEncodedWordValue{1u}), parameter(3u, SctInstructionReference{ids[6]})}},
@@ -117,18 +117,14 @@ const SctControlFlowEdge* edgeOf(std::span<const SctControlFlowEdge> edges,
 }
 
 SctCanonicalExpression variableExpression() {
-    SctCanonicalExpressionNode root;
-    root.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
-    root.encodingCode = 7u;
-    root.children = {
-        {SctCanonicalExpressionNodeKind::IntVariable, 0x50000018u},
-        {SctCanonicalExpressionNodeKind::NegatedIntVariable, 0x50000008u},
-        {SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison, 0x5000000fu},
-        {SctCanonicalExpressionNodeKind::FloatVariable, 0x40000003u},
-        {SctCanonicalExpressionNodeKind::BitVariable, 0x20000004u},
-        {SctCanonicalExpressionNodeKind::ByteVariable, 0x10000005u},
-    };
-    return {std::move(root), SctExpressionTermination::InlineValue};
+    return {SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::DirectIntVariable, 0x50000018u, {}},
+        SctScptValueOperation{SctScptValueKind::NegatedIntVariable, 0x50000008u, {}},
+        SctScptValueOperation{SctScptValueKind::NegatedIntVariableLow16Comparison, 0x5000000fu, {}},
+        SctScptValueOperation{SctScptValueKind::FloatVariable, 0x40000003u, {}},
+        SctScptValueOperation{SctScptValueKind::BitVariable, 0x20000004u, {}},
+        SctScptValueOperation{SctScptValueKind::ByteVariable, 0x10000005u, {}}}},
+        SctExpressionTermination::StopCode};
 }
 
 SctDocument semanticCompositionDocument() {
@@ -162,8 +158,8 @@ SctDocument semanticCompositionDocument() {
     loadMld.fixedParameters = {parameter(0u, SctFooterEntryReference{footerId})};
 
     auto ground = instruction(groundId, 114u);
-    ground.fixedParameters = {parameter(0u, SctCanonicalExpression{
-        SctCanonicalExpressionNode{}, SctExpressionTermination::InlineValue})};
+    ground.fixedParameters = {parameter(0u, SctExpressionFactory::oneWordValue(
+        SctExpressionOneWordValue::Value7F7FFFFF))};
 
     auto loadScript = instruction(loadScriptId, 43u);
     loadScript.fixedParameters = {parameter(0u, SctFooterEntryReference{footerId})};
@@ -429,8 +425,8 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
     EXPECT_EQ(usage.variableUsages().size(), 6u);
     EXPECT_EQ(usage.usagesForVariable({SctVariableKind::Integer, 24u}).size(), 1u);
     EXPECT_TRUE(std::any_of(usage.variableUsages().begin(), usage.variableUsages().end(), [](const auto& item) {
-        return item.encodedForm == SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison
-            && item.source.childPath == std::vector<std::uint32_t>{2u};
+        return item.encodedForm == SctScptValueKind::NegatedIntVariableLow16Comparison
+            && item.source.operationOrdinal == 2u;
     }));
     ASSERT_EQ(usage.unresolvedReferences().size(), 1u);
     EXPECT_EQ(usage.unresolvedReferences()[0].source.parameter.schemaIndex, 4u);
@@ -731,7 +727,7 @@ TEST(SctImportedSourceMap, NeighborhoodsExposeTargetedSitesWithoutInferringOwner
     const SctOpaqueAttachmentId attachmentId{1u};
     const SctParameterSite firstParameter{instructionId, {0u, std::nullopt}};
     const SctParameterSite secondParameter{instructionId, {1u, std::nullopt}};
-    const SctExpressionSite expression{instructionId, SctParameterAddress{0u, std::nullopt}, {}};
+    const SctExpressionSite expression{instructionId, SctParameterAddress{0u, std::nullopt}};
     const SctDocumentEntityId instructionEntity{instructionId};
     const SctDocumentEntityId attachmentEntity{attachmentId};
     auto built = SctImportedSourceMap::build(16u, {
@@ -863,17 +859,14 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
     SctDocument document;
     const auto scriptSectionId = document.allocateSectionId();
     const auto instructionId = document.allocateInstructionId();
-    SctCanonicalExpressionNode expressionRoot;
-    expressionRoot.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
-    expressionRoot.encodingCode = 7u;
-    expressionRoot.children = {
-        {SctCanonicalExpressionNodeKind::DecimalLiteral, 0x08000001u},
-        {SctCanonicalExpressionNodeKind::DecimalLiteral, 0x08000002u},
-    };
+    const SctCanonicalExpression expressionProgram{SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000001u, {}},
+        SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000002u, {}},
+        SctScptBinaryOperation{SctScptBinaryOperationKind::Comparison, 7u}}},
+        SctExpressionTermination::StopCode};
     auto scripted = instruction(instructionId, 3u);
     scripted.scheduledExpression = SctExpressionFactory::encodedDecimalLiteral(1);
-    scripted.fixedParameters = {parameter(0u, SctCanonicalExpression{
-        expressionRoot, SctExpressionTermination::InlineValue})};
+    scripted.fixedParameters = {parameter(0u, expressionProgram)};
     scripted.repeatedParameterGroups = {{{parameter(3u, SctEncodedWordValue{4u})}}};
     document.sections.push_back({scriptSectionId, "SCRIPT",
         SctScriptSectionContent{{scripted}}});
@@ -892,9 +885,9 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
 
     const SctParameterSite fixedSite{instructionId, {0u, std::nullopt}};
     const SctParameterSite repeatedSite{instructionId, {3u, 0u}};
-    const SctExpressionSite scheduledSite{instructionId, SctScheduledExpressionSite{}, {}};
-    const SctExpressionSite childSite{instructionId,
-        SctParameterAddress{0u, std::nullopt}, {1u}};
+    const SctExpressionSite scheduledSite{instructionId, SctScheduledExpressionSite{}};
+    const SctExpressionOperationSite operationSite{
+        SctExpressionSite{instructionId, SctParameterAddress{0u, std::nullopt}}, 1u};
     const SctTextSite headerSite{SctTextEntityId{stringId}, SctTextRegion::Header,
         std::nullopt, {0u, 2u}};
     const SctTextSite bodySite{SctTextEntityId{stringId}, SctTextRegion::Body,
@@ -911,7 +904,7 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
         {{0u, 2u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Envelope,
             SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{fixedSite}},
         {{0u, 1u}, SctSourceSpanRole::Expression, SctSourceSpanLayer::Envelope,
-            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{childSite}},
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{operationSite}},
         {{2u, 2u}, SctSourceSpanRole::InstructionParameter, SctSourceSpanLayer::Envelope,
             SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{repeatedSite}},
         {{4u, 4u}, SctSourceSpanRole::Expression, SctSourceSpanLayer::Envelope,
@@ -939,8 +932,8 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
     };
     const auto exact = assess(document);
     EXPECT_EQ(exact.summary(), SctImportedAddressabilitySummary::FullyAddressable);
-    ASSERT_NE(exact.find(childSite), nullptr);
-    EXPECT_EQ(exact.find(childSite)->addressability, SctImportedSiteAddressability::ExactSite);
+    ASSERT_NE(exact.find(operationSite), nullptr);
+    EXPECT_EQ(exact.find(operationSite)->addressability, SctImportedSiteAddressability::ExactSite);
     EXPECT_EQ(exact.find(repeatedSite)->addressability, SctImportedSiteAddressability::ExactSite);
     EXPECT_EQ(exact.find(scheduledSite)->addressability, SctImportedSiteAddressability::ExactSite);
     EXPECT_EQ(exact.find(plainSite)->addressability, SctImportedSiteAddressability::ExactSite);
@@ -949,14 +942,14 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
     auto& changedExpression = std::get<SctCanonicalExpression>(
         std::get<SctScriptSectionContent>(changedChild.sections[0].content)
             .instructions[0].fixedParameters[0].value);
-    std::get<SctCanonicalExpressionNode>(changedExpression.root).children.pop_back();
-    EXPECT_EQ(assess(changedChild).find(childSite)->addressability,
+    std::get<SctTypedScptProgram>(changedExpression.body).operations.resize(1u);
+    EXPECT_EQ(assess(changedChild).find(operationSite)->addressability,
         SctImportedSiteAddressability::ParentSiteOnly);
 
     auto changedOwner = document;
     std::get<SctScriptSectionContent>(changedOwner.sections[0].content)
         .instructions[0].fixedParameters[0].value = SctEncodedWordValue{0u};
-    EXPECT_EQ(assess(changedOwner).find(childSite)->addressability,
+    EXPECT_EQ(assess(changedOwner).find(operationSite)->addressability,
         SctImportedSiteAddressability::OwningEntityOnly);
 
     auto removedScheduled = document;
@@ -976,7 +969,7 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
         .instructions[0].fixedParameters.clear();
     EXPECT_EQ(assess(removedParameter).find(fixedSite)->addressability,
         SctImportedSiteAddressability::OwningEntityOnly);
-    EXPECT_EQ(assess(removedParameter).find(childSite)->addressability,
+    EXPECT_EQ(assess(removedParameter).find(operationSite)->addressability,
         SctImportedSiteAddressability::OwningEntityOnly);
 
     auto changedText = document;
@@ -1029,7 +1022,7 @@ TEST(SctImportedSourceMap, RecordsExactInstructionExpressionAndTextSitesInBothBy
         ASSERT_TRUE(expression.expression);
         SctDocumentInstruction instructionValue{instructionId, 114u};
         instructionValue.skipRefresh = true;
-        instructionValue.scheduledExpression = SctExpressionFactory::encodedDecimalLiteral(3);
+        instructionValue.scheduledExpression = SctExpressionFactory::floatLiteral(3.0f);
         instructionValue.fixedParameters = {
             parameter(0u, *expression.expression),
             parameter(1u, SctExpressionFactory::encodedDecimalLiteral(4)),
@@ -1073,9 +1066,16 @@ TEST(SctImportedSourceMap, RecordsExactInstructionExpressionAndTextSitesInBothBy
                 && std::holds_alternative<SctParameterSite>(*record.target);
         }));
         EXPECT_TRUE(std::any_of(records.begin(), records.end(), [](const auto& record) {
-            if (record.role != SctSourceSpanRole::Expression || !record.target
-                || !std::holds_alternative<SctExpressionSite>(*record.target)) return false;
-            return !std::get<SctExpressionSite>(*record.target).childPath.empty();
+            return record.role == SctSourceSpanRole::ExpressionOperation && record.target
+                && std::holds_alternative<SctExpressionOperationSite>(*record.target);
+        }));
+        EXPECT_TRUE(std::any_of(records.begin(), records.end(), [](const auto& record) {
+            return record.role == SctSourceSpanRole::ExpressionPayload && record.target
+                && std::holds_alternative<SctExpressionOperationSite>(*record.target);
+        }));
+        EXPECT_TRUE(std::any_of(records.begin(), records.end(), [](const auto& record) {
+            return record.role == SctSourceSpanRole::ExpressionTerminator && record.target
+                && std::holds_alternative<SctExpressionSite>(*record.target);
         }));
         EXPECT_TRUE(std::any_of(records.begin(), records.end(), [](const auto& record) {
             if (record.role != SctSourceSpanRole::Expression || !record.target

@@ -749,7 +749,7 @@ TEST(SctRoundTrip, ParserFoldsScheduledInstructionIntoFollowingInstructionMetada
     EXPECT_EQ(12u, instructions[1].opcode);
 }
 
-TEST(SctRoundTrip, ScheduledFrameDelayIsFirstClassScptAst)
+TEST(SctRoundTrip, ScheduledFrameDelayIsFirstClassScptProgram)
 {
     const std::vector<std::vector<std::uint8_t>> sections = {
         makeComplexScheduledScript(),
@@ -762,16 +762,18 @@ TEST(SctRoundTrip, ScheduledFrameDelayIsFirstClassScptAst)
     const auto& frameDelay = instruction.scheduled.frameDelay;
     EXPECT_EQ(spice::sct::SctParameterValueKind::Expression, frameDelay.valueKind);
     ASSERT_TRUE(frameDelay.expression.has_value());
-    ASSERT_TRUE(frameDelay.expression->ast.has_value());
+    ASSERT_TRUE(frameDelay.expression->program.has_value());
     EXPECT_TRUE(frameDelay.expression->hitStopCode);
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::ArithmeticOp, frameDelay.expression->ast->kind);
-    EXPECT_EQ("+", frameDelay.expression->ast->op);
-    ASSERT_EQ(2u, frameDelay.expression->ast->children.size());
+    ASSERT_EQ(3u, frameDelay.expression->program->operations.size());
+    const auto& operation = std::get<spice::sct::SctScptBinaryOperation>(
+        frameDelay.expression->program->operations.back());
+    EXPECT_EQ(spice::sct::SctScptBinaryOperationKind::Arithmetic, operation.kind);
+    EXPECT_EQ(0x15u, operation.encodingWord);
 
     const auto json = spice::sct::SctJsonExporter{}.toJson(parsed);
     EXPECT_NE(std::string::npos, json.find("\"frameDelay\":{\"index\":0"));
-    EXPECT_NE(std::string::npos, json.find("\"kind\":\"arithmetic_op\""));
-    EXPECT_NE(std::string::npos, json.find("\"op\":\"+\""));
+    EXPECT_NE(std::string::npos, json.find("\"kind\":\"arithmetic\""));
+    EXPECT_NE(std::string::npos, json.find("\"encodingWord\":21"));
 }
 
 TEST(SctRoundTrip, CanonicalExportPreservesFoldedInstructionModifierSemantics)

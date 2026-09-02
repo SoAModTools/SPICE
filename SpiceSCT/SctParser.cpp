@@ -283,51 +283,21 @@ struct OpcodeBoundaryProbe {
         || second == 'i';
 }
 
-[[nodiscard]] SctScptAstNode makeScptNode(
-    SctScptAstNodeKind kind,
-    std::string display,
-    std::uint32_t rawWord,
-    std::string op = {})
-{
-    SctScptAstNode node{};
-    node.kind = kind;
-    node.display = std::move(display);
-    node.op = std::move(op);
-    node.rawWords.push_back(rawWord);
-    return node;
-}
-
-[[nodiscard]] std::vector<std::uint32_t> encodeParsedScptNode(const SctScptAstNode& root,
-    bool appendStop) {
-    std::vector<std::uint32_t> words;
-    const auto append = [&](const auto& self, const SctScptAstNode& node) -> void {
-        for (const auto& child : node.children) self(self, child);
-        words.insert(words.end(), node.rawWords.begin(), node.rawWords.end());
-    };
-    append(append, root);
-    if (appendStop && root.kind != SctScptAstNodeKind::Stop) words.push_back(kSctScptStopCode);
-    return words;
-}
-
-[[nodiscard]] SctScptAstNodeKind parsedKind(SctScptWordKind kind) {
+[[nodiscard]] std::optional<SctScptValueKind> parsedValueKind(SctScptWordKind kind) {
     switch (kind) {
-    case SctScptWordKind::FloatLiteral: return SctScptAstNodeKind::FloatLiteral;
-    case SctScptWordKind::DecimalLiteral: return SctScptAstNodeKind::DecimalLiteral;
-    case SctScptWordKind::ByteVariable: return SctScptAstNodeKind::ByteVariable;
-    case SctScptWordKind::BitVariable: return SctScptAstNodeKind::BitVariable;
-    case SctScptWordKind::FloatVariable: return SctScptAstNodeKind::FloatVariable;
-    case SctScptWordKind::DirectIntVariable: return SctScptAstNodeKind::IntVariable;
-    case SctScptWordKind::NegatedIntVariable: return SctScptAstNodeKind::NegatedIntVariable;
+    case SctScptWordKind::FloatLiteral: return SctScptValueKind::FloatLiteral;
+    case SctScptWordKind::DecimalLiteral: return SctScptValueKind::DecimalLiteral;
+    case SctScptWordKind::ByteVariable: return SctScptValueKind::ByteVariable;
+    case SctScptWordKind::BitVariable: return SctScptValueKind::BitVariable;
+    case SctScptWordKind::FloatVariable: return SctScptValueKind::FloatVariable;
+    case SctScptWordKind::DirectIntVariable: return SctScptValueKind::DirectIntVariable;
+    case SctScptWordKind::NegatedIntVariable: return SctScptValueKind::NegatedIntVariable;
     case SctScptWordKind::NegatedIntVariableLow16Comparison:
-        return SctScptAstNodeKind::NegatedIntVariableLow16Comparison;
-    case SctScptWordKind::SecondaryValue: return SctScptAstNodeKind::SecondaryValue;
-    case SctScptWordKind::CompareOperator: return SctScptAstNodeKind::CompareOp;
-    case SctScptWordKind::ArithmeticOperator: return SctScptAstNodeKind::ArithmeticOp;
-    case SctScptWordKind::AssignmentOperator: return SctScptAstNodeKind::AssignmentOp;
-    case SctScptWordKind::Stop: return SctScptAstNodeKind::Stop;
-    case SctScptWordKind::Inert: break;
+        return SctScptValueKind::NegatedIntVariableLow16Comparison;
+    case SctScptWordKind::SecondaryValue: return SctScptValueKind::SecondaryValue;
+    default: break;
     }
-    return SctScptAstNodeKind::Unknown;
+    return std::nullopt;
 }
 
 [[nodiscard]] std::string scptLeafDisplay(std::uint32_t word, SctScptWordKind kind,
@@ -391,55 +361,42 @@ struct OpcodeBoundaryProbe {
     if (scan.inlineValue) {
         record->resolvedValue = detail::toHexWord(scannedWords.front());
         record->evaluationTrace.push_back({scannedWords.front(), record->resolvedValue});
-        record->ast = makeScptNode(SctScptAstNodeKind::NoLoopValue,
-            record->resolvedValue, scannedWords.front());
+        record->program = SctTypedScptProgram{{SctScptValueOperation{
+            SctScptValueKind::InlineValue, scannedWords.front(), {}}}};
         return 1u;
     }
     if (scannedWords.size() == 1u) {
         record->resolvedValue = "return values (0x1d)";
         record->evaluationTrace.push_back({kSctScptStopCode, record->resolvedValue});
-        record->ast = makeScptNode(SctScptAstNodeKind::Stop,
-            record->resolvedValue, kSctScptStopCode);
+        record->program = SctTypedScptProgram{};
         return 1u;
     }
 
-    bool typed = true;
-    bool assignmentSeen = false;
-    std::uint32_t maximumDepth = 0u;
-    std::vector<SctScptAstNode> stack;
+    SctTypedScptProgram program;
     for (std::size_t cursor = 0; cursor + 1u < scannedWords.size(); ++cursor) {
         const auto word = scannedWords[cursor];
         const auto classification = classifySctScptWord(word);
-        if (assignmentSeen) typed = false;
         if (classification.kind == SctScptWordKind::Inert) {
-            typed = false;
+            program.operations.push_back(SctScptInertOperation{word});
             record->evaluationTrace.push_back({word, "runtime-inert"});
             continue;
         }
         if (classification.kind == SctScptWordKind::CompareOperator
-            || classification.kind == SctScptWordKind::ArithmeticOperator
-            || classification.kind == SctScptWordKind::AssignmentOperator) {
-            const auto symbol = std::string{sctScptOperatorSymbol(word)};
-            if (stack.size() < 2u) {
-                typed = false;
-                record->evaluationTrace.push_back({word, "operator stack underflow"});
-                continue;
-            }
-            auto right = std::move(stack.back()); stack.pop_back();
-            auto left = std::move(stack.back()); stack.pop_back();
-            const auto display = "(" + left.display + " " + symbol + " " + right.display + ")";
-            auto node = makeScptNode(parsedKind(classification.kind), display, word, symbol);
-            node.children.push_back(std::move(left));
-            node.children.push_back(std::move(right));
-            stack.push_back(std::move(node));
-            assignmentSeen = classification.kind == SctScptWordKind::AssignmentOperator;
-            record->evaluationTrace.push_back({word, display});
+            || classification.kind == SctScptWordKind::ArithmeticOperator) {
+            program.operations.push_back(SctScptBinaryOperation{
+                classification.kind == SctScptWordKind::CompareOperator
+                    ? SctScptBinaryOperationKind::Comparison
+                    : SctScptBinaryOperationKind::Arithmetic,
+                word});
+            record->evaluationTrace.push_back({word, std::string{sctScptOperatorSymbol(word)}});
             continue;
         }
-        if (classification.kind == SctScptWordKind::Stop) {
-            typed = false;
+        if (classification.kind == SctScptWordKind::StackOverwritePreviousWithTop) {
+            program.operations.push_back(SctScptStackOverwritePreviousWithTopOperation{word});
+            record->evaluationTrace.push_back({word, std::string{sctScptOperatorSymbol(word)}});
             continue;
         }
+        if (classification.kind == SctScptWordKind::Stop) continue;
 
         std::optional<std::uint32_t> payload;
         if (classification.payloadWordCount != 0u) {
@@ -447,26 +404,30 @@ struct OpcodeBoundaryProbe {
             record->evaluationTrace.push_back({word, detail::toHexWord(word)});
         }
         const auto display = scptLeafDisplay(word, classification.kind, payload);
-        auto node = makeScptNode(parsedKind(classification.kind), display, word);
-        if (payload) node.rawWords.push_back(*payload);
-        stack.push_back(std::move(node));
-        maximumDepth = std::max(maximumDepth, static_cast<std::uint32_t>(stack.size()));
+        const auto valueKind = parsedValueKind(classification.kind);
+        if (!valueKind) {
+            record->resolvedValue = "opaque SCPT expression";
+            return static_cast<std::uint32_t>(scan.wordCount);
+        }
+        SctScptValueOperation value{*valueKind, word, {}};
+        if (payload) value.payloadWords.push_back(*payload);
+        program.operations.push_back(std::move(value));
         record->evaluationTrace.push_back({payload.value_or(word), display});
     }
     record->evaluationTrace.push_back({kSctScptStopCode, "return values (0x1d)"});
-    if (maximumDepth > kSctScptRuntimeStackWarningThreshold) {
+    const auto analysis = analyzeSctScptProgram(program);
+    if (analysis.maximumLogicalStackDepth > kSctScptRuntimeStackWarningThreshold) {
         diagnostics.push_back({"SCPT expression exceeds the observed runtime stack-depth warning threshold.",
             instructionOffset});
     }
-    if (stack.size() != 1u) typed = false;
-    if (typed) {
-        auto candidate = std::move(stack.front());
-        if (encodeParsedScptNode(candidate, true) == scannedWords) {
-            record->resolvedValue = candidate.display;
-            record->ast = std::move(candidate);
-        }
+    const SctCanonicalExpression candidate{program, SctExpressionTermination::StopCode};
+    if (encodeSctCanonicalExpressionWords(candidate) == scannedWords) {
+        record->program = std::move(program);
+        record->resolvedValue = analysis.returnedExpression
+            ? "typed SCPT stack program" : "typed SCPT stack program (undefined result)";
+    } else {
+        record->resolvedValue = "opaque SCPT expression";
     }
-    if (!record->ast) record->resolvedValue = "opaque SCPT expression";
     return static_cast<std::uint32_t>(scan.wordCount);
 }
 
@@ -982,7 +943,7 @@ void populateFooterEntriesAndGroups(
             for (const auto& trace : delayRecord.evaluationTrace) {
                 expression.trace.push_back({trace.rawWord, trace.interpretedValue});
             }
-            expression.ast = delayRecord.ast;
+            expression.program = delayRecord.program;
             delayParameter.expression = std::move(expression);
             decoded.inst.scheduled.frameDelay = std::move(delayParameter);
 
@@ -1112,7 +1073,7 @@ void populateFooterEntriesAndGroups(
                 for (const auto& trace : scptRecord.evaluationTrace) {
                     expression.trace.push_back({trace.rawWord, trace.interpretedValue});
                 }
-                expression.ast = scptRecord.ast;
+                expression.program = scptRecord.program;
                 parameter.expression = std::move(expression);
                 decoded.inst.scptParameterValueRecords.push_back(std::move(scptRecord));
             } else if (!parameter.rawWords.empty()) {

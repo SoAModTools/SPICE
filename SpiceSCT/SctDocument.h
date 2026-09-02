@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SctScptProgram.h"
 #include "SctTextContract.h"
 
 #include <compare>
@@ -67,8 +68,13 @@ using SctExpressionOwner = std::variant<SctScheduledExpressionSite, SctParameter
 struct SctExpressionSite {
     SctInstructionId instruction;
     SctExpressionOwner owner;
-    std::vector<std::uint32_t> childPath;
     auto operator<=>(const SctExpressionSite&) const = default;
+};
+
+struct SctExpressionOperationSite {
+    SctExpressionSite expression;
+    std::uint32_t operationOrdinal = 0;
+    auto operator<=>(const SctExpressionOperationSite&) const = default;
 };
 
 using SctTextEntityId = std::variant<SctStringId, SctFooterEntryId>;
@@ -95,12 +101,18 @@ struct SctDraftParameterSite {
 struct SctDraftExpressionSite {
     std::optional<std::uint16_t> opcode;
     std::optional<SctExpressionOwner> owner;
-    std::vector<std::uint32_t> childPath;
     auto operator<=>(const SctDraftExpressionSite&) const = default;
 };
 
+struct SctDraftExpressionOperationSite {
+    SctDraftExpressionSite expression;
+    std::uint32_t operationOrdinal = 0;
+    auto operator<=>(const SctDraftExpressionOperationSite&) const = default;
+};
+
 using SctDiagnosticLocation = std::variant<SctDocumentEntityId, SctParameterSite,
-    SctExpressionSite, SctTextSite, SctDraftParameterSite, SctDraftExpressionSite>;
+    SctExpressionSite, SctExpressionOperationSite, SctTextSite, SctDraftParameterSite,
+    SctDraftExpressionSite, SctDraftExpressionOperationSite>;
 
 enum class SctDiagnosticSeverity { Info, Warning, Error };
 enum class SctDiagnosticCode {
@@ -131,6 +143,9 @@ enum class SctDiagnosticCode {
     TextInvalid,
     HeaderUnavailable,
     ExpressionRuntimeStackDepth,
+    ExpressionLogicalStackUnderflow,
+    ExpressionUndefinedResult,
+    ExpressionResidualStackValues,
 };
 
 struct SctDocumentDiagnostic {
@@ -139,27 +154,6 @@ struct SctDocumentDiagnostic {
     std::string message;
     std::optional<SctDiagnosticLocation> primaryLocation;
     std::vector<SctDiagnosticLocation> relatedLocations;
-};
-
-enum class SctExpressionTermination { InlineValue, StopCode };
-enum class SctCanonicalExpressionNodeKind {
-    NoLoopValue, FloatLiteral, DecimalLiteral, IntVariable, NegatedIntVariable,
-    NegatedIntVariableLow16Comparison, FloatVariable,
-    BitVariable, ByteVariable, SecondaryValue, CompareOperator, ArithmeticOperator,
-    AssignmentOperator, Stop,
-};
-
-struct SctCanonicalExpressionNode {
-    SctCanonicalExpressionNodeKind kind = SctCanonicalExpressionNodeKind::NoLoopValue;
-    std::uint32_t encodingCode = 0x7f7fffffu;
-    std::vector<std::uint32_t> payloadWords;
-    std::vector<SctCanonicalExpressionNode> children;
-};
-
-struct SctOpaqueExpression { std::vector<std::uint32_t> words; };
-struct SctCanonicalExpression {
-    std::variant<SctCanonicalExpressionNode, SctOpaqueExpression> root;
-    SctExpressionTermination termination = SctExpressionTermination::InlineValue;
 };
 
 struct SctEncodedWordValue { std::uint32_t value = 0; };

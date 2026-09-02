@@ -116,6 +116,7 @@
     <ClInclude Include="SctOpcodeParameterRoles.h" />
     <ClInclude Include="SctScptDecodeHelpers.h" />
     <ClInclude Include="SctScptEncoding.h" />
+    <ClInclude Include="SctScptProgram.h" />
     <ClInclude Include="SctDocument.h" />
     <ClInclude Include="SctDocumentBuilder.h" />
     <ClInclude Include="SctDocumentIndex.h" />

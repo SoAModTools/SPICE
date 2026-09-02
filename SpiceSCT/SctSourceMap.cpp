@@ -49,6 +49,8 @@ bool validTarget(const SctImportedSourceTarget& target) {
         } else if constexpr (std::is_same_v<T, SctParameterSite>
             || std::is_same_v<T, SctExpressionSite>) {
             return value.instruction.value() != 0u;
+        } else if constexpr (std::is_same_v<T, SctExpressionOperationSite>) {
+            return value.expression.instruction.value() != 0u;
         } else {
             return std::visit([](const auto& id) { return id.value() != 0u; }, value.text);
         }

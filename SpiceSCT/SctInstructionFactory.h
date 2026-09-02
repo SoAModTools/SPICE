@@ -36,7 +36,6 @@ enum class SctExpressionBinaryOperator {
     BitOr,
     LogicalAnd,
     LogicalOr,
-    Assign,
     Multiply,
     Divide,
     Modulo,
@@ -53,7 +52,7 @@ public:
     [[nodiscard]] static SctCanonicalExpression secondaryValue(SctExpressionSecondaryValue value);
     struct BuildResult {
         std::optional<SctCanonicalExpression> expression;
-        std::optional<SctCanonicalExpressionNodeKind> selectedNodeKind;
+        std::optional<SctScptValueKind> selectedValueKind;
         std::vector<SctDocumentDiagnostic> diagnostics;
     };
 
@@ -68,6 +67,10 @@ public:
     [[nodiscard]] static BuildResult binaryOperator(
         SctExpressionBinaryOperator operation,
         SctCanonicalExpression left, SctCanonicalExpression right);
+    [[nodiscard]] static BuildResult program(std::vector<SctScptOperation> operations,
+        SctExpressionTermination termination = SctExpressionTermination::StopCode);
+    [[nodiscard]] static SctScptStackOverwritePreviousWithTopOperation
+        stackOverwritePreviousWithTop() noexcept;
 };
 
 using SctExpressionBuildResult = SctExpressionFactory::BuildResult;

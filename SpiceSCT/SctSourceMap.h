@@ -45,6 +45,9 @@ enum class SctSourceSpanRole {
     InstructionOpcode,
     InstructionParameter,
     Expression,
+    ExpressionOperation,
+    ExpressionPayload,
+    ExpressionTerminator,
     TextElement,
     TextTerminator,
     IndexedStringPreamble,
@@ -84,7 +87,7 @@ struct SctSourceSpanRecord {
     // Historical site in the imported revision. Parameter and expression paths
     // must not be interpreted as current after the document is restructured.
     using Target = std::variant<SctDocumentEntityId, SctParameterSite,
-        SctExpressionSite, SctTextSite>;
+        SctExpressionSite, SctExpressionOperationSite, SctTextSite>;
     std::optional<Target> target;
     std::optional<SctSectionId> containingSection;
     std::optional<std::uint32_t> sectionRelativeOffset;

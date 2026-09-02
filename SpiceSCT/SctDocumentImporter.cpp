@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <limits>
 #include <numeric>
+#include <type_traits>
 #include <unordered_map>
 
 namespace spice::sct {
@@ -20,61 +21,22 @@ void addDiagnostic(SctDocumentImportResult& result, SctDiagnosticSeverity severi
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
-bool hasUnknownNode(const SctScptAstNode& node) {
-    if (node.kind == SctScptAstNodeKind::Unknown) return true;
-    return std::any_of(node.children.begin(), node.children.end(), hasUnknownNode);
-}
-
-SctCanonicalExpressionNodeKind canonicalKind(SctScptAstNodeKind kind) {
-    switch (kind) {
-    case SctScptAstNodeKind::NoLoopValue: return SctCanonicalExpressionNodeKind::NoLoopValue;
-    case SctScptAstNodeKind::FloatLiteral: return SctCanonicalExpressionNodeKind::FloatLiteral;
-    case SctScptAstNodeKind::DecimalLiteral: return SctCanonicalExpressionNodeKind::DecimalLiteral;
-    case SctScptAstNodeKind::IntVariable: return SctCanonicalExpressionNodeKind::IntVariable;
-    case SctScptAstNodeKind::NegatedIntVariable: return SctCanonicalExpressionNodeKind::NegatedIntVariable;
-    case SctScptAstNodeKind::NegatedIntVariableLow16Comparison:
-        return SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison;
-    case SctScptAstNodeKind::FloatVariable: return SctCanonicalExpressionNodeKind::FloatVariable;
-    case SctScptAstNodeKind::BitVariable: return SctCanonicalExpressionNodeKind::BitVariable;
-    case SctScptAstNodeKind::ByteVariable: return SctCanonicalExpressionNodeKind::ByteVariable;
-    case SctScptAstNodeKind::SecondaryValue: return SctCanonicalExpressionNodeKind::SecondaryValue;
-    case SctScptAstNodeKind::CompareOp: return SctCanonicalExpressionNodeKind::CompareOperator;
-    case SctScptAstNodeKind::ArithmeticOp: return SctCanonicalExpressionNodeKind::ArithmeticOperator;
-    case SctScptAstNodeKind::AssignmentOp: return SctCanonicalExpressionNodeKind::AssignmentOperator;
-    case SctScptAstNodeKind::Stop: return SctCanonicalExpressionNodeKind::Stop;
-    case SctScptAstNodeKind::Unknown: break;
-    }
-    return SctCanonicalExpressionNodeKind::NoLoopValue;
-}
-
-SctCanonicalExpressionNode convertNode(const SctScptAstNode& node) {
-    SctCanonicalExpressionNode converted;
-    converted.kind = canonicalKind(node.kind);
-    if (!node.rawWords.empty()) {
-        converted.encodingCode = node.rawWords.front();
-        converted.payloadWords.assign(node.rawWords.begin() + 1, node.rawWords.end());
-    }
-    converted.children.reserve(node.children.size());
-    for (const auto& child : node.children) converted.children.push_back(convertNode(child));
-    return converted;
-}
-
 SctCanonicalExpression convertExpression(const SctExpression& expression,
     const std::vector<std::uint32_t>& rawWords, SctDocumentImportResult& result,
     SctDocumentEntityId entity) {
     SctCanonicalExpression converted;
     converted.termination = expression.hitStopCode ? SctExpressionTermination::StopCode
                                                     : SctExpressionTermination::InlineValue;
-    if (!expression.ast || hasUnknownNode(*expression.ast)) {
-        converted.root = SctOpaqueExpression{rawWords};
+    if (!expression.program) {
+        converted.body = SctOpaqueExpression{rawWords};
         addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousExpression,
-            "SCPT expression retained as opaque words because its exact typed structure is incomplete.", entity);
+            "SCPT expression retained as opaque words because its operation semantics are incomplete.", entity);
     } else {
-        converted.root = convertNode(*expression.ast);
+        converted.body = *expression.program;
         if (encodeSctCanonicalExpressionWords(converted) != rawWords) {
-            converted.root = SctOpaqueExpression{rawWords};
+            converted.body = SctOpaqueExpression{rawWords};
             addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousExpression,
-                "SCPT expression retained as opaque words because typed re-encoding was not byte-exact.", entity);
+                "SCPT stack program retained as opaque words because typed re-encoding was not byte-exact.", entity);
         }
     }
     return converted;
@@ -487,35 +449,6 @@ void addSourceSiteRecord(std::vector<SctSourceSpanRecord>& records, std::uint32_
         sectionRelativeOffset, region, false});
 }
 
-std::uint32_t astWordCount(const SctScptAstNode& node) {
-    std::uint32_t count = static_cast<std::uint32_t>(node.rawWords.size());
-    for (const auto& child : node.children) count += astWordCount(child);
-    return count;
-}
-
-std::uint32_t addExpressionChildEnvelopes(std::vector<SctSourceSpanRecord>& records,
-    const SctScptAstNode& node, std::uint32_t absoluteWordOffset,
-    const SctExpressionSite& rootSite, std::vector<std::uint32_t> path,
-    std::optional<SctSectionId> section, std::uint32_t sectionStart) {
-    auto cursor = absoluteWordOffset;
-    for (std::uint32_t child = 0; child < node.children.size(); ++child) {
-        auto childPath = path;
-        childPath.push_back(child);
-        cursor = addExpressionChildEnvelopes(records, node.children[child], cursor,
-            rootSite, std::move(childPath), section, sectionStart);
-    }
-    const auto end = cursor + static_cast<std::uint32_t>(node.rawWords.size() * 4u);
-    if (!path.empty()) {
-        auto site = rootSite;
-        site.childPath = std::move(path);
-        addSourceSiteRecord(records, absoluteWordOffset, end - absoluteWordOffset,
-            SctSourceSpanRole::Expression, SctSourceCoverageKind::SemanticEntity,
-            SctImportedSourceTarget{std::move(site)}, section,
-            absoluteWordOffset - sectionStart, SctSourceRegion::SectionPayload);
-    }
-    return end;
-}
-
 void addExpressionProvenance(std::vector<SctSourceSpanRecord>& records,
     const SctExpression& expression, std::span<const std::uint32_t> rawWords,
     std::uint32_t absoluteOffset, SctExpressionSite site,
@@ -524,15 +457,40 @@ void addExpressionProvenance(std::vector<SctSourceSpanRecord>& records,
         static_cast<std::uint32_t>(rawWords.size() * 4u), SctSourceSpanRole::Expression,
         SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{site}, section,
         absoluteOffset - sectionStart, SctSourceRegion::SectionPayload);
-    if (!expression.ast || hasUnknownNode(*expression.ast)) return;
-    const SctCanonicalExpression candidate{convertNode(*expression.ast),
+    if (!expression.program) return;
+    const SctCanonicalExpression candidate{*expression.program,
         expression.hitStopCode ? SctExpressionTermination::StopCode
                                : SctExpressionTermination::InlineValue};
     const auto encoded = encodeSctCanonicalExpressionWords(candidate);
     if (encoded.size() != rawWords.size()
         || !std::equal(encoded.begin(), encoded.end(), rawWords.begin())) return;
-    addExpressionChildEnvelopes(records, *expression.ast, absoluteOffset, site, {},
-        section, sectionStart);
+    auto cursor = absoluteOffset;
+    for (std::uint32_t ordinal = 0; ordinal < expression.program->operations.size(); ++ordinal) {
+        const auto& operation = expression.program->operations[ordinal];
+        const auto payloadWords = std::visit([](const auto& value) -> std::uint32_t {
+            if constexpr (std::is_same_v<std::decay_t<decltype(value)>, SctScptValueOperation>) {
+                return static_cast<std::uint32_t>(value.payloadWords.size());
+            }
+            return 0u;
+        }, operation);
+        const auto operationSite = SctExpressionOperationSite{site, ordinal};
+        addSourceSiteRecord(records, cursor, (1u + payloadWords) * 4u,
+            SctSourceSpanRole::ExpressionOperation, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{operationSite}, section, cursor - sectionStart,
+            SctSourceRegion::SectionPayload);
+        if (payloadWords != 0u) {
+            addSourceSiteRecord(records, cursor + 4u, payloadWords * 4u,
+                SctSourceSpanRole::ExpressionPayload, SctSourceCoverageKind::SemanticEntity,
+                SctImportedSourceTarget{operationSite}, section, cursor + 4u - sectionStart,
+                SctSourceRegion::SectionPayload);
+        }
+        cursor += (1u + payloadWords) * 4u;
+    }
+    if (candidate.termination == SctExpressionTermination::StopCode) {
+        addSourceSiteRecord(records, cursor, 4u, SctSourceSpanRole::ExpressionTerminator,
+            SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{site}, section,
+            cursor - sectionStart, SctSourceRegion::SectionPayload);
+    }
 }
 
 void addInstructionSourceRecords(std::vector<SctSourceSpanRecord>& records,
@@ -574,7 +532,7 @@ void addInstructionSourceRecords(std::vector<SctSourceSpanRecord>& records,
                     cursor - sectionStart, SctSourceRegion::SectionPayload, SctSourceSpanLayer::Leaf);
                 if (parameter.expression) {
                     addExpressionProvenance(records, *parameter.expression, parameter.rawWords,
-                        cursor, SctExpressionSite{id, SctExpressionOwner{address}, {}},
+                        cursor, SctExpressionSite{id, SctExpressionOwner{address}},
                         section, sectionStart);
                 }
             }
@@ -600,7 +558,7 @@ void addInstructionSourceRecords(std::vector<SctSourceSpanRecord>& records,
             const auto word = static_cast<std::uint32_t>(found - instruction.rawWords.begin());
             addExpressionProvenance(records, *delay.expression, delay.rawWords,
                 absoluteStart + word * 4u,
-                SctExpressionSite{id, SctExpressionOwner{SctScheduledExpressionSite{}}, {}},
+                SctExpressionSite{id, SctExpressionOwner{SctScheduledExpressionSite{}}},
                 section, sectionStart);
         }
     }

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
@@ -65,7 +66,7 @@ std::vector<std::uint8_t> makeSingleSectionSct(const std::vector<std::uint8_t>& 
     return out;
 }
 
-std::vector<std::uint8_t> makeScptAstFixture()
+std::vector<std::uint8_t> makeScptProgramFixture()
 {
     std::vector<std::uint8_t> section{};
 
@@ -323,9 +324,9 @@ TEST(SctIr, SemanticComparerUsesOpcodeSchemaForKnownOpcodeParameters)
     EXPECT_GT(checkedOpcodes, 200u);
 }
 
-TEST(SctIr, ParserBuildsTypedScptAstFamilies)
+TEST(SctIr, ParserBuildsTypedScptProgramFamilies)
 {
-    const auto parsed = spice::sct::SctParser{}.parse(makeScptAstFixture(), "scpt_ast.sct");
+    const auto parsed = spice::sct::SctParser{}.parse(makeScptProgramFixture(), "scpt_program.sct");
     ASSERT_TRUE(parsed.parseOk);
     ASSERT_EQ(1u, parsed.file.sections.size());
 
@@ -334,63 +335,67 @@ TEST(SctIr, ParserBuildsTypedScptAstFamilies)
 
     const auto& arithmetic = instructions[0].parameters.front().expression;
     ASSERT_TRUE(arithmetic.has_value());
-    ASSERT_TRUE(arithmetic->ast.has_value());
+    ASSERT_TRUE(arithmetic->program.has_value());
     EXPECT_TRUE(arithmetic->hitStopCode);
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::ArithmeticOp, arithmetic->ast->kind);
-    EXPECT_EQ("+", arithmetic->ast->op);
-    ASSERT_EQ(2u, arithmetic->ast->children.size());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatLiteral, arithmetic->ast->children[0].kind);
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatLiteral, arithmetic->ast->children[1].kind);
-    const auto lhsLiteral = arithmetic->ast->children[0].numericLiteral();
-    const auto rhsLiteral = arithmetic->ast->children[1].numericLiteral();
-    ASSERT_TRUE(lhsLiteral.has_value());
-    ASSERT_TRUE(rhsLiteral.has_value());
-    EXPECT_EQ(spice::sct::SctNumericLiteralEncoding::Float32, lhsLiteral->encoding);
-    EXPECT_EQ(spice::sct::SctNumericLiteralEncoding::Float32, rhsLiteral->encoding);
-    EXPECT_DOUBLE_EQ(1.0, lhsLiteral->value);
-    EXPECT_DOUBLE_EQ(2.0, rhsLiteral->value);
-    EXPECT_FALSE(arithmetic->ast->numericLiteral().has_value());
+    ASSERT_EQ(3u, arithmetic->program->operations.size());
+    const auto& lhsLiteral = std::get<spice::sct::SctScptValueOperation>(
+        arithmetic->program->operations[0]);
+    const auto& rhsLiteral = std::get<spice::sct::SctScptValueOperation>(
+        arithmetic->program->operations[1]);
+    EXPECT_EQ(spice::sct::SctScptValueKind::FloatLiteral, lhsLiteral.kind);
+    EXPECT_EQ(spice::sct::SctScptValueKind::FloatLiteral, rhsLiteral.kind);
+    ASSERT_EQ(1u, lhsLiteral.payloadWords.size());
+    ASSERT_EQ(1u, rhsLiteral.payloadWords.size());
+    EXPECT_FLOAT_EQ(1.0f, std::bit_cast<float>(lhsLiteral.payloadWords.front()));
+    EXPECT_FLOAT_EQ(2.0f, std::bit_cast<float>(rhsLiteral.payloadWords.front()));
+    const auto& add = std::get<spice::sct::SctScptBinaryOperation>(
+        arithmetic->program->operations[2]);
+    EXPECT_EQ(spice::sct::SctScptBinaryOperationKind::Arithmetic, add.kind);
+    EXPECT_EQ(0x15u, add.encodingWord);
 
     const auto& secondary = instructions[1].parameters.front().expression;
     ASSERT_TRUE(secondary.has_value());
-    ASSERT_TRUE(secondary->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::SecondaryValue, secondary->ast->kind);
-    EXPECT_EQ("Gold", secondary->ast->display);
+    ASSERT_TRUE(secondary->program.has_value());
+    EXPECT_EQ(spice::sct::SctScptValueKind::SecondaryValue,
+        std::get<spice::sct::SctScptValueOperation>(secondary->program->operations.front()).kind);
 
     const auto& intVariable = instructions[2].parameters.front().expression;
     ASSERT_TRUE(intVariable.has_value());
-    ASSERT_TRUE(intVariable->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::NegatedIntVariableLow16Comparison, intVariable->ast->kind);
+    ASSERT_TRUE(intVariable->program.has_value());
+    EXPECT_EQ(spice::sct::SctScptValueKind::NegatedIntVariableLow16Comparison,
+        std::get<spice::sct::SctScptValueOperation>(intVariable->program->operations.front()).kind);
 
     const auto& floatVariable = instructions[3].parameters.front().expression;
     ASSERT_TRUE(floatVariable.has_value());
-    ASSERT_TRUE(floatVariable->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::FloatVariable, floatVariable->ast->kind);
+    ASSERT_TRUE(floatVariable->program.has_value());
+    EXPECT_EQ(spice::sct::SctScptValueKind::FloatVariable,
+        std::get<spice::sct::SctScptValueOperation>(floatVariable->program->operations.front()).kind);
 
     const auto& bitVariable = instructions[4].parameters.front().expression;
     ASSERT_TRUE(bitVariable.has_value());
-    ASSERT_TRUE(bitVariable->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::BitVariable, bitVariable->ast->kind);
+    ASSERT_TRUE(bitVariable->program.has_value());
+    EXPECT_EQ(spice::sct::SctScptValueKind::BitVariable,
+        std::get<spice::sct::SctScptValueOperation>(bitVariable->program->operations.front()).kind);
 
     const auto& byteVariable = instructions[5].parameters.front().expression;
     ASSERT_TRUE(byteVariable.has_value());
-    ASSERT_TRUE(byteVariable->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::ByteVariable, byteVariable->ast->kind);
+    ASSERT_TRUE(byteVariable->program.has_value());
+    EXPECT_EQ(spice::sct::SctScptValueKind::ByteVariable,
+        std::get<spice::sct::SctScptValueOperation>(byteVariable->program->operations.front()).kind);
 
     const auto& decimal = instructions[6].parameters.front().expression;
     ASSERT_TRUE(decimal.has_value());
-    ASSERT_TRUE(decimal->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::DecimalLiteral, decimal->ast->kind);
-    EXPECT_EQ("decimal: 1+128/256", decimal->ast->display);
-    const auto decimalLiteral = decimal->ast->numericLiteral();
-    ASSERT_TRUE(decimalLiteral.has_value());
-    EXPECT_EQ(spice::sct::SctNumericLiteralEncoding::Decimal16_8, decimalLiteral->encoding);
-    EXPECT_DOUBLE_EQ(1.5, decimalLiteral->value);
+    ASSERT_TRUE(decimal->program.has_value());
+    const auto& decimalLiteral = std::get<spice::sct::SctScptValueOperation>(
+        decimal->program->operations.front());
+    EXPECT_EQ(spice::sct::SctScptValueKind::DecimalLiteral, decimalLiteral.kind);
+    EXPECT_EQ(0x08000180u, decimalLiteral.encodingWord);
 
     const auto& noLoop = instructions[7].parameters.front().expression;
     ASSERT_TRUE(noLoop.has_value());
-    ASSERT_TRUE(noLoop->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::NoLoopValue, noLoop->ast->kind);
+    ASSERT_TRUE(noLoop->program.has_value());
+    EXPECT_EQ(spice::sct::SctScptValueKind::InlineValue,
+        std::get<spice::sct::SctScptValueOperation>(noLoop->program->operations.front()).kind);
 }
 
 TEST(SctIr, ParserResolvesCallSubscriptOperandsAsSignedRelativePayloadTargets)
@@ -424,13 +429,16 @@ TEST(SctIr, ParserResolvesCallSubscriptOperandsAsSignedRelativePayloadTargets)
     EXPECT_EQ("-20", callEdges[1]->attributes.at("signed_offset_operand"));
 }
 
-TEST(SctIr, JsonExporterEmitsScptAst)
+TEST(SctIr, JsonExporterEmitsScptProgram)
 {
-    const auto parsed = spice::sct::SctParser{}.parse(makeScptAstFixture(), "scpt_ast.sct");
+    const auto parsed = spice::sct::SctParser{}.parse(makeScptProgramFixture(), "scpt_program.sct");
     const auto json = spice::sct::SctJsonExporter{}.toJson(parsed);
 
     EXPECT_NE(std::string::npos, json.find("\"hitStopCode\":true"));
-    EXPECT_NE(std::string::npos, json.find("\"kind\":\"arithmetic_op\""));
-    EXPECT_NE(std::string::npos, json.find("\"kind\":\"secondary_value\""));
-    EXPECT_NE(std::string::npos, json.find("\"kind\":\"decimal_literal\""));
+    EXPECT_NE(std::string::npos, json.find("\"kind\":\"arithmetic\""));
+    EXPECT_NE(std::string::npos, json.find("\"valueKind\":\"secondary_value\""));
+    EXPECT_NE(std::string::npos, json.find("\"valueKind\":\"decimal_literal\""));
+    EXPECT_NE(std::string::npos, json.find("\"analysis\":{"));
+    EXPECT_NE(std::string::npos, json.find("\"conventionalTree\":{"));
+    EXPECT_NE(std::string::npos, json.find("\"operationOrdinal\":2"));
 }

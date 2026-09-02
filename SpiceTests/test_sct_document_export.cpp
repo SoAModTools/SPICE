@@ -12,7 +12,8 @@ namespace {
 using namespace spice::sct;
 
 SctCanonicalExpression noLoop(std::uint32_t value = 0x7fffffffu) {
-    return {SctCanonicalExpressionNode{SctCanonicalExpressionNodeKind::NoLoopValue, value, {}, {}},
+    return {SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::InlineValue, value, {}}}},
         SctExpressionTermination::InlineValue};
 }
 

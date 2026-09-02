@@ -9,8 +9,9 @@ namespace {
 using namespace spice::sct;
 
 SctCanonicalExpression noLoop(std::uint32_t word = 0x00800000u) {
-    return {SctCanonicalExpressionNode{SctCanonicalExpressionNodeKind::NoLoopValue,
-        word, {}, {}}, SctExpressionTermination::InlineValue};
+    return {SctTypedScptProgram{{
+        SctScptValueOperation{SctScptValueKind::InlineValue, word, {}}}},
+        SctExpressionTermination::InlineValue};
 }
 
 SctParameter parsedParameter(std::uint32_t index, std::uint32_t word, bool expression = false) {
@@ -19,8 +20,8 @@ SctParameter parsedParameter(std::uint32_t index, std::uint32_t word, bool expre
     parameter.rawWords = {word};
     if (expression) {
         parameter.expression = SctExpression{};
-        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::NoLoopValue,
-            {}, {}, {word}, {}};
+        parameter.expression->program = SctTypedScptProgram{{
+            SctScptValueOperation{SctScptValueKind::InlineValue, word, {}}}};
     }
     return parameter;
 }

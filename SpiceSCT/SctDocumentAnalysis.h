@@ -65,8 +65,8 @@ struct SctVariableIdentity {
 
 struct SctVariableUsage {
     SctVariableIdentity variable;
-    SctCanonicalExpressionNodeKind encodedForm = SctCanonicalExpressionNodeKind::IntVariable;
-    SctExpressionSite source;
+    SctScptValueKind encodedForm = SctScptValueKind::DirectIntVariable;
+    SctExpressionOperationSite source;
 };
 
 struct SctUnresolvedReferenceUsage {

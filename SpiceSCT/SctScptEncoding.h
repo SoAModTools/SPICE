@@ -1,5 +1,7 @@
 #pragma once
 
+#include "SctScptProgram.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -8,8 +10,6 @@
 
 namespace spice::sct {
 
-struct SctCanonicalExpression;
-
 inline constexpr std::uint32_t kSctScptStopCode = 0x0000001du;
 inline constexpr std::uint32_t kSctScptRuntimeStackWarningThreshold = 30u;
 
@@ -17,7 +17,7 @@ enum class SctScptWordKind {
     Inert,
     CompareOperator,
     ArithmeticOperator,
-    AssignmentOperator,
+    StackOverwritePreviousWithTop,
     FloatLiteral,
     DecimalLiteral,
     ByteVariable,
@@ -62,12 +62,16 @@ private:
 
 [[nodiscard]] bool isSctScptInlineValue(std::uint32_t word) noexcept;
 [[nodiscard]] SctScptWordClassification classifySctScptWord(std::uint32_t word) noexcept;
+[[nodiscard]] bool isSctScptOperationEncodingValid(
+    const SctScptOperation& operation) noexcept;
 [[nodiscard]] SctScptScanResult scanSctScptWords(std::span<const std::uint32_t> words) noexcept;
 [[nodiscard]] std::string_view sctScptOperatorSymbol(std::uint32_t word) noexcept;
 [[nodiscard]] std::string_view sctScptSecondaryValueName(std::uint32_t index) noexcept;
 [[nodiscard]] std::vector<std::uint32_t> encodeSctCanonicalExpressionWords(
     const SctCanonicalExpression& expression);
 [[nodiscard]] std::uint32_t sctCanonicalExpressionMaximumStackDepth(
-    const SctCanonicalExpression& expression) noexcept;
+    const SctCanonicalExpression& expression);
+[[nodiscard]] SctScptProgramAnalysis analyzeSctScptProgram(
+    const SctTypedScptProgram& program);
 
 } // namespace spice::sct
