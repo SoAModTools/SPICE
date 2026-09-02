@@ -243,7 +243,7 @@ TEST(SctIr, MetadataNamesKnownControlAndResourceOpcodes)
     ASSERT_NE(nullptr, loadMld);
     EXPECT_EQ("LoadMldFile", loadMld->semantic.mnemonic);
     EXPECT_EQ(spice::sct::SctSemanticConfidence::Partial, loadMld->semantic.confidence);
-    EXPECT_EQ(spice::sct::SctOpcodeResourceRole::LoadsMld, loadMld->semantic.resourceRole);
+    EXPECT_EQ(spice::sct::SctOpcodeEffectKind::LoadMld, loadMld->semantic.effect.kind);
 
     EXPECT_EQ(nullptr, spice::sct::findSctOpcodeSchema(999));
 }
@@ -323,7 +323,7 @@ TEST(SctIr, SemanticComparerUsesOpcodeSchemaForKnownOpcodeParameters)
     EXPECT_GT(checkedOpcodes, 200u);
 }
 
-TEST(SctIr, ParserBuildsSalsaScptAstFamilies)
+TEST(SctIr, ParserBuildsTypedScptAstFamilies)
 {
     const auto parsed = spice::sct::SctParser{}.parse(makeScptAstFixture(), "scpt_ast.sct");
     ASSERT_TRUE(parsed.parseOk);
@@ -360,7 +360,7 @@ TEST(SctIr, ParserBuildsSalsaScptAstFamilies)
     const auto& intVariable = instructions[2].parameters.front().expression;
     ASSERT_TRUE(intVariable.has_value());
     ASSERT_TRUE(intVariable->ast.has_value());
-    EXPECT_EQ(spice::sct::SctScptAstNodeKind::IntVariable, intVariable->ast->kind);
+    EXPECT_EQ(spice::sct::SctScptAstNodeKind::NegatedIntVariableLow16Comparison, intVariable->ast->kind);
 
     const auto& floatVariable = instructions[3].parameters.front().expression;
     ASSERT_TRUE(floatVariable.has_value());

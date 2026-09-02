@@ -108,18 +108,21 @@ void acceptProvisionalSuggestions(SctInstructionDraft& draft) {
 TEST(SctDocumentImporter, OrdinaryIndexPaddingIsDerivedAndDoesNotBlockRenames) {
     const auto imported = SctDocumentImporter::import(makeLabelParse("A"), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     EXPECT_TRUE(std::none_of(imported.document->opaqueAttachments.begin(),
         imported.document->opaqueAttachments.end(), [](const auto& attachment) {
             return attachment.reason == SctOpaqueReason::Padding;
         }));
-    EXPECT_TRUE(std::any_of(imported.receipt.provenance.begin(), imported.receipt.provenance.end(),
+    EXPECT_TRUE(std::any_of(imported.context.receipt.sourceMap.records().begin(),
+        imported.context.receipt.sourceMap.records().end(),
         [](const auto& provenance) { return provenance.coverageKind == SctSourceCoverageKind::DerivedLayout; }));
 
     for (const std::string name : {std::string{}, std::string{"B"}, std::string{"LONGER_NAME"},
              std::string(16, 'X')}) {
         auto document = *imported.document;
         document.sections.front().nameBytes = name;
-        const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &imported.receipt);
+        const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &*evidence);
         ASSERT_TRUE(exported.success) << name;
         const auto reparsed = SctParser{}.parse(exported.bytes, "renamed.sct");
         ASSERT_TRUE(reparsed.parseOk);
@@ -137,6 +140,8 @@ TEST(SctDocumentImporter, UnusualIndexSuffixIsPreservedAndOnlyOverlappingGrowthI
     const auto imported = SctDocumentImporter::import(
         makeLabelParse("A", {0x7e, 0x55}), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     const auto padding = std::find_if(imported.document->opaqueAttachments.begin(),
         imported.document->opaqueAttachments.end(), [](const auto& attachment) {
             return attachment.reason == SctOpaqueReason::Padding;
@@ -147,11 +152,11 @@ TEST(SctDocumentImporter, UnusualIndexSuffixIsPreservedAndOnlyOverlappingGrowthI
 
     auto safe = *imported.document;
     safe.sections.front().nameBytes = "AB";
-    EXPECT_TRUE(SctDocumentExporter::exportDocument(safe, rawGameCubeOptions(), &imported.receipt).success);
+    EXPECT_TRUE(SctDocumentExporter::exportDocument(safe, rawGameCubeOptions(), &*evidence).success);
 
     auto overlap = *imported.document;
     overlap.sections.front().nameBytes = "ABC";
-    const auto rejected = SctDocumentExporter::exportDocument(overlap, rawGameCubeOptions(), &imported.receipt);
+    const auto rejected = SctDocumentExporter::exportDocument(overlap, rawGameCubeOptions(), &*evidence);
     EXPECT_FALSE(rejected.success);
     EXPECT_TRUE(std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::OpaquePlacementUnsatisfied;
@@ -208,16 +213,17 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
         SctOpaquePlacement::FixedOffset, 100u, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
 
     const auto first = SctDocumentIndex::build(document);
-    EXPECT_NE(first.find(sectionId), nullptr);
-    EXPECT_NE(first.find(targetId), nullptr);
+    EXPECT_NE(first.find(document, sectionId), nullptr);
+    EXPECT_NE(first.find(document, targetId), nullptr);
     EXPECT_EQ(first.attachmentsFor(sectionId).size(), 1u);
-    EXPECT_EQ(first.outboundReferences(jumpId).size(), 1u);
-    EXPECT_EQ(first.inboundReferences(SctDocumentReferenceTarget{targetId}).size(), 1u);
+    const auto firstUsage = SctSemanticUsageIndex::build(document);
+    EXPECT_EQ(firstUsage.outboundReferences(jumpId).size(), 1u);
+    EXPECT_EQ(firstUsage.inboundReferences(SctDocumentReferenceTarget{targetId}).size(), 1u);
     ASSERT_EQ(first.sectionOrdinal(sectionId), 0u);
     ASSERT_TRUE(first.instructionLocation(targetId).has_value());
     EXPECT_EQ(first.instructionLocation(targetId)->sectionId, sectionId);
     EXPECT_EQ(first.instructionLocation(targetId)->instructionOrdinal, 1u);
-    EXPECT_EQ(first.owningSection(targetId), &document.sections.front());
+    EXPECT_EQ(first.owningSection(document, targetId), &document.sections.front());
     EXPECT_EQ(first.opaqueAttachmentOrdinal(attachmentId), 0u);
     ASSERT_TRUE(first.stringLocation(stringId).has_value());
     EXPECT_EQ(first.stringLocation(stringId)->sectionId, stringSectionId);
@@ -233,15 +239,14 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     ASSERT_TRUE(rebuilt.instructionLocation(targetId).has_value());
     EXPECT_EQ(rebuilt.instructionLocation(targetId)->sectionId, movedSectionId);
     EXPECT_EQ(rebuilt.instructionLocation(targetId)->sectionOrdinal, 2u);
-    EXPECT_EQ(rebuilt.owningSection(targetId), &document.sections[2]);
-    EXPECT_EQ(rebuilt.outboundReferences(jumpId).size(), 1u);
+    EXPECT_EQ(rebuilt.owningSection(document, targetId), &document.sections[2]);
+    EXPECT_EQ(SctSemanticUsageIndex::build(document).outboundReferences(jumpId).size(), 1u);
 }
 
 static_assert(!std::is_default_constructible_v<SctDocumentExportOptions>);
 
 TEST(SctExpressionFactory, RejectsLossyVariableAndOpaqueOperatorConstruction) {
-    const auto oversized = SctExpressionFactory::variable(
-        SctExpressionVariableKind::Integer, 0x01000000u);
+    const auto oversized = SctExpressionFactory::integerInput(0x01000000u);
     EXPECT_FALSE(oversized.expression.has_value());
     EXPECT_TRUE(std::any_of(oversized.diagnostics.begin(), oversized.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::ExpressionInvalid;
@@ -250,10 +255,10 @@ TEST(SctExpressionFactory, RejectsLossyVariableAndOpaqueOperatorConstruction) {
     SctCanonicalExpression opaque{SctOpaqueExpression{{0x50000001u, 0x1du}},
         SctExpressionTermination::StopCode};
     const auto rejected = SctExpressionFactory::binaryOperator(
-        SctExpressionBinaryOperator::Add, opaque, SctExpressionFactory::decimalLiteral(1));
+        SctExpressionBinaryOperator::Add, opaque, SctExpressionFactory::encodedDecimalLiteral(1));
     EXPECT_FALSE(rejected.expression.has_value());
 
-    const auto variable = SctExpressionFactory::variable(SctExpressionVariableKind::Integer, 0x00ffffffu);
+    const auto variable = SctExpressionFactory::integerInput(0x00ffffffu);
     ASSERT_TRUE(variable.expression.has_value());
     EXPECT_EQ(std::get<SctCanonicalExpressionNode>(variable.expression->root).encodingCode, 0x50ffffffu);
 }
@@ -267,19 +272,21 @@ TEST(SctDocumentValidator, ReportsParameterGroupAndExpressionChildLocations) {
     SctCanonicalExpressionNode invalidOperator;
     invalidOperator.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
     invalidOperator.encodingCode = 0x0eu;
-    invalidOperator.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::decimalLiteral(1).root));
+    invalidOperator.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::encodedDecimalLiteral(1).root));
     instruction.fixedParameters.push_back({0, SctCanonicalExpression{invalidOperator, SctExpressionTermination::StopCode}});
-    instruction.fixedParameters.push_back({1, SctExpressionFactory::decimalLiteral(0)});
+    instruction.fixedParameters.push_back({1, SctExpressionFactory::encodedDecimalLiteral(0)});
     document.sections.push_back({sectionId, "SCRIPT", SctScriptSectionContent{{instruction}}});
 
     const auto validation = SctDocumentValidator::validateDocument(document);
     const auto found = std::find_if(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.code == SctDiagnosticCode::ExpressionInvalid && diagnostic.parameter.has_value();
+        return diagnostic.code == SctDiagnosticCode::ExpressionInvalid && diagnostic.primaryLocation
+            && std::holds_alternative<SctExpressionSite>(*diagnostic.primaryLocation);
     });
     ASSERT_NE(found, validation.diagnostics.end());
-    EXPECT_EQ(found->parameter->schemaIndex, 0u);
-    EXPECT_FALSE(found->parameter->repeatedGroupOrdinal.has_value());
-    EXPECT_TRUE(found->expressionChildPath.empty());
+    const auto& site = std::get<SctExpressionSite>(*found->primaryLocation);
+    EXPECT_EQ(std::get<SctParameterAddress>(site.owner).schemaIndex, 0u);
+    EXPECT_FALSE(std::get<SctParameterAddress>(site.owner).repeatedGroupOrdinal.has_value());
+    EXPECT_TRUE(site.childPath.empty());
 }
 
 TEST(SctOpcodeAuthoringCatalog, CoversEveryOpcodeShapeWithoutInventingLegalDomains) {
@@ -348,7 +355,7 @@ TEST(SctInstructionFactory, RepresentsScheduledOpcode129AsAnInstructionModifier)
 
     SctInstructionFactoryRequest instructionRequest;
     instructionRequest.opcode = 12;
-    instructionRequest.scheduledExpression = SctExpressionFactory::decimalLiteral(3);
+    instructionRequest.scheduledExpression = SctExpressionFactory::encodedDecimalLiteral(3);
     auto draft = SctInstructionFactory::createDraft(instructionRequest);
     ASSERT_TRUE(draft.draft.has_value());
     SctDocument document;
@@ -387,7 +394,8 @@ TEST(SctInstructionFactory, RejectsInvalidDraftExpressionsWithoutAssigningEntity
     EXPECT_TRUE(std::any_of(materialized.diagnostics.begin(), materialized.diagnostics.end(),
         [](const auto& diagnostic) {
             return diagnostic.code == SctDiagnosticCode::ExpressionInvalid
-                && !diagnostic.entity.has_value();
+                && diagnostic.primaryLocation
+                && std::holds_alternative<SctDraftExpressionSite>(*diagnostic.primaryLocation);
         }));
 }
 
@@ -430,6 +438,8 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
 }
 
 TEST(SctDocumentEditing, StructuralAndTextEditsExportWithoutChangingStableIdentity) {
@@ -461,12 +471,13 @@ TEST(SctDocumentEditing, StructuralAndTextEditsExportWithoutChangingStableIdenti
     const auto reimported = SctDocumentImporter::import(reparsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(reimported.document.has_value());
     const auto index = SctDocumentIndex::build(*reimported.document);
+    const auto usage = SctSemanticUsageIndex::build(*reimported.document);
     const auto& reimportedScript = std::get<SctScriptSectionContent>(
         reimported.document->sections.front().content).instructions;
     ASSERT_FALSE(reimportedScript.empty());
-    const auto outbound = index.outboundReferences(reimportedScript.front().id);
+    const auto outbound = usage.outboundReferences(reimportedScript.front().id);
     ASSERT_EQ(outbound.size(), 1u);
-    EXPECT_EQ(index.inboundReferences(outbound.front().target).size(), 1u);
+    EXPECT_EQ(usage.inboundReferences(outbound.front().target).size(), 1u);
 }
 
 TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText) {
@@ -475,11 +486,13 @@ TEST(SctDocumentEditing, ImportedPhysicalStringCanGrowAndReimportAsEditableText)
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     auto document = *imported.document;
     auto& indexedString = std::get<SctStringSectionContent>(document.sections.front().content).string;
     std::get<SctTextChunk>(std::get<SctMessage>(indexedString.value).body.elements.front()).utf8 =
         "a substantially longer string";
-    const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &imported.receipt);
+    const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &*evidence);
     ASSERT_TRUE(exported.success);
     const auto reparsed = SctParser{}.parse(exported.bytes, "edited_string.sct");
     ASSERT_TRUE(reparsed.parseOk);
@@ -508,12 +521,12 @@ TEST(SctDocumentEditing, TypedExpressionEditsExportAndReimport) {
     document.sections.push_back({sectionId, "EXPRESSIONS", SctScriptSectionContent{{*created.instruction}}});
 
     auto& instruction = std::get<SctScriptSectionContent>(document.sections.front().content).instructions.front();
-    const auto variable = SctExpressionFactory::variable(SctExpressionVariableKind::Integer, 8);
+    const auto variable = SctExpressionFactory::integerInput(8);
     ASSERT_TRUE(variable.expression.has_value());
     const auto builtOperation = SctExpressionFactory::binaryOperator(
         SctExpressionBinaryOperator::Add,
         *variable.expression,
-        SctExpressionFactory::decimalLiteral(12, 128));
+        SctExpressionFactory::encodedDecimalLiteral(12, 128));
     ASSERT_TRUE(builtOperation.expression.has_value());
     instruction.fixedParameters[0].value = *builtOperation.expression;
     instruction.fixedParameters[1].value = SctExpressionFactory::floatLiteral(1.5f);
@@ -533,7 +546,7 @@ TEST(SctDocumentEditing, TypedExpressionEditsExportAndReimport) {
     EXPECT_EQ(operation.kind, SctCanonicalExpressionNodeKind::ArithmeticOperator);
     EXPECT_EQ(operation.encodingCode, 0x0eu);
     ASSERT_EQ(operation.children.size(), 2u);
-    EXPECT_EQ(operation.children[0].kind, SctCanonicalExpressionNodeKind::IntVariable);
+    EXPECT_EQ(operation.children[0].kind, SctCanonicalExpressionNodeKind::NegatedIntVariable);
     EXPECT_EQ(operation.children[0].encodingCode, 0x50000008u);
     EXPECT_EQ(operation.children[1].kind, SctCanonicalExpressionNodeKind::DecimalLiteral);
     EXPECT_EQ(operation.children[1].encodingCode, 0x08000c80u);
@@ -559,11 +572,11 @@ TEST(SctDocumentEditing, RepeatedGroupsCanBeAddedRemovedAndReordered) {
     document.sections.push_back({sectionId, "REPEATED", SctScriptSectionContent{{*created.instruction}}});
 
     auto& instruction = std::get<SctScriptSectionContent>(document.sections.front().content).instructions.front();
-    instruction.repeatedParameterGroups[0].parameters[0].value = SctExpressionFactory::decimalLiteral(10);
-    instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::decimalLiteral(20)}}});
+    instruction.repeatedParameterGroups[0].parameters[0].value = SctExpressionFactory::encodedDecimalLiteral(10);
+    instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::encodedDecimalLiteral(20)}}});
     std::swap(instruction.repeatedParameterGroups[0], instruction.repeatedParameterGroups[1]);
     instruction.repeatedParameterGroups.erase(instruction.repeatedParameterGroups.begin() + 1);
-    instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::decimalLiteral(30)}}});
+    instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::encodedDecimalLiteral(30)}}});
 
     ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
@@ -594,7 +607,7 @@ TEST(SctDocumentEditing, MovesTargetsAcrossSectionsAndRetargetsSwitchAndCallRefe
     const auto secondTargetId = document.allocateInstructionId();
 
     SctDocumentInstruction branch{switchId, 3};
-    branch.fixedParameters.push_back({0, SctExpressionFactory::decimalLiteral(0)});
+    branch.fixedParameters.push_back({0, SctExpressionFactory::encodedDecimalLiteral(0)});
     branch.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{1}},
         {3, SctInstructionReference{firstTargetId}}}});
     branch.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{2}},
@@ -617,9 +630,9 @@ TEST(SctDocumentEditing, MovesTargetsAcrossSectionsAndRetargetsSwitchAndCallRefe
     auto& editedCall = std::get<SctScriptSectionContent>(document.sections[1].content).instructions.front();
     std::get<SctInstructionReference>(editedCall.fixedParameters[0].value).target = secondTargetId;
 
-    const auto currentIndex = SctDocumentIndex::build(document);
-    EXPECT_EQ(currentIndex.inboundReferences(SctDocumentReferenceTarget{firstTargetId}).size(), 1u);
-    EXPECT_EQ(currentIndex.inboundReferences(SctDocumentReferenceTarget{secondTargetId}).size(), 2u);
+    const auto currentUsage = SctSemanticUsageIndex::build(document);
+    EXPECT_EQ(currentUsage.inboundReferences(SctDocumentReferenceTarget{firstTargetId}).size(), 1u);
+    EXPECT_EQ(currentUsage.inboundReferences(SctDocumentReferenceTarget{secondTargetId}).size(), 2u);
     ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
@@ -654,9 +667,9 @@ TEST(SctDocumentEditing, MovesTargetsAcrossSectionsAndRetargetsSwitchAndCallRefe
     ASSERT_EQ(importedCalls.size(), 1u);
     ASSERT_EQ(importedSecondTargets.size(), 1u);
     ASSERT_EQ(importedFirstTargets.size(), 1u);
-    const auto importedIndex = SctDocumentIndex::build(*reimported.document);
-    const auto switchReferences = importedIndex.outboundReferences(importedSwitches.front().id);
-    const auto callReferences = importedIndex.outboundReferences(importedCalls.front().id);
+    const auto importedUsage = SctSemanticUsageIndex::build(*reimported.document);
+    const auto switchReferences = importedUsage.outboundReferences(importedSwitches.front().id);
+    const auto callReferences = importedUsage.outboundReferences(importedCalls.front().id);
     ASSERT_EQ(switchReferences.size(), 2u);
     ASSERT_EQ(callReferences.size(), 1u);
     EXPECT_EQ(switchReferences[0].target, SctDocumentReferenceTarget{importedFirstTargets.front().id});
@@ -694,24 +707,25 @@ TEST(SctDocumentEditing, ReferencedFooterTextCanGrowAndReimport) {
     const auto& importedInstructions = std::get<SctScriptSectionContent>(
         reimported.document->sections.front().content).instructions;
     ASSERT_FALSE(importedInstructions.empty());
-    EXPECT_EQ(SctDocumentIndex::build(*reimported.document).outboundReferences(importedInstructions.front().id).size(), 1u);
+    EXPECT_EQ(SctSemanticUsageIndex::build(*reimported.document).outboundReferences(
+        importedInstructions.front().id).size(), 1u);
 }
 
 TEST(SctDocumentValidator, LocatesNestedExpressionErrorsInsideRepeatedGroups) {
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
     SctDocumentInstruction instruction{document.allocateInstructionId(), 119};
-    instruction.fixedParameters.push_back({0, SctExpressionFactory::decimalLiteral(0)});
-    instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::decimalLiteral(1)}}});
+    instruction.fixedParameters.push_back({0, SctExpressionFactory::encodedDecimalLiteral(0)});
+    instruction.repeatedParameterGroups.push_back({{{2, SctExpressionFactory::encodedDecimalLiteral(1)}}});
 
     SctCanonicalExpressionNode invalidChild;
     invalidChild.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
     invalidChild.encodingCode = 0x0eu;
-    invalidChild.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::decimalLiteral(2).root));
+    invalidChild.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::encodedDecimalLiteral(2).root));
     SctCanonicalExpressionNode root;
     root.kind = SctCanonicalExpressionNodeKind::ArithmeticOperator;
     root.encodingCode = 0x0eu;
-    root.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::decimalLiteral(3).root));
+    root.children.push_back(std::get<SctCanonicalExpressionNode>(SctExpressionFactory::encodedDecimalLiteral(3).root));
     root.children.push_back(std::move(invalidChild));
     instruction.repeatedParameterGroups.push_back({{{2,
         SctCanonicalExpression{std::move(root), SctExpressionTermination::StopCode}}}});
@@ -720,12 +734,15 @@ TEST(SctDocumentValidator, LocatesNestedExpressionErrorsInsideRepeatedGroups) {
     const auto validation = SctDocumentValidator::validateDocument(document);
     const auto found = std::find_if(validation.diagnostics.begin(), validation.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::ExpressionInvalid
-            && diagnostic.parameter.has_value()
-            && diagnostic.parameter->repeatedGroupOrdinal == 1u;
+            && diagnostic.primaryLocation
+            && std::holds_alternative<SctExpressionSite>(*diagnostic.primaryLocation)
+            && std::get<SctParameterAddress>(
+                std::get<SctExpressionSite>(*diagnostic.primaryLocation).owner).repeatedGroupOrdinal == 1u;
     });
     ASSERT_NE(found, validation.diagnostics.end());
-    EXPECT_EQ(found->parameter->schemaIndex, 2u);
-    EXPECT_EQ(found->expressionChildPath, std::vector<std::uint32_t>({1u}));
+    const auto& expressionSite = std::get<SctExpressionSite>(*found->primaryLocation);
+    EXPECT_EQ(std::get<SctParameterAddress>(expressionSite.owner).schemaIndex, 2u);
+    EXPECT_EQ(expressionSite.childPath, std::vector<std::uint32_t>({1u}));
 }
 
 TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocumentOrder) {
@@ -737,7 +754,7 @@ TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocument
     const auto firstAttachmentId = document.allocateOpaqueAttachmentId();
     const auto secondAttachmentId = document.allocateOpaqueAttachmentId();
     SctDocumentInstruction branch{sourceId, 3};
-    branch.fixedParameters.push_back({0, SctExpressionFactory::decimalLiteral(0)});
+    branch.fixedParameters.push_back({0, SctExpressionFactory::encodedDecimalLiteral(0)});
     branch.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{1}}, {3, SctInstructionReference{firstTargetId}}}});
     branch.repeatedParameterGroups.push_back({{{2, SctEncodedWordValue{2}}, {3, SctInstructionReference{secondTargetId}}}});
     document.sections.push_back({sectionId, "ORDER", SctScriptSectionContent{
@@ -750,17 +767,21 @@ TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocument
     const auto index = SctDocumentIndex::build(document);
     const auto attachments = index.attachmentsFor(sectionId);
     ASSERT_EQ(attachments.size(), 2u);
-    EXPECT_EQ(attachments[0]->id, secondAttachmentId);
-    EXPECT_EQ(attachments[1]->id, firstAttachmentId);
-    const auto references = index.outboundReferences(sourceId);
+    EXPECT_EQ(attachments[0], secondAttachmentId);
+    EXPECT_EQ(attachments[1], firstAttachmentId);
+    const auto references = SctSemanticUsageIndex::build(document).outboundReferences(sourceId);
     ASSERT_EQ(references.size(), 2u);
-    EXPECT_EQ(references[0].parameter, (SctParameterAddress{3, 0u}));
-    EXPECT_EQ(references[1].parameter, (SctParameterAddress{3, 1u}));
+    EXPECT_EQ(references[0].source.parameter, (SctParameterAddress{3, 0u}));
+    EXPECT_EQ(references[1].source.parameter, (SctParameterAddress{3, 1u}));
 
-    SctDocumentImportReceipt receipt;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    const auto first = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &receipt);
-    const auto second = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &receipt);
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
+    const auto first = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &*evidence);
+    const auto second = SctDocumentExporter::exportDocument(document, rawGameCubeOptions(), &*evidence);
     ASSERT_TRUE(first.success);
     ASSERT_TRUE(second.success);
     EXPECT_EQ(first.bytes, second.bytes);
@@ -782,7 +803,6 @@ TEST(SctDocumentDeterminism, IndexLayoutDiagnosticsAndPreservationFollowDocument
     for (std::size_t i = 0; i < validationA.diagnostics.size(); ++i) {
         EXPECT_EQ(validationA.diagnostics[i].code, validationB.diagnostics[i].code);
         EXPECT_EQ(validationA.diagnostics[i].message, validationB.diagnostics[i].message);
-        EXPECT_EQ(validationA.diagnostics[i].parameter, validationB.diagnostics[i].parameter);
-        EXPECT_EQ(validationA.diagnostics[i].expressionChildPath, validationB.diagnostics[i].expressionChildPath);
+        EXPECT_EQ(validationA.diagnostics[i].primaryLocation, validationB.diagnostics[i].primaryLocation);
     }
 }

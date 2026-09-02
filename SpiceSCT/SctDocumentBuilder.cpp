@@ -14,17 +14,18 @@ bool observeId(Id id, std::string_view label, std::unordered_set<std::uint64_t>&
     std::uint64_t& maximum, std::vector<SctDocumentDiagnostic>& diagnostics) {
     if (!id) {
         diagnostics.push_back({SctDiagnosticSeverity::Error, SctDiagnosticCode::InvalidId,
-            SctDocumentEntityId{id}, std::string(label) + " ID is zero."});
+            std::string(label) + " ID is zero.", SctDiagnosticLocation{SctDocumentEntityId{id}}});
         return false;
     }
     if (!seen.insert(id.value()).second) {
         diagnostics.push_back({SctDiagnosticSeverity::Error, SctDiagnosticCode::DuplicateId,
-            SctDocumentEntityId{id}, std::string(label) + " ID is duplicated."});
+            std::string(label) + " ID is duplicated.", SctDiagnosticLocation{SctDocumentEntityId{id}}});
         return false;
     }
     if (id.value() == std::numeric_limits<std::uint64_t>::max()) {
         diagnostics.push_back({SctDiagnosticSeverity::Error, SctDiagnosticCode::AllocatorDiscontinuity,
-            SctDocumentEntityId{id}, std::string(label) + " ID leaves no monotonic successor."});
+            std::string(label) + " ID leaves no monotonic successor.",
+            SctDiagnosticLocation{SctDocumentEntityId{id}}});
         return false;
     }
     maximum = std::max(maximum, id.value());

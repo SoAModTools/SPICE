@@ -11,8 +11,7 @@ namespace {
 void addError(SctReferenceValueResult& result, SctDiagnosticCode code, std::string message,
     SctInstructionId source, SctParameterAddress parameter) {
     SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code,
-        SctDocumentEntityId{source}, std::move(message)};
-    diagnostic.parameter = parameter;
+        std::move(message), SctDiagnosticLocation{SctParameterSite{source, parameter}}};
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
@@ -51,20 +50,21 @@ bool addressMatches(const SctOpcodeSchema& schema, SctParameterAddress address) 
         && (parameter->belongsToRepeatedGroup == address.repeatedGroupOrdinal.has_value());
 }
 
-bool targetMatches(const SctDocumentIndex& index, const SctExpectedReferenceTarget& expected,
+bool targetMatches(const SctDocument& document, const SctDocumentIndex& index,
+    const SctExpectedReferenceTarget& expected,
     const SctDocumentReferenceTarget& target) {
     if (expected.storage == SctReferenceTargetStorage::Instruction) {
         const auto* id = std::get_if<SctInstructionId>(&target);
-        return id != nullptr && index.find(*id) != nullptr && !expected.textKind.has_value();
+        return id != nullptr && index.find(document, *id) != nullptr && !expected.textKind.has_value();
     }
     if (!expected.textKind.has_value()) return false;
     if (expected.storage == SctReferenceTargetStorage::IndexedString) {
         const auto* id = std::get_if<SctStringId>(&target);
-        const auto* string = id == nullptr ? nullptr : index.find(*id);
+        const auto* string = id == nullptr ? nullptr : index.find(document, *id);
         return string != nullptr && string->kind == *expected.textKind;
     }
     const auto* id = std::get_if<SctFooterEntryId>(&target);
-    const auto* footer = id == nullptr ? nullptr : index.find(*id);
+    const auto* footer = id == nullptr ? nullptr : index.find(document, *id);
     return footer != nullptr && footer->kind == *expected.textKind;
 }
 
@@ -87,7 +87,7 @@ void addCandidate(std::vector<SctReferenceRepairCandidate>& candidates,
 } // namespace
 
 SctReferenceRepairAnalysis SctReferenceRepair::analyze(
-    const SctDocument& document, const SctDocumentImportReceipt* receipt) {
+    const SctDocument& document, const SctBoundImportEvidence* evidence) {
     SctReferenceRepairAnalysis result;
     const auto index = SctDocumentIndex::build(document);
     for (const auto& section : document.sections) {
@@ -101,33 +101,37 @@ SctReferenceRepairAnalysis SctReferenceRepair::analyze(
                 SctReferenceRepairIssue issue{instruction.id,
                     {parameter.schemaIndex, groupOrdinal}, unresolved->expectedTarget,
                     unresolved->encodedWords};
-                if (receipt != nullptr) {
-                    const auto observation = std::find_if(receipt->unresolvedReferences.begin(),
-                        receipt->unresolvedReferences.end(), [&](const auto& value) {
+                if (evidence != nullptr) {
+                    const auto& receipt = evidence->receipt();
+                    const auto observation = std::find_if(receipt.unresolvedReferences.begin(),
+                        receipt.unresolvedReferences.end(), [&](const auto& value) {
                             return value.sourceInstruction == instruction.id
                                 && value.parameter == issue.parameter;
                         });
-                    if (observation != receipt->unresolvedReferences.end()) {
+                    if (observation != receipt.unresolvedReferences.end()) {
                         issue.sourceObservation = *observation;
                         if (observation->calculatedTargetPayloadOffset
                             && *observation->calculatedTargetPayloadOffset >= 0) {
                             const auto offset = static_cast<std::uint64_t>(
                                 *observation->calculatedTargetPayloadOffset);
-                            for (const auto& provenance : receipt->provenance) {
-                                if (provenance.decodedPayloadOffset != offset) continue;
+                            for (const auto& provenance : receipt.sourceMap.recordsAt(
+                                    static_cast<std::uint32_t>(offset))) {
+                                if (provenance.span.offset != offset || !provenance.target) continue;
+                                const auto* entity = std::get_if<SctDocumentEntityId>(&*provenance.target);
+                                if (entity == nullptr) continue;
                                 if (issue.expectedTarget.storage == SctReferenceTargetStorage::Instruction) {
-                                    if (const auto* id = std::get_if<SctInstructionId>(&provenance.entity);
-                                        id != nullptr && index.find(*id) != nullptr) addCandidate(issue.candidates, *id);
+                                    if (const auto* id = std::get_if<SctInstructionId>(entity);
+                                        id != nullptr && index.find(document, *id) != nullptr) addCandidate(issue.candidates, *id);
                                 } else if (issue.expectedTarget.storage == SctReferenceTargetStorage::FooterEntry) {
-                                    if (const auto* id = std::get_if<SctFooterEntryId>(&provenance.entity);
-                                        id != nullptr && targetMatches(index, issue.expectedTarget, *id)) {
+                                    if (const auto* id = std::get_if<SctFooterEntryId>(entity);
+                                        id != nullptr && targetMatches(document, index, issue.expectedTarget, *id)) {
                                         addCandidate(issue.candidates, *id);
                                     }
-                                } else if (const auto* sectionId = std::get_if<SctSectionId>(&provenance.entity)) {
-                                    const auto* targetSection = index.find(*sectionId);
+                                } else if (const auto* sectionId = std::get_if<SctSectionId>(entity)) {
+                                    const auto* targetSection = index.find(document, *sectionId);
                                     const auto* content = targetSection == nullptr ? nullptr
                                         : std::get_if<SctStringSectionContent>(&targetSection->content);
-                                    if (content != nullptr && targetMatches(index, issue.expectedTarget,
+                                    if (content != nullptr && targetMatches(document, index, issue.expectedTarget,
                                             SctDocumentReferenceTarget{content->string.id})) {
                                         addCandidate(issue.candidates, content->string.id);
                                     }
@@ -154,7 +158,7 @@ SctReferenceValueResult SctReferenceRepair::createReferenceValue(
     SctParameterAddress parameter, const SctDocumentReferenceTarget& target) {
     SctReferenceValueResult result;
     const auto index = SctDocumentIndex::build(document);
-    const auto* instruction = index.find(sourceInstruction);
+    const auto* instruction = index.find(document, sourceInstruction);
     if (instruction == nullptr) {
         addError(result, SctDiagnosticCode::UnresolvedReference,
             "Source instruction does not exist in the document.", sourceInstruction, parameter);
@@ -174,7 +178,7 @@ SctReferenceValueResult SctReferenceRepair::createReferenceValue(
             "Parameter address is not a known reference parameter.", sourceInstruction, parameter);
         return result;
     }
-    if (!targetMatches(index, *expected, target)) {
+    if (!targetMatches(document, index, *expected, target)) {
         addError(result, SctDiagnosticCode::ParameterMismatch,
             "Selected target does not exist or does not match the reference contract.",
             sourceInstruction, parameter);
@@ -201,7 +205,7 @@ SctReferenceValueResult SctReferenceRepair::createReferenceValue(
         return result;
     }
     const auto index = SctDocumentIndex::build(document);
-    if (!targetMatches(index, *expected, target)) {
+    if (!targetMatches(document, index, *expected, target)) {
         addError(result, SctDiagnosticCode::ParameterMismatch,
             "Selected target does not exist or does not match the reference contract.", {}, parameter);
         return result;
@@ -215,7 +219,7 @@ SctReferenceValueResult SctReferenceRepair::resolve(
     SctParameterAddress parameter, const SctDocumentReferenceTarget& target) {
     SctReferenceValueResult result;
     const auto index = SctDocumentIndex::build(document);
-    const auto* instruction = index.find(sourceInstruction);
+    const auto* instruction = index.find(document, sourceInstruction);
     const auto* source = instruction == nullptr ? nullptr : findParameter(*instruction, parameter);
     const auto* unresolved = source == nullptr ? nullptr
         : std::get_if<SctUnresolvedReferenceValue>(&source->value);

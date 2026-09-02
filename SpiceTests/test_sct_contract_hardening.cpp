@@ -146,17 +146,19 @@ TEST(SctReferenceSafety, ImportClassifiesEveryKnownUnresolvedReferenceKind) {
         ASSERT_NE(unresolved, nullptr);
         EXPECT_EQ(unresolved->expectedTarget, testCase.expected);
         EXPECT_EQ(unresolved->encodedWords, (std::vector<std::uint32_t>{100u}));
-        ASSERT_EQ(imported.receipt.unresolvedReferences.size(), 1u);
-        EXPECT_EQ(imported.receipt.unresolvedReferences.front().sourceInstruction, instruction.id);
-        EXPECT_EQ(imported.receipt.unresolvedReferences.front().parameter, testCase.address);
-        EXPECT_EQ(imported.receipt.unresolvedReferences.front().sourceInstructionPayloadOffset, 32u);
-        ASSERT_TRUE(imported.receipt.unresolvedReferences.front().operandPayloadOffset.has_value());
-        EXPECT_GE(*imported.receipt.unresolvedReferences.front().operandPayloadOffset, 36u);
-        EXPECT_TRUE(imported.receipt.unresolvedReferences.front().calculatedTargetPayloadOffset.has_value());
+        ASSERT_EQ(imported.context.receipt.unresolvedReferences.size(), 1u);
+        EXPECT_EQ(imported.context.receipt.unresolvedReferences.front().sourceInstruction, instruction.id);
+        EXPECT_EQ(imported.context.receipt.unresolvedReferences.front().parameter, testCase.address);
+        EXPECT_EQ(imported.context.receipt.unresolvedReferences.front().sourceInstructionPayloadOffset, 32u);
+        ASSERT_TRUE(imported.context.receipt.unresolvedReferences.front().operandPayloadOffset.has_value());
+        EXPECT_GE(*imported.context.receipt.unresolvedReferences.front().operandPayloadOffset, 36u);
+        EXPECT_TRUE(imported.context.receipt.unresolvedReferences.front().calculatedTargetPayloadOffset.has_value());
         const auto structural = SctDocumentValidator::validateDocument(*imported.document);
         EXPECT_TRUE(structural.validDocument) << diagnosticMessages(structural.diagnostics);
+        const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+        ASSERT_TRUE(evidence);
         EXPECT_FALSE(SctDocumentValidator::validateForTarget(*imported.document,
-            SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt).validForTarget);
+            SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*evidence).validForTarget);
     }
 }
 
@@ -180,11 +182,22 @@ TEST(SctReferenceRepair, ReportsExactEvidenceCandidatesAndReturnsTypedReplacemen
     const auto withoutReceipt = SctReferenceRepair::analyze(document);
     ASSERT_EQ(withoutReceipt.issues.size(), 1u);
     EXPECT_TRUE(withoutReceipt.issues.front().candidates.empty());
-    SctDocumentImportReceipt receipt;
-    receipt.unresolvedReferences.push_back({sourceId, {0u, std::nullopt}, 0u, 4u, 100});
-    receipt.provenance.push_back({SctDocumentEntityId{targetId}, 100u, 4u, 0u});
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.unresolvedReferences.push_back({sourceId, {0u, std::nullopt}, 0u, 4u, 100});
+    auto builtMap = SctImportedSourceMap::build(104u, {
+        {{0u, 100u}, SctSourceSpanRole::Header, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::SourceObservation},
+        {{100u, 4u}, SctSourceSpanRole::Instruction, SctSourceSpanLayer::Leaf,
+            SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{targetId},
+            std::nullopt, std::nullopt, SctSourceRegion::SectionPayload, true}});
+    ASSERT_TRUE(builtMap.map);
+    context.receipt.sourceMap = std::move(*builtMap.map);
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
 
-    const auto analysis = SctReferenceRepair::analyze(document, &receipt);
+    const auto analysis = SctReferenceRepair::analyze(document, &*evidence);
     ASSERT_EQ(analysis.issues.size(), 1u);
     ASSERT_TRUE(analysis.issues.front().sourceObservation.has_value());
     ASSERT_EQ(analysis.issues.front().candidates.size(), 1u);
@@ -195,9 +208,19 @@ TEST(SctReferenceRepair, ReportsExactEvidenceCandidatesAndReturnsTypedReplacemen
     const auto secondTargetId = ambiguous.allocateInstructionId();
     std::get<SctScriptSectionContent>(ambiguous.sections.front().content).instructions.push_back(
         SctDocumentInstruction{secondTargetId, 12u});
-    auto ambiguousReceipt = receipt;
-    ambiguousReceipt.provenance.push_back({SctDocumentEntityId{secondTargetId}, 100u, 4u, 0u});
-    const auto multiple = SctReferenceRepair::analyze(ambiguous, &ambiguousReceipt);
+    auto ambiguousContext = context;
+    auto ambiguousRecords = std::vector<SctSourceSpanRecord>(
+        ambiguousContext.receipt.sourceMap.records().begin(), ambiguousContext.receipt.sourceMap.records().end());
+    ambiguousRecords.push_back({{100u, 4u}, SctSourceSpanRole::Instruction,
+        SctSourceSpanLayer::Envelope, SctSourceCoverageKind::SemanticEntity,
+        SctDocumentEntityId{secondTargetId}, std::nullopt, std::nullopt,
+        SctSourceRegion::SectionPayload, true});
+    auto ambiguousMap = SctImportedSourceMap::build(104u, std::move(ambiguousRecords));
+    ASSERT_TRUE(ambiguousMap.map);
+    ambiguousContext.receipt.sourceMap = std::move(*ambiguousMap.map);
+    const auto ambiguousEvidence = ambiguousContext.bind(ambiguousContext.revisionProvenance);
+    ASSERT_TRUE(ambiguousEvidence);
+    const auto multiple = SctReferenceRepair::analyze(ambiguous, &*ambiguousEvidence);
     ASSERT_EQ(multiple.issues.size(), 1u);
     EXPECT_EQ(multiple.issues.front().candidates.size(), 2u);
 
@@ -220,7 +243,7 @@ TEST(SctReferenceRepair, ReportsExactEvidenceCandidatesAndReturnsTypedReplacemen
     const auto& reimportedInstructions = std::get<SctScriptSectionContent>(
         reimported.document->sections.front().content).instructions;
     ASSERT_FALSE(reimportedInstructions.empty());
-    EXPECT_EQ(SctDocumentIndex::build(*reimported.document)
+    EXPECT_EQ(SctSemanticUsageIndex::build(*reimported.document)
         .outboundReferences(reimportedInstructions.front().id).size(), 1u);
 }
 
@@ -314,10 +337,14 @@ TEST(SctDocumentWorkflow, ClassifiesUnavailableInspectableStructuralAndExportRea
     blocked.opaqueAttachments.push_back({attachmentId, {0xaa}, blockedSection,
         SctOpaquePlacement::FixedOffset, 0u, 1u, SctOpaqueRelocationSupport::FixedOnly,
         SctOpaqueReason::Gap});
-    SctDocumentImportReceipt receipt;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     const auto blockedAssessment = SctDocumentWorkflow::assessForExport(
-        blocked, gameCubeOptions(), &receipt);
+        blocked, gameCubeOptions(), &*evidence);
     EXPECT_EQ(blockedAssessment.readiness, SctDocumentReadiness::StructurallyValid);
     EXPECT_FALSE(blockedAssessment.layout.success);
 }

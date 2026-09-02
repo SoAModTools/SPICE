@@ -23,6 +23,28 @@ void appendBe32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
     bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
+SctParseResult parsedFooterText(std::vector<std::uint8_t> record,
+    SctFooterEntryKind kind) {
+    SctParseResult parsed;
+    parsed.parseOk = true;
+    parsed.file.detectedEndian = "big";
+    parsed.file.originalPayloadBytes.resize(12u, 0u);
+    parsed.file.originalPayloadBytes.insert(
+        parsed.file.originalPayloadBytes.end(), record.begin(), record.end());
+    SctFooter footer;
+    footer.present = true;
+    footer.payloadStartOffset = 0u;
+    footer.payloadEndOffset = static_cast<std::uint32_t>(record.size());
+    SctFooterEntry entry;
+    entry.id = "FOOTER_0";
+    entry.kind = kind;
+    entry.payloadOffset = 0u;
+    entry.rawBytes = std::move(record);
+    footer.entries.push_back(std::move(entry));
+    parsed.file.footer = std::move(footer);
+    return parsed;
+}
+
 } // namespace
 
 TEST(SctSemanticText, BuilderNormalizesLineEndingsCoalescesChunksAndRejectsInvalidUtf8) {
@@ -210,13 +232,15 @@ TEST(SctSemanticText, StructuralDiagnosticsLocateHeaderAndBodyElements) {
     const auto result = SctDocumentValidator::validateDocument(document);
     EXPECT_FALSE(result.validDocument);
     EXPECT_TRUE(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& item) {
-        return item.textLocation.has_value()
-            && item.textLocation->region == SctDocumentDiagnostic::TextRegion::Header;
+        return item.primaryLocation
+            && std::holds_alternative<SctTextSite>(*item.primaryLocation)
+            && std::get<SctTextSite>(*item.primaryLocation).region == SctTextRegion::Header;
     }));
     EXPECT_TRUE(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& item) {
-        return item.textLocation.has_value()
-            && item.textLocation->region == SctDocumentDiagnostic::TextRegion::Body
-            && item.textLocation->elementOrdinal == 1u;
+        return item.primaryLocation
+            && std::holds_alternative<SctTextSite>(*item.primaryLocation)
+            && std::get<SctTextSite>(*item.primaryLocation).region == SctTextRegion::Body
+            && std::get<SctTextSite>(*item.primaryLocation).elementOrdinal == 1u;
     }));
 }
 
@@ -243,12 +267,9 @@ TEST(SctSemanticText, OpaqueTextExportsAcrossPlatformAndEncodingWithoutTranscodi
     const std::vector<std::uint8_t> raw{0x81u, 0u};
     document.footerEntries.push_back({id, SctTextKind::SctString, SctOpaqueText{raw}});
 
-    SctDocumentImportReceipt receipt;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    receipt.sourceTextEncoding = kSctShiftJis8140Encoding;
     SctDocumentExportOptions options{SctPlatform::Dreamcast, kSctWindows1252Byte7FEncoding,
         SctDocumentOutputByteOrder::LittleEndian};
-    const auto exported = SctDocumentExporter::exportDocument(document, options, &receipt);
+    const auto exported = SctDocumentExporter::exportDocument(document, options);
     ASSERT_TRUE(exported.success);
     ASSERT_EQ(exported.preservation.text.size(), 1u);
     const auto& record = exported.preservation.text.front();
@@ -332,22 +353,116 @@ TEST(SctSemanticText, ImportEncodingIsIndependentOfDeclaredSourcePlatform) {
     ASSERT_NE(message, nullptr);
     ASSERT_EQ(message->body.elements.size(), 1u);
     EXPECT_EQ(std::get<SctTextChunk>(message->body.elements.front()).utf8, "Hi");
-    ASSERT_EQ(imported.receipt.text.size(), 1u);
-    EXPECT_EQ(imported.receipt.text.front().encoding, kSctShiftJis8140Encoding);
-    EXPECT_TRUE(imported.receipt.text.front().semantic);
+    ASSERT_EQ(imported.context.receipt.text.size(), 1u);
+    EXPECT_EQ(imported.context.receipt.text.front().selectedEncoding, kSctShiftJis8140Encoding);
+    EXPECT_EQ(imported.context.receipt.text.front().disposition,
+        SctTextImportDisposition::Semantic);
+}
+
+TEST(SctSemanticText, ConservativeFooterImportPreservesConflictingInterpretations) {
+    for (const auto kind : {SctFooterEntryKind::String, SctFooterEntryKind::SctString}) {
+        const auto parsed = parsedFooterText({0x82u, 0xa0u, 0u}, kind);
+        const auto imported = SctDocumentImporter::import(parsed,
+            {{SctPlatform::Dreamcast}, kSctWindows1252Byte7FEncoding});
+        ASSERT_TRUE(imported.document.has_value());
+        ASSERT_EQ(imported.document->footerEntries.size(), 1u);
+        const auto* opaque = std::get_if<SctOpaqueText>(
+            &imported.document->footerEntries.front().value);
+        ASSERT_NE(opaque, nullptr);
+        EXPECT_EQ(opaque->bytes, (std::vector<std::uint8_t>{0x82u, 0xa0u, 0u}));
+        ASSERT_EQ(imported.context.receipt.text.size(), 1u);
+        const auto& observation = imported.context.receipt.text.front();
+        EXPECT_EQ(observation.disposition,
+            SctTextImportDisposition::OpaqueConflictingInterpretations);
+        EXPECT_EQ(observation.selectedEncoding, kSctWindows1252Byte7FEncoding);
+        EXPECT_TRUE(std::find(observation.viableAlternativeConventions.begin(),
+            observation.viableAlternativeConventions.end(),
+            SctKnownTextConvention::Windows1252Byte7F)
+            != observation.viableAlternativeConventions.end());
+        EXPECT_TRUE(std::find(observation.viableAlternativeConventions.begin(),
+            observation.viableAlternativeConventions.end(),
+            SctKnownTextConvention::ShiftJisByte7F)
+            != observation.viableAlternativeConventions.end());
+
+        const auto inspected = SctTextInspectionService::inspectKnownConventions(
+            *opaque, imported.document->footerEntries.front().kind,
+            SctTextStorage::Footer);
+        EXPECT_EQ(inspected.bytes, opaque->bytes);
+        EXPECT_TRUE(inspected.ambiguous);
+    }
+}
+
+TEST(SctSemanticText, ExplicitFooterTrustPromotesSelectedInterpretationAndChangesLineage) {
+    const auto parsed = parsedFooterText(
+        {0x82u, 0xa0u, 0u}, SctFooterEntryKind::SctString);
+    SctDocumentImportOptions trustedOptions;
+    trustedOptions.declaredSourcePlatform = SctPlatform::Dreamcast;
+    trustedOptions.sourceTextEncoding = kSctWindows1252Byte7FEncoding;
+    trustedOptions.footerTextPromotion = SctFooterTextPromotionPolicy::TrustSelectedEncoding;
+    const auto trusted = SctDocumentImporter::import(parsed, trustedOptions);
+    ASSERT_TRUE(trusted.document.has_value());
+    ASSERT_EQ(trusted.document->footerEntries.size(), 1u);
+    EXPECT_TRUE(std::holds_alternative<SctMessage>(
+        trusted.document->footerEntries.front().value));
+    ASSERT_EQ(trusted.context.receipt.text.size(), 1u);
+    EXPECT_EQ(trusted.context.receipt.text.front().disposition,
+        SctTextImportDisposition::Semantic);
+    EXPECT_EQ(trusted.context.receipt.footerTextPromotion,
+        SctFooterTextPromotionPolicy::TrustSelectedEncoding);
+
+    const auto conservative = SctDocumentImporter::import(parsed,
+        {{SctPlatform::Dreamcast}, kSctWindows1252Byte7FEncoding});
+    EXPECT_NE(conservative.context.receipt.lineage, trusted.context.receipt.lineage);
+}
+
+TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFailures) {
+    const auto ascii = SctDocumentImporter::import(
+        parsedFooterText({'P', 'A', 'T', 'H', 0u}, SctFooterEntryKind::String),
+        {{SctPlatform::GameCube}, kSctWindows1252Byte7FEncoding});
+    ASSERT_TRUE(ascii.document.has_value());
+    ASSERT_EQ(ascii.document->footerEntries.size(), 1u);
+    EXPECT_TRUE(std::holds_alternative<SctPlainText>(
+        ascii.document->footerEntries.front().value));
+    ASSERT_EQ(ascii.context.receipt.text.size(), 1u);
+    EXPECT_EQ(ascii.context.receipt.text.front().disposition,
+        SctTextImportDisposition::Semantic);
+
+    const auto failed = SctDocumentImporter::import(
+        parsedFooterText({0x81u, 0u}, SctFooterEntryKind::String),
+        {{SctPlatform::GameCube}, kSctWindows1252Byte7FEncoding});
+    ASSERT_TRUE(failed.document.has_value());
+    ASSERT_EQ(failed.document->footerEntries.size(), 1u);
+    EXPECT_TRUE(std::holds_alternative<SctOpaqueText>(
+        failed.document->footerEntries.front().value));
+    EXPECT_EQ(failed.context.receipt.text.front().disposition,
+        SctTextImportDisposition::OpaqueDecodeFailed);
+
+    const auto malformed = SctDocumentImporter::import(
+        parsedFooterText({'A', '\\', 'p', '(', 'x', ')', 0u},
+            SctFooterEntryKind::SctString),
+        {{SctPlatform::GameCube}, kSctWindows1252Byte7FEncoding});
+    ASSERT_TRUE(malformed.document.has_value());
+    EXPECT_TRUE(std::holds_alternative<SctOpaqueText>(
+        malformed.document->footerEntries.front().value));
+    EXPECT_EQ(malformed.context.receipt.text.front().disposition,
+        SctTextImportDisposition::OpaqueDecodeFailed);
 }
 
 TEST(SctHeaderProvenance, MaterializesReceiptCanonicalCrossEndianAndExplicitHeaders) {
     SctDocument document;
     const std::array<std::uint8_t, 8> raw{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0};
-    SctDocumentImportReceipt receipt;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
-    receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
-    receipt.source.header = {raw, {0x1234, 0x5678, 0x9abc, 0xdef0}, true};
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    context.receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
+    context.receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
+    context.receipt.source.header = {raw, {0x1234, 0x5678, 0x9abc, 0xdef0}, true};
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
 
     SctDocumentExportOptions same{SctPlatform::GameCube, kSctShiftJisByte7FEncoding};
-    const auto preserved = SctDocumentExporter::exportDocument(document, same, &receipt);
+    const auto preserved = SctDocumentExporter::exportDocument(document, same, &*evidence);
     ASSERT_TRUE(preserved.success);
     ASSERT_GE(preserved.bytes.size(), 12u);
     EXPECT_TRUE(std::equal(raw.begin(), raw.end(), preserved.bytes.begin()));
@@ -357,7 +472,7 @@ TEST(SctHeaderProvenance, MaterializesReceiptCanonicalCrossEndianAndExplicitHead
 
     SctDocumentExportOptions little{SctPlatform::GameCube, kSctShiftJisByte7FEncoding,
         SctDocumentOutputByteOrder::LittleEndian};
-    const auto reencoded = SctDocumentExporter::exportDocument(document, little, &receipt);
+    const auto reencoded = SctDocumentExporter::exportDocument(document, little, &*evidence);
     ASSERT_TRUE(reencoded.success);
     EXPECT_EQ((std::vector<std::uint8_t>(reencoded.bytes.begin(), reencoded.bytes.begin() + 8)),
         (std::vector<std::uint8_t>{0x34, 0x12, 0x78, 0x56, 0xbc, 0x9a, 0xf0, 0xde}));
@@ -378,7 +493,7 @@ TEST(SctHeaderProvenance, MaterializesReceiptCanonicalCrossEndianAndExplicitHead
     SctDocumentExportOptions overridden{SctPlatform::GameCube, kSctShiftJisByte7FEncoding,
         SctDocumentOutputByteOrder::BigEndian, SctDocumentOutputWrapper::Raw,
         SctOpaquePreservationPolicy::RequirePreservation, explicitHeader};
-    const auto explicitResult = SctDocumentExporter::exportDocument(document, overridden, &receipt);
+    const auto explicitResult = SctDocumentExporter::exportDocument(document, overridden, &*evidence);
     ASSERT_TRUE(explicitResult.success);
     EXPECT_EQ((std::vector<std::uint8_t>(explicitResult.bytes.begin(), explicitResult.bytes.begin() + 8)),
         (std::vector<std::uint8_t>{0, 1, 0, 2, 0, 3, 0, 4}));
@@ -393,13 +508,13 @@ TEST(SctHeaderProvenance, ImportClaimsHeaderAsReceiptObservationNotOpaqueDocumen
     parsed.file.originalPayloadBytes = {0x07, 0xd2, 0, 6, 0, 14, 0x12, 0x34, 0, 0, 0, 0};
     const auto imported = SctDocumentImporter::import(parsed);
     ASSERT_TRUE(imported.document.has_value());
-    EXPECT_TRUE(imported.receipt.source.header.available);
-    EXPECT_EQ(imported.receipt.source.header.values, (SctHeaderValues{2002, 6, 14, 0x1234}));
+    EXPECT_TRUE(imported.context.receipt.source.header.available);
+    EXPECT_EQ(imported.context.receipt.source.header.values, (SctHeaderValues{2002, 6, 14, 0x1234}));
     EXPECT_TRUE(imported.document->opaqueAttachments.empty());
-    const auto headerCoverage = std::find_if(imported.receipt.provenance.begin(),
-        imported.receipt.provenance.end(), [](const auto& item) {
-            return item.decodedPayloadOffset == 0u && item.byteSize == 8u;
+    const auto records = imported.context.receipt.sourceMap.records();
+    const auto headerCoverage = std::find_if(records.begin(), records.end(), [](const auto& item) {
+            return item.span.offset == 0u && item.span.size == 8u;
         });
-    ASSERT_NE(headerCoverage, imported.receipt.provenance.end());
+    ASSERT_NE(headerCoverage, records.end());
     EXPECT_EQ(headerCoverage->coverageKind, SctSourceCoverageKind::SourceObservation);
 }

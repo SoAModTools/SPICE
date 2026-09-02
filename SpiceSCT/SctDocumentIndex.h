@@ -11,14 +11,6 @@
 
 namespace spice::sct {
 
-using SctDocumentReferenceTarget = std::variant<SctInstructionId, SctStringId, SctFooterEntryId>;
-
-struct SctDocumentReferenceRecord {
-    SctInstructionId sourceInstruction;
-    SctParameterAddress parameter;
-    SctDocumentReferenceTarget target;
-};
-
 struct SctInstructionDocumentLocation {
     SctSectionId sectionId;
     std::size_t sectionOrdinal = 0;
@@ -30,45 +22,37 @@ struct SctStringDocumentLocation {
     std::size_t sectionOrdinal = 0;
 };
 
-// A derived, revision-scoped view. Mutating the source document invalidates the
-// pointers and reference lists in this object; rebuild it after each mutation.
+// A value-owned, revision-scoped view. It contains no pointers into the source
+// document. Rebuild after mutation; resolution verifies the supplied document.
 class SctDocumentIndex {
 public:
     [[nodiscard]] static SctDocumentIndex build(const SctDocument& document);
 
-    [[nodiscard]] const SctDocumentSection* find(SctSectionId id) const noexcept;
-    [[nodiscard]] const SctDocumentInstruction* find(SctInstructionId id) const noexcept;
-    [[nodiscard]] const SctDocumentString* find(SctStringId id) const noexcept;
-    [[nodiscard]] const SctDocumentFooterEntry* find(SctFooterEntryId id) const noexcept;
-    [[nodiscard]] const SctOpaqueAttachment* find(SctOpaqueAttachmentId id) const noexcept;
+    [[nodiscard]] const SctDocumentSection* find(const SctDocument& document, SctSectionId id) const noexcept;
+    [[nodiscard]] const SctDocumentInstruction* find(const SctDocument& document, SctInstructionId id) const noexcept;
+    [[nodiscard]] const SctDocumentString* find(const SctDocument& document, SctStringId id) const noexcept;
+    [[nodiscard]] const SctDocumentFooterEntry* find(const SctDocument& document, SctFooterEntryId id) const noexcept;
+    [[nodiscard]] const SctOpaqueAttachment* find(const SctDocument& document, SctOpaqueAttachmentId id) const noexcept;
 
     [[nodiscard]] std::optional<std::size_t> sectionOrdinal(SctSectionId id) const noexcept;
     [[nodiscard]] std::optional<SctInstructionDocumentLocation> instructionLocation(
         SctInstructionId id) const noexcept;
-    [[nodiscard]] const SctDocumentSection* owningSection(SctInstructionId id) const noexcept;
+    [[nodiscard]] const SctDocumentSection* owningSection(
+        const SctDocument& document, SctInstructionId id) const noexcept;
     [[nodiscard]] std::optional<SctStringDocumentLocation> stringLocation(SctStringId id) const noexcept;
     [[nodiscard]] std::optional<std::size_t> footerEntryOrdinal(SctFooterEntryId id) const noexcept;
     [[nodiscard]] std::optional<std::size_t> opaqueAttachmentOrdinal(
         SctOpaqueAttachmentId id) const noexcept;
 
-    [[nodiscard]] std::vector<const SctOpaqueAttachment*> attachmentsFor(const SctOpaqueAnchor& anchor) const;
-    [[nodiscard]] std::vector<SctDocumentReferenceRecord> outboundReferences(SctInstructionId source) const;
-    [[nodiscard]] std::vector<SctDocumentReferenceRecord> inboundReferences(
-        const SctDocumentReferenceTarget& target) const;
+    [[nodiscard]] std::vector<SctOpaqueAttachmentId> attachmentsFor(const SctOpaqueAnchor& anchor) const;
 
 private:
-    std::unordered_map<std::uint64_t, const SctDocumentSection*> sections_;
-    std::unordered_map<std::uint64_t, const SctDocumentInstruction*> instructions_;
-    std::unordered_map<std::uint64_t, const SctDocumentString*> strings_;
-    std::unordered_map<std::uint64_t, const SctDocumentFooterEntry*> footerEntries_;
-    std::unordered_map<std::uint64_t, const SctOpaqueAttachment*> attachments_;
     std::unordered_map<std::uint64_t, std::size_t> sectionOrdinals_;
     std::unordered_map<std::uint64_t, SctInstructionDocumentLocation> instructionLocations_;
     std::unordered_map<std::uint64_t, SctStringDocumentLocation> stringLocations_;
     std::unordered_map<std::uint64_t, std::size_t> footerEntryOrdinals_;
     std::unordered_map<std::uint64_t, std::size_t> attachmentOrdinals_;
-    std::vector<const SctOpaqueAttachment*> attachmentOrder_;
-    std::vector<SctDocumentReferenceRecord> references_;
+    std::vector<std::pair<SctOpaqueAttachmentId, SctOpaqueAnchor>> attachmentOrder_;
 };
 
 } // namespace spice::sct

@@ -35,7 +35,8 @@ SctParameter makeFallbackParameter(const SctInstruction& instruction, std::size_
     }
     parameter.confidence = metadata.confidence;
     parameter.valueKind = SctParameterValueKind::Integer;
-    if (metadata.resourceRole != SctOpcodeResourceRole::None) {
+    if (metadata.effect.kind == SctOpcodeEffectKind::LoadMld
+        || metadata.effect.kind == SctOpcodeEffectKind::LoadScript) {
         parameter.valueKind = SctParameterValueKind::ResourceRef;
     } else if (parameter.role.find("offset") != std::string::npos || parameter.role.find("Offset") != std::string::npos) {
         parameter.valueKind = SctParameterValueKind::Link;
@@ -61,10 +62,10 @@ SctEdgeType semanticEdgeType(const SctOpcodeSemanticMetadata& metadata) {
     default:
         break;
     }
-    switch (metadata.resourceRole) {
-    case SctOpcodeResourceRole::LoadsMld:
+    switch (metadata.effect.kind) {
+    case SctOpcodeEffectKind::LoadMld:
         return SctEdgeType::LoadsMld;
-    case SctOpcodeResourceRole::LoadsScript:
+    case SctOpcodeEffectKind::LoadScript:
         return SctEdgeType::LoadsScript;
     default:
         return SctEdgeType::Fallthrough;

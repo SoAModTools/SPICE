@@ -2,6 +2,7 @@
 
 #include "SctTextBuilder.h"
 #include "SctTextCodec.h"
+#include "SctScptEncoding.h"
 
 #include <algorithm>
 #include <unordered_map>
@@ -13,28 +14,58 @@ namespace {
 void error(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
     std::optional<SctDocumentEntityId> entity = std::nullopt,
     std::optional<SctParameterAddress> parameter = std::nullopt,
-    std::vector<std::uint32_t> expressionPath = {}) {
-    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)};
-    diagnostic.parameter = parameter;
-    diagnostic.expressionChildPath = std::move(expressionPath);
+    std::vector<std::uint32_t> expressionPath = {}, bool expression = false) {
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(message)};
+    const auto* instruction = entity ? std::get_if<SctInstructionId>(&*entity) : nullptr;
+    if (instruction != nullptr && parameter) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{SctParameterSite{*instruction, *parameter}};
+    }
+    if (instruction != nullptr && expression) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{SctExpressionSite{*instruction,
+            parameter ? SctExpressionOwner{*parameter}
+                      : SctExpressionOwner{SctScheduledExpressionSite{}},
+            std::move(expressionPath)}};
+    }
+    if (!diagnostic.primaryLocation && entity) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
+    }
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
 void warning(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
     std::optional<SctDocumentEntityId> entity = std::nullopt,
-    std::optional<SctParameterAddress> parameter = std::nullopt) {
-    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Warning, code, std::move(entity), std::move(message)};
-    diagnostic.parameter = parameter;
+    std::optional<SctParameterAddress> parameter = std::nullopt,
+    bool expression = false) {
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Warning, code, std::move(message)};
+    const auto* instruction = entity ? std::get_if<SctInstructionId>(&*entity) : nullptr;
+    if (instruction != nullptr && parameter) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{SctParameterSite{*instruction, *parameter}};
+    }
+    if (instruction != nullptr && expression) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{SctExpressionSite{*instruction,
+            parameter ? SctExpressionOwner{*parameter}
+                      : SctExpressionOwner{SctScheduledExpressionSite{}}, {}}};
+    }
+    if (!diagnostic.primaryLocation && entity) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
+    }
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
 void textError(SctDocumentValidationResult& result, std::string message,
-    SctDocumentEntityId entity, SctDocumentDiagnostic::TextRegion region,
+    SctDocumentEntityId entity, SctTextRegion region,
     std::optional<std::uint32_t> elementOrdinal, std::uint32_t offset, std::uint32_t size) {
+    std::optional<SctTextEntityId> textEntity;
+    if (const auto* string = std::get_if<SctStringId>(&entity)) textEntity = *string;
+    if (const auto* footer = std::get_if<SctFooterEntryId>(&entity)) textEntity = *footer;
     SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error,
-        SctDiagnosticCode::TextInvalid, entity, std::move(message)};
-    diagnostic.textLocation = SctDocumentDiagnostic::TextLocation{
-        region, elementOrdinal, {offset, size}};
+        SctDiagnosticCode::TextInvalid, std::move(message)};
+    if (textEntity) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{SctTextSite{
+            *textEntity, region, elementOrdinal, {offset, size}}};
+    } else {
+        diagnostic.primaryLocation = SctDiagnosticLocation{entity};
+    }
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
@@ -66,55 +97,65 @@ bool validExpressionNode(const SctCanonicalExpressionNode& node, SctDocumentVali
         || node.kind == SctCanonicalExpressionNodeKind::AssignmentOperator;
     if (binary && node.children.size() != 2) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "A typed SCPT operator must have exactly two children.", entity, parameter, path);
+            "A typed SCPT operator must have exactly two children.", entity, parameter, path, true);
         valid = false;
     }
     if (!binary && !node.children.empty()) {
-        error(result, SctDiagnosticCode::ExpressionInvalid, "A typed SCPT leaf cannot have children.", entity, parameter, path);
+        error(result, SctDiagnosticCode::ExpressionInvalid, "A typed SCPT leaf cannot have children.", entity, parameter, path, true);
         valid = false;
     }
     if (node.kind == SctCanonicalExpressionNodeKind::FloatLiteral && node.payloadWords.size() != 1) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "A float literal must preserve exactly one payload word.", entity, parameter, path);
+            "A float literal must preserve exactly one payload word.", entity, parameter, path, true);
         valid = false;
     }
     if (node.kind != SctCanonicalExpressionNodeKind::FloatLiteral && !node.payloadWords.empty()) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "Only a typed SCPT float literal may contain a payload word.", entity, parameter, path);
+            "Only a typed SCPT float literal may contain a payload word.", entity, parameter, path, true);
         valid = false;
     }
-    const auto prefix = node.encodingCode & 0xff000000u;
-    const auto compare = node.encodingCode <= 0x0au || node.encodingCode == 0x10u || node.encodingCode == 0x11u;
-    const auto arithmetic = (node.encodingCode >= 0x0bu && node.encodingCode <= 0x0fu)
-        || (node.encodingCode >= 0x12u && node.encodingCode <= 0x16u);
+    const auto classification = classifySctScptWord(node.encodingCode);
     bool encodingMatches = true;
     switch (node.kind) {
     case SctCanonicalExpressionNodeKind::NoLoopValue:
-        encodingMatches = node.encodingCode == 0x7f7fffffu || node.encodingCode == 0x00800000u
-            || node.encodingCode == 0x7fffffffu;
+        encodingMatches = isSctScptInlineValue(node.encodingCode);
         break;
-    case SctCanonicalExpressionNodeKind::FloatLiteral: encodingMatches = prefix == 0x04000000u; break;
-    case SctCanonicalExpressionNodeKind::DecimalLiteral: encodingMatches = prefix == 0x08000000u; break;
+    case SctCanonicalExpressionNodeKind::FloatLiteral:
+        encodingMatches = classification.kind == SctScptWordKind::FloatLiteral; break;
+    case SctCanonicalExpressionNodeKind::DecimalLiteral:
+        encodingMatches = classification.kind == SctScptWordKind::DecimalLiteral; break;
     case SctCanonicalExpressionNodeKind::IntVariable:
-    case SctCanonicalExpressionNodeKind::SecondaryValue: encodingMatches = prefix == 0x50000000u; break;
-    case SctCanonicalExpressionNodeKind::FloatVariable: encodingMatches = prefix == 0x40000000u; break;
-    case SctCanonicalExpressionNodeKind::BitVariable: encodingMatches = prefix == 0x20000000u; break;
-    case SctCanonicalExpressionNodeKind::ByteVariable: encodingMatches = prefix == 0x10000000u; break;
-    case SctCanonicalExpressionNodeKind::CompareOperator: encodingMatches = compare && node.encodingCode != 0x0au; break;
-    case SctCanonicalExpressionNodeKind::AssignmentOperator: encodingMatches = node.encodingCode == 0x0au; break;
-    case SctCanonicalExpressionNodeKind::ArithmeticOperator: encodingMatches = arithmetic; break;
-    case SctCanonicalExpressionNodeKind::Stop: encodingMatches = node.encodingCode == 0x1du; break;
-    case SctCanonicalExpressionNodeKind::RawValue: break;
+        encodingMatches = classification.kind == SctScptWordKind::DirectIntVariable; break;
+    case SctCanonicalExpressionNodeKind::NegatedIntVariable:
+        encodingMatches = classification.kind == SctScptWordKind::NegatedIntVariable; break;
+    case SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison:
+        encodingMatches = classification.kind == SctScptWordKind::NegatedIntVariableLow16Comparison; break;
+    case SctCanonicalExpressionNodeKind::SecondaryValue:
+        encodingMatches = classification.kind == SctScptWordKind::SecondaryValue; break;
+    case SctCanonicalExpressionNodeKind::FloatVariable:
+        encodingMatches = classification.kind == SctScptWordKind::FloatVariable; break;
+    case SctCanonicalExpressionNodeKind::BitVariable:
+        encodingMatches = classification.kind == SctScptWordKind::BitVariable; break;
+    case SctCanonicalExpressionNodeKind::ByteVariable:
+        encodingMatches = classification.kind == SctScptWordKind::ByteVariable; break;
+    case SctCanonicalExpressionNodeKind::CompareOperator:
+        encodingMatches = classification.kind == SctScptWordKind::CompareOperator; break;
+    case SctCanonicalExpressionNodeKind::AssignmentOperator:
+        encodingMatches = classification.kind == SctScptWordKind::AssignmentOperator; break;
+    case SctCanonicalExpressionNodeKind::ArithmeticOperator:
+        encodingMatches = classification.kind == SctScptWordKind::ArithmeticOperator; break;
+    case SctCanonicalExpressionNodeKind::Stop:
+        encodingMatches = classification.kind == SctScptWordKind::Stop; break;
     }
     if (!encodingMatches) {
         error(result, SctDiagnosticCode::ExpressionInvalid,
-            "Typed SCPT node kind does not match its exact encoding code.", entity, parameter, path);
+            "Typed SCPT node kind does not match its exact encoding code.", entity, parameter, path, true);
         valid = false;
     }
     for (std::size_t childIndex = 0; childIndex < node.children.size(); ++childIndex) {
         auto childPath = path;
         childPath.push_back(static_cast<std::uint32_t>(childIndex));
-        validExpressionNode(node.children[childIndex], result, entity, parameter, childPath);
+        valid = validExpressionNode(node.children[childIndex], result, entity, parameter, childPath) && valid;
     }
     return valid;
 }
@@ -124,7 +165,21 @@ void validateExpression(const SctCanonicalExpression& expression, SctDocumentVal
     if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
         if (opaque->words.empty()) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "An opaque SCPT fallback must contain the preserved encoded words.", entity, parameter);
+                "An opaque SCPT fallback must contain the preserved encoded words.", entity, parameter, {}, true);
+        } else {
+            const auto scan = scanSctScptWords(opaque->words);
+            if (!scan.complete || scan.wordCount != opaque->words.size()) {
+                error(result, SctDiagnosticCode::ExpressionInvalid,
+                    scan.error == SctScptScanError::TruncatedFloatPayload
+                        ? "Opaque SCPT expression contains a truncated float payload."
+                        : "Opaque SCPT expression does not contain exactly one complete parameter.",
+                    entity, parameter, {}, true);
+            } else if ((scan.inlineValue && expression.termination != SctExpressionTermination::InlineValue)
+                || (!scan.inlineValue && expression.termination != SctExpressionTermination::StopCode)) {
+                error(result, SctDiagnosticCode::ExpressionInvalid,
+                    "Opaque SCPT expression termination disagrees with its lexical boundary.",
+                    entity, parameter, {}, true);
+            }
         }
     } else {
         const auto& root = std::get<SctCanonicalExpressionNode>(expression.root);
@@ -135,7 +190,19 @@ void validateExpression(const SctCanonicalExpression& expression, SctDocumentVal
             || (!inlineValue && expression.termination != SctExpressionTermination::StopCode)
             || (explicitStop && expression.termination != SctExpressionTermination::StopCode)) {
             error(result, SctDiagnosticCode::ExpressionInvalid,
-                "Typed SCPT expression termination is incompatible with its root encoding.", entity, parameter);
+                "Typed SCPT expression termination is incompatible with its root encoding.", entity, parameter, {}, true);
+        }
+        const auto words = encodeSctCanonicalExpressionWords(expression);
+        const auto scan = scanSctScptWords(words);
+        if (!scan.complete || scan.wordCount != words.size()) {
+            error(result, SctDiagnosticCode::ExpressionInvalid,
+                "Typed SCPT expression does not encode as exactly one complete parameter.", entity, parameter, {}, true);
+        }
+        if (sctCanonicalExpressionMaximumStackDepth(expression)
+            > kSctScptRuntimeStackWarningThreshold) {
+            warning(result, SctDiagnosticCode::ExpressionRuntimeStackDepth,
+                "SCPT expression exceeds the observed runtime stack-depth warning threshold.",
+                entity, parameter, true);
         }
     }
 }
@@ -160,7 +227,7 @@ void validateText(const SctTextValue& value, SctTextKind kind, SctTextStorage st
         if (kind != SctTextKind::PlainString || !SctTextBuilder::isValidUtf8(plain->utf8)
             || plain->utf8.find('\0') != std::string::npos) {
             textError(result, "Plain text must be zero-free valid UTF-8 and belong to a PlainString entity.",
-                entity, SctDocumentDiagnostic::TextRegion::Body, std::nullopt, 0,
+                entity, SctTextRegion::Body, std::nullopt, 0,
                 static_cast<std::uint32_t>(plain->utf8.size()));
         }
         return;
@@ -168,14 +235,14 @@ void validateText(const SctTextValue& value, SctTextKind kind, SctTextStorage st
     if (const auto* message = std::get_if<SctMessage>(&value)) {
         if (kind != SctTextKind::SctString) {
             textError(result, "Semantic SCT messages must belong to SctString entities.", entity,
-                SctDocumentDiagnostic::TextRegion::Body, std::nullopt, 0, 0);
+                SctTextRegion::Body, std::nullopt, 0, 0);
         }
         if (message->headerUtf8 && (!SctTextBuilder::isValidUtf8(*message->headerUtf8)
             || message->headerUtf8->find('\0') != std::string::npos
             || message->headerUtf8->find('\r') != std::string::npos
             || message->headerUtf8->find('\n') != std::string::npos)) {
             textError(result, "Message headers must contain valid UTF-8 without NUL or line breaks.", entity,
-                SctDocumentDiagnostic::TextRegion::Header, std::nullopt, 0,
+                SctTextRegion::Header, std::nullopt, 0,
                 static_cast<std::uint32_t>(message->headerUtf8->size()));
         }
         bool previousText = false;
@@ -186,7 +253,7 @@ void validateText(const SctTextValue& value, SctTextKind kind, SctTextStorage st
                     || chunk->utf8.find('\0') != std::string::npos || chunk->utf8.find('\r') != std::string::npos) {
                     textError(result,
                         "Message text chunks must be nonempty, coalesced, valid UTF-8 using LF line endings.",
-                        entity, SctDocumentDiagnostic::TextRegion::Body,
+                        entity, SctTextRegion::Body,
                         static_cast<std::uint32_t>(ordinal), 0,
                         static_cast<std::uint32_t>(chunk->utf8.size()));
                 }
@@ -194,7 +261,7 @@ void validateText(const SctTextValue& value, SctTextKind kind, SctTextStorage st
             } else {
                 if (!validCommandArgument(std::get<SctInlineCommand>(element))) {
                     textError(result, "Inline command argument does not match its confirmed command grammar.",
-                        entity, SctDocumentDiagnostic::TextRegion::Body,
+                        entity, SctTextRegion::Body,
                         static_cast<std::uint32_t>(ordinal), 0, 0);
                 }
                 previousText = false;
@@ -503,8 +570,9 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
     const SctDocument& document,
     SctPlatform targetPlatform,
     SctTextEncoding textEncoding,
-    const SctDocumentImportReceipt* receipt) {
+    const SctBoundImportEvidence* evidence) {
     SctTargetValidationResult result;
+    const auto* receipt = evidence == nullptr ? nullptr : &evidence->receipt();
     auto structural = validateDocument(document);
     result.diagnostics = std::move(structural.diagnostics);
 
@@ -512,8 +580,13 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
         std::optional<SctDocumentEntityId> entity = std::nullopt,
         std::optional<SctParameterAddress> parameter = std::nullopt) {
         SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code,
-            std::move(entity), std::move(message)};
-        diagnostic.parameter = parameter;
+            std::move(message)};
+        const auto* instruction = entity ? std::get_if<SctInstructionId>(&*entity) : nullptr;
+        if (instruction != nullptr && parameter) {
+            diagnostic.primaryLocation = SctDiagnosticLocation{SctParameterSite{*instruction, *parameter}};
+        } else if (entity) {
+            diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
+        }
         result.diagnostics.push_back(std::move(diagnostic));
     };
 

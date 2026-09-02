@@ -38,12 +38,14 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     ASSERT_TRUE(parsed.parseOk);
     auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
 
     auto candidateResult = SctDocumentBuilder::reconstitute(std::move(*imported.document));
     ASSERT_TRUE(candidateResult.document.has_value());
     auto candidate = std::move(*candidateResult.document);
     auto beforeEdit = SctDocumentIndex::build(candidate);
-    ASSERT_NE(beforeEdit.find(candidate.sections.front().id), nullptr);
+    ASSERT_NE(beforeEdit.find(candidate, candidate.sections.front().id), nullptr);
 
     candidate.sections.front().nameBytes = "EDITED";
     SctInstructionFactoryRequest insertedInstructionRequest;
@@ -57,15 +59,15 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     candidateInstructions.insert(candidateInstructions.begin(), *insertedInstruction.instruction);
 
     const auto afterEdit = SctDocumentIndex::build(candidate);
-    EXPECT_NE(afterEdit.find(appendedId), nullptr);
+    EXPECT_NE(afterEdit.find(candidate, appendedId), nullptr);
     ASSERT_TRUE(afterEdit.instructionLocation(appendedId).has_value());
     const auto structuralValidation = SctDocumentValidator::validateDocument(candidate);
     ASSERT_TRUE(structuralValidation.validDocument);
     const auto targetValidation = SctDocumentValidator::validateForTarget(
-        candidate, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
+        candidate, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*evidence);
     ASSERT_TRUE(targetValidation.validForTarget);
     const auto exported = SctDocumentExporter::exportDocument(
-        candidate, gameCubeOptions(), &imported.receipt);
+        candidate, gameCubeOptions(), &*evidence);
     ASSERT_TRUE(exported.success);
 
     const auto reparsed = SctParser{}.parse(exported.bytes, "public_workflow_edited.sct");

@@ -1,5 +1,7 @@
 #include "SctDocumentImporter.h"
+#include "SctSha256.h"
 
+#include "SctScptEncoding.h"
 #include "SctTextCodec.h"
 
 #include <algorithm>
@@ -13,7 +15,9 @@ namespace {
 void addDiagnostic(SctDocumentImportResult& result, SctDiagnosticSeverity severity,
     SctDiagnosticCode code, std::string message,
     std::optional<SctDocumentEntityId> entity = std::nullopt) {
-    result.diagnostics.push_back({severity, code, std::move(entity), std::move(message)});
+    SctDocumentDiagnostic diagnostic{severity, code, std::move(message)};
+    if (entity) diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
+    result.diagnostics.push_back(std::move(diagnostic));
 }
 
 bool hasUnknownNode(const SctScptAstNode& node) {
@@ -24,10 +28,12 @@ bool hasUnknownNode(const SctScptAstNode& node) {
 SctCanonicalExpressionNodeKind canonicalKind(SctScptAstNodeKind kind) {
     switch (kind) {
     case SctScptAstNodeKind::NoLoopValue: return SctCanonicalExpressionNodeKind::NoLoopValue;
-    case SctScptAstNodeKind::RawValue: return SctCanonicalExpressionNodeKind::RawValue;
     case SctScptAstNodeKind::FloatLiteral: return SctCanonicalExpressionNodeKind::FloatLiteral;
     case SctScptAstNodeKind::DecimalLiteral: return SctCanonicalExpressionNodeKind::DecimalLiteral;
     case SctScptAstNodeKind::IntVariable: return SctCanonicalExpressionNodeKind::IntVariable;
+    case SctScptAstNodeKind::NegatedIntVariable: return SctCanonicalExpressionNodeKind::NegatedIntVariable;
+    case SctScptAstNodeKind::NegatedIntVariableLow16Comparison:
+        return SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison;
     case SctScptAstNodeKind::FloatVariable: return SctCanonicalExpressionNodeKind::FloatVariable;
     case SctScptAstNodeKind::BitVariable: return SctCanonicalExpressionNodeKind::BitVariable;
     case SctScptAstNodeKind::ByteVariable: return SctCanonicalExpressionNodeKind::ByteVariable;
@@ -38,7 +44,7 @@ SctCanonicalExpressionNodeKind canonicalKind(SctScptAstNodeKind kind) {
     case SctScptAstNodeKind::Stop: return SctCanonicalExpressionNodeKind::Stop;
     case SctScptAstNodeKind::Unknown: break;
     }
-    return SctCanonicalExpressionNodeKind::RawValue;
+    return SctCanonicalExpressionNodeKind::NoLoopValue;
 }
 
 SctCanonicalExpressionNode convertNode(const SctScptAstNode& node) {
@@ -65,6 +71,11 @@ SctCanonicalExpression convertExpression(const SctExpression& expression,
             "SCPT expression retained as opaque words because its exact typed structure is incomplete.", entity);
     } else {
         converted.root = convertNode(*expression.ast);
+        if (encodeSctCanonicalExpressionWords(converted) != rawWords) {
+            converted.root = SctOpaqueExpression{rawWords};
+            addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousExpression,
+                "SCPT expression retained as opaque words because typed re-encoding was not byte-exact.", entity);
+        }
     }
     return converted;
 }
@@ -77,6 +88,104 @@ std::uint16_t readHeaderU16(const std::vector<std::uint8_t>& bytes, std::size_t 
     }
     return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8)
         | bytes[offset + 1]);
+}
+
+bool sameCommandArgument(const SctMessageCommandArgument& left,
+    const SctMessageCommandArgument& right) {
+    if (left.index() != right.index()) return false;
+    if (const auto* value = std::get_if<SctNoCommandArgument>(&left)) {
+        return *value == std::get<SctNoCommandArgument>(right);
+    }
+    if (const auto* value = std::get_if<SctDecimalCommandArgument>(&left)) {
+        return *value == std::get<SctDecimalCommandArgument>(right);
+    }
+    return std::get<SctByteListCommandArgument>(left)
+        == std::get<SctByteListCommandArgument>(right);
+}
+
+bool sameFormattedText(const SctFormattedText& left, const SctFormattedText& right) {
+    if (left.elements.size() != right.elements.size()) return false;
+    for (std::size_t index = 0; index < left.elements.size(); ++index) {
+        const auto& leftElement = left.elements[index];
+        const auto& rightElement = right.elements[index];
+        if (leftElement.index() != rightElement.index()) return false;
+        if (const auto* chunk = std::get_if<SctTextChunk>(&leftElement)) {
+            if (chunk->utf8 != std::get<SctTextChunk>(rightElement).utf8) return false;
+            continue;
+        }
+        const auto& leftCommand = std::get<SctInlineCommand>(leftElement);
+        const auto& rightCommand = std::get<SctInlineCommand>(rightElement);
+        if (leftCommand.code != rightCommand.code
+            || !sameCommandArgument(leftCommand.argument, rightCommand.argument)) return false;
+    }
+    return true;
+}
+
+bool sameSemanticText(const SctTextValue& left, const SctTextValue& right) {
+    if (left.index() != right.index()) return false;
+    if (const auto* value = std::get_if<SctPlainText>(&left)) {
+        return value->utf8 == std::get<SctPlainText>(right).utf8;
+    }
+    if (const auto* value = std::get_if<SctMessage>(&left)) {
+        const auto& other = std::get<SctMessage>(right);
+        return value->headerUtf8 == other.headerUtf8
+            && sameFormattedText(value->body, other.body);
+    }
+    if (const auto* value = std::get_if<SctOpaqueText>(&left)) {
+        return value->bytes == std::get<SctOpaqueText>(right).bytes;
+    }
+    return true;
+}
+
+struct TextImportDecision {
+    std::optional<SctTextValue> semanticValue;
+    SctTextImportDisposition disposition = SctTextImportDisposition::OpaqueNoEncoding;
+    std::vector<SctKnownTextConvention> viableAlternativeConventions;
+    std::string reason = "No source text encoding was supplied.";
+};
+
+TextImportDecision decideTextImport(std::span<const std::uint8_t> bytes,
+    SctTextKind kind, SctTextStorage storage,
+    const SctDocumentImportOptions& options) {
+    TextImportDecision decision;
+    const auto alternatives = SctTextInspectionService::inspectKnownConventions(
+        bytes, kind, storage);
+    for (const auto& interpretation : alternatives.interpretations) {
+        if (interpretation.complete && interpretation.knownConvention) {
+            decision.viableAlternativeConventions.push_back(*interpretation.knownConvention);
+        }
+    }
+    if (!options.sourceTextEncoding) return decision;
+
+    const auto selected = decodeSctTextRecord(
+        bytes, kind, storage, *options.sourceTextEncoding);
+    if (!selected.value || std::holds_alternative<SctOpaqueText>(*selected.value)) {
+        decision.disposition = SctTextImportDisposition::OpaqueDecodeFailed;
+        decision.reason = selected.error.empty()
+            ? "The selected source text encoding did not produce semantic text."
+            : selected.error;
+        return decision;
+    }
+
+    if (storage == SctTextStorage::Footer
+        && options.footerTextPromotion == SctFooterTextPromotionPolicy::PreserveAmbiguous) {
+        const bool conflicting = std::any_of(alternatives.interpretations.begin(),
+            alternatives.interpretations.end(), [&](const SctTextInterpretation& interpretation) {
+                return interpretation.complete && interpretation.semanticValue
+                    && !sameSemanticText(*selected.value, *interpretation.semanticValue);
+            });
+        if (conflicting) {
+            decision.disposition =
+                SctTextImportDisposition::OpaqueConflictingInterpretations;
+            decision.reason = "The footer record has multiple complete but semantically different text interpretations.";
+            return decision;
+        }
+    }
+
+    decision.semanticValue = *selected.value;
+    decision.disposition = SctTextImportDisposition::Semantic;
+    decision.reason.clear();
+    return decision;
 }
 
 struct ClaimLedger {
@@ -213,6 +322,47 @@ SctParameterAddress parameterAddress(const SctOpcodeSchema& schema, std::uint32_
     return address;
 }
 
+std::optional<SctControlFlowKind> controlFlowKind(SctEdgeType type) {
+    switch (type) {
+    case SctEdgeType::Fallthrough: return SctControlFlowKind::Fallthrough;
+    case SctEdgeType::BranchTrue: return SctControlFlowKind::BranchTrue;
+    case SctEdgeType::BranchFalse: return SctControlFlowKind::BranchFalse;
+    case SctEdgeType::SwitchCase: return SctControlFlowKind::SwitchCase;
+    case SctEdgeType::Jump: return SctControlFlowKind::Jump;
+    case SctEdgeType::CallSubscript: return SctControlFlowKind::Call;
+    case SctEdgeType::Return: return SctControlFlowKind::Return;
+    case SctEdgeType::LoadsScript:
+    case SctEdgeType::LoadsMld:
+    case SctEdgeType::ReferencesString:
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::optional<SctParameterSite> controlFlowOrigin(const SctInstruction& instruction,
+    SctControlFlowKind kind, std::uint32_t switchOrdinal, SctInstructionId id) {
+    const auto* schema = findSctOpcodeSchema(instruction.opcode);
+    if (schema == nullptr) return std::nullopt;
+    switch (kind) {
+    case SctControlFlowKind::BranchFalse:
+    case SctControlFlowKind::Jump:
+        if (schema->parameters.jumpParam >= 0) {
+            return SctParameterSite{id, {static_cast<std::uint32_t>(schema->parameters.jumpParam), std::nullopt}};
+        }
+        break;
+    case SctControlFlowKind::SwitchCase:
+        if (schema->parameters.switchJumpParam >= 0) {
+            return SctParameterSite{id, {static_cast<std::uint32_t>(schema->parameters.switchJumpParam), switchOrdinal}};
+        }
+        break;
+    case SctControlFlowKind::Call:
+        return SctParameterSite{id, {0u, std::nullopt}};
+    default:
+        break;
+    }
+    return std::nullopt;
+}
+
 SctExpectedReferenceTarget expectedInstructionTarget() {
     return {SctReferenceTargetStorage::Instruction, std::nullopt};
 }
@@ -234,7 +384,7 @@ SctDocumentParameter unresolvedReference(const SctParameter& parameter,
     const auto absoluteTarget = targetOffset
         ? std::optional<std::int64_t>{static_cast<std::int64_t>(dataStart) + *targetOffset}
         : std::nullopt;
-    result.receipt.unresolvedReferences.push_back({entityId, address,
+    result.context.receipt.unresolvedReferences.push_back({entityId, address,
         dataStart + instruction.payloadOffset, absoluteOperand, absoluteTarget});
     addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::UnresolvedReference,
         std::move(message), SctDocumentEntityId{entityId});
@@ -314,15 +464,221 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
     return converted;
 }
 
-SctOpaqueAttachmentId addAttachment(SctDocument& document, SctDocumentImportResult& result, SctOpaqueAnchor anchor,
-    std::uint32_t absoluteOffset, std::vector<std::uint8_t> bytes, SctOpaqueReason reason) {
+void addSourceRecord(std::vector<SctSourceSpanRecord>& records, std::uint32_t offset,
+    std::uint32_t size, SctSourceSpanRole role, SctSourceCoverageKind coverage,
+    std::optional<SctDocumentEntityId> entity = std::nullopt,
+    std::optional<SctSectionId> section = std::nullopt,
+    std::optional<std::uint32_t> sectionRelativeOffset = std::nullopt,
+    SctSourceRegion region = SctSourceRegion::SectionPayload,
+    SctSourceSpanLayer layer = SctSourceSpanLayer::Leaf,
+    bool primary = false) {
+    records.push_back({{offset, size}, role, layer, coverage, std::move(entity), section,
+        sectionRelativeOffset, region, primary});
+}
+
+void addSourceSiteRecord(std::vector<SctSourceSpanRecord>& records, std::uint32_t offset,
+    std::uint32_t size, SctSourceSpanRole role, SctSourceCoverageKind coverage,
+    SctImportedSourceTarget target, std::optional<SctSectionId> section,
+    std::optional<std::uint32_t> sectionRelativeOffset, SctSourceRegion region,
+    SctSourceSpanLayer layer = SctSourceSpanLayer::Envelope) {
+    records.push_back({{offset, size}, role, layer, coverage, std::move(target), section,
+        sectionRelativeOffset, region, false});
+}
+
+std::uint32_t astWordCount(const SctScptAstNode& node) {
+    std::uint32_t count = static_cast<std::uint32_t>(node.rawWords.size());
+    for (const auto& child : node.children) count += astWordCount(child);
+    return count;
+}
+
+std::uint32_t addExpressionChildEnvelopes(std::vector<SctSourceSpanRecord>& records,
+    const SctScptAstNode& node, std::uint32_t absoluteWordOffset,
+    const SctExpressionSite& rootSite, std::vector<std::uint32_t> path,
+    std::optional<SctSectionId> section, std::uint32_t sectionStart) {
+    auto cursor = absoluteWordOffset;
+    for (std::uint32_t child = 0; child < node.children.size(); ++child) {
+        auto childPath = path;
+        childPath.push_back(child);
+        cursor = addExpressionChildEnvelopes(records, node.children[child], cursor,
+            rootSite, std::move(childPath), section, sectionStart);
+    }
+    const auto end = cursor + static_cast<std::uint32_t>(node.rawWords.size() * 4u);
+    if (!path.empty()) {
+        auto site = rootSite;
+        site.childPath = std::move(path);
+        addSourceSiteRecord(records, absoluteWordOffset, end - absoluteWordOffset,
+            SctSourceSpanRole::Expression, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{std::move(site)}, section,
+            absoluteWordOffset - sectionStart, SctSourceRegion::SectionPayload);
+    }
+    return end;
+}
+
+void addExpressionProvenance(std::vector<SctSourceSpanRecord>& records,
+    const SctExpression& expression, std::span<const std::uint32_t> rawWords,
+    std::uint32_t absoluteOffset, SctExpressionSite site,
+    std::optional<SctSectionId> section, std::uint32_t sectionStart) {
+    addSourceSiteRecord(records, absoluteOffset,
+        static_cast<std::uint32_t>(rawWords.size() * 4u), SctSourceSpanRole::Expression,
+        SctSourceCoverageKind::SemanticEntity, SctImportedSourceTarget{site}, section,
+        absoluteOffset - sectionStart, SctSourceRegion::SectionPayload);
+    if (!expression.ast || hasUnknownNode(*expression.ast)) return;
+    const SctCanonicalExpression candidate{convertNode(*expression.ast),
+        expression.hitStopCode ? SctExpressionTermination::StopCode
+                               : SctExpressionTermination::InlineValue};
+    const auto encoded = encodeSctCanonicalExpressionWords(candidate);
+    if (encoded.size() != rawWords.size()
+        || !std::equal(encoded.begin(), encoded.end(), rawWords.begin())) return;
+    addExpressionChildEnvelopes(records, *expression.ast, absoluteOffset, site, {},
+        section, sectionStart);
+}
+
+void addInstructionSourceRecords(std::vector<SctSourceSpanRecord>& records,
+    const SctInstruction& instruction, const SctOpcodeSchema& schema,
+    SctInstructionId id, SctSectionId section, std::uint32_t sectionStart) {
+    const auto absoluteStart = sectionStart + instruction.offset;
+    addSourceRecord(records, absoluteStart, instruction.sizeBytes,
+        SctSourceSpanRole::Instruction, SctSourceCoverageKind::SemanticEntity,
+        SctDocumentEntityId{id}, section, instruction.offset, SctSourceRegion::SectionPayload,
+        SctSourceSpanLayer::Envelope, true);
+
+    const auto prefixSize = instruction.opcodeWordIndex * 4u;
+    if (prefixSize != 0u) {
+        addSourceRecord(records, absoluteStart, prefixSize, SctSourceSpanRole::InstructionModifier,
+            SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{id}, section,
+            instruction.offset, SctSourceRegion::SectionPayload);
+    }
+    const auto opcodeOffset = absoluteStart + prefixSize;
+    addSourceRecord(records, opcodeOffset, 4u, SctSourceSpanRole::InstructionOpcode,
+        SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{id}, section,
+        instruction.offset + prefixSize, SctSourceRegion::SectionPayload);
+
+    std::uint32_t cursor = opcodeOffset + 4u;
+    for (const auto& parameter : instruction.parameters) {
+        const auto size = static_cast<std::uint32_t>(parameter.rawWords.size() * 4u);
+        const auto address = parameterAddress(schema, parameter.index);
+        const auto repeated = sctOpcodeRepeatedGroup(schema);
+        const bool derivedCount = repeated && address.schemaIndex == repeated->iterationCountParameter
+            && parameter.index < schema.parameters.paramCount;
+        if (size != 0u) {
+            if (derivedCount) {
+                addSourceRecord(records, cursor, size, SctSourceSpanRole::InstructionParameter,
+                    SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{id}, section,
+                    cursor - sectionStart, SctSourceRegion::SectionPayload);
+            } else {
+                addSourceSiteRecord(records, cursor, size, SctSourceSpanRole::InstructionParameter,
+                    SctSourceCoverageKind::SemanticEntity,
+                    SctImportedSourceTarget{SctParameterSite{id, address}}, section,
+                    cursor - sectionStart, SctSourceRegion::SectionPayload, SctSourceSpanLayer::Leaf);
+                if (parameter.expression) {
+                    addExpressionProvenance(records, *parameter.expression, parameter.rawWords,
+                        cursor, SctExpressionSite{id, SctExpressionOwner{address}, {}},
+                        section, sectionStart);
+                }
+            }
+            cursor += size;
+        }
+    }
+    const auto end = absoluteStart + instruction.sizeBytes;
+    if (cursor < end) {
+        addSourceRecord(records, cursor, end - cursor, SctSourceSpanRole::InstructionParameter,
+            SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{id}, section,
+            cursor - sectionStart, SctSourceRegion::SectionPayload);
+    }
+
+    if (instruction.scheduled.present && instruction.scheduled.frameDelay.expression) {
+        const auto& delay = instruction.scheduled.frameDelay;
+        const auto found = std::search(instruction.rawWords.begin(),
+            instruction.rawWords.begin() + instruction.opcodeWordIndex,
+            delay.rawWords.begin(), delay.rawWords.end());
+        if (found != instruction.rawWords.begin() + instruction.opcodeWordIndex
+            && std::search(found + 1, instruction.rawWords.begin() + instruction.opcodeWordIndex,
+                delay.rawWords.begin(), delay.rawWords.end())
+                == instruction.rawWords.begin() + instruction.opcodeWordIndex) {
+            const auto word = static_cast<std::uint32_t>(found - instruction.rawWords.begin());
+            addExpressionProvenance(records, *delay.expression, delay.rawWords,
+                absoluteStart + word * 4u,
+                SctExpressionSite{id, SctExpressionOwner{SctScheduledExpressionSite{}}, {}},
+                section, sectionStart);
+        }
+    }
+}
+
+void addTextProvenance(std::vector<SctSourceSpanRecord>& records,
+    std::span<const std::uint8_t> bytes, SctTextKind kind, SctTextStorage storage,
+    SctTextEncoding encoding, SctTextEntityId id, std::uint32_t absoluteOffset,
+    std::optional<SctSectionId> section, std::optional<std::uint32_t> sectionRelative,
+    SctSourceRegion region) {
+    const auto interpreted = SctTextInspectionService::interpret(bytes, kind, storage, encoding);
+    if (!interpreted.complete) return;
+    std::uint32_t bodyOrdinal = 0;
+    std::uint32_t bodyElementUtf8Offset = 0;
+    std::uint32_t headerUtf8Offset = 0;
+    const auto* message = interpreted.semanticValue
+        ? std::get_if<SctMessage>(&*interpreted.semanticValue) : nullptr;
+    for (const auto& span : interpreted.spans) {
+        if (span.kind == SctTextInspectionSpanKind::Terminator) {
+            addSourceSiteRecord(records, absoluteOffset + span.source.offset, span.source.size,
+                SctSourceSpanRole::TextTerminator, SctSourceCoverageKind::SemanticEntity,
+                SctImportedSourceTarget{SctTextSite{id, SctTextRegion::Body, std::nullopt, {}}},
+                section, sectionRelative ? std::optional<std::uint32_t>{*sectionRelative + span.source.offset}
+                                         : std::nullopt, region);
+            continue;
+        }
+        const bool header = span.kind == SctTextInspectionSpanKind::Header;
+        const bool textLike = span.kind != SctTextInspectionSpanKind::Command
+            || !span.utf8.empty();
+        if (!header && message != nullptr) {
+            while (bodyOrdinal < message->body.elements.size()) {
+                const auto* chunk = std::get_if<SctTextChunk>(&message->body.elements[bodyOrdinal]);
+                if (textLike && chunk != nullptr && bodyElementUtf8Offset < chunk->utf8.size()) break;
+                if (!textLike && chunk == nullptr) break;
+                ++bodyOrdinal;
+                bodyElementUtf8Offset = 0;
+            }
+        }
+        const auto utf8Size = static_cast<std::uint32_t>(span.utf8.size());
+        const SctTextSite site{id, header ? SctTextRegion::Header : SctTextRegion::Body,
+            header ? std::nullopt : std::optional<std::uint32_t>{bodyOrdinal},
+            {header ? headerUtf8Offset : bodyElementUtf8Offset, utf8Size}};
+        addSourceSiteRecord(records, absoluteOffset + span.source.offset, span.source.size,
+            SctSourceSpanRole::TextElement, SctSourceCoverageKind::SemanticEntity,
+            SctImportedSourceTarget{site}, section,
+            sectionRelative ? std::optional<std::uint32_t>{*sectionRelative + span.source.offset}
+                            : std::nullopt, region);
+        if (header) headerUtf8Offset += utf8Size;
+        else if (textLike) bodyElementUtf8Offset += utf8Size;
+        else { ++bodyOrdinal; bodyElementUtf8Offset = 0; }
+    }
+}
+
+void addSemanticEntityEnvelopeAndLeaf(std::vector<SctSourceSpanRecord>& records,
+    std::uint32_t offset, std::uint32_t size, SctSourceSpanRole role,
+    SctDocumentEntityId entity, std::optional<SctSectionId> section,
+    std::optional<std::uint32_t> sectionRelativeOffset, SctSourceRegion region) {
+    addSourceRecord(records, offset, size, role, SctSourceCoverageKind::SemanticEntity,
+        entity, section, sectionRelativeOffset, region, SctSourceSpanLayer::Envelope, true);
+    if (size != 0u) {
+        addSourceRecord(records, offset, size, role, SctSourceCoverageKind::SemanticEntity,
+            std::move(entity), section, sectionRelativeOffset, region, SctSourceSpanLayer::Leaf);
+    }
+}
+
+SctOpaqueAttachmentId addAttachment(SctDocument& document,
+    std::vector<SctSourceSpanRecord>& sourceRecords, SctOpaqueAnchor anchor,
+    std::uint32_t absoluteOffset, std::vector<std::uint8_t> bytes, SctOpaqueReason reason,
+    std::optional<SctSectionId> section = std::nullopt,
+    std::optional<std::uint32_t> sectionRelativeOffset = std::nullopt,
+    SctSourceRegion region = SctSourceRegion::SectionPayload) {
     if (bytes.empty()) return {};
     const auto id = document.allocateOpaqueAttachmentId();
     document.opaqueAttachments.push_back({id, std::move(bytes), std::move(anchor),
         SctOpaquePlacement::FixedOffset, absoluteOffset, 1, SctOpaqueRelocationSupport::FixedOnly, reason});
-    result.receipt.provenance.push_back({SctDocumentEntityId{id}, absoluteOffset,
-        static_cast<std::uint32_t>(document.opaqueAttachments.back().bytes.size()), std::nullopt,
-        SctSourceCoverageKind::OpaqueAttachment});
+    addSourceRecord(sourceRecords, absoluteOffset,
+        static_cast<std::uint32_t>(document.opaqueAttachments.back().bytes.size()),
+        SctSourceSpanRole::OpaqueAttachment, SctSourceCoverageKind::OpaqueAttachment,
+        SctDocumentEntityId{id}, section, sectionRelativeOffset, region,
+        SctSourceSpanLayer::Leaf, true);
     return id;
 }
 
@@ -332,17 +688,31 @@ SctDocumentImportResult SctDocumentImporter::import(
     const SctParseResult& parsed,
     const SctDocumentImportOptions& options) {
     SctDocumentImportResult result;
-    result.receipt.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
+    std::vector<SctSourceSpanRecord> sourceRecords;
+    result.context.receipt.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
         : parsed.file.detectedEndian == "little" ? SctSourceByteOrder::LittleEndian : SctSourceByteOrder::Unknown;
-    result.receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
-    result.receipt.declaredSourcePlatform = options.declaredSourcePlatform;
-    result.receipt.sourceTextEncoding = options.sourceTextEncoding;
+    result.context.receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;
+    result.context.receipt.declaredSourcePlatform = options.declaredSourcePlatform;
+    result.context.receipt.sourceTextEncoding = options.sourceTextEncoding;
+    result.context.receipt.footerTextPromotion = options.footerTextPromotion;
     if (!parsed.parseOk) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::ParseFailed,
             "A canonical document cannot be imported from a failed parse.");
         return result;
     }
     const auto& bytes = parsed.file.originalPayloadBytes;
+    std::vector<std::uint8_t> lineageBytes(bytes.begin(), bytes.end());
+    lineageBytes.push_back(0x53u);
+    lineageBytes.push_back(static_cast<std::uint8_t>(result.context.receipt.source.wrapper));
+    lineageBytes.push_back(options.declaredSourcePlatform
+        ? static_cast<std::uint8_t>(*options.declaredSourcePlatform) : 0xffu);
+    lineageBytes.push_back(options.sourceTextEncoding
+        ? static_cast<std::uint8_t>(options.sourceTextEncoding->characters) : 0xffu);
+    lineageBytes.push_back(options.sourceTextEncoding
+        ? static_cast<std::uint8_t>(options.sourceTextEncoding->messageSpace) : 0xffu);
+    lineageBytes.push_back(static_cast<std::uint8_t>(options.footerTextPromotion));
+    result.context.receipt.lineage.sha256 = detail::sha256(lineageBytes);
+    result.context.revisionProvenance.importLineage = result.context.receipt.lineage;
     const std::uint64_t dataStart64 = 12ull + (20ull * parsed.file.sections.size());
     if (bytes.size() < dataStart64) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
@@ -351,14 +721,14 @@ SctDocumentImportResult SctDocumentImporter::import(
     }
     const auto dataStart = static_cast<std::uint32_t>(dataStart64);
     if (bytes.size() >= 8u) {
-        auto& header = result.receipt.source.header;
+        auto& header = result.context.receipt.source.header;
         std::copy_n(bytes.begin(), 8u, header.rawBytes.begin());
-        if (result.receipt.source.byteOrder != SctSourceByteOrder::Unknown) {
+        if (result.context.receipt.source.byteOrder != SctSourceByteOrder::Unknown) {
             header.values = {
-                readHeaderU16(bytes, 0u, result.receipt.source.byteOrder),
-                readHeaderU16(bytes, 2u, result.receipt.source.byteOrder),
-                readHeaderU16(bytes, 4u, result.receipt.source.byteOrder),
-                readHeaderU16(bytes, 6u, result.receipt.source.byteOrder),
+                readHeaderU16(bytes, 0u, result.context.receipt.source.byteOrder),
+                readHeaderU16(bytes, 2u, result.context.receipt.source.byteOrder),
+                readHeaderU16(bytes, 4u, result.context.receipt.source.byteOrder),
+                readHeaderU16(bytes, 6u, result.context.receipt.source.byteOrder),
             };
             header.available = true;
         }
@@ -408,6 +778,54 @@ SctDocumentImportResult SctDocumentImporter::import(
             if (!unsafe[i]) instructionIds.emplace(section.instructions[i].payloadOffset, document.allocateInstructionId());
         }
     }
+    for (const auto& section : parsed.file.sections) {
+        std::unordered_map<std::uint32_t, std::uint32_t> switchOrdinals;
+        for (const auto& edge : section.edges) {
+            if (!edge.fromPayloadOffset) continue;
+            const auto kind = controlFlowKind(edge.type);
+            const auto sourceId = instructionIds.find(*edge.fromPayloadOffset);
+            if (!kind || sourceId == instructionIds.end()) continue;
+            const auto sourceInstruction = std::find_if(section.instructions.begin(),
+                section.instructions.end(), [&](const auto& instruction) {
+                    return instruction.payloadOffset == *edge.fromPayloadOffset;
+                });
+            if (sourceInstruction == section.instructions.end()) continue;
+            const auto switchOrdinal = *kind == SctControlFlowKind::SwitchCase
+                ? switchOrdinals[*edge.fromPayloadOffset]++ : 0u;
+            std::optional<SctInstructionId> targetId;
+            if (edge.toPayloadOffset) {
+                if (const auto found = instructionIds.find(*edge.toPayloadOffset);
+                    found != instructionIds.end()) targetId = found->second;
+            }
+            result.context.receipt.controlFlow.push_back({sourceId->second, *kind, edge.confidence,
+                controlFlowOrigin(*sourceInstruction, *kind, switchOrdinal, sourceId->second),
+                targetId, edge.toPayloadOffset
+                    ? std::optional<std::uint32_t>{dataStart + *edge.toPayloadOffset}
+                    : std::nullopt});
+        }
+        const auto order = physicalInstructionOrder(section);
+        for (std::size_t orderIndex = 0; orderIndex + 1u < order.size(); ++orderIndex) {
+            const auto& source = section.instructions[order[orderIndex]];
+            const auto& target = section.instructions[order[orderIndex + 1u]];
+            const auto sourceId = instructionIds.find(source.payloadOffset);
+            const auto targetId = instructionIds.find(target.payloadOffset);
+            const auto* schema = findSctOpcodeSchema(source.opcode);
+            if (sourceId == instructionIds.end() || schema == nullptr) continue;
+            if (schema->semantic.controlRole != SctOpcodeControlRole::None
+                && schema->semantic.controlRole != SctOpcodeControlRole::CallSubscript) continue;
+            const bool alreadyObserved = std::any_of(result.context.receipt.controlFlow.begin(),
+                result.context.receipt.controlFlow.end(), [&](const auto& observation) {
+                    return observation.sourceInstruction == sourceId->second
+                        && observation.kind == SctControlFlowKind::Fallthrough;
+                });
+            if (alreadyObserved) continue;
+            result.context.receipt.controlFlow.push_back({sourceId->second,
+                SctControlFlowKind::Fallthrough, SctSemanticConfidence::Known, std::nullopt,
+                targetId == instructionIds.end() ? std::nullopt
+                    : std::optional<SctInstructionId>{targetId->second},
+                dataStart + target.payloadOffset});
+        }
+    }
     FooterMap footerIds;
     std::vector<std::size_t> footerEntryOrder;
     if (parsed.file.footer) {
@@ -438,39 +856,54 @@ SctDocumentImportResult SctDocumentImporter::import(
         }
     }
 
-    result.receipt.provenance.push_back({{}, 0, 8, std::nullopt,
-        SctSourceCoverageKind::SourceObservation});
-    result.receipt.provenance.push_back({{}, 8, 4, std::nullopt});
+    addSourceRecord(sourceRecords, 0u, 8u, SctSourceSpanRole::Header,
+        SctSourceCoverageKind::SourceObservation, std::nullopt, std::nullopt,
+        std::nullopt, SctSourceRegion::Header);
+    addSourceRecord(sourceRecords, 8u, 4u, SctSourceSpanRole::SectionCount,
+        SctSourceCoverageKind::SemanticEntity, std::nullopt, std::nullopt,
+        std::nullopt, SctSourceRegion::SectionIndex);
     std::vector<std::string> sectionNames;
     sectionNames.reserve(parsed.file.sections.size());
     for (std::size_t sectionIndex = 0; sectionIndex < parsed.file.sections.size(); ++sectionIndex) {
         const auto rowOffset = static_cast<std::uint32_t>(12 + sectionIndex * 20);
-        result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset,
-            4, static_cast<std::uint32_t>(sectionIndex)});
+        addSourceRecord(sourceRecords, rowOffset, 20u, SctSourceSpanRole::SectionIndexRow,
+            SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{sectionIds[sectionIndex]},
+            sectionIds[sectionIndex], std::nullopt, SctSourceRegion::SectionIndex,
+            SctSourceSpanLayer::Envelope);
+        addSourceRecord(sourceRecords, rowOffset, 4u, SctSourceSpanRole::SectionOffsetField,
+            SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{sectionIds[sectionIndex]},
+            sectionIds[sectionIndex], std::nullopt, SctSourceRegion::SectionIndex);
         const auto nameBegin = bytes.begin() + rowOffset + 4;
         const auto zero = std::find(nameBegin, nameBegin + 16, 0);
         sectionNames.emplace_back(nameBegin, zero);
         if (!sectionNames.back().empty()) {
-            result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]}, rowOffset + 4,
-                static_cast<std::uint32_t>(sectionNames.back().size()), static_cast<std::uint32_t>(sectionIndex)});
+            addSourceRecord(sourceRecords, rowOffset + 4u,
+                static_cast<std::uint32_t>(sectionNames.back().size()), SctSourceSpanRole::SectionName,
+                SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{sectionIds[sectionIndex]},
+                sectionIds[sectionIndex], std::nullopt, SctSourceRegion::SectionIndex);
         }
         const auto fieldEnd = nameBegin + 16;
         const auto unusual = std::find_if(zero, fieldEnd, [](std::uint8_t value) { return value != 0; });
         if (unusual == fieldEnd) {
-            result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]},
-                rowOffset + 4 + static_cast<std::uint32_t>(sectionNames.back().size()),
-                static_cast<std::uint32_t>(fieldEnd - zero), static_cast<std::uint32_t>(sectionIndex),
-                SctSourceCoverageKind::DerivedLayout});
+            if (zero != fieldEnd) {
+                addSourceRecord(sourceRecords,
+                    rowOffset + 4u + static_cast<std::uint32_t>(sectionNames.back().size()),
+                    static_cast<std::uint32_t>(fieldEnd - zero), SctSourceSpanRole::SectionNamePadding,
+                    SctSourceCoverageKind::DerivedLayout, SctDocumentEntityId{sectionIds[sectionIndex]},
+                    sectionIds[sectionIndex], std::nullopt, SctSourceRegion::SectionIndex);
+            }
         } else {
             if (unusual != zero) {
-                result.receipt.provenance.push_back({SctDocumentEntityId{sectionIds[sectionIndex]},
-                    rowOffset + 4 + static_cast<std::uint32_t>(sectionNames.back().size()),
-                    static_cast<std::uint32_t>(unusual - zero), static_cast<std::uint32_t>(sectionIndex),
-                    SctSourceCoverageKind::DerivedLayout});
+                addSourceRecord(sourceRecords,
+                    rowOffset + 4u + static_cast<std::uint32_t>(sectionNames.back().size()),
+                    static_cast<std::uint32_t>(unusual - zero), SctSourceSpanRole::SectionNamePadding,
+                    SctSourceCoverageKind::DerivedLayout, SctDocumentEntityId{sectionIds[sectionIndex]},
+                    sectionIds[sectionIndex], std::nullopt, SctSourceRegion::SectionIndex);
             }
-            addAttachment(document, result, sectionIds[sectionIndex],
+            addAttachment(document, sourceRecords, sectionIds[sectionIndex],
                 rowOffset + 4 + static_cast<std::uint32_t>(unusual - nameBegin),
-                std::vector<std::uint8_t>(unusual, fieldEnd), SctOpaqueReason::Padding);
+                std::vector<std::uint8_t>(unusual, fieldEnd), SctOpaqueReason::Padding,
+                sectionIds[sectionIndex], std::nullopt, SctSourceRegion::SectionIndex);
         }
     }
     const SctFooter* footer = parsed.file.footer ? &*parsed.file.footer : nullptr;
@@ -487,6 +920,11 @@ SctDocumentImportResult SctDocumentImporter::import(
         SctDocumentSection targetSection;
         targetSection.id = sectionIds[sectionIndex];
         targetSection.nameBytes = sectionNames[sectionIndex];
+        addSourceRecord(sourceRecords, sourceSection.startOffset,
+            sourceSection.endOffset - sourceSection.startOffset, SctSourceSpanRole::SectionPayload,
+            SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{targetSection.id},
+            targetSection.id, 0u, SctSourceRegion::SectionPayload,
+            SctSourceSpanLayer::Envelope, true);
         ClaimLedger ledger{std::vector<std::uint8_t>(sourceSection.endOffset - sourceSection.startOffset)};
 
         if (sourceSection.stringEntry) {
@@ -521,23 +959,18 @@ SctDocumentImportResult SctDocumentImporter::import(
             }
             std::vector<std::uint8_t> recordBytes(physicalText.begin(), physicalText.begin() + recordSize);
             SctDocumentString string{stringId, SctOpaqueText{recordBytes}, SctTextKind::SctString};
-            std::string textReason = "No source text encoding was supplied.";
-            bool semanticText = false;
-            if (options.sourceTextEncoding.has_value()) {
-                const auto decoded = decodeSctTextRecord(recordBytes, SctTextKind::SctString,
-                    SctTextStorage::IndexedSection, *options.sourceTextEncoding);
-                if (decoded.value) {
-                    string.value = *decoded.value;
-                    semanticText = !std::holds_alternative<SctOpaqueText>(string.value);
-                    textReason.clear();
-                } else textReason = decoded.error;
-            }
+            auto textDecision = decideTextImport(recordBytes, SctTextKind::SctString,
+                SctTextStorage::IndexedSection, options);
+            const bool semanticText = textDecision.semanticValue.has_value();
+            if (textDecision.semanticValue) string.value = *textDecision.semanticValue;
             if (!semanticText) {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
-                    "Indexed SCT string remained opaque: " + textReason, SctDocumentEntityId{stringId});
+                    "Indexed SCT string remained opaque: " + textDecision.reason,
+                    SctDocumentEntityId{stringId});
             }
-            result.receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextEncoding,
-                semanticText, textReason});
+            result.context.receipt.text.push_back({SctDocumentEntityId{stringId}, options.sourceTextEncoding,
+                textDecision.disposition, std::move(textDecision.viableAlternativeConventions),
+                std::move(textDecision.reason)});
             const bool validPreamble = entry.preambleWords.size() >= 2u
                 && entry.preambleWords.front() == 9u
                 && entry.preambleWords.back() == 0x0000001du
@@ -550,12 +983,21 @@ SctDocumentImportResult SctDocumentImporter::import(
                 targetSection.content = SctOpaqueSectionContent{};
             } else {
                 targetSection.content = SctStringSectionContent{std::move(string), entry.preambleWords};
-                result.receipt.provenance.push_back({SctDocumentEntityId{targetSection.id},
-                    sourceSection.startOffset, static_cast<std::uint32_t>(preambleSize),
-                    static_cast<std::uint32_t>(sectionIndex)});
-                result.receipt.provenance.push_back({SctDocumentEntityId{stringId},
+                addSourceRecord(sourceRecords, sourceSection.startOffset,
+                    static_cast<std::uint32_t>(preambleSize), SctSourceSpanRole::IndexedStringPreamble,
+                    SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{targetSection.id},
+                    targetSection.id, 0u, SctSourceRegion::SectionPayload);
+                addSemanticEntityEnvelopeAndLeaf(sourceRecords,
                     sourceSection.startOffset + entry.textStartOffset,
-                    static_cast<std::uint32_t>(recordSize), static_cast<std::uint32_t>(sectionIndex)});
+                    static_cast<std::uint32_t>(recordSize), SctSourceSpanRole::IndexedStringRecord,
+                    SctDocumentEntityId{stringId}, targetSection.id, entry.textStartOffset,
+                    SctSourceRegion::SectionPayload);
+                if (semanticText && options.sourceTextEncoding) {
+                    addTextProvenance(sourceRecords, recordBytes, SctTextKind::SctString,
+                        SctTextStorage::IndexedSection, *options.sourceTextEncoding,
+                        SctTextEntityId{stringId}, sourceSection.startOffset + entry.textStartOffset,
+                        targetSection.id, entry.textStartOffset, SctSourceRegion::SectionPayload);
+                }
             }
         } else if (sourceSection.kind == SctSectionKind::Label) {
             targetSection.content = SctLabelSectionContent{};
@@ -607,8 +1049,8 @@ SctDocumentImportResult SctDocumentImporter::import(
                         "Encoded repetition count disagrees with the imported group count.", SctDocumentEntityId{converted.id});
                 }
                 script.instructions.push_back(std::move(converted));
-                result.receipt.provenance.push_back({SctDocumentEntityId{idIt->second},
-                    sourceSection.startOffset + instruction.offset, instruction.sizeBytes, static_cast<std::uint32_t>(sectionIndex)});
+                addInstructionSourceRecords(sourceRecords, instruction, *schema, idIt->second,
+                    targetSection.id, sourceSection.startOffset);
             }
             targetSection.content = std::move(script);
         } else {
@@ -624,23 +1066,30 @@ SctDocumentImportResult SctDocumentImporter::import(
                     bytes.begin() + sourceSection.startOffset + pos,
                     [](std::uint8_t value) { return value == 0; });
             if (derivedStringPadding) {
-                result.receipt.provenance.push_back({SctDocumentEntityId{targetSection.id},
+                addSourceRecord(sourceRecords,
                     sourceSection.startOffset + static_cast<std::uint32_t>(begin),
-                    static_cast<std::uint32_t>(pos - begin), static_cast<std::uint32_t>(sectionIndex),
-                    SctSourceCoverageKind::DerivedLayout});
+                    static_cast<std::uint32_t>(pos - begin), SctSourceSpanRole::DerivedPadding,
+                    SctSourceCoverageKind::DerivedLayout, SctDocumentEntityId{targetSection.id},
+                    targetSection.id, static_cast<std::uint32_t>(begin), SctSourceRegion::SectionPayload);
                 continue;
             }
-            addAttachment(document, result, targetSection.id,
+            addAttachment(document, sourceRecords, targetSection.id,
                 sourceSection.startOffset + static_cast<std::uint32_t>(begin),
                 std::vector<std::uint8_t>(bytes.begin() + sourceSection.startOffset + begin,
                     bytes.begin() + sourceSection.startOffset + pos),
-                SctOpaqueReason::Gap);
+                SctOpaqueReason::Gap, targetSection.id, static_cast<std::uint32_t>(begin),
+                SctSourceRegion::SectionPayload);
         }
         document.sections.push_back(std::move(targetSection));
     }
 
     if (footer) {
         ClaimLedger ledger{std::vector<std::uint8_t>(footer->payloadEndOffset - footer->payloadStartOffset)};
+        const auto footerAbsolute = dataStart + footer->payloadStartOffset;
+        addSourceRecord(sourceRecords, footerAbsolute,
+            footer->payloadEndOffset - footer->payloadStartOffset, SctSourceSpanRole::FooterRegion,
+            SctSourceCoverageKind::SemanticEntity, std::nullopt, std::nullopt, std::nullopt,
+            SctSourceRegion::Footer, SctSourceSpanLayer::Envelope);
         for (const auto entryIndex : footerEntryOrder) {
             const auto& entry = footer->entries[entryIndex];
             const auto idIt = footerIds.find(entry.payloadOffset);
@@ -654,34 +1103,35 @@ SctDocumentImportResult SctDocumentImporter::import(
                 ? SctTextKind::SctString
                 : SctTextKind::PlainString;
             SctDocumentFooterEntry converted{id, kind, SctOpaqueText{entry.rawBytes}};
-            std::string textReason = "No source text encoding was supplied.";
-            bool semanticText = false;
-            if (options.sourceTextEncoding.has_value()) {
-                const auto decoded = decodeSctTextRecord(entry.rawBytes, kind,
-                    SctTextStorage::Footer, *options.sourceTextEncoding);
-                if (decoded.value) {
-                    converted.value = *decoded.value;
-                    semanticText = !std::holds_alternative<SctOpaqueText>(converted.value);
-                    textReason.clear();
-                } else textReason = decoded.error;
-            }
+            auto textDecision = decideTextImport(
+                entry.rawBytes, kind, SctTextStorage::Footer, options);
+            const bool semanticText = textDecision.semanticValue.has_value();
+            if (textDecision.semanticValue) converted.value = *textDecision.semanticValue;
             if (!semanticText) {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::AmbiguousString,
-                    "Footer text remained opaque: " + textReason, SctDocumentEntityId{id});
+                    "Footer text remained opaque: " + textDecision.reason,
+                    SctDocumentEntityId{id});
             }
-            result.receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextEncoding,
-                semanticText, textReason});
+            result.context.receipt.text.push_back({SctDocumentEntityId{id}, options.sourceTextEncoding,
+                textDecision.disposition, std::move(textDecision.viableAlternativeConventions),
+                std::move(textDecision.reason)});
             const auto local = entry.payloadOffset - footer->payloadStartOffset;
             if (ledger.claim(local, entry.rawBytes.size())) {
                 document.footerEntries.push_back(std::move(converted));
-                result.receipt.provenance.push_back({SctDocumentEntityId{id}, dataStart + entry.payloadOffset,
-                    static_cast<std::uint32_t>(entry.rawBytes.size()), std::nullopt});
+                addSemanticEntityEnvelopeAndLeaf(sourceRecords, dataStart + entry.payloadOffset,
+                    static_cast<std::uint32_t>(entry.rawBytes.size()), SctSourceSpanRole::FooterEntry,
+                    SctDocumentEntityId{id}, std::nullopt, std::nullopt, SctSourceRegion::Footer);
+                if (semanticText && options.sourceTextEncoding) {
+                    addTextProvenance(sourceRecords, entry.rawBytes, kind, SctTextStorage::Footer,
+                        *options.sourceTextEncoding, SctTextEntityId{id}, dataStart + entry.payloadOffset,
+                        std::nullopt, std::nullopt,
+                        SctSourceRegion::Footer);
+                }
             } else {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::OverlappingSourceClaims,
                     "Footer entry evidence overlapped or exceeded the footer and remains opaque.", SctDocumentEntityId{id});
             }
         }
-        const auto footerAbsolute = dataStart + footer->payloadStartOffset;
         for (std::size_t pos = 0; pos < ledger.claims.size();) {
             if (ledger.claims[pos]) { ++pos; continue; }
             const auto begin = pos;
@@ -690,22 +1140,25 @@ SctDocumentImportResult SctDocumentImporter::import(
                 bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + pos,
                 [](std::uint8_t value) { return value == 0; });
             if (derivedFooterPadding) {
-                result.receipt.provenance.push_back({{},
-                    footerAbsolute + static_cast<std::uint32_t>(begin),
-                    static_cast<std::uint32_t>(pos - begin), std::nullopt,
-                    SctSourceCoverageKind::DerivedLayout});
+                addSourceRecord(sourceRecords, footerAbsolute + static_cast<std::uint32_t>(begin),
+                    static_cast<std::uint32_t>(pos - begin), SctSourceSpanRole::DerivedPadding,
+                    SctSourceCoverageKind::DerivedLayout, std::nullopt, std::nullopt,
+                    std::nullopt, SctSourceRegion::Footer);
                 continue;
             }
-            addAttachment(document, result, SctDocumentAnchor{}, footerAbsolute + static_cast<std::uint32_t>(begin),
+            addAttachment(document, sourceRecords, SctDocumentAnchor{},
+                footerAbsolute + static_cast<std::uint32_t>(begin),
                 std::vector<std::uint8_t>(bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + pos),
-                SctOpaqueReason::Gap);
+                SctOpaqueReason::Gap, std::nullopt, std::nullopt,
+                SctSourceRegion::Footer);
         }
     }
 
     std::vector<std::uint8_t> totalCoverage(bytes.size(), 0);
-    for (const auto& provenance : result.receipt.provenance) {
-        const auto begin = static_cast<std::size_t>(provenance.decodedPayloadOffset);
-        const auto size = static_cast<std::size_t>(provenance.byteSize);
+    for (const auto& record : sourceRecords) {
+        if (record.layer != SctSourceSpanLayer::Leaf) continue;
+        const auto begin = static_cast<std::size_t>(record.span.offset);
+        const auto size = static_cast<std::size_t>(record.span.size);
         if (begin > totalCoverage.size() || size > totalCoverage.size() - begin) {
             addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
                 "An imported source claim exceeds the decoded SCT payload.");
@@ -724,10 +1177,25 @@ SctDocumentImportResult SctDocumentImporter::import(
         if (totalCoverage[pos]) { ++pos; continue; }
         const auto begin = pos;
         while (pos < totalCoverage.size() && !totalCoverage[pos]) ++pos;
-        addAttachment(document, result, SctDocumentAnchor{}, static_cast<std::uint32_t>(begin),
-            std::vector<std::uint8_t>(bytes.begin() + begin, bytes.begin() + pos), SctOpaqueReason::Gap);
+        SctSourceRegion region = SctSourceRegion::SectionPayload;
+        if (begin < 8u) region = SctSourceRegion::Header;
+        else if (begin < dataStart) region = SctSourceRegion::SectionIndex;
+        else if (footer && begin >= dataStart + footer->payloadStartOffset) region = SctSourceRegion::Footer;
+        addAttachment(document, sourceRecords, SctDocumentAnchor{}, static_cast<std::uint32_t>(begin),
+            std::vector<std::uint8_t>(bytes.begin() + begin, bytes.begin() + pos),
+            SctOpaqueReason::Gap, std::nullopt, std::nullopt, region);
     }
 
+    auto sourceMap = SctImportedSourceMap::build(
+        static_cast<std::uint32_t>(bytes.size()), std::move(sourceRecords));
+    if (!sourceMap.map) {
+        for (const auto& issue : sourceMap.issues) {
+            addDiagnostic(result, SctDiagnosticSeverity::Error,
+                SctDiagnosticCode::UnsafePhysicalStructure, issue.message);
+        }
+        return result;
+    }
+    result.context.receipt.sourceMap = std::move(*sourceMap.map);
     result.document = std::move(document);
     return result;
 }

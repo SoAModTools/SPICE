@@ -34,7 +34,7 @@ struct SctReferenceValueResult {
 class SctReferenceRepair {
 public:
     [[nodiscard]] static SctReferenceRepairAnalysis analyze(
-        const SctDocument& document, const SctDocumentImportReceipt* receipt = nullptr);
+        const SctDocument& document, const SctBoundImportEvidence* evidence = nullptr);
     [[nodiscard]] static SctReferenceValueResult createReferenceValue(
         const SctDocument& document, SctInstructionId sourceInstruction,
         SctParameterAddress parameter, const SctDocumentReferenceTarget& target);

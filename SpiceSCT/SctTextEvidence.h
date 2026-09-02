@@ -3,6 +3,7 @@
 #include "SctModel.h"
 #include "SctTextCodec.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -31,18 +32,54 @@ struct SctSourceTextRecordAssessment {
     bool ambiguous = false;
 };
 
+enum class SctSourceTextEvidenceGroupKind {
+    IndexedSctString,
+    FooterSctString,
+    FooterPlainString,
+};
+
+struct SctSourceTextEvidenceGroupAssessment {
+    SctSourceTextEvidenceGroupKind kind = SctSourceTextEvidenceGroupKind::IndexedSctString;
+    std::vector<std::size_t> recordOrdinals;
+    std::vector<SctKnownTextConvention> viableConventions;
+};
+
+enum class SctSourceTextRecommendationStatus {
+    Unique,
+    Ambiguous,
+    Conflicting,
+    InsufficientEvidence,
+};
+
+enum class SctSourceTextRecommendationBasis {
+    IndexedSctStrings,
+};
+
+struct SctSourceTextRecommendation {
+    SctSourceTextRecommendationStatus status =
+        SctSourceTextRecommendationStatus::InsufficientEvidence;
+    SctSourceTextRecommendationBasis basis =
+        SctSourceTextRecommendationBasis::IndexedSctStrings;
+    std::optional<SctKnownTextConvention> convention;
+};
+
 struct SctSourceTextAssessment {
     bool sourceUsable = false;
     std::vector<SctSourceTextRecordAssessment> records;
-    std::vector<SctKnownTextConvention> viableConventions;
-    bool ambiguous = false;
+    SctSourceTextEvidenceGroupAssessment indexedSctStrings{
+        SctSourceTextEvidenceGroupKind::IndexedSctString};
+    SctSourceTextEvidenceGroupAssessment footerSctStrings{
+        SctSourceTextEvidenceGroupKind::FooterSctString};
+    SctSourceTextEvidenceGroupAssessment footerPlainStrings{
+        SctSourceTextEvidenceGroupKind::FooterPlainString};
+    SctSourceTextRecommendation recommendation;
     std::vector<SctSourceTextAssessmentIssue> issues;
 };
 
 class SctSourceTextDetector {
 public:
-    // Returns unranked mechanical evidence. It never selects an encoding and
-    // never uses platform, region, or release hints.
+    // Returns mechanical per-record evidence plus an indexed-SctString-only
+    // recommendation. It never uses platform, region, or release hints.
     [[nodiscard]] static SctSourceTextAssessment assess(const SctParseResult& parsed);
 };
 

@@ -78,10 +78,11 @@ struct SctExpressionTraceEntry {
 enum class SctScptAstNodeKind {
     Unknown,
     NoLoopValue,
-    RawValue,
     FloatLiteral,
     DecimalLiteral,
     IntVariable,
+    NegatedIntVariable,
+    NegatedIntVariableLow16Comparison,
     FloatVariable,
     BitVariable,
     ByteVariable,
@@ -118,7 +119,7 @@ struct SctScptAstNode {
         }
         if (kind == SctScptAstNodeKind::DecimalLiteral && !rawWords.empty()) {
             const auto payload = rawWords.front() & 0x00ffffffu;
-            const auto whole = (payload & 0x00ffff00u) >> 8u;
+            const auto whole = static_cast<std::int16_t>((rawWords.front() >> 8u) & 0x0000ffffu);
             const auto fraction = payload & 0x000000ffu;
             return SctNumericLiteral{
                 .encoding = SctNumericLiteralEncoding::Decimal16_8,

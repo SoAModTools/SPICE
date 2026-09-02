@@ -11,14 +11,14 @@ template <typename Result>
 bool invalidName(Result& result, const std::string& name) {
     if (name.size() <= 16u && name.find('\0') == std::string::npos) return false;
     result.diagnostics.push_back({SctDiagnosticSeverity::Error, SctDiagnosticCode::InvalidName,
-        std::nullopt, "Section names must be zero-free byte strings no longer than 16 bytes."});
+        "Section names must be zero-free byte strings no longer than 16 bytes."});
     return true;
 }
 
 template <typename Result>
 void appendValidation(Result& result, SctDocumentValidationResult validation) {
     for (auto& diagnostic : validation.diagnostics) {
-        diagnostic.entity.reset();
+        diagnostic.primaryLocation.reset();
         result.diagnostics.push_back(std::move(diagnostic));
     }
 }

@@ -1,0 +1,212 @@
+#pragma once
+
+#include "SctDocumentImporter.h"
+#include "SctDocumentIndex.h"
+
+#include <cstddef>
+#include <optional>
+#include <span>
+#include <variant>
+#include <vector>
+
+namespace spice::sct {
+
+struct SctControlFlowEdge {
+    SctInstructionId sourceInstruction;
+    SctControlFlowKind kind = SctControlFlowKind::Fallthrough;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+    std::optional<SctParameterSite> origin;
+    std::optional<SctInstructionId> targetInstruction;
+    std::optional<std::uint32_t> unresolvedTargetPayloadOffset;
+    std::vector<SctOpaqueAttachmentId> crossedOpaqueAttachments;
+};
+
+class SctControlFlowIndex {
+public:
+    [[nodiscard]] static SctControlFlowIndex build(const SctDocument& document,
+        const SctBoundImportEvidence* evidence = nullptr);
+
+    [[nodiscard]] std::span<const SctControlFlowEdge> currentEdges() const noexcept {
+        return currentEdges_;
+    }
+    [[nodiscard]] std::span<const SctControlFlowEdge> importedEdges() const noexcept {
+        return importedEdges_;
+    }
+    [[nodiscard]] std::vector<SctControlFlowEdge> currentOutbound(
+        SctInstructionId source) const;
+    [[nodiscard]] std::vector<SctControlFlowEdge> currentInbound(
+        SctInstructionId target) const;
+
+private:
+    std::vector<SctControlFlowEdge> currentEdges_;
+    std::vector<SctControlFlowEdge> importedEdges_;
+};
+
+struct SctOpcodeUsage {
+    std::uint16_t opcode = 0;
+    SctInstructionId instruction;
+};
+
+struct SctReferenceUsage {
+    SctParameterSite source;
+    SctDocumentReferenceTarget target;
+};
+
+enum class SctVariableKind { Integer, Float, Bit, Byte };
+
+struct SctVariableIdentity {
+    SctVariableKind kind = SctVariableKind::Integer;
+    std::uint32_t index = 0;
+    auto operator<=>(const SctVariableIdentity&) const = default;
+};
+
+struct SctVariableUsage {
+    SctVariableIdentity variable;
+    SctCanonicalExpressionNodeKind encodedForm = SctCanonicalExpressionNodeKind::IntVariable;
+    SctExpressionSite source;
+};
+
+struct SctUnresolvedReferenceUsage {
+    SctParameterSite source;
+    SctExpectedReferenceTarget expectedTarget;
+    std::size_t encodedWordCount = 0;
+};
+
+struct SctOpaqueParameterUsage {
+    SctParameterSite source;
+    std::size_t wordCount = 0;
+};
+
+struct SctOpaqueExpressionUsage {
+    SctExpressionSite source;
+    std::size_t wordCount = 0;
+};
+
+class SctSemanticUsageIndex {
+public:
+    [[nodiscard]] static SctSemanticUsageIndex build(const SctDocument& document);
+
+    [[nodiscard]] std::span<const SctOpcodeUsage> opcodeUsages() const noexcept { return opcodeUsages_; }
+    [[nodiscard]] std::span<const SctReferenceUsage> referenceUsages() const noexcept { return referenceUsages_; }
+    [[nodiscard]] std::span<const SctVariableUsage> variableUsages() const noexcept { return variableUsages_; }
+    [[nodiscard]] std::span<const SctUnresolvedReferenceUsage> unresolvedReferences() const noexcept {
+        return unresolvedReferences_;
+    }
+    [[nodiscard]] std::span<const SctOpaqueParameterUsage> opaqueParameters() const noexcept {
+        return opaqueParameters_;
+    }
+    [[nodiscard]] std::span<const SctOpaqueExpressionUsage> opaqueExpressions() const noexcept {
+        return opaqueExpressions_;
+    }
+    [[nodiscard]] std::vector<SctOpcodeUsage> usagesForOpcode(std::uint16_t opcode) const;
+    [[nodiscard]] std::vector<SctReferenceUsage> outboundReferences(SctInstructionId source) const;
+    [[nodiscard]] std::vector<SctReferenceUsage> inboundReferences(
+        const SctDocumentReferenceTarget& target) const;
+    [[nodiscard]] std::vector<SctVariableUsage> usagesForVariable(SctVariableIdentity variable) const;
+
+private:
+    std::vector<SctOpcodeUsage> opcodeUsages_;
+    std::vector<SctReferenceUsage> referenceUsages_;
+    std::vector<SctVariableUsage> variableUsages_;
+    std::vector<SctUnresolvedReferenceUsage> unresolvedReferences_;
+    std::vector<SctOpaqueParameterUsage> opaqueParameters_;
+    std::vector<SctOpaqueExpressionUsage> opaqueExpressions_;
+};
+
+enum class SctOpaqueInterpretationKind { ControlFlowGap, SwitchDispatchGap };
+
+struct SctOpaqueInterpretation {
+    SctOpaqueInterpretationKind kind = SctOpaqueInterpretationKind::ControlFlowGap;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+};
+
+struct SctControlFlowEdgeKey {
+    SctInstructionId sourceInstruction;
+    SctControlFlowKind kind = SctControlFlowKind::Fallthrough;
+    std::optional<SctParameterSite> origin;
+    std::optional<SctInstructionId> targetInstruction;
+};
+
+struct SctOpaqueContextRecord {
+    SctOpaqueAttachmentId attachment;
+    SctImportedByteSpan sourceSpan;
+    SctSourceRegion region = SctSourceRegion::SectionPayload;
+    std::optional<SctSectionId> containingSection;
+    std::optional<SctDocumentEntityId> previousSemanticEntity;
+    std::optional<SctDocumentEntityId> nextSemanticEntity;
+    std::vector<SctControlFlowEdgeKey> crossingImportedEdges;
+    std::vector<SctOpaqueInterpretation> interpretations;
+};
+
+class SctOpaqueContextIndex {
+public:
+    [[nodiscard]] static SctOpaqueContextIndex build(const SctDocument& document,
+        const SctBoundImportEvidence* evidence, const SctControlFlowIndex& controlFlow);
+    [[nodiscard]] std::span<const SctOpaqueContextRecord> records() const noexcept { return records_; }
+    [[nodiscard]] const SctOpaqueContextRecord* find(SctOpaqueAttachmentId id) const noexcept;
+
+private:
+    std::vector<SctOpaqueContextRecord> records_;
+};
+
+enum class SctResourceKind { Script, Mld };
+
+struct SctResourceLoadEffect {
+    SctInstructionId sourceInstruction;
+    SctResourceKind resource = SctResourceKind::Script;
+    SctParameterSite resourceParameter;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+};
+
+struct SctGroundVariantSelectionEffect {
+    SctInstructionId sourceInstruction;
+    SctParameterSite tableIdParameter;
+    SctParameterSite variantParameter;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
+};
+
+using SctOpcodeEffect = std::variant<SctResourceLoadEffect, SctGroundVariantSelectionEffect>;
+
+enum class SctOpcodeEffectUsability {
+    Usable,
+    UnresolvedInput,
+    OpaqueInput,
+    MissingInput,
+    IncompatibleInput,
+};
+
+struct SctOpcodeEffectOccurrence {
+    SctOpcodeEffect effect;
+    SctOpcodeEffectUsability usability = SctOpcodeEffectUsability::Usable;
+};
+
+class SctOpcodeEffectIndex {
+public:
+    [[nodiscard]] static SctOpcodeEffectIndex build(const SctDocument& document);
+    [[nodiscard]] std::span<const SctOpcodeEffectOccurrence> effects() const noexcept { return effects_; }
+    [[nodiscard]] std::vector<SctOpcodeEffectOccurrence> effectsForInstruction(SctInstructionId id) const;
+    [[nodiscard]] std::vector<SctOpcodeEffectOccurrence> usableEffects() const;
+
+private:
+    std::vector<SctOpcodeEffectOccurrence> effects_;
+};
+
+// A revision-scoped collection of derived views. Rebuild after mutating document.
+struct SctDocumentAnalysis {
+    SctDocumentIndex entities;
+    SctControlFlowIndex controlFlow;
+    SctSemanticUsageIndex usage;
+    SctOpaqueContextIndex opaqueContext;
+    SctOpcodeEffectIndex effects;
+    enum class ImportedSiteAddressability {
+        NotProvided,
+        FullyAddressable,
+        PartiallyAddressable,
+        NoLongerAddressable,
+    } importedSiteAddressability = ImportedSiteAddressability::NotProvided;
+
+    [[nodiscard]] static SctDocumentAnalysis build(const SctDocument& document,
+        const SctBoundImportEvidence* evidence = nullptr);
+};
+
+} // namespace spice::sct

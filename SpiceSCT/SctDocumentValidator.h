@@ -27,7 +27,7 @@ public:
         const SctDocument& document,
         SctPlatform targetPlatform,
         SctTextEncoding textEncoding,
-        const SctDocumentImportReceipt* receipt = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr);
 };
 
 } // namespace spice::sct

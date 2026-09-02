@@ -1,12 +1,12 @@
 #include "SctParser.h"
 #include "SctOpcodeMetadata.h"
 #include "SctScptDecodeHelpers.h"
+#include "SctScptEncoding.h"
 
 #include "../SpiceRoot/Binary/EndianReader.h"
 #include "../Compression/Aklz.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -25,7 +25,6 @@ constexpr std::size_t kIndexEntrySize = 0x14;
 constexpr std::size_t kIndexNameOffset = 4;
 constexpr std::size_t kIndexNameMaxLen = 0x10;
 constexpr std::uint32_t kMaxOpcodeProbe = 265;
-constexpr std::uint32_t kScptStopCode = 0x0000001d;
 
 using Endian = spice::root::Endian;
 
@@ -116,10 +115,6 @@ struct OpcodeBoundaryProbe {
     return offset < sectionSize && (offset % 4u == 0u);
 }
 
-[[nodiscard]] bool isScptNoLoopValue(std::uint32_t value) {
-    return value == 0x7f7fffff || value == 0x00800000 || value == 0x7fffffff || value == kScptStopCode;
-}
-
 [[nodiscard]] LabelPreambleProbe parseLabelPreamble(std::span<const std::uint8_t> sectionBytes, Endian baseEndian) {
     LabelPreambleProbe probe{};
     if (sectionBytes.size() < 8u) {
@@ -141,7 +136,7 @@ struct OpcodeBoundaryProbe {
     for (std::uint32_t cursor = 0; cursor + 4u <= sectionBytes.size(); cursor += 4u) {
         const auto word = readU32(sectionBytes, cursor, chosenEndian);
         probe.rawWords.push_back(word);
-        if (word == kScptStopCode) {
+        if (word == kSctScptStopCode) {
             probe.present = true;
             probe.endian = chosenEndian;
             probe.endOffset = cursor + 4u;
@@ -288,67 +283,6 @@ struct OpcodeBoundaryProbe {
         || second == 'i';
 }
 
-[[nodiscard]] std::uint32_t scptInputActionPrefix(std::uint32_t value) {
-    if (value >= 0x50000000) {
-        return 0x50000000;
-    }
-    if (value >= 0x40000000) {
-        return 0x40000000;
-    }
-    if (value >= 0x20000000) {
-        return 0x20000000;
-    }
-    if (value >= 0x10000000) {
-        return 0x10000000;
-    }
-    if (value >= 0x08000000) {
-        return 0x08000000;
-    }
-    if (value >= 0x04000000) {
-        return 0x04000000;
-    }
-    return 0;
-}
-
-[[nodiscard]] bool isScptCompareCode(std::uint32_t value) {
-    switch (value) {
-    case 0x00000000:
-    case 0x00000001:
-    case 0x00000002:
-    case 0x00000003:
-    case 0x00000004:
-    case 0x00000005:
-    case 0x00000006:
-    case 0x00000007:
-    case 0x00000008:
-    case 0x00000009:
-    case 0x0000000a:
-    case 0x00000010:
-    case 0x00000011:
-        return true;
-    default:
-        return false;
-    }
-}
-
-[[nodiscard]] bool isScptArithmeticCode(std::uint32_t value) {
-    switch (value) {
-    case 0x0000000b:
-    case 0x0000000c:
-    case 0x0000000d:
-    case 0x0000000e:
-    case 0x0000000f:
-    case 0x00000012:
-    case 0x00000013:
-    case 0x00000014:
-    case 0x00000015:
-    case 0x00000016:
-        return true;
-    default:
-        return false;
-    }
-}
-
 [[nodiscard]] SctScptAstNode makeScptNode(
     SctScptAstNodeKind kind,
     std::string display,
@@ -363,48 +297,62 @@ struct OpcodeBoundaryProbe {
     return node;
 }
 
-[[nodiscard]] SctScptAstNode makeUnknownScptNode() {
-    SctScptAstNode node{};
-    node.kind = SctScptAstNodeKind::Unknown;
-    node.display = "?";
-    return node;
+[[nodiscard]] std::vector<std::uint32_t> encodeParsedScptNode(const SctScptAstNode& root,
+    bool appendStop) {
+    std::vector<std::uint32_t> words;
+    const auto append = [&](const auto& self, const SctScptAstNode& node) -> void {
+        for (const auto& child : node.children) self(self, child);
+        words.insert(words.end(), node.rawWords.begin(), node.rawWords.end());
+    };
+    append(append, root);
+    if (appendStop && root.kind != SctScptAstNodeKind::Stop) words.push_back(kSctScptStopCode);
+    return words;
 }
 
-[[nodiscard]] const SctScptAstNode* stackAstValue(
-    const std::array<std::optional<SctScptAstNode>, 20>& stack,
-    std::int32_t index)
-{
-    if (index < 0 || index >= static_cast<std::int32_t>(stack.size()) || !stack[index].has_value()) {
-        return nullptr;
+[[nodiscard]] SctScptAstNodeKind parsedKind(SctScptWordKind kind) {
+    switch (kind) {
+    case SctScptWordKind::FloatLiteral: return SctScptAstNodeKind::FloatLiteral;
+    case SctScptWordKind::DecimalLiteral: return SctScptAstNodeKind::DecimalLiteral;
+    case SctScptWordKind::ByteVariable: return SctScptAstNodeKind::ByteVariable;
+    case SctScptWordKind::BitVariable: return SctScptAstNodeKind::BitVariable;
+    case SctScptWordKind::FloatVariable: return SctScptAstNodeKind::FloatVariable;
+    case SctScptWordKind::DirectIntVariable: return SctScptAstNodeKind::IntVariable;
+    case SctScptWordKind::NegatedIntVariable: return SctScptAstNodeKind::NegatedIntVariable;
+    case SctScptWordKind::NegatedIntVariableLow16Comparison:
+        return SctScptAstNodeKind::NegatedIntVariableLow16Comparison;
+    case SctScptWordKind::SecondaryValue: return SctScptAstNodeKind::SecondaryValue;
+    case SctScptWordKind::CompareOperator: return SctScptAstNodeKind::CompareOp;
+    case SctScptWordKind::ArithmeticOperator: return SctScptAstNodeKind::ArithmeticOp;
+    case SctScptWordKind::AssignmentOperator: return SctScptAstNodeKind::AssignmentOp;
+    case SctScptWordKind::Stop: return SctScptAstNodeKind::Stop;
+    case SctScptWordKind::Inert: break;
     }
-    return &*stack[index];
+    return SctScptAstNodeKind::Unknown;
 }
 
-[[nodiscard]] SctScptAstNodeKind inputNodeKind(std::uint32_t action) {
-    switch (action) {
-    case 0x50000000:
-        return SctScptAstNodeKind::IntVariable;
-    case 0x40000000:
-        return SctScptAstNodeKind::FloatVariable;
-    case 0x20000000:
-        return SctScptAstNodeKind::BitVariable;
-    case 0x10000000:
-        return SctScptAstNodeKind::ByteVariable;
-    case 0x08000000:
-        return SctScptAstNodeKind::DecimalLiteral;
-    case 0x04000000:
-        return SctScptAstNodeKind::FloatLiteral;
-    default:
-        return SctScptAstNodeKind::RawValue;
+[[nodiscard]] std::string scptLeafDisplay(std::uint32_t word, SctScptWordKind kind,
+    std::optional<std::uint32_t> payload = std::nullopt) {
+    const auto index = word & 0x00ffffffu;
+    switch (kind) {
+    case SctScptWordKind::FloatLiteral:
+        return "float: " + std::to_string(detail::floatFromWordBits(payload.value_or(0u)));
+    case SctScptWordKind::DecimalLiteral: {
+        const auto whole = static_cast<std::int16_t>((word >> 8u) & 0xffffu);
+        return "decimal: " + std::to_string(whole) + "+" + std::to_string(word & 0xffu) + "/256";
     }
-}
-
-void setScptStackNode(
-    std::array<std::optional<SctScptAstNode>, 20>& stack,
-    std::int32_t index,
-    SctScptAstNode node)
-{
-    stack[std::clamp<std::int32_t>(index, 0, 19)] = std::move(node);
+    case SctScptWordKind::ByteVariable: return "ByteVar: " + std::to_string(index);
+    case SctScptWordKind::BitVariable: return "BitVar: " + std::to_string(index);
+    case SctScptWordKind::FloatVariable: return "FloatVar: " + std::to_string(index);
+    case SctScptWordKind::DirectIntVariable: return "IntVar: " + std::to_string(index);
+    case SctScptWordKind::NegatedIntVariable: return "NegatedIntVar: " + std::to_string(index);
+    case SctScptWordKind::NegatedIntVariableLow16Comparison:
+        return "NegatedIntVarLow16: " + std::to_string(index);
+    case SctScptWordKind::SecondaryValue: {
+        const auto name = sctScptSecondaryValueName(index);
+        return name.empty() ? "Secondary: " + std::to_string(index) : std::string{name};
+    }
+    default: return detail::toHexWord(word);
+    }
 }
 
 [[nodiscard]] std::uint32_t consumeScptParameterWords(
@@ -420,191 +368,106 @@ void setScptStackNode(
         return 0;
     }
 
-    const auto firstWord = readU32(sectionBytes, wordOffset, endian);
-    if (isScptNoLoopValue(firstWord)) {
-        if (record != nullptr) {
-            record->resolvedValue = detail::toHexWord(firstWord);
-            record->evaluationTrace.push_back({firstWord, record->resolvedValue});
-            record->hitStopCode = firstWord == kScptStopCode;
-            record->ast = makeScptNode(
-                record->hitStopCode ? SctScptAstNodeKind::Stop : SctScptAstNodeKind::NoLoopValue,
-                record->resolvedValue,
-                firstWord);
-        }
-        return 1;
+    std::vector<std::uint32_t> availableWords;
+    SctScptScanner scanner;
+    for (std::uint32_t cursor = wordOffset; cursor + 4u <= sectionBytes.size(); cursor += 4u) {
+        const auto word = readU32(sectionBytes, cursor, endian);
+        availableWords.push_back(word);
+        if (!scanner.consume(word)) break;
+    }
+    const auto scan = scanner.result();
+    if (!scan.complete) {
+        diagnostics.push_back({scan.error == SctScptScanError::TruncatedFloatPayload
+            ? "SCPT float literal payload exceeds section bounds."
+            : "SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
+        return static_cast<std::uint32_t>(scan.wordCount);
     }
 
-    std::uint32_t consumedWords = 0;
-    std::uint32_t cursor = wordOffset;
-    std::array<std::string, 20> resultStack{};
-    std::array<std::optional<SctScptAstNode>, 20> astStack{};
+    const std::vector<std::uint32_t> scannedWords(
+        availableWords.begin(), availableWords.begin() + scan.wordCount);
+    if (record == nullptr) return static_cast<std::uint32_t>(scan.wordCount);
 
-    // Mirror SALSA's _SCPT_analyze stack-driven loop semantics.
-    // In Python this starts as `stack_index = 0`, `max_index = 18` and bails
-    // if stack_index >= max_index before processing the current word.
-    std::int32_t stackIndex = 0;
-    constexpr std::int32_t kScptMaxIndex = 18;
+    record->hitStopCode = !scan.inlineValue;
+    if (scan.inlineValue) {
+        record->resolvedValue = detail::toHexWord(scannedWords.front());
+        record->evaluationTrace.push_back({scannedWords.front(), record->resolvedValue});
+        record->ast = makeScptNode(SctScptAstNodeKind::NoLoopValue,
+            record->resolvedValue, scannedWords.front());
+        return 1u;
+    }
+    if (scannedWords.size() == 1u) {
+        record->resolvedValue = "return values (0x1d)";
+        record->evaluationTrace.push_back({kSctScptStopCode, record->resolvedValue});
+        record->ast = makeScptNode(SctScptAstNodeKind::Stop,
+            record->resolvedValue, kSctScptStopCode);
+        return 1u;
+    }
 
-    while (cursor + 4u <= sectionBytes.size()) {
-        const auto currentWord = readU32(sectionBytes, cursor, endian);
-
-        if (stackIndex >= kScptMaxIndex) {
-            diagnostics.push_back({"SCPT parameter decode stopped at stack overflow threshold.", instructionOffset});
-            break;
+    bool typed = true;
+    bool assignmentSeen = false;
+    std::uint32_t maximumDepth = 0u;
+    std::vector<SctScptAstNode> stack;
+    for (std::size_t cursor = 0; cursor + 1u < scannedWords.size(); ++cursor) {
+        const auto word = scannedWords[cursor];
+        const auto classification = classifySctScptWord(word);
+        if (assignmentSeen) typed = false;
+        if (classification.kind == SctScptWordKind::Inert) {
+            typed = false;
+            record->evaluationTrace.push_back({word, "runtime-inert"});
+            continue;
         }
-
-        ++consumedWords;
-
-        if (currentWord == kScptStopCode) {
-            if (record != nullptr) {
-                record->hitStopCode = true;
-                if (!resultStack[2].empty()) {
-                    record->resolvedValue = resultStack[2];
-                    if (astStack[2].has_value()) {
-                        record->ast = astStack[2];
-                    }
-                } else {
-                    record->resolvedValue = "return values (0x1d)";
-                    record->ast = makeScptNode(SctScptAstNodeKind::Stop, record->resolvedValue, currentWord);
-                }
-                record->evaluationTrace.push_back({currentWord, "return values (0x1d)"});
+        if (classification.kind == SctScptWordKind::CompareOperator
+            || classification.kind == SctScptWordKind::ArithmeticOperator
+            || classification.kind == SctScptWordKind::AssignmentOperator) {
+            const auto symbol = std::string{sctScptOperatorSymbol(word)};
+            if (stack.size() < 2u) {
+                typed = false;
+                record->evaluationTrace.push_back({word, "operator stack underflow"});
+                continue;
             }
-            return consumedWords;
+            auto right = std::move(stack.back()); stack.pop_back();
+            auto left = std::move(stack.back()); stack.pop_back();
+            const auto display = "(" + left.display + " " + symbol + " " + right.display + ")";
+            auto node = makeScptNode(parsedKind(classification.kind), display, word, symbol);
+            node.children.push_back(std::move(left));
+            node.children.push_back(std::move(right));
+            stack.push_back(std::move(node));
+            assignmentSeen = classification.kind == SctScptWordKind::AssignmentOperator;
+            record->evaluationTrace.push_back({word, display});
+            continue;
         }
-
-        if (isScptCompareCode(currentWord)) {
-            const auto lhs = detail::stackValue(resultStack, stackIndex);
-            const auto rhs = detail::stackValue(resultStack, stackIndex + 1);
-            const auto expr = "(" + lhs + " " + detail::compareSymbol(currentWord) + " " + rhs + ")";
-            auto node = makeScptNode(
-                currentWord == 0x0000000au ? SctScptAstNodeKind::AssignmentOp : SctScptAstNodeKind::CompareOp,
-                expr,
-                currentWord,
-                detail::compareSymbol(currentWord));
-            if (const auto* lhsNode = stackAstValue(astStack, stackIndex)) {
-                node.children.push_back(*lhsNode);
-            } else {
-                node.children.push_back(makeUnknownScptNode());
-            }
-            if (const auto* rhsNode = stackAstValue(astStack, stackIndex + 1)) {
-                node.children.push_back(*rhsNode);
-            } else {
-                node.children.push_back(makeUnknownScptNode());
-            }
-            std::int32_t nones = 0;
-            if (lhs == "?") {
-                ++nones;
-            }
-            if (rhs == "?") {
-                ++nones;
-            }
-            resultStack[std::clamp<std::int32_t>(stackIndex + nones, 0, 19)] = expr;
-            setScptStackNode(astStack, stackIndex + nones, std::move(node));
-            if (record != nullptr) {
-                record->evaluationTrace.push_back({currentWord, expr});
-            }
-            --stackIndex;
-            if (currentWord == 0x0000000a) {
-                ++stackIndex;
-            }
-            cursor += 4u;
+        if (classification.kind == SctScptWordKind::Stop) {
+            typed = false;
             continue;
         }
 
-        if (isScptArithmeticCode(currentWord)) {
-            const auto lhs = detail::stackValue(resultStack, stackIndex);
-            const auto rhs = detail::stackValue(resultStack, stackIndex + 1);
-            const auto expr = "(" + lhs + " " + detail::arithmeticSymbol(currentWord) + " " + rhs + ")";
-            auto node = makeScptNode(SctScptAstNodeKind::ArithmeticOp, expr, currentWord, detail::arithmeticSymbol(currentWord));
-            if (const auto* lhsNode = stackAstValue(astStack, stackIndex)) {
-                node.children.push_back(*lhsNode);
-            } else {
-                node.children.push_back(makeUnknownScptNode());
-            }
-            if (const auto* rhsNode = stackAstValue(astStack, stackIndex + 1)) {
-                node.children.push_back(*rhsNode);
-            } else {
-                node.children.push_back(makeUnknownScptNode());
-            }
-            std::int32_t nones = 0;
-            if (lhs == "?") {
-                ++nones;
-            }
-            if (rhs == "?") {
-                ++nones;
-            }
-            resultStack[std::clamp<std::int32_t>(stackIndex + nones, 0, 19)] = expr;
-            setScptStackNode(astStack, stackIndex + nones, std::move(node));
-            if (record != nullptr) {
-                record->evaluationTrace.push_back({currentWord, expr});
-            }
-            --stackIndex;
-            cursor += 4u;
-            continue;
+        std::optional<std::uint32_t> payload;
+        if (classification.payloadWordCount != 0u) {
+            payload = scannedWords[++cursor];
+            record->evaluationTrace.push_back({word, detail::toHexWord(word)});
         }
-
-        const auto action = scptInputActionPrefix(currentWord);
-        if (action != 0x50000000u) {
-            if (action == 0x04000000u) {
-                if (cursor + 8u > sectionBytes.size()) {
-                    diagnostics.push_back({"SCPT float literal payload exceeds section bounds.", instructionOffset});
-                    return consumedWords;
-                }
-                const auto floatPayload = readU32(sectionBytes, cursor + 4u, endian);
-                const auto floatValue = detail::floatFromWordBits(floatPayload);
-                const auto value = std::string{detail::inputPrefix(action)} + std::to_string(floatValue);
-                resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
-                auto node = makeScptNode(SctScptAstNodeKind::FloatLiteral, value, currentWord);
-                node.rawWords.push_back(floatPayload);
-                setScptStackNode(astStack, stackIndex + 2, std::move(node));
-                if (record != nullptr) {
-                    record->evaluationTrace.push_back({currentWord, detail::toHexWord(currentWord)});
-                    record->evaluationTrace.push_back({floatPayload, value});
-                }
-                ++consumedWords;
-                cursor += 8u;
-            } else {
-                std::string value;
-                if (action == 0x08000000u) {
-                    const auto whole = (currentWord & 0x00ffff00u) >> 8u;
-                    const auto frac = currentWord & 0x000000ffu;
-                    value = std::string{detail::inputPrefix(action)} + std::to_string(whole) + "+" + std::to_string(frac) + "/256";
-                } else {
-                    value = std::string{detail::inputPrefix(action)} + std::to_string(currentWord & 0x00ffffffu);
-                }
-                resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
-                setScptStackNode(astStack, stackIndex + 2, makeScptNode(inputNodeKind(action), value, currentWord));
-                if (record != nullptr) {
-                    record->evaluationTrace.push_back({currentWord, value});
-                }
-                cursor += 4u;
-            }
-        } else {
-            const auto masked = currentWord & 0x00ffffffu;
-            auto value = detail::secondaryLabel(masked);
-            if (value.empty()) {
-                value = std::string{detail::inputPrefix(action)} + std::to_string(masked);
-                setScptStackNode(astStack, stackIndex + 2, makeScptNode(SctScptAstNodeKind::IntVariable, value, currentWord));
-            } else {
-                setScptStackNode(astStack, stackIndex + 2, makeScptNode(SctScptAstNodeKind::SecondaryValue, value, currentWord));
-            }
-            resultStack[std::clamp<std::int32_t>(stackIndex + 2, 0, 19)] = value;
-            if (record != nullptr) {
-                record->evaluationTrace.push_back({currentWord, value});
-            }
-            cursor += 4u;
-        }
-        ++stackIndex;
+        const auto display = scptLeafDisplay(word, classification.kind, payload);
+        auto node = makeScptNode(parsedKind(classification.kind), display, word);
+        if (payload) node.rawWords.push_back(*payload);
+        stack.push_back(std::move(node));
+        maximumDepth = std::max(maximumDepth, static_cast<std::uint32_t>(stack.size()));
+        record->evaluationTrace.push_back({payload.value_or(word), display});
     }
-
-    if (record != nullptr && record->resolvedValue.empty() && !resultStack[2].empty()) {
-        record->resolvedValue = resultStack[2];
-        if (astStack[2].has_value()) {
-            record->ast = astStack[2];
+    record->evaluationTrace.push_back({kSctScptStopCode, "return values (0x1d)"});
+    if (maximumDepth > kSctScptRuntimeStackWarningThreshold) {
+        diagnostics.push_back({"SCPT expression exceeds the observed runtime stack-depth warning threshold.",
+            instructionOffset});
+    }
+    if (stack.size() != 1u) typed = false;
+    if (typed) {
+        auto candidate = std::move(stack.front());
+        if (encodeParsedScptNode(candidate, true) == scannedWords) {
+            record->resolvedValue = candidate.display;
+            record->ast = std::move(candidate);
         }
     }
-    diagnostics.push_back({"SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
-    return consumedWords;
+    if (!record->ast) record->resolvedValue = "opaque SCPT expression";
+    return static_cast<std::uint32_t>(scan.wordCount);
 }
 
 void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectionBytes, Endian endian) {
@@ -739,9 +602,11 @@ void addInstructionSemanticEdges(
         edge.detail = "Opcode returns from the current subscript stack.";
         edges.push_back(std::move(edge));
     }
-    if (metadata.resourceRole == SctOpcodeResourceRole::LoadsMld || metadata.resourceRole == SctOpcodeResourceRole::LoadsScript) {
+    if (metadata.effect.kind == SctOpcodeEffectKind::LoadMld
+        || metadata.effect.kind == SctOpcodeEffectKind::LoadScript) {
         SctEdge edge{};
-        edge.type = metadata.resourceRole == SctOpcodeResourceRole::LoadsMld ? SctEdgeType::LoadsMld : SctEdgeType::LoadsScript;
+        edge.type = metadata.effect.kind == SctOpcodeEffectKind::LoadMld
+            ? SctEdgeType::LoadsMld : SctEdgeType::LoadsScript;
         edge.confidence = metadata.confidence;
         edge.fromOffset = instruction.payloadOffset - sourceSectionStart;
         edge.fromPayloadOffset = instruction.payloadOffset;
@@ -1016,7 +881,7 @@ void populateFooterEntriesAndGroups(
     }
     if (breakValue == 0u) {
         if (parameter.rawWords.size() >= 3u && parameter.rawWords[0] == 0x04000000u && parameter.rawWords[1] == 0u
-            && parameter.rawWords.back() == kScptStopCode) {
+            && parameter.rawWords.back() == kSctScptStopCode) {
             return true;
         }
         return parameter.displayValue == "0" || parameter.displayValue == "float: 0.000000";
@@ -1216,8 +1081,8 @@ void populateFooterEntriesAndGroups(
                 || parameter.role.find("Offset") != std::string::npos)) {
                 parameter.valueKind = SctParameterValueKind::Link;
             }
-            if (!isScptParam && (opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsMld
-                || opcodeMetadata.resourceRole == SctOpcodeResourceRole::LoadsScript)) {
+            if (!isScptParam && (opcodeMetadata.effect.kind == SctOpcodeEffectKind::LoadMld
+                || opcodeMetadata.effect.kind == SctOpcodeEffectKind::LoadScript)) {
                 parameter.valueKind = SctParameterValueKind::ResourceRef;
             }
             if (!isScptParam && sctOpcodeTextReference(*opcodeSchema, paramIndex).has_value()) {

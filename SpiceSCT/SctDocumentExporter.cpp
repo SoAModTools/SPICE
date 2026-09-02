@@ -1,6 +1,7 @@
 #include "SctDocumentExporter.h"
 
 #include "SctOpcodeMetadata.h"
+#include "SctScptEncoding.h"
 #include "SctTextCodec.h"
 
 #include "../Compression/Aklz.h"
@@ -22,12 +23,13 @@ constexpr std::uint32_t kHeaderSize = 12;
 constexpr std::uint32_t kIndexEntrySize = 20;
 constexpr std::uint32_t kIndexNameOffset = 4;
 constexpr std::uint32_t kIndexNameSize = 16;
-constexpr std::uint32_t kScptStopCode = 0x1d;
 constexpr std::uint32_t kMaximumPayloadSize = spice::compression::aklz::kDefaultMaxDecompressedSize;
 
 void addDiagnostic(std::vector<SctDocumentDiagnostic>& diagnostics, SctDiagnosticCode code,
     std::string message, std::optional<SctDocumentEntityId> entity = std::nullopt) {
-    diagnostics.push_back({SctDiagnosticSeverity::Error, code, std::move(entity), std::move(message)});
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(message)};
+    if (entity) diagnostic.primaryLocation = SctDiagnosticLocation{*entity};
+    diagnostics.push_back(std::move(diagnostic));
 }
 
 bool hasErrors(const std::vector<SctDocumentDiagnostic>& diagnostics) {
@@ -80,25 +82,6 @@ void patchWord(std::vector<std::uint8_t>& bytes, std::uint32_t offset, std::uint
         bytes[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
         bytes[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
     }
-}
-
-std::vector<std::uint32_t> encodeExpressionWords(const SctCanonicalExpression& expression) {
-    if (const auto* opaque = std::get_if<SctOpaqueExpression>(&expression.root)) {
-        return opaque->words;
-    }
-    std::vector<std::uint32_t> words;
-    const auto appendNode = [&](const auto& self, const SctCanonicalExpressionNode& node) -> void {
-        for (const auto& child : node.children) self(self, child);
-        words.push_back(node.encodingCode);
-        words.insert(words.end(), node.payloadWords.begin(), node.payloadWords.end());
-    };
-    const auto& root = std::get<SctCanonicalExpressionNode>(expression.root);
-    appendNode(appendNode, root);
-    if (expression.termination == SctExpressionTermination::StopCode
-        && root.kind != SctCanonicalExpressionNodeKind::Stop) {
-        words.push_back(kScptStopCode);
-    }
-    return words;
 }
 
 std::vector<std::uint8_t> encodeHeaderValues(const SctHeaderValues& values,
@@ -243,7 +226,7 @@ EncodedInstruction encodeInstruction(const SctDocumentInstruction& instruction,
     std::optional<std::size_t> scheduledLengthIndex;
     if (instruction.scheduledExpression) {
         words.push_back(129);
-        const auto expressionWords = encodeExpressionWords(*instruction.scheduledExpression);
+        const auto expressionWords = encodeSctCanonicalExpressionWords(*instruction.scheduledExpression);
         words.insert(words.end(), expressionWords.begin(), expressionWords.end());
         scheduledLengthIndex = words.size();
         words.push_back(0);
@@ -257,7 +240,7 @@ EncodedInstruction encodeInstruction(const SctDocumentInstruction& instruction,
         if (const auto* scalar = std::get_if<SctEncodedWordValue>(&parameter.value)) {
             words.push_back(scalar->value);
         } else if (const auto* expression = std::get_if<SctCanonicalExpression>(&parameter.value)) {
-            const auto expressionWords = encodeExpressionWords(*expression);
+            const auto expressionWords = encodeSctCanonicalExpressionWords(*expression);
             words.insert(words.end(), expressionWords.begin(), expressionWords.end());
         } else if (const auto* sequence = std::get_if<SctTerminatedWordSequenceValue>(&parameter.value)) {
             words.insert(words.end(), sequence->words.begin(), sequence->words.end());
@@ -365,14 +348,15 @@ struct InternalBuildResult {
 };
 
 InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentExportOptions& options,
-    const SctDocumentImportReceipt* receipt) {
+    const SctBoundImportEvidence* evidence) {
     InternalBuildResult result;
+    const auto* receipt = evidence == nullptr ? nullptr : &evidence->receipt();
     switch (options.opaquePolicy) {
     case SctOpaquePreservationPolicy::RequirePreservation:
         break;
     }
     const auto validation = SctDocumentValidator::validateForTarget(
-        document, options.targetPlatform, options.textEncoding, receipt);
+        document, options.targetPlatform, options.textEncoding, evidence);
     result.diagnostics = validation.diagnostics;
     if (hasErrors(result.diagnostics)) return result;
 
@@ -713,8 +697,8 @@ void markFailedPreservation(const SctDocument& document, InternalBuildResult& re
 SctDocumentLayoutResult SctDocumentLayoutEngine::layout(
     const SctDocument& document,
     const SctDocumentExportOptions& options,
-    const SctDocumentImportReceipt* receipt) {
-    auto built = buildPayload(document, options, receipt);
+    const SctBoundImportEvidence* evidence) {
+    auto built = buildPayload(document, options, evidence);
     markFailedPreservation(document, built);
     return {built.success, std::move(built.layout), std::move(built.diagnostics), std::move(built.preservation)};
 }
@@ -722,8 +706,8 @@ SctDocumentLayoutResult SctDocumentLayoutEngine::layout(
 SctDocumentExportResult SctDocumentExporter::exportDocument(
     const SctDocument& document,
     const SctDocumentExportOptions& options,
-    const SctDocumentImportReceipt* receipt) {
-    auto built = buildPayload(document, options, receipt);
+    const SctBoundImportEvidence* evidence) {
+    auto built = buildPayload(document, options, evidence);
     markFailedPreservation(document, built);
     SctDocumentExportResult result;
     result.success = built.success;

@@ -30,7 +30,7 @@ public:
         const SctParseResult& parsed, const SctDocumentImportOptions& options = {});
     [[nodiscard]] static SctDocumentExportAssessment assessForExport(
         const SctDocument& document, const SctDocumentExportOptions& options,
-        const SctDocumentImportReceipt* receipt = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr);
 };
 
 } // namespace spice::sct

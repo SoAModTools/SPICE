@@ -2,6 +2,7 @@
 
 #include "SctDocumentIndex.h"
 #include "SctDocumentValidator.h"
+#include "SctScptEncoding.h"
 
 #include <algorithm>
 #include <bit>
@@ -12,8 +13,10 @@ namespace {
 template <typename Result>
 void addError(Result& result, SctDiagnosticCode code, std::string message,
     std::optional<SctParameterAddress> parameter = std::nullopt) {
-    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::nullopt, std::move(message)};
-    diagnostic.parameter = parameter;
+    SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error, code, std::move(message)};
+    if (parameter) {
+        diagnostic.primaryLocation = SctDiagnosticLocation{SctDraftParameterSite{0, *parameter}};
+    }
     result.diagnostics.push_back(std::move(diagnostic));
 }
 
@@ -59,7 +62,7 @@ bool valueMatches(const SctOpcodeParameterSchema& schema, const SctDocumentParam
 
 SctDocumentParameterValue defaultValue(const SctOpcodeParameterSchema& schema) {
     if (schema.encoding == SctOpcodeParameterEncoding::ScptExpression) {
-        return SctExpressionFactory::decimalLiteral(0);
+        return SctExpressionFactory::encodedDecimalLiteral(0);
     }
     if (schema.encoding == SctOpcodeParameterEncoding::RawWordsUntilSentinel) {
         return SctTerminatedWordSequenceValue{{schema.defaultEncodedWord}};
@@ -84,11 +87,27 @@ std::uint32_t requestedGroupCount(const SctOpcodeSchema& schema,
 
 } // namespace
 
-SctCanonicalExpression SctExpressionFactory::decimalLiteral(
-    std::uint16_t whole, std::uint8_t fraction256) {
+SctCanonicalExpression SctExpressionFactory::encodedDecimalLiteral(
+    std::int16_t whole, std::uint8_t fraction256) {
     SctCanonicalExpressionNode node;
     node.kind = SctCanonicalExpressionNodeKind::DecimalLiteral;
-    node.encodingCode = 0x08000000u | (static_cast<std::uint32_t>(whole) << 8u) | fraction256;
+    node.encodingCode = 0x08000000u
+        | (static_cast<std::uint32_t>(static_cast<std::uint16_t>(whole)) << 8u)
+        | fraction256;
+    return {std::move(node), SctExpressionTermination::StopCode};
+}
+
+SctCanonicalExpression SctExpressionFactory::oneWordValue(SctExpressionOneWordValue value) {
+    SctCanonicalExpressionNode node;
+    node.kind = SctCanonicalExpressionNodeKind::NoLoopValue;
+    node.encodingCode = static_cast<std::uint32_t>(value);
+    return {std::move(node), SctExpressionTermination::InlineValue};
+}
+
+SctCanonicalExpression SctExpressionFactory::secondaryValue(SctExpressionSecondaryValue value) {
+    SctCanonicalExpressionNode node;
+    node.kind = SctCanonicalExpressionNodeKind::SecondaryValue;
+    node.encodingCode = 0x50000000u | static_cast<std::uint32_t>(value);
     return {std::move(node), SctExpressionTermination::StopCode};
 }
 
@@ -100,37 +119,110 @@ SctCanonicalExpression SctExpressionFactory::floatLiteral(float value) {
     return {std::move(node), SctExpressionTermination::StopCode};
 }
 
-SctExpressionBuildResult SctExpressionFactory::variable(
-    SctExpressionVariableKind kind, std::uint32_t index) {
+namespace {
+SctExpressionBuildResult buildVariable(std::uint32_t prefix, std::uint32_t index,
+    std::uint32_t maximumIndex, SctCanonicalExpressionNodeKind requiredKind,
+    const char* domainMessage) {
+    SctExpressionBuildResult result;
+    if (index > maximumIndex) {
+        addError(result, SctDiagnosticCode::ExpressionInvalid,
+            domainMessage);
+        return result;
+    }
+    const auto classified = classifySctScptWord(prefix | index);
+    const auto actualKind = [&]() {
+        switch (classified.kind) {
+        case SctScptWordKind::DirectIntVariable: return SctCanonicalExpressionNodeKind::IntVariable;
+        case SctScptWordKind::NegatedIntVariable: return SctCanonicalExpressionNodeKind::NegatedIntVariable;
+        case SctScptWordKind::NegatedIntVariableLow16Comparison:
+            return SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison;
+        case SctScptWordKind::SecondaryValue: return SctCanonicalExpressionNodeKind::SecondaryValue;
+        case SctScptWordKind::FloatVariable: return SctCanonicalExpressionNodeKind::FloatVariable;
+        case SctScptWordKind::BitVariable: return SctCanonicalExpressionNodeKind::BitVariable;
+        case SctScptWordKind::ByteVariable: return SctCanonicalExpressionNodeKind::ByteVariable;
+        default: return SctCanonicalExpressionNodeKind::Stop;
+        }
+    }();
+    if (actualKind != requiredKind) {
+        addError(result, SctDiagnosticCode::ExpressionInvalid,
+            "SCPT input index is not in the requested runtime-selected variable domain.");
+        return result;
+    }
+    SctCanonicalExpressionNode node;
+    node.kind = actualKind;
+    node.encodingCode = prefix | index;
+    result.expression = SctCanonicalExpression{std::move(node), SctExpressionTermination::StopCode};
+    result.selectedNodeKind = actualKind;
+    return result;
+}
+} // namespace
+
+SctExpressionBuildResult SctExpressionFactory::scaledDecimalLiteral(std::int32_t units256) {
+    SctExpressionBuildResult result;
+    if (units256 < -0x800000 || units256 > 0x7fffff) {
+        addError(result, SctDiagnosticCode::ExpressionInvalid,
+            "Scaled SCPT decimal exceeds the signed 24-bit 1/256 domain.");
+        return result;
+    }
+    std::int32_t whole = units256 / 256;
+    std::int32_t fraction = units256 % 256;
+    if (fraction < 0) { --whole; fraction += 256; }
+    result.expression = encodedDecimalLiteral(static_cast<std::int16_t>(whole),
+        static_cast<std::uint8_t>(fraction));
+    result.selectedNodeKind = SctCanonicalExpressionNodeKind::DecimalLiteral;
+    return result;
+}
+
+SctExpressionBuildResult SctExpressionFactory::integerInput(std::uint32_t index) {
     SctExpressionBuildResult result;
     if (index > 0x00ffffffu) {
         addError(result, SctDiagnosticCode::ExpressionInvalid,
-            "SCPT variable index exceeds the confirmed 24-bit encoded domain.");
+            "SCPT integer-input index exceeds the confirmed 24-bit domain.");
         return result;
     }
-
-    std::uint32_t prefix = 0;
-    SctCanonicalExpressionNodeKind nodeKind = SctCanonicalExpressionNodeKind::IntVariable;
-    switch (kind) {
-    case SctExpressionVariableKind::Integer: prefix = 0x50000000u; break;
-    case SctExpressionVariableKind::Float:
-        prefix = 0x40000000u;
-        nodeKind = SctCanonicalExpressionNodeKind::FloatVariable;
-        break;
-    case SctExpressionVariableKind::Bit:
-        prefix = 0x20000000u;
-        nodeKind = SctCanonicalExpressionNodeKind::BitVariable;
-        break;
-    case SctExpressionVariableKind::Byte:
-        prefix = 0x10000000u;
-        nodeKind = SctCanonicalExpressionNodeKind::ByteVariable;
-        break;
+    const auto classification = classifySctScptWord(0x50000000u | index);
+    SctCanonicalExpressionNodeKind kind;
+    switch (classification.kind) {
+    case SctScptWordKind::DirectIntVariable: kind = SctCanonicalExpressionNodeKind::IntVariable; break;
+    case SctScptWordKind::NegatedIntVariable: kind = SctCanonicalExpressionNodeKind::NegatedIntVariable; break;
+    case SctScptWordKind::NegatedIntVariableLow16Comparison:
+        kind = SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison; break;
+    case SctScptWordKind::SecondaryValue: kind = SctCanonicalExpressionNodeKind::SecondaryValue; break;
+    default:
+        addError(result, SctDiagnosticCode::ExpressionInvalid,
+            "SCPT integer-input index does not select a confirmed input form.");
+        return result;
     }
-    SctCanonicalExpressionNode node;
-    node.kind = nodeKind;
-    node.encodingCode = prefix | index;
+    SctCanonicalExpressionNode node{kind, 0x50000000u | index};
     result.expression = SctCanonicalExpression{std::move(node), SctExpressionTermination::StopCode};
+    result.selectedNodeKind = kind;
     return result;
+}
+
+SctExpressionBuildResult SctExpressionFactory::directIntegerVariable(std::uint32_t index) {
+    return buildVariable(0x50000000u, index, 0x00ffffffu,
+        SctCanonicalExpressionNodeKind::IntVariable, "SCPT integer index exceeds 24 bits.");
+}
+SctExpressionBuildResult SctExpressionFactory::negatedIntegerVariable(std::uint32_t index) {
+    return buildVariable(0x50000000u, index, 0x00ffffffu,
+        SctCanonicalExpressionNodeKind::NegatedIntVariable, "SCPT integer index exceeds 24 bits.");
+}
+SctExpressionBuildResult SctExpressionFactory::low16ComparisonIntegerVariable(std::uint32_t index) {
+    return buildVariable(0x50000000u, index, 0x00ffffffu,
+        SctCanonicalExpressionNodeKind::NegatedIntVariableLow16Comparison,
+        "SCPT integer index exceeds 24 bits.");
+}
+SctExpressionBuildResult SctExpressionFactory::floatVariable(std::uint32_t index) {
+    return buildVariable(0x40000000u, index, 0x0fffffffu,
+        SctCanonicalExpressionNodeKind::FloatVariable, "SCPT float-variable index exceeds 28 bits.");
+}
+SctExpressionBuildResult SctExpressionFactory::bitVariable(std::uint32_t index) {
+    return buildVariable(0x20000000u, index, 0x1fffffffu,
+        SctCanonicalExpressionNodeKind::BitVariable, "SCPT bit-variable index exceeds 29 bits.");
+}
+SctExpressionBuildResult SctExpressionFactory::byteVariable(std::uint32_t index) {
+    return buildVariable(0x10000000u, index, 0x0fffffffu,
+        SctCanonicalExpressionNodeKind::ByteVariable, "SCPT byte-variable index exceeds 28 bits.");
 }
 
 SctExpressionBuildResult SctExpressionFactory::binaryOperator(
@@ -152,6 +244,7 @@ SctExpressionBuildResult SctExpressionFactory::binaryOperator(
     case SctExpressionBinaryOperator::Greater: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x02u; break;
     case SctExpressionBinaryOperator::GreaterOrEqual: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x03u; break;
     case SctExpressionBinaryOperator::Equal: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x04u; break;
+    case SctExpressionBinaryOperator::NotEqual: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x05u; break;
     case SctExpressionBinaryOperator::BitAnd: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x06u; break;
     case SctExpressionBinaryOperator::BitOr: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x07u; break;
     case SctExpressionBinaryOperator::LogicalAnd: node.kind = SctCanonicalExpressionNodeKind::CompareOperator; node.encodingCode = 0x08u; break;
@@ -235,9 +328,9 @@ SctInstructionDraftResult SctInstructionFactory::createDraft(
             } else if (parameterSchema.defaultKind == SctOpcodeDefaultKind::ProvisionalZero) {
                 parameter.suggestedValue = defaultValue(parameterSchema);
                 SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Info,
-                    SctDiagnosticCode::ProvisionalAuthoringDefault, std::nullopt,
-                    "Instruction parameter has a provisional zero suggestion that must be resolved explicitly."};
-                diagnostic.parameter = address;
+                    SctDiagnosticCode::ProvisionalAuthoringDefault,
+                    "Instruction parameter has a provisional zero suggestion that must be resolved explicitly.",
+                    SctDiagnosticLocation{SctDraftParameterSite{request.opcode, address}}};
                 result.diagnostics.push_back(std::move(diagnostic));
             } else if (parameterSchema.defaultKind != SctOpcodeDefaultKind::Required) {
                 parameter.value = defaultValue(parameterSchema);
@@ -358,10 +451,22 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
     validationDocument.sections.push_back({validationSectionId, "DRAFT",
         SctScriptSectionContent{{instruction}}});
     const auto validation = SctDocumentValidator::validateDocument(validationDocument);
+    const auto asDraftLocation = [&](const SctDiagnosticLocation& location) -> SctDiagnosticLocation {
+        if (const auto* parameter = std::get_if<SctParameterSite>(&location)) {
+            return SctDraftParameterSite{draft.opcode, parameter->parameter};
+        }
+        if (const auto* expression = std::get_if<SctExpressionSite>(&location)) {
+            return SctDraftExpressionSite{draft.opcode, expression->owner, expression->childPath};
+        }
+        return SctDraftExpressionSite{draft.opcode, std::nullopt, {}};
+    };
     for (const auto& diagnostic : validation.diagnostics) {
         if (diagnostic.code == SctDiagnosticCode::UnresolvedReference) continue;
         auto draftDiagnostic = diagnostic;
-        draftDiagnostic.entity.reset();
+        if (draftDiagnostic.primaryLocation) {
+            draftDiagnostic.primaryLocation = asDraftLocation(*draftDiagnostic.primaryLocation);
+        }
+        for (auto& related : draftDiagnostic.relatedLocations) related = asDraftLocation(related);
         result.diagnostics.push_back(std::move(draftDiagnostic));
     }
 
@@ -369,12 +474,12 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
     for (const auto& parameter : draft.parameters) {
         if (!parameter.value.has_value()) continue;
         if (const auto* reference = std::get_if<SctInstructionReference>(&*parameter.value)) {
-            if (index.find(reference->target) == nullptr) {
+            if (index.find(document, reference->target) == nullptr) {
                 addError(result, SctDiagnosticCode::UnresolvedReference,
                     "Resolved draft parameter references a missing instruction.", parameter.address);
             }
         } else if (const auto* reference = std::get_if<SctStringReference>(&*parameter.value)) {
-            const auto* string = index.find(reference->target);
+            const auto* string = index.find(document, reference->target);
             const auto location = index.stringLocation(reference->target);
             const auto rule = sctOpcodeTextReference(*schema, parameter.address.schemaIndex);
             if (string == nullptr || !location.has_value()) {
@@ -386,7 +491,7 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
                     "Resolved indexed string reference disagrees with the opcode schema.", parameter.address);
             }
         } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&*parameter.value)) {
-            const auto* footer = index.find(reference->target);
+            const auto* footer = index.find(document, reference->target);
             if (footer == nullptr) {
                 addError(result, SctDiagnosticCode::UnresolvedReference,
                     "Resolved draft parameter references a missing footer entry.", parameter.address);
@@ -449,9 +554,9 @@ SctRepeatedParameterGroupDraftResult SctInstructionFactory::createRepeatedGroupD
         } else if (parameterSchema->defaultKind == SctOpcodeDefaultKind::ProvisionalZero) {
             parameter.suggestedValue = defaultValue(*parameterSchema);
             SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Info,
-                SctDiagnosticCode::ProvisionalAuthoringDefault, std::nullopt,
-                "Repeated parameter has a provisional suggestion that must be resolved explicitly."};
-            diagnostic.parameter = SctParameterAddress{index, 0u};
+                SctDiagnosticCode::ProvisionalAuthoringDefault,
+                "Repeated parameter has a provisional suggestion that must be resolved explicitly.",
+                SctDiagnosticLocation{SctDraftParameterSite{opcode, SctParameterAddress{index, 0u}}}};
             result.diagnostics.push_back(std::move(diagnostic));
         } else if (parameterSchema->defaultKind != SctOpcodeDefaultKind::Required) {
             parameter.value = defaultValue(*parameterSchema);

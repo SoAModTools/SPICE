@@ -46,6 +46,62 @@ struct SctEntityIdHash {
 using SctDocumentEntityId = std::variant<std::monostate, SctSectionId, SctInstructionId,
     SctStringId, SctFooterEntryId, SctOpaqueAttachmentId>;
 
+struct SctParameterAddress {
+    std::uint32_t schemaIndex = 0;
+    std::optional<std::uint32_t> repeatedGroupOrdinal;
+    auto operator<=>(const SctParameterAddress&) const = default;
+};
+
+struct SctParameterSite {
+    SctInstructionId instruction;
+    SctParameterAddress parameter;
+    auto operator<=>(const SctParameterSite&) const = default;
+};
+
+struct SctScheduledExpressionSite {
+    auto operator<=>(const SctScheduledExpressionSite&) const = default;
+};
+
+using SctExpressionOwner = std::variant<SctScheduledExpressionSite, SctParameterAddress>;
+
+struct SctExpressionSite {
+    SctInstructionId instruction;
+    SctExpressionOwner owner;
+    std::vector<std::uint32_t> childPath;
+    auto operator<=>(const SctExpressionSite&) const = default;
+};
+
+using SctTextEntityId = std::variant<SctStringId, SctFooterEntryId>;
+enum class SctTextRegion { Header, Body };
+struct SctUtf8ByteRange {
+    std::uint32_t offset = 0;
+    std::uint32_t size = 0;
+    auto operator<=>(const SctUtf8ByteRange&) const = default;
+};
+struct SctTextSite {
+    SctTextEntityId text;
+    SctTextRegion region = SctTextRegion::Body;
+    std::optional<std::uint32_t> elementOrdinal;
+    SctUtf8ByteRange utf8Range;
+    auto operator<=>(const SctTextSite&) const = default;
+};
+
+struct SctDraftParameterSite {
+    std::uint16_t opcode = 0;
+    SctParameterAddress parameter;
+    auto operator<=>(const SctDraftParameterSite&) const = default;
+};
+
+struct SctDraftExpressionSite {
+    std::optional<std::uint16_t> opcode;
+    std::optional<SctExpressionOwner> owner;
+    std::vector<std::uint32_t> childPath;
+    auto operator<=>(const SctDraftExpressionSite&) const = default;
+};
+
+using SctDiagnosticLocation = std::variant<SctDocumentEntityId, SctParameterSite,
+    SctExpressionSite, SctTextSite, SctDraftParameterSite, SctDraftExpressionSite>;
+
 enum class SctDiagnosticSeverity { Info, Warning, Error };
 enum class SctDiagnosticCode {
     ParseFailed,
@@ -74,48 +130,28 @@ enum class SctDiagnosticCode {
     ProvisionalOpcodeConstraint,
     TextInvalid,
     HeaderUnavailable,
+    ExpressionRuntimeStackDepth,
 };
 
 struct SctDocumentDiagnostic {
     SctDiagnosticSeverity severity = SctDiagnosticSeverity::Error;
     SctDiagnosticCode code = SctDiagnosticCode::InvalidContent;
-    std::optional<SctDocumentEntityId> entity;
     std::string message;
-    struct ParameterAddress {
-        std::uint32_t schemaIndex = 0;
-        std::optional<std::uint32_t> repeatedGroupOrdinal;
-        auto operator<=>(const ParameterAddress&) const = default;
-    };
-    struct TextByteRange {
-        std::uint32_t offset = 0;
-        std::uint32_t size = 0;
-        auto operator<=>(const TextByteRange&) const = default;
-    };
-    enum class TextRegion { Header, Body };
-    struct TextLocation {
-        TextRegion region = TextRegion::Body;
-        std::optional<std::uint32_t> elementOrdinal;
-        TextByteRange utf8Range;
-        auto operator<=>(const TextLocation&) const = default;
-    };
-    std::optional<ParameterAddress> parameter;
-    std::vector<std::uint32_t> expressionChildPath;
-    std::optional<TextByteRange> textRange;
-    std::optional<TextLocation> textLocation;
+    std::optional<SctDiagnosticLocation> primaryLocation;
+    std::vector<SctDiagnosticLocation> relatedLocations;
 };
-
-using SctParameterAddress = SctDocumentDiagnostic::ParameterAddress;
 
 enum class SctExpressionTermination { InlineValue, StopCode };
 enum class SctCanonicalExpressionNodeKind {
-    NoLoopValue, RawValue, FloatLiteral, DecimalLiteral, IntVariable, FloatVariable,
+    NoLoopValue, FloatLiteral, DecimalLiteral, IntVariable, NegatedIntVariable,
+    NegatedIntVariableLow16Comparison, FloatVariable,
     BitVariable, ByteVariable, SecondaryValue, CompareOperator, ArithmeticOperator,
     AssignmentOperator, Stop,
 };
 
 struct SctCanonicalExpressionNode {
-    SctCanonicalExpressionNodeKind kind = SctCanonicalExpressionNodeKind::RawValue;
-    std::uint32_t encodingCode = 0;
+    SctCanonicalExpressionNodeKind kind = SctCanonicalExpressionNodeKind::NoLoopValue;
+    std::uint32_t encodingCode = 0x7f7fffffu;
     std::vector<std::uint32_t> payloadWords;
     std::vector<SctCanonicalExpressionNode> children;
 };
@@ -131,6 +167,7 @@ struct SctTerminatedWordSequenceValue { std::vector<std::uint32_t> words; };
 struct SctInstructionReference { SctInstructionId target; };
 struct SctStringReference { SctStringId target; };
 struct SctFooterEntryReference { SctFooterEntryId target; };
+using SctDocumentReferenceTarget = std::variant<SctInstructionId, SctStringId, SctFooterEntryId>;
 enum class SctReferenceTargetStorage { Instruction, IndexedString, FooterEntry };
 struct SctExpectedReferenceTarget {
     SctReferenceTargetStorage storage = SctReferenceTargetStorage::Instruction;

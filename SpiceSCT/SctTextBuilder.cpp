@@ -50,7 +50,7 @@ SctTextBuildResult SctTextBuilder::build(std::vector<SctFormattedTextElement> el
             chunk->utf8 = normalizeLineEndings(chunk->utf8);
             if (!validUtf8(chunk->utf8) || chunk->utf8.find('\0') != std::string::npos) {
                 result.diagnostics.push_back({SctDiagnosticSeverity::Error,
-                    SctDiagnosticCode::TextInvalid, std::nullopt,
+                    SctDiagnosticCode::TextInvalid,
                     "Text chunk must contain valid zero-free UTF-8."});
                 return result;
             }
@@ -71,7 +71,7 @@ SctTextBuildResult SctTextBuilder::build(std::vector<SctFormattedTextElement> el
 SctPlainTextBuildResult SctTextBuilder::plainText(std::string utf8) {
     if (!validUtf8(utf8) || utf8.find('\0') != std::string::npos) {
         return {std::nullopt, {{SctDiagnosticSeverity::Error, SctDiagnosticCode::TextInvalid,
-            std::nullopt, "Plain text must contain valid zero-free UTF-8."}}};
+            "Plain text must contain valid zero-free UTF-8."}}};
     }
     return {SctPlainText{std::move(utf8)}, {}};
 }
@@ -81,7 +81,7 @@ SctMessageBuildResult SctTextBuilder::message(
     if (headerUtf8 && (!validUtf8(*headerUtf8) || headerUtf8->find('\0') != std::string::npos
         || headerUtf8->find('\r') != std::string::npos || headerUtf8->find('\n') != std::string::npos)) {
         return {std::nullopt, {{SctDiagnosticSeverity::Error, SctDiagnosticCode::TextInvalid,
-            std::nullopt, "Message headers must contain valid UTF-8 without NUL or line breaks."}}};
+            "Message headers must contain valid UTF-8 without NUL or line breaks."}}};
     }
     auto builtBody = build(std::move(body));
     if (!builtBody.success) return {std::nullopt, std::move(builtBody.diagnostics)};
@@ -100,7 +100,7 @@ SctInlineCommandBuildResult SctTextBuilder::noArgumentCommand(SctMessageCommandC
         return {SctInlineCommand{code, SctNoCommandArgument{}}, {}};
     default:
         return {std::nullopt, {{SctDiagnosticSeverity::Error, SctDiagnosticCode::TextInvalid,
-            std::nullopt, "The selected SCT command requires a typed argument."}}};
+            "The selected SCT command requires a typed argument."}}};
     }
 }
 
@@ -114,7 +114,7 @@ SctInlineCommandBuildResult SctTextBuilder::decimalCommand(
         return {SctInlineCommand{code, SctDecimalCommandArgument{value}}, {}};
     default:
         return {std::nullopt, {{SctDiagnosticSeverity::Error, SctDiagnosticCode::TextInvalid,
-            std::nullopt, "The selected SCT command does not accept a decimal argument."}}};
+            "The selected SCT command does not accept a decimal argument."}}};
     }
 }
 

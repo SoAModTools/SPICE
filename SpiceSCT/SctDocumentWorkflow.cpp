@@ -17,15 +17,15 @@ SctDocumentImportAssessment SctDocumentWorkflow::importForEditing(
 
 SctDocumentExportAssessment SctDocumentWorkflow::assessForExport(
     const SctDocument& document, const SctDocumentExportOptions& options,
-    const SctDocumentImportReceipt* receipt) {
+    const SctBoundImportEvidence* evidence) {
     SctDocumentExportAssessment result;
     result.documentValidation = SctDocumentValidator::validateDocument(document);
     if (!result.documentValidation.validDocument) return result;
     result.readiness = SctDocumentReadiness::StructurallyValid;
     result.targetValidation = SctDocumentValidator::validateForTarget(
-        document, options.targetPlatform, options.textEncoding, receipt);
+        document, options.targetPlatform, options.textEncoding, evidence);
     if (!result.targetValidation.validForTarget) return result;
-    result.layout = SctDocumentLayoutEngine::layout(document, options, receipt);
+    result.layout = SctDocumentLayoutEngine::layout(document, options, evidence);
     if (result.layout.success) result.readiness = SctDocumentReadiness::ExportReady;
     return result;
 }

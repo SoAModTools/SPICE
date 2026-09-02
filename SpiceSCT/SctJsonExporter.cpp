@@ -86,10 +86,12 @@ const char* toString(SctScptAstNodeKind value) {
     switch (value) {
     case SctScptAstNodeKind::Unknown: return "unknown";
     case SctScptAstNodeKind::NoLoopValue: return "no_loop_value";
-    case SctScptAstNodeKind::RawValue: return "raw_value";
     case SctScptAstNodeKind::FloatLiteral: return "float_literal";
     case SctScptAstNodeKind::DecimalLiteral: return "decimal_literal";
     case SctScptAstNodeKind::IntVariable: return "int_variable";
+    case SctScptAstNodeKind::NegatedIntVariable: return "negated_int_variable";
+    case SctScptAstNodeKind::NegatedIntVariableLow16Comparison:
+        return "negated_int_variable_low16_comparison";
     case SctScptAstNodeKind::FloatVariable: return "float_variable";
     case SctScptAstNodeKind::BitVariable: return "bit_variable";
     case SctScptAstNodeKind::ByteVariable: return "byte_variable";

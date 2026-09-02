@@ -16,6 +16,62 @@ bool contains(const std::vector<SctKnownTextConvention>& values,
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
+SctSourceTextEvidenceGroupAssessment& groupFor(
+    SctSourceTextAssessment& result, const SctSourceTextRecordLocation& location) {
+    if (location.storage == SctTextStorage::IndexedSection) {
+        return result.indexedSctStrings;
+    }
+    return location.kind == SctTextKind::SctString
+        ? result.footerSctStrings : result.footerPlainStrings;
+}
+
+void summarizeGroup(SctSourceTextEvidenceGroupAssessment& group,
+    const std::vector<SctSourceTextRecordAssessment>& records) {
+    bool initialized = false;
+    for (const auto ordinal : group.recordOrdinals) {
+        const auto& record = records[ordinal];
+        if (record.viableConventions.empty()) continue;
+        if (!initialized) {
+            group.viableConventions = record.viableConventions;
+            initialized = true;
+            continue;
+        }
+        std::erase_if(group.viableConventions, [&](SctKnownTextConvention convention) {
+            return !contains(record.viableConventions, convention);
+        });
+    }
+}
+
+void buildRecommendation(SctSourceTextAssessment& result) {
+    const auto allConventionCount = sctKnownTextConventions().size();
+    bool hasDecodableEvidence = false;
+    bool hasDiscriminatingEvidence = false;
+    for (const auto ordinal : result.indexedSctStrings.recordOrdinals) {
+        const auto& record = result.records[ordinal];
+        if (record.viableConventions.empty()) continue;
+        hasDecodableEvidence = true;
+        if (record.viableConventions.size() < allConventionCount) {
+            hasDiscriminatingEvidence = true;
+        }
+    }
+
+    auto& recommendation = result.recommendation;
+    if (!hasDecodableEvidence || !hasDiscriminatingEvidence) {
+        recommendation.status = SctSourceTextRecommendationStatus::InsufficientEvidence;
+        return;
+    }
+    if (result.indexedSctStrings.viableConventions.empty()) {
+        recommendation.status = SctSourceTextRecommendationStatus::Conflicting;
+        return;
+    }
+    if (result.indexedSctStrings.viableConventions.size() == 1u) {
+        recommendation.status = SctSourceTextRecommendationStatus::Unique;
+        recommendation.convention = result.indexedSctStrings.viableConventions.front();
+        return;
+    }
+    recommendation.status = SctSourceTextRecommendationStatus::Ambiguous;
+}
+
 void assessRecord(SctSourceTextRecordAssessment& record) {
     for (const auto& descriptor : sctKnownTextConventions()) {
         record.interpretations.push_back(SctTextInspectionService::interpret(
@@ -31,9 +87,6 @@ void assessRecord(SctSourceTextRecordAssessment& record) {
 
 SctSourceTextAssessment SctSourceTextDetector::assess(const SctParseResult& parsed) {
     SctSourceTextAssessment result;
-    for (const auto& descriptor : sctKnownTextConventions()) {
-        result.viableConventions.push_back(descriptor.convention);
-    }
     if (!parsed.parseOk) {
         result.issues.push_back({std::nullopt,
             "Source-text assessment requires a successful structural parse."});
@@ -91,6 +144,7 @@ SctSourceTextAssessment SctSourceTextDetector::assess(const SctParseResult& pars
         }
         record.bytes.assign(physicalText.begin(), physicalText.begin() + recordSize);
         assessRecord(record);
+        result.indexedSctStrings.recordOrdinals.push_back(result.records.size());
         result.records.push_back(std::move(record));
     }
 
@@ -123,17 +177,16 @@ SctSourceTextAssessment SctSourceTextDetector::assess(const SctParseResult& pars
                 }
                 record.bytes = entry.rawBytes;
                 assessRecord(record);
+                groupFor(result, record.location).recordOrdinals.push_back(result.records.size());
                 result.records.push_back(std::move(record));
             }
         }
     }
 
-    for (const auto& record : result.records) {
-        std::erase_if(result.viableConventions, [&](SctKnownTextConvention convention) {
-            return !contains(record.viableConventions, convention);
-        });
-    }
-    result.ambiguous = result.viableConventions.size() > 1u;
+    summarizeGroup(result.indexedSctStrings, result.records);
+    summarizeGroup(result.footerSctStrings, result.records);
+    summarizeGroup(result.footerPlainStrings, result.records);
+    buildRecommendation(result);
     return result;
 }
 

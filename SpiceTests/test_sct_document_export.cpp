@@ -80,13 +80,17 @@ TEST(SctDocumentValidationContext, DoesNotInferPlatformFromByteOrderAndRequiresR
     EXPECT_FALSE(SctDocumentValidator::validateForTarget(
         document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding).validForTarget);
 
-    SctDocumentImportReceipt receipt;
-    receipt.source.byteOrder = SctSourceByteOrder::LittleEndian;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.source.byteOrder = SctSourceByteOrder::LittleEndian;
+    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
-        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &receipt).validForTarget);
+        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*evidence).validForTarget);
     const auto mismatch = SctDocumentValidator::validateForTarget(
-        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &receipt);
+        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &*evidence);
     EXPECT_FALSE(mismatch.validForTarget);
     EXPECT_TRUE(std::any_of(mismatch.diagnostics.begin(), mismatch.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == SctDiagnosticCode::OpaquePlatformUnverified;
@@ -231,7 +235,7 @@ TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionS
     const auto location = reimportedIndex.stringLocation(reparsedReference->target);
     ASSERT_TRUE(location.has_value());
     EXPECT_EQ("STR_B", reimported.document->sections[location->sectionOrdinal].nameBytes);
-    const auto* reimportedString = reimportedIndex.find(reparsedReference->target);
+    const auto* reimportedString = reimportedIndex.find(*reimported.document, reparsedReference->target);
     ASSERT_NE(nullptr, reimportedString);
     const auto* editable = std::get_if<SctMessage>(&reimportedString->value);
     ASSERT_NE(nullptr, editable);
@@ -322,15 +326,19 @@ TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejects
         SctOpaquePlacement::FixedOffset, 17, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Padding});
     document.opaqueAttachments.push_back({contentId, {0xaa, 0xbb}, sectionId,
         SctOpaquePlacement::FixedOffset, 32, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::UnknownEncoding});
-    SctDocumentImportReceipt receipt;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
-    receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
-    receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
-    receipt.source.header.available = true;
-    receipt.source.header.rawBytes = {1, 2, 3, 4, 5, 6, 7, 8};
-    receipt.source.header.values = {0x0102, 0x0304, 0x0506, 0x0708};
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    context.receipt.sourceTextEncoding = kSctShiftJisByte7FEncoding;
+    context.receipt.source.byteOrder = SctSourceByteOrder::BigEndian;
+    context.receipt.source.header.available = true;
+    context.receipt.source.header.rawBytes = {1, 2, 3, 4, 5, 6, 7, 8};
+    context.receipt.source.header.values = {0x0102, 0x0304, 0x0506, 0x0708};
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
 
-    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &receipt);
+    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &*evidence);
     ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
     ASSERT_TRUE(exported.layout.has_value());
     ASSERT_EQ(exported.preservation.attachments.size(), 2u);
@@ -348,7 +356,7 @@ TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejects
     const auto conflictId = conflicting.allocateOpaqueAttachmentId();
     conflicting.opaqueAttachments.push_back({conflictId, {9, 9, 9, 9}, SctDocumentAnchor{},
         SctOpaquePlacement::FixedOffset, 8, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
-    const auto rejected = SctDocumentExporter::exportDocument(conflicting, rawOptions(), &receipt);
+    const auto rejected = SctDocumentExporter::exportDocument(conflicting, rawOptions(), &*evidence);
     EXPECT_FALSE(rejected.success);
     ASSERT_EQ(rejected.preservation.attachments.size(), conflicting.opaqueAttachments.size());
     EXPECT_TRUE(std::all_of(rejected.preservation.attachments.begin(), rejected.preservation.attachments.end(),
@@ -366,10 +374,13 @@ TEST(SctDocumentExporter, PlacesSupportedRelativeOpaqueAttachmentsAndReportsRelo
     document.opaqueAttachments.push_back({attachmentId, {0xde, 0xad}, sectionId,
         SctOpaquePlacement::Before, std::nullopt, 1, SctOpaqueRelocationSupport::Relocatable,
         SctOpaqueReason::Preamble});
-    SctDocumentImportReceipt receipt;
-    receipt.declaredSourcePlatform = SctPlatform::GameCube;
-
-    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &receipt);
+    SctDocumentImportContext context;
+    context.receipt.lineage.sha256[0] = 1u;
+    context.revisionProvenance.importLineage = context.receipt.lineage;
+    context.receipt.declaredSourcePlatform = SctPlatform::GameCube;
+    const auto evidence = context.bind(context.revisionProvenance);
+    ASSERT_TRUE(evidence);
+    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &*evidence);
     ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
     ASSERT_EQ(exported.preservation.attachments.size(), 1u);
     EXPECT_EQ(exported.preservation.attachments[0].status, SctOpaquePreservationStatus::RelocatedUnderRule);

@@ -128,7 +128,7 @@ public:
     [[nodiscard]] static SctDocumentLayoutResult layout(
         const SctDocument& document,
         const SctDocumentExportOptions& options,
-        const SctDocumentImportReceipt* receipt = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr);
 };
 
 class SctDocumentExporter {
@@ -136,7 +136,7 @@ public:
     [[nodiscard]] static SctDocumentExportResult exportDocument(
         const SctDocument& document,
         const SctDocumentExportOptions& options,
-        const SctDocumentImportReceipt* receipt = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr);
 };
 
 } // namespace spice::sct

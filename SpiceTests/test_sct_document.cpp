@@ -15,25 +15,25 @@ SctParseResult makeOpcode265Parse() {
     SctParseResult parsed;
     parsed.parseOk = true;
     parsed.file.detectedEndian = "big";
-    parsed.file.originalPayloadBytes.resize(44, 0);
+    parsed.file.originalPayloadBytes.resize(48, 0);
     SctSection section;
     section.id.index = 0;
     section.id.name = "DUPLICATE";
     section.startOffset = 32;
-    section.endOffset = 44;
+    section.endOffset = 48;
     section.kind = SctSectionKind::Script;
     SctInstruction instruction;
     instruction.offset = 0;
     instruction.payloadOffset = 0;
     instruction.opcode = 265;
-    instruction.sizeBytes = 12;
+    instruction.sizeBytes = 16;
     instruction.decodeOk = true;
     SctParameter expression;
     expression.index = 0;
-    expression.rawWords = {0x0000002au};
+    expression.rawWords = {0x08002a00u, 0x1du};
     expression.expression = SctExpression{};
     expression.expression->hitStopCode = true;
-    expression.expression->ast = SctScptAstNode{SctScptAstNodeKind::RawValue, {}, {}, {0x0000002au}, {}};
+    expression.expression->ast = SctScptAstNode{SctScptAstNodeKind::DecimalLiteral, {}, {}, {0x08002a00u}, {}};
     SctParameter footer;
     footer.index = 1;
     footer.rawWords = {0};
@@ -120,17 +120,11 @@ TEST(SctDocumentImporter, IsDeterministicAndClaimsEveryDecodedPayloadByte) {
     ASSERT_EQ(secondScript.instructions.size(), 1u);
     EXPECT_EQ(first.document->sections[0].id, second.document->sections[0].id);
     EXPECT_EQ(firstScript.instructions[0].id, secondScript.instructions[0].id);
-    EXPECT_EQ(first.receipt.source.byteOrder, SctSourceByteOrder::BigEndian);
-    ASSERT_TRUE(first.receipt.declaredSourcePlatform.has_value());
-    EXPECT_EQ(*first.receipt.declaredSourcePlatform, SctPlatform::GameCube);
+    EXPECT_EQ(first.context.receipt.source.byteOrder, SctSourceByteOrder::BigEndian);
+    ASSERT_TRUE(first.context.receipt.declaredSourcePlatform.has_value());
+    EXPECT_EQ(*first.context.receipt.declaredSourcePlatform, SctPlatform::GameCube);
 
-    std::vector<unsigned> coverage(parsed.file.originalPayloadBytes.size(), 0);
-    for (const auto& provenance : first.receipt.provenance) {
-        ASSERT_LE(static_cast<std::size_t>(provenance.decodedPayloadOffset) + provenance.byteSize, coverage.size());
-        for (std::size_t i = provenance.decodedPayloadOffset;
-             i < provenance.decodedPayloadOffset + provenance.byteSize; ++i) ++coverage[i];
-    }
-    EXPECT_TRUE(std::all_of(coverage.begin(), coverage.end(), [](unsigned claims) { return claims == 1; }));
+    EXPECT_TRUE(first.context.receipt.sourceMap.hasCompleteLeafCoverage());
 }
 
 TEST(SctDocumentImporter, RecordsEncodingObservationsWithoutInferringAPlatform) {
@@ -138,8 +132,8 @@ TEST(SctDocumentImporter, RecordsEncodingObservationsWithoutInferringAPlatform) 
     parsed.file.detectedEndian = "little";
     const auto imported = SctDocumentImporter::import(parsed);
     ASSERT_TRUE(imported.document.has_value());
-    EXPECT_EQ(imported.receipt.source.byteOrder, SctSourceByteOrder::LittleEndian);
-    EXPECT_FALSE(imported.receipt.declaredSourcePlatform.has_value());
+    EXPECT_EQ(imported.context.receipt.source.byteOrder, SctSourceByteOrder::LittleEndian);
+    EXPECT_FALSE(imported.context.receipt.declaredSourcePlatform.has_value());
 }
 
 TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferences) {
@@ -151,6 +145,8 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     ASSERT_EQ(2u, imported.document->sections.size());
     const auto& stringContent = std::get<SctStringSectionContent>(imported.document->sections[1].content);
     EXPECT_EQ((std::vector<std::uint32_t>{9u, 0x1du}), stringContent.preambleWords);
@@ -166,10 +162,10 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     ASSERT_NE(nullptr, reference);
     EXPECT_EQ(stringContent.string.id, reference->target);
 
-    const auto index = SctDocumentIndex::build(*imported.document);
-    ASSERT_EQ(1u, index.outboundReferences(instructions.front().id).size());
+    const auto usage = SctSemanticUsageIndex::build(*imported.document);
+    ASSERT_EQ(1u, usage.outboundReferences(instructions.front().id).size());
     EXPECT_TRUE(std::holds_alternative<SctStringId>(
-        index.outboundReferences(instructions.front().id).front().target));
+        usage.outboundReferences(instructions.front().id).front().target));
     EXPECT_TRUE(SctDocumentValidator::validateDocument(*imported.document).validDocument);
 
     auto wrongStorage = *imported.document;
@@ -257,6 +253,8 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     const auto imported = SctDocumentImporter::import(
         parsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(imported.document.has_value());
+    const auto referenceEvidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(referenceEvidence);
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 3u);
     ASSERT_TRUE(std::holds_alternative<SctInstructionReference>(instructions[0].fixedParameters[0].value));
@@ -266,7 +264,7 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
         imported.document->footerEntries[0].id);
     EXPECT_EQ(imported.document->footerEntries[0].kind, SctDocumentFooterEntryKind::String);
     const auto validation = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*referenceEvidence);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForTarget) << messages;
@@ -326,6 +324,8 @@ TEST(SctDocumentImporter, ConvertsFooterSctStringOffsetsForOpcodes24And25) {
 
     const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     ASSERT_EQ(1u, imported.document->footerEntries.size());
     EXPECT_EQ(SctTextKind::SctString, imported.document->footerEntries.front().kind);
     const auto& instructions = std::get<SctScriptSectionContent>(
@@ -345,18 +345,18 @@ TEST(SctDocumentImporter, ConvertsFooterSctStringOffsetsForOpcodes24And25) {
 TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections) {
     SctParseResult parsed;
     parsed.parseOk = true;
-    parsed.file.originalPayloadBytes.resize(84, 0);
+    parsed.file.originalPayloadBytes.resize(92, 0);
     SctSection section;
     section.startOffset = 32;
-    section.endOffset = 84;
+    section.endOffset = 92;
     section.kind = SctSectionKind::Script;
     const auto expression = [](std::uint32_t index) {
         SctParameter parameter;
         parameter.index = index;
-        parameter.rawWords = {1};
+        parameter.rawWords = {0x08000100u, 0x1du};
         parameter.expression = SctExpression{};
         parameter.expression->hitStopCode = true;
-        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::RawValue, {}, {}, {1}, {}};
+        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::DecimalLiteral, {}, {}, {0x08000100u}, {}};
         return parameter;
     };
     const auto raw = [](std::uint32_t index, std::uint32_t value) {
@@ -366,28 +366,30 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
         return parameter;
     };
     SctInstruction branch;
-    branch.opcode = 0; branch.payloadOffset = 0; branch.offset = 0; branch.sizeBytes = 12; branch.decodeOk = true;
+    branch.opcode = 0; branch.payloadOffset = 0; branch.offset = 0; branch.sizeBytes = 16; branch.decodeOk = true;
     branch.parameters = {expression(0), raw(1, 0)};
     SctInstruction sw;
-    sw.opcode = 3; sw.payloadOffset = 12; sw.offset = 12; sw.sizeBytes = 20; sw.decodeOk = true;
+    sw.opcode = 3; sw.payloadOffset = 16; sw.offset = 16; sw.sizeBytes = 24; sw.decodeOk = true;
     sw.parameters = {expression(0), raw(1, 1), raw(2, 9), raw(3, 0)};
     SctInstruction call;
-    call.opcode = 11; call.payloadOffset = 32; call.offset = 32; call.sizeBytes = 8; call.decodeOk = true;
+    call.opcode = 11; call.payloadOffset = 40; call.offset = 40; call.sizeBytes = 8; call.decodeOk = true;
     call.parameters = {raw(0, 0)};
     SctInstruction ret;
-    ret.opcode = 12; ret.payloadOffset = 40; ret.offset = 40; ret.sizeBytes = 4; ret.decodeOk = true;
+    ret.opcode = 12; ret.payloadOffset = 48; ret.offset = 48; ret.sizeBytes = 4; ret.decodeOk = true;
     SctInstruction jump;
-    jump.opcode = 10; jump.payloadOffset = 44; jump.offset = 44; jump.sizeBytes = 8; jump.decodeOk = true;
+    jump.opcode = 10; jump.payloadOffset = 52; jump.offset = 52; jump.sizeBytes = 8; jump.decodeOk = true;
     jump.parameters = {raw(0, 0)};
     section.instructions = {branch, sw, call, ret, jump};
-    section.edges.push_back({SctEdgeType::BranchFalse, SctSemanticConfidence::Known, {}, {}, 0, 40, 0});
-    section.edges.push_back({SctEdgeType::SwitchCase, SctSemanticConfidence::Known, {}, {}, 12, 40, 3});
-    section.edges.push_back({SctEdgeType::CallSubscript, SctSemanticConfidence::Known, {}, {}, 32, 0, 11});
-    section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known, {}, {}, 44, 0, 10});
+    section.edges.push_back({SctEdgeType::BranchFalse, SctSemanticConfidence::Known, {}, {}, 0, 48, 0});
+    section.edges.push_back({SctEdgeType::SwitchCase, SctSemanticConfidence::Known, {}, {}, 16, 48, 3});
+    section.edges.push_back({SctEdgeType::CallSubscript, SctSemanticConfidence::Known, {}, {}, 40, 0, 11});
+    section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known, {}, {}, 52, 0, 10});
     parsed.file.sections.push_back(std::move(section));
 
     const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     const auto& instructions = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions;
     ASSERT_EQ(instructions.size(), 5u);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[0].fixedParameters[1].value).target, instructions[3].id);
@@ -396,7 +398,7 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[2].fixedParameters[0].value).target, instructions[0].id);
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[4].fixedParameters[0].value).target, instructions[0].id);
     const auto validation = SctDocumentValidator::validateForTarget(
-        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
+        *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*evidence);
     std::string messages;
     for (const auto& diagnostic : validation.diagnostics) messages += diagnostic.message + "\n";
     EXPECT_TRUE(validation.validForTarget) << messages;
@@ -405,25 +407,26 @@ TEST(SctDocumentImporter, ConvertsBranchSwitchCallAndJumpTargetsInBothDirections
 TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
     SctParseResult parsed;
     parsed.parseOk = true;
-    parsed.file.originalPayloadBytes.resize(48, 0);
+    parsed.file.originalPayloadBytes.resize(56, 0);
     SctSection section;
     section.id.name = "LOOP";
     section.startOffset = 32;
-    section.endOffset = 48;
+    section.endOffset = 56;
     section.kind = SctSectionKind::Script;
     SctInstruction instruction;
     instruction.opcode = 119;
     instruction.payloadOffset = 0;
     instruction.offset = 0;
-    instruction.sizeBytes = 16;
+    instruction.sizeBytes = 24;
     instruction.decodeOk = true;
     const auto expression = [](std::uint32_t index, std::uint32_t word) {
         SctParameter parameter;
         parameter.index = index;
-        parameter.rawWords = {word};
+        const auto encoded = 0x08000000u | (word << 8u);
+        parameter.rawWords = {encoded, 0x1du};
         parameter.expression = SctExpression{};
         parameter.expression->hitStopCode = true;
-        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::RawValue, {}, {}, {word}, {}};
+        parameter.expression->ast = SctScptAstNode{SctScptAstNodeKind::DecimalLiteral, {}, {}, {encoded}, {}};
         return parameter;
     };
     auto count = SctParameter{};
@@ -435,6 +438,8 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
 
     const auto imported = SctDocumentImporter::import(parsed, {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     const auto& canonical = std::get<SctScriptSectionContent>(imported.document->sections[0].content).instructions[0];
     ASSERT_EQ(canonical.fixedParameters.size(), 1u);
     ASSERT_EQ(canonical.repeatedParameterGroups.size(), 1u);
@@ -442,13 +447,13 @@ TEST(SctDocumentImporter, RemovesDerivedCountAndSplitsSchemaRepeatedGroups) {
     EXPECT_EQ(canonical.repeatedParameterGroups[0].parameters[0].schemaIndex, 2u);
     EXPECT_TRUE(SctDocumentValidator::validateForTarget(
         *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding,
-        &imported.receipt).validForTarget);
+        &*evidence).validForTarget);
 }
 
 TEST(SctDocumentImporter, ReturnsPartialDocumentWithOpaqueFallbackForContradictoryEvidence) {
     auto parsed = makeOpcode265Parse();
-    parsed.file.originalPayloadBytes.resize(48, 0);
-    parsed.file.sections[0].endOffset = 48;
+    parsed.file.originalPayloadBytes.resize(52, 0);
+    parsed.file.sections[0].endOffset = 52;
     auto overlapping = parsed.file.sections[0].instructions[0];
     overlapping.payloadOffset = 4;
     overlapping.offset = 4;
@@ -485,6 +490,8 @@ TEST(SctDocumentImporter, FailedParseDoesNotProduceDocument) {
 TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingTheContract) {
     const auto imported = SctDocumentImporter::import(makeOpcode265Parse(), {{SctPlatform::GameCube}});
     ASSERT_TRUE(imported.document.has_value());
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance);
+    ASSERT_TRUE(evidence);
     auto document = *imported.document;
     const auto stringId = document.allocateStringId();
     const auto stringSectionId = document.allocateSectionId();
@@ -495,9 +502,9 @@ TEST(SctDocumentValidator, AppliesExplicitPlatformAvailabilityWithoutChangingThe
     opcode265.fixedParameters[1].value = SctStringReference{stringId};
     const auto structural = SctDocumentValidator::validateDocument(document);
     const auto gameCube = SctDocumentValidator::validateForTarget(
-        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &imported.receipt);
+        document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*evidence);
     const auto dreamcast = SctDocumentValidator::validateForTarget(
-        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &imported.receipt);
+        document, SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding, &*evidence);
     EXPECT_TRUE(structural.validDocument);
     EXPECT_TRUE(gameCube.validForTarget);
     EXPECT_FALSE(dreamcast.validForTarget);
@@ -521,12 +528,18 @@ TEST(SctDocumentValidator, NeutralValidationRejectsUniversallyInvalidAndFoldedOp
     EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(),
         [&](const auto& diagnostic) {
             return diagnostic.code == SctDiagnosticCode::OpcodeUnavailable
-                && diagnostic.entity == SctDocumentEntityId{invalidId};
+                && diagnostic.primaryLocation
+                && std::holds_alternative<SctDocumentEntityId>(*diagnostic.primaryLocation)
+                && std::get<SctDocumentEntityId>(*diagnostic.primaryLocation)
+                    == SctDocumentEntityId{invalidId};
         }));
     EXPECT_TRUE(std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(),
         [&](const auto& diagnostic) {
             return diagnostic.code == SctDiagnosticCode::InvalidContent
-                && diagnostic.entity == SctDocumentEntityId{modifierId};
+                && diagnostic.primaryLocation
+                && std::holds_alternative<SctDocumentEntityId>(*diagnostic.primaryLocation)
+                && std::get<SctDocumentEntityId>(*diagnostic.primaryLocation)
+                    == SctDocumentEntityId{modifierId};
         }));
 }
 

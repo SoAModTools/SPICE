@@ -8,13 +8,30 @@
 
 namespace spice::sct {
 
-enum class SctExpressionVariableKind { Integer, Float, Bit, Byte };
+enum class SctExpressionOneWordValue : std::uint32_t {
+    Value7F7FFFFF = 0x7f7fffffu,
+    Value00800000 = 0x00800000u,
+    Value7FFFFFFF = 0x7fffffffu,
+    Value7FFFFFFE = 0x7ffffffeu,
+};
+enum class SctExpressionSecondaryValue : std::uint32_t {
+    Gold = 0u,
+    Reputation = 1u,
+    VyseCurrentHp = 2u,
+    AikaCurrentHp = 3u,
+    FinaCurrentHp = 4u,
+    DrachmaCurrentHp = 5u,
+    EnriqueCurrentHp = 6u,
+    GilderCurrentHp = 7u,
+    VyseLevel = 0x4au,
+};
 enum class SctExpressionBinaryOperator {
     Less,
     LessOrEqual,
     Greater,
     GreaterOrEqual,
     Equal,
+    NotEqual,
     BitAnd,
     BitOr,
     LogicalAnd,
@@ -29,16 +46,25 @@ enum class SctExpressionBinaryOperator {
 
 class SctExpressionFactory {
 public:
-    [[nodiscard]] static SctCanonicalExpression decimalLiteral(
-        std::uint16_t whole, std::uint8_t fraction256 = 0);
+    [[nodiscard]] static SctCanonicalExpression encodedDecimalLiteral(
+        std::int16_t whole, std::uint8_t fraction256 = 0);
     [[nodiscard]] static SctCanonicalExpression floatLiteral(float value);
+    [[nodiscard]] static SctCanonicalExpression oneWordValue(SctExpressionOneWordValue value);
+    [[nodiscard]] static SctCanonicalExpression secondaryValue(SctExpressionSecondaryValue value);
     struct BuildResult {
         std::optional<SctCanonicalExpression> expression;
+        std::optional<SctCanonicalExpressionNodeKind> selectedNodeKind;
         std::vector<SctDocumentDiagnostic> diagnostics;
     };
 
-    [[nodiscard]] static BuildResult variable(
-        SctExpressionVariableKind kind, std::uint32_t index);
+    [[nodiscard]] static BuildResult scaledDecimalLiteral(std::int32_t units256);
+    [[nodiscard]] static BuildResult integerInput(std::uint32_t index);
+    [[nodiscard]] static BuildResult directIntegerVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult negatedIntegerVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult low16ComparisonIntegerVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult floatVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult bitVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult byteVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult binaryOperator(
         SctExpressionBinaryOperator operation,
         SctCanonicalExpression left, SctCanonicalExpression right);

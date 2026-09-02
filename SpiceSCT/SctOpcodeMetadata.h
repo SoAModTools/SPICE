@@ -22,10 +22,18 @@ enum class SctOpcodeControlRole {
     Return,
 };
 
-enum class SctOpcodeResourceRole {
+enum class SctOpcodeEffectKind {
     None,
-    LoadsScript,
-    LoadsMld,
+    LoadScript,
+    LoadMld,
+    SelectGroundVariant,
+};
+
+struct SctOpcodeEffectRule {
+    SctOpcodeEffectKind kind = SctOpcodeEffectKind::None;
+    std::uint8_t firstParameter = 0;
+    std::optional<std::uint8_t> secondParameter;
+    SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
 };
 
 enum class SctFooterParamKind {
@@ -157,7 +165,7 @@ struct SctOpcodeSemanticMetadata {
     std::string_view mnemonic = {};
     SctSemanticConfidence confidence = SctSemanticConfidence::Unknown;
     SctOpcodeControlRole controlRole = SctOpcodeControlRole::None;
-    SctOpcodeResourceRole resourceRole = SctOpcodeResourceRole::None;
+    SctOpcodeEffectRule effect;
     std::array<std::string_view, 32> parameterRoles{};
     std::string_view notes = {};
 };
@@ -532,25 +540,30 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     case 23:
         meta.mnemonic = "LoadMldFile";
         meta.confidence = SctSemanticConfidence::Partial;
-        meta.resourceRole = SctOpcodeResourceRole::LoadsMld;
+        meta.effect = {SctOpcodeEffectKind::LoadMld, 0u, std::nullopt,
+            SctSemanticConfidence::Partial};
         meta.parameterRoles = {"mldPathOffset"};
         break;
     case 43:
         meta.mnemonic = "LoadScriptByName";
         meta.confidence = SctSemanticConfidence::Partial;
-        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.effect = {SctOpcodeEffectKind::LoadScript, 0u, std::nullopt,
+            SctSemanticConfidence::Partial};
         meta.parameterRoles = {"scriptNameOffset"};
         break;
     case 114:
         meta.mnemonic = "ChangeGroundVariant";
         meta.confidence = SctSemanticConfidence::Partial;
+        meta.effect = {SctOpcodeEffectKind::SelectGroundVariant, 0u, 1u,
+            SctSemanticConfidence::Known};
         meta.parameterRoles = { "tblId", "variant" };
         meta.notes = "Finds a ground entry using tblId and sets the active ground from the ground address list. -1 disables the ground.";
         break;
     case 210:
         meta.mnemonic = "WarpCurrentAreaByString";
         meta.confidence = SctSemanticConfidence::Partial;
-        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.effect = {SctOpcodeEffectKind::LoadScript, 0u, std::nullopt,
+            SctSemanticConfidence::Partial};
         meta.parameterRoles = {"footerStringOffset"};
         break;
     case 238:
@@ -561,7 +574,8 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     case 257:
         meta.mnemonic = "ExitShipBattleToScript";
         meta.confidence = SctSemanticConfidence::Partial;
-        meta.resourceRole = SctOpcodeResourceRole::LoadsScript;
+        meta.effect = {SctOpcodeEffectKind::LoadScript, 0u, std::nullopt,
+            SctSemanticConfidence::Partial};
         meta.parameterRoles = {"scriptRef"};
         break;
     case 265:
