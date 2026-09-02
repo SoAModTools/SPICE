@@ -126,21 +126,18 @@ struct SctOpcodeParameterSchema {
     std::uint32_t allowedBitMask = 0xffffffffu;
     std::uint32_t requiredBitValue = 0u;
     SctOpcodeContractConfidence bitContractConfidence = SctOpcodeContractConfidence::Unknown;
-    std::int64_t minimumValue = 0;
-    std::int64_t maximumValue = 0;
-    bool hasConfirmedRange = false;
-    std::int64_t observedMinimumValue = 0;
-    std::int64_t observedMaximumValue = 0;
-    bool hasObservedRange = false;
-    std::uint32_t sentinelEncodedWord = 0;
-    bool hasConfirmedSentinel = false;
+    struct TerminatorRule {
+        std::uint32_t encodedWord = 0;
+        SctOpcodeContractConfidence confidence = SctOpcodeContractConfidence::Unknown;
+        auto operator<=>(const TerminatorRule&) const = default;
+    };
+    std::optional<TerminatorRule> terminator;
     bool belongsToRepeatedGroup = false;
     SctOpcodeDefaultKind defaultKind = SctOpcodeDefaultKind::Required;
     std::uint32_t defaultEncodedWord = 0;
     SctOpcodeContractConfidence binaryConfidence = SctOpcodeContractConfidence::Unknown;
     SctOpcodeContractConfidence semanticConfidence = SctOpcodeContractConfidence::Unknown;
     SctOpcodeContractConfidence defaultConfidence = SctOpcodeContractConfidence::Unknown;
-    SctOpcodeContractConfidence sentinelConfidence = SctOpcodeContractConfidence::Unknown;
 };
 
 struct SctFooterParamMetadata {
@@ -714,9 +711,8 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     if (schema.opcode == 9u && parameterIndex == 0u) {
         parameter.encoding = SctOpcodeParameterEncoding::RawWordsUntilSentinel;
         parameter.storage = SctOpcodeParameterStorage::RawWordSequence;
-        parameter.sentinelEncodedWord = 0x0000001du;
-        parameter.hasConfirmedSentinel = true;
-        parameter.sentinelConfidence = SctOpcodeContractConfidence::Confirmed;
+        parameter.terminator = SctOpcodeParameterSchema::TerminatorRule{
+            0x0000001du, SctOpcodeContractConfidence::Confirmed};
         parameter.defaultKind = SctOpcodeDefaultKind::ConfirmedEncodedWord;
         parameter.defaultEncodedWord = 0x0000001du;
         parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
@@ -730,9 +726,6 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
         parameter.requiredBitValue = schema.opcode == 5u ? 0x10000000u
             : schema.opcode == 6u ? 0x50000000u : 0x40000000u;
         parameter.bitContractConfidence = SctOpcodeContractConfidence::Confirmed;
-        parameter.minimumValue = 0;
-        parameter.maximumValue = 0xffff;
-        parameter.hasConfirmedRange = true;
         parameter.defaultKind = SctOpcodeDefaultKind::Required;
         parameter.defaultConfidence = SctOpcodeContractConfidence::Confirmed;
         return parameter;
@@ -785,9 +778,6 @@ inline constexpr std::array<SctOpcodeParamPattern, 266> kOpcodeParamPatternSeeds
     if (schema.opcode == 3u && parameterIndex == 2u) {
         parameter.scalarType = SctOpcodeScalarType::SignedInteger;
         parameter.semanticConfidence = SctOpcodeContractConfidence::Provisional;
-        parameter.sentinelEncodedWord = 0xffffffffu;
-        parameter.hasConfirmedSentinel = true;
-        parameter.sentinelConfidence = SctOpcodeContractConfidence::Confirmed;
     }
 
     // Zero is a safe structural seed for the known binary shape, but absent a

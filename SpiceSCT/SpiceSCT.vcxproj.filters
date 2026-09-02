@@ -32,6 +32,9 @@
     <ClInclude Include="SctOpcodeMetadata.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SctOpcodeParameterFacts.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SctTextContract.h">
       <Filter>Model</Filter>
     </ClInclude>
@@ -117,6 +120,9 @@
     </ClCompile>
     <ClCompile Include="SctParseProbe.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SctOpcodeParameterFacts.cpp">
+      <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="SctScptDecodeHelpers.cpp">
       <Filter>Parser</Filter>

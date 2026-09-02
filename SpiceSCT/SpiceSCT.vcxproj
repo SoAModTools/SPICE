@@ -106,6 +106,7 @@
     <ClInclude Include="SctParser.h" />
     <ClInclude Include="SctParseProbe.h" />
     <ClInclude Include="SctOpcodeMetadata.h" />
+    <ClInclude Include="SctOpcodeParameterFacts.h" />
     <ClInclude Include="SctTextContract.h" />
     <ClInclude Include="SctHeaderContract.h" />
     <ClInclude Include="SctTextBuilder.h" />
@@ -136,6 +137,7 @@
     <ClCompile Include="SctJsonExporter.cpp" />
     <ClCompile Include="SctSemanticComparer.cpp" />
     <ClCompile Include="SctParseProbe.cpp" />
+    <ClCompile Include="SctOpcodeParameterFacts.cpp" />
     <ClCompile Include="SctScptDecodeHelpers.cpp" />
     <ClCompile Include="SctScptEncoding.cpp" />
     <ClCompile Include="SctTextBuilder.cpp" />

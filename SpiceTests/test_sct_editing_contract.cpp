@@ -302,7 +302,7 @@ TEST(SctOpcodeAuthoringCatalog, CoversEveryOpcodeShapeWithoutInventingLegalDomai
             const auto& parameter = schema.parameterCatalog[index];
             EXPECT_EQ(parameter.schemaIndex, index) << schema.opcode;
             EXPECT_EQ(parameter.binaryConfidence, SctOpcodeContractConfidence::Confirmed) << schema.opcode;
-            if (!parameter.hasConfirmedRange && parameter.defaultKind == SctOpcodeDefaultKind::ProvisionalZero) {
+            if (parameter.defaultKind == SctOpcodeDefaultKind::ProvisionalZero) {
                 EXPECT_EQ(parameter.defaultConfidence, SctOpcodeContractConfidence::Provisional) << schema.opcode;
             }
         }

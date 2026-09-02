@@ -430,8 +430,8 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                             "Terminated raw-word sequence is assigned outside a sentinel-sequence parameter.", entity, address);
                     }
                     const auto* parameterSchema = sctOpcodeParameterSchema(*schema, parameter.schemaIndex);
-                    const auto sentinel = parameterSchema != nullptr && parameterSchema->hasConfirmedSentinel
-                        ? parameterSchema->sentinelEncodedWord : 0x0000001du;
+                    const auto sentinel = parameterSchema != nullptr && parameterSchema->terminator.has_value()
+                        ? parameterSchema->terminator->encodedWord : 0x0000001du;
                     const auto stop = std::find(sequence->words.begin(), sequence->words.end(), sentinel);
                     if (sequence->words.empty() || stop == sequence->words.end()
                         || stop != sequence->words.end() - 1u) {

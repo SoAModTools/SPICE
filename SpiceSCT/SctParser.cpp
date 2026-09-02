@@ -1046,8 +1046,8 @@ void populateFooterEntriesAndGroups(
             } else if (isRawSentinelSequence) {
                 wordsForParam = 0;
                 const auto* parameterSchema = sctOpcodeParameterSchema(*opcodeSchema, paramIndex);
-                const auto sentinel = parameterSchema != nullptr && parameterSchema->hasConfirmedSentinel
-                    ? parameterSchema->sentinelEncodedWord : 0x0000001du;
+                const auto sentinel = parameterSchema != nullptr && parameterSchema->terminator.has_value()
+                    ? parameterSchema->terminator->encodedWord : 0x0000001du;
                 auto rawCursor = paramWordOffset;
                 while (rawCursor + 4u <= sectionBytes.size()) {
                     ++wordsForParam;

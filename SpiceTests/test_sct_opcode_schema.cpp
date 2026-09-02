@@ -321,15 +321,16 @@ TEST(SctOpcodeSchema, RecordsCorrectedRawAndProvisionalContracts)
     ASSERT_EQ(1u, opcode9->parameterCatalogCount);
     EXPECT_EQ(spice::sct::SctOpcodeParameterEncoding::RawWordsUntilSentinel,
         opcode9->parameterCatalog[0].encoding);
-    EXPECT_TRUE(opcode9->parameterCatalog[0].hasConfirmedSentinel);
-    EXPECT_EQ(0x1du, opcode9->parameterCatalog[0].sentinelEncodedWord);
+    ASSERT_TRUE(opcode9->parameterCatalog[0].terminator.has_value());
+    EXPECT_EQ(0x1du, opcode9->parameterCatalog[0].terminator->encodedWord);
 
     const auto* opcode3 = spice::sct::findSctOpcodeSchema(3u);
     ASSERT_NE(nullptr, opcode3);
     ASSERT_GT(opcode3->parameterCatalogCount, 2u);
     EXPECT_EQ(spice::sct::SctOpcodeScalarType::SignedInteger, opcode3->parameterCatalog[2].scalarType);
-    EXPECT_TRUE(opcode3->parameterCatalog[2].hasConfirmedSentinel);
-    EXPECT_EQ(0xffffffffu, opcode3->parameterCatalog[2].sentinelEncodedWord);
+    EXPECT_FALSE(opcode3->parameterCatalog[2].terminator.has_value());
+    EXPECT_EQ("caseValue", opcode3->parameterCatalog[2].role);
+    EXPECT_EQ("caseOffset", opcode3->parameterCatalog[3].role);
 
     for (const auto opcode : {131u, 132u}) {
         const auto* schema = spice::sct::findSctOpcodeSchema(opcode);

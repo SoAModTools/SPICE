@@ -14,12 +14,13 @@ struct SctOpcodeParameterRoleSeed {
 
 // Concise parameter labels transcribed from the living handler catalog. Missing
 // entries remain unnamed rather than receiving invented semantics.
-inline constexpr std::array<SctOpcodeParameterRoleSeed, 677> kOpcodeParameterRoleSeeds{{
+inline constexpr std::array<SctOpcodeParameterRoleSeed, 678> kOpcodeParameterRoleSeeds{{
     SctOpcodeParameterRoleSeed{0, 0, "conditionExpr"},
     SctOpcodeParameterRoleSeed{0, 1, "falseOffset"},
     SctOpcodeParameterRoleSeed{3, 0, "choiceExpr"},
     SctOpcodeParameterRoleSeed{3, 1, "caseCount"},
-    SctOpcodeParameterRoleSeed{3, 2, "repeated"},
+    SctOpcodeParameterRoleSeed{3, 2, "caseValue"},
+    SctOpcodeParameterRoleSeed{3, 3, "caseOffset"},
     SctOpcodeParameterRoleSeed{5, 0, "byteVarRef"},
     SctOpcodeParameterRoleSeed{5, 1, "valueExpr"},
     SctOpcodeParameterRoleSeed{6, 0, "intVarRef"},
