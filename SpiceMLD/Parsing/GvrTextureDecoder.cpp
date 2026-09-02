@@ -10,7 +10,9 @@ DecodedRgbaTexture decodeGvrToRgba8(const model::MldTextureEntry& entry) {
     DecodedRgbaTexture out{};
     out.width = entry.width;
     out.height = entry.height;
-    out.diagnostics = entry.diagnostics;
+    out.diagnostics.reserve(entry.diagnostics.size());
+    for (const auto& diagnostic : entry.diagnostics)
+        out.diagnostics.push_back(diagnostic.message);
 
     if (entry.decoded && !entry.rgba8.empty()) {
         out.decoded = true;

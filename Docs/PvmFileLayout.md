@@ -43,11 +43,12 @@ Some VQ-mipmap payloads include zero padding inside the declared PVRT size to re
 | `0x03` | Vector quantized |
 | `0x04` | Vector quantized with mipmaps |
 | `0x09` | Linear rectangle |
+| `0x0D` | Rectangle twiddled |
 | `0x10` | Small VQ |
 | `0x11` | Small VQ with mipmaps |
 | `0x12` | Twiddled mipmaps with a six-byte DMA prefix |
 
-Rectangle data is row-major. Twiddled data uses Morton order. VQ data begins with eight-byte codebook entries containing four 16-bit colors in top-left, bottom-left, top-right, bottom-right order, followed by Morton-ordered byte indexes for 2x2 vectors. Standard VQ uses 256 codebook entries; Small VQ uses dimension-dependent codebook sizes.
+Linear rectangle data is row-major. Rectangle-twiddled data divides the image into square Morton tiles whose side is `min(width, height)`; tiles advance row-major along the longer axis. Both dimensions must be nonzero powers of two, and the layout contains one non-mipmapped direct-color image. Square twiddled data uses Morton order across the entire image. VQ data begins with eight-byte codebook entries containing four 16-bit colors in top-left, bottom-left, top-right, bottom-right order, followed by Morton-ordered byte indexes for 2x2 vectors. Standard VQ uses 256 codebook entries; Small VQ uses dimension-dependent codebook sizes.
 
 Mip levels are stored smallest to largest. Uncompressed levels use two bytes per pixel. VQ levels use one byte per 2x2 vector, with one byte retained for both the 1x1 and 2x2 levels. Layout `0x02` has a two-byte prefix before its mip data and layout `0x12` has a six-byte prefix.
 

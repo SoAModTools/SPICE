@@ -47,6 +47,12 @@ Address and parameter lists begin with a U32 count followed by that many U32 val
 
 Entry texture lists may be direct `NJTL`/`GJTL` chunks, wrappers whose pointer at `+0x08` leads to such a chunk, or simple counted tables of `0x0C`-byte records. In `NJTL`/`GJTL`, the tag is at `+0x00`, payload size at `+0x04`, texture count at `+0x0C`, and each texture record contains a name pointer.
 
+Texture-list pointers are classified independently from object pointers. A shared pointer produces one owning texture-list resource and any number of entry projections. The resource retains its source and resolved ranges, wrapper bytes, raw records, raw name pointers, recovered names, status, and offset-bearing diagnostics. An `NJTL` immediately preceding an `NJCM` may overlap the backing view required by the Ninja model reader, but the object remains keyed only by its actual object address.
+
+## Structural and Asset Health
+
+`MldFile::parseStatus` reports only container, index, and resource-boundary integrity. Individual object, motion, ground, texture-list, texture-archive, and archive-entry resources report `Empty`, `Complete`, `Partial`, or `Failed`; `MldFile::assetStatus` is the worst of those resource results. Resource diagnostics remain attached to their resource, while compatibility projections aggregate structural and resource diagnostics for user-facing output. Same-entry motion ambiguity is relationship metadata and does not lower resource health.
+
 ## Texture Archive Table
 
 The archive begins with a U32 count followed by `0x2C`-byte records.

@@ -20,6 +20,7 @@ DataLayout dataLayoutFromRaw(const std::uint8_t raw) noexcept
     case 0x03: return DataLayout::Vq;
     case 0x04: return DataLayout::VqMipmaps;
     case 0x09: return DataLayout::Rectangle;
+    case 0x0D: return DataLayout::RectangleTwiddled;
     case 0x10: return DataLayout::SmallVq;
     case 0x11: return DataLayout::SmallVqMipmaps;
     case 0x12: return DataLayout::TwiddledMipmapsDma;
@@ -45,6 +46,7 @@ const char* toString(const DataLayout layout) noexcept
     case DataLayout::Vq: return "VQ";
     case DataLayout::VqMipmaps: return "VQMipmaps";
     case DataLayout::Rectangle: return "Rectangle";
+    case DataLayout::RectangleTwiddled: return "RectangleTwiddled";
     case DataLayout::SmallVq: return "SmallVQ";
     case DataLayout::SmallVqMipmaps: return "SmallVQMipmaps";
     case DataLayout::TwiddledMipmapsDma: return "TwiddledMipmapsDMA";

@@ -46,6 +46,7 @@ enum class DataLayout : std::uint8_t {
     Vq = 0x03,
     VqMipmaps = 0x04,
     Rectangle = 0x09,
+    RectangleTwiddled = 0x0D,
     SmallVq = 0x10,
     SmallVqMipmaps = 0x11,
     TwiddledMipmapsDma = 0x12,

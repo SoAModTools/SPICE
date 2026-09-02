@@ -2,7 +2,9 @@
 
 ## Current Support
 
-SPICE reads GameCube big-endian and Dreamcast little-endian MLD files, including AKLZ-wrapped GameCube input. It models the top-level index, counted link and address lists, entry transforms and names, texture lists, texture archives, and bounded raw payload blocks. GRND collision surfaces, GOBJ geometry, NJCM chunk models, Ninja motion resources, and non-rendering Ninja volume polygon chunks are structurally decoded. GameCube GVR and Dreamcast PVR archive entries are represented through their respective texture projects.
+SPICE reads GameCube big-endian and Dreamcast little-endian MLD files, including AKLZ-wrapped GameCube input. It models the top-level index, counted link and address lists, entry transforms and names, texture lists, texture archives, and bounded raw payload blocks. Texture lists are independent owning resources rather than attempted object models, including direct NJTL/GJTL, wrapper, and counted-record layouts. GRND collision surfaces, GOBJ geometry, NJCM chunk models, Ninja motion resources, and non-rendering Ninja volume polygon chunks are structurally decoded. GameCube GVR and Dreamcast PVR archive entries are represented through their respective texture projects.
+
+Container health and asset coverage are reported separately. `parseStatus` covers structural integrity, while `assetStatus` aggregates per-resource `Empty`, `Complete`, `Partial`, and `Failed` states. Resource limitations do not prevent byte-preserving no-edit output when the container itself is writable.
 
 Known fields can be written in either platform byte order while unknown source bytes are preserved. The semantic writer supports texture replacement and archive relocation. GRND/GOBJ triangles retain decoded-payload provenance for selector patching in uncompressed Dreamcast/GameCube files and AKLZ-wrapped GameCube replacements.
 

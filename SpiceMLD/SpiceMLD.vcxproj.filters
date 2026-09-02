@@ -55,6 +55,9 @@
     <ClInclude Include="Model\MldFile.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="Model\MldDiagnostics.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="Model\MldGroundModel.h">
       <Filter>Model</Filter>
     </ClInclude>

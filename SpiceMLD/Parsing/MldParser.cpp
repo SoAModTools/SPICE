@@ -111,7 +111,8 @@ void addHistogram(std::unordered_map<std::string, std::size_t>& histogram, const
 }
 
 [[nodiscard]] bool isNjTextureListTag(const std::uint32_t tag) {
-    return tag == 0x4E4A544CU; // NJTL
+    return tag == 0x4E4A544CU || // NJTL
+        tag == 0x474A544CU;      // GJTL
 }
 
 [[nodiscard]] bool tagAt(
@@ -262,6 +263,27 @@ void resolveObjectNjLayout(
         bool includesNjtlPrefix = false;
         std::optional<std::uint32_t> sourceObjectAddress{};
         std::size_t effectiveEnd = std::min(end, payload.size());
+        if (candidate.kind == CandidateAddress::Kind::Object &&
+            i + 1U < candidates.size() &&
+            candidates[i + 1U].kind == CandidateAddress::Kind::TextureList) {
+            // An MLD object wrapper can own a texture-list prefix followed by its
+            // NJCM/GJCM body.  The texture-list address remains an independent
+            // resource boundary, but it must not truncate the overlapping object
+            // backing view.
+            const auto relativeModelOffset = common::readU32AtBE(payload, begin);
+            const auto extendedEnd = (i + 2U < candidates.size())
+                ? static_cast<std::size_t>(candidates[i + 2U].offset)
+                : payload.size();
+            if (relativeModelOffset.has_value() && *relativeModelOffset > 0U &&
+                static_cast<std::size_t>(*relativeModelOffset) <= payload.size() - begin) {
+                const auto absoluteModelOffset = begin + static_cast<std::size_t>(*relativeModelOffset);
+                if (absoluteModelOffset >= static_cast<std::size_t>(candidates[i + 1U].offset) &&
+                    absoluteModelOffset < extendedEnd &&
+                    tagAt(payload, absoluteModelOffset, isNjModelTag)) {
+                    effectiveEnd = std::min(extendedEnd, payload.size());
+                }
+            }
+        }
         if (candidate.kind == CandidateAddress::Kind::TextureList && i + 1 < candidates.size()) {
             const auto currentTag = readTag(candidate.offset).value_or(0U);
             const auto nextTag = readTag(candidates[i + 1].offset).value_or(0U);
@@ -280,6 +302,9 @@ void resolveObjectNjLayout(
         }
         if (!sourceObjectAddress.has_value() && candidate.kind == CandidateAddress::Kind::Object) {
             sourceObjectAddress = candidate.offset;
+        }
+        if (candidate.kind == CandidateAddress::Kind::TextureList && !sourceObjectAddress.has_value()) {
+            continue;
         }
 
         ExtractedNjBlock block{};
@@ -550,87 +575,200 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
     return out;
 }
 
-[[nodiscard]] std::vector<std::string> parseEntryTextureNames(std::span<const std::uint8_t> payload,
+void copyRange(std::vector<std::uint8_t>& out,
+    const std::span<const std::uint8_t> bytes,
+    const std::size_t offset,
+    const std::size_t size)
+{
+    if (offset <= bytes.size() && size <= bytes.size() - offset) {
+        out.assign(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+            bytes.begin() + static_cast<std::ptrdiff_t>(offset + size));
+    }
+}
+
+void addTextureListDiagnostic(model::MldTextureListResource& resource,
+    const model::MldDiagnostic::Severity severity,
+    std::string message,
+    const std::size_t offset)
+{
+    resource.diagnostics.push_back(model::MldDiagnostic{
+        .severity = severity,
+        .message = std::move(message),
+        .sourceOffset = static_cast<std::uint32_t>(std::min<std::size_t>(offset, UINT32_MAX)),
+        .scope = model::MldDiagnosticScope::Resource,
+        .resourceKind = model::MldResourceKind::TextureList,
+    });
+}
+
+[[nodiscard]] model::MldTextureListResource parseTextureListResource(
+    const std::span<const std::uint8_t> payload,
     const std::uint32_t texturesPointer,
-    const Endian endian) {
+    const Endian endian)
+{
     constexpr std::uint32_t kNjtlTag = 0x4E4A544CU;
     constexpr std::uint32_t kGjtlTag = 0x474A544CU;
     constexpr std::size_t textureRecordStride = 12U;
-    std::vector<std::string> names{};
+    constexpr std::uint32_t hardCap = 4096U;
+    model::MldTextureListResource resource{};
+    resource.sourceAddress = texturesPointer;
     std::size_t njtlOffset = static_cast<std::size_t>(texturesPointer);
-    if (njtlOffset + 16U > payload.size()) {
-        return names;
+    if (njtlOffset > payload.size() || 12U > payload.size() - njtlOffset) {
+        resource.status = model::MldResourceStatus::Failed;
+        addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Error,
+            "Texture-list pointer is outside the decoded MLD payload.", njtlOffset);
+        return resource;
     }
 
     const EndianReader reader(payload, endian);
+    copyRange(resource.sourceBytes, payload, njtlOffset, 12U);
     auto tag = readTagAt(payload, njtlOffset);
     if (tag != kNjtlTag && tag != kGjtlTag) {
+        const auto wrappedNjtlPointer = reader.try_read_u32(njtlOffset + 0x08U).value_or(0U);
+        const auto wrappedTag = wrappedNjtlPointer != 0U
+            && static_cast<std::size_t>(wrappedNjtlPointer) + 16U <= payload.size()
+            ? readTagAt(payload, wrappedNjtlPointer)
+            : 0U;
+        if (wrappedTag == kNjtlTag || wrappedTag == kGjtlTag) {
+            resource.layout = model::MldTextureListLayout::Wrapper;
+            resource.wrapperRange = model::MldByteRange{njtlOffset, 12U};
+            copyRange(resource.wrapperBytes, payload, njtlOffset, 12U);
+            njtlOffset = static_cast<std::size_t>(wrappedNjtlPointer);
+            tag = wrappedTag;
+        }
+    }
+    if (tag != kNjtlTag && tag != kGjtlTag) {
         const auto count = reader.try_read_u32(njtlOffset + 4U);
-        if (count.has_value() && *count <= 4096U &&
+        if (count.has_value() && *count <= hardCap &&
             njtlOffset + 8U + (static_cast<std::size_t>(*count) * textureRecordStride) <= payload.size()) {
-            names.reserve(*count);
+            resource.layout = model::MldTextureListLayout::CountedRecords;
+            resource.resolvedListOffset = texturesPointer;
+            resource.declaredCount = *count;
+            resource.listRange = {njtlOffset, 8U + static_cast<std::size_t>(*count) * textureRecordStride};
+            copyRange(resource.listBytes, payload, resource.listRange.offset, resource.listRange.size);
+            resource.entries.reserve(*count);
             for (std::uint32_t i = 0; i < *count; ++i) {
+                const auto recordOffset = njtlOffset + 8U + static_cast<std::size_t>(i) * textureRecordStride;
+                model::MldTextureListEntry entry{};
+                entry.ordinal = i;
+                entry.recordRange = {recordOffset, textureRecordStride};
+                copyRange(entry.rawRecordBytes, payload, recordOffset, textureRecordStride);
                 const auto namePointer = reader.try_read_u32(
-                    njtlOffset + 8U + (static_cast<std::size_t>(i) * textureRecordStride));
-                if (!namePointer.has_value() || static_cast<std::size_t>(*namePointer) >= payload.size()) {
-                    names.push_back({});
+                    recordOffset);
+                if (!namePointer.has_value() || *namePointer == 0U ||
+                    static_cast<std::size_t>(*namePointer) >= payload.size()) {
+                    resource.status = model::MldResourceStatus::Partial;
+                    addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Warning,
+                        "Counted texture-list record has an invalid name pointer.", recordOffset);
+                    resource.entries.push_back(std::move(entry));
                     continue;
                 }
-                names.push_back(readFixedAsciiName(payload, *namePointer, payload.size() - *namePointer));
+                entry.rawNamePointer = *namePointer;
+                entry.name = readFixedAsciiName(payload, *namePointer, payload.size() - *namePointer);
+                auto nameSize = entry.name.size();
+                if (static_cast<std::size_t>(*namePointer) + nameSize < payload.size() &&
+                    payload[static_cast<std::size_t>(*namePointer) + nameSize] == 0U)
+                    ++nameSize;
+                entry.nameRange = model::MldByteRange{*namePointer, nameSize};
+                copyRange(entry.rawNameBytes, payload, *namePointer, nameSize);
+                resource.entries.push_back(std::move(entry));
             }
-            return names;
+            if (resource.status == model::MldResourceStatus::Empty)
+                resource.status = model::MldResourceStatus::Complete;
+            resource.sourceBytes = resource.listBytes;
+            return resource;
         }
     }
 
     if (tag != kNjtlTag && tag != kGjtlTag) {
-        const auto wrappedNjtlPointer = reader.try_read_u32(njtlOffset + 0x08U).value_or(0U);
-        if (wrappedNjtlPointer == 0U || static_cast<std::size_t>(wrappedNjtlPointer) + 16U > payload.size()) {
-            return names;
-        }
-        njtlOffset = static_cast<std::size_t>(wrappedNjtlPointer);
-        tag = readTagAt(payload, njtlOffset);
+        resource.status = model::MldResourceStatus::Failed;
+        addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Error,
+            "Texture-list pointer does not identify a supported list, wrapper, or counted table.", njtlOffset);
+        return resource;
     }
-    if (tag != kNjtlTag && tag != kGjtlTag) {
-        return names;
+    resource.resolvedListOffset = static_cast<std::uint32_t>(njtlOffset);
+    if (resource.layout != model::MldTextureListLayout::Wrapper) {
+        resource.layout = tag == kNjtlTag
+            ? model::MldTextureListLayout::Njtl
+            : model::MldTextureListLayout::Gjtl;
     }
 
     const auto blockSize = reader.try_read_u32(njtlOffset + 4U);
     const auto count = reader.try_read_u32(njtlOffset + 12U);
-    if (!blockSize.has_value() || !count.has_value() || *count > 4096U) {
-        return names;
+    if (!blockSize.has_value() || !count.has_value() || *count > hardCap) {
+        resource.status = model::MldResourceStatus::Failed;
+        addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Error,
+            "Texture-list header has an invalid size or record count.", njtlOffset);
+        return resource;
     }
+    resource.declaredSize = *blockSize;
+    resource.declaredCount = *count;
 
     constexpr std::size_t blockHeaderSize = 8U;
     constexpr std::size_t textureRecordTableOffset = 8U;
     constexpr std::size_t textureRecordSize = 12U;
     const std::size_t payloadStart = njtlOffset + blockHeaderSize;
-    if (payloadStart >= payload.size()) {
-        return names;
+    if (payloadStart > payload.size() || *blockSize > payload.size() - payloadStart) {
+        resource.status = model::MldResourceStatus::Failed;
+        addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Error,
+            "Texture-list declared payload exceeds file bounds.", njtlOffset + 4U);
+        return resource;
     }
 
-    const std::size_t payloadSize = std::min<std::size_t>(*blockSize, payload.size() - payloadStart);
+    const std::size_t payloadSize = *blockSize;
+    resource.listRange = {njtlOffset, blockHeaderSize + payloadSize};
+    copyRange(resource.listBytes, payload, resource.listRange.offset, resource.listRange.size);
     const auto texturePayload = std::span<const std::uint8_t>(
         payload.data() + static_cast<std::ptrdiff_t>(payloadStart),
         payloadSize);
 
     const EndianReader textureReader(texturePayload, endian);
-    names.reserve(*count);
+    resource.entries.reserve(*count);
     for (std::uint32_t i = 0; i < *count; ++i) {
         const std::size_t recordOffset = textureRecordTableOffset + (static_cast<std::size_t>(i) * textureRecordSize);
-        const auto namePointer = textureReader.try_read_u32(recordOffset);
-        if (!namePointer.has_value() || static_cast<std::size_t>(*namePointer) >= texturePayload.size()) {
-            names.push_back({});
+        model::MldTextureListEntry entry{};
+        entry.ordinal = i;
+        entry.recordRange = {payloadStart + recordOffset, textureRecordSize};
+        if (recordOffset > texturePayload.size() || textureRecordSize > texturePayload.size() - recordOffset) {
+            resource.status = model::MldResourceStatus::Partial;
+            addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Warning,
+                "Texture-list record table overruns the declared chunk.", payloadStart + recordOffset);
+            resource.entries.push_back(std::move(entry));
             continue;
         }
-        names.push_back(readFixedAsciiName(texturePayload, *namePointer, texturePayload.size() - *namePointer));
+        copyRange(entry.rawRecordBytes, payload, entry.recordRange.offset, textureRecordSize);
+        const auto namePointer = textureReader.try_read_u32(recordOffset);
+        if (!namePointer.has_value() || *namePointer == 0U ||
+            static_cast<std::size_t>(*namePointer) >= texturePayload.size()) {
+            resource.status = model::MldResourceStatus::Partial;
+            addTextureListDiagnostic(resource, model::MldDiagnostic::Severity::Warning,
+                "Texture-list record has an invalid payload-relative name pointer.",
+                payloadStart + recordOffset);
+            resource.entries.push_back(std::move(entry));
+            continue;
+        }
+        entry.rawNamePointer = *namePointer;
+        entry.name = readFixedAsciiName(texturePayload, *namePointer,
+            texturePayload.size() - *namePointer);
+        auto nameSize = entry.name.size();
+        if (static_cast<std::size_t>(*namePointer) + nameSize < texturePayload.size() &&
+            texturePayload[static_cast<std::size_t>(*namePointer) + nameSize] == 0U)
+            ++nameSize;
+        entry.nameRange = model::MldByteRange{payloadStart + *namePointer, nameSize};
+        copyRange(entry.rawNameBytes, payload, entry.nameRange->offset, nameSize);
+        resource.entries.push_back(std::move(entry));
     }
 
-    return names;
+    if (resource.status == model::MldResourceStatus::Empty)
+        resource.status = model::MldResourceStatus::Complete;
+    const auto sourceOffset = static_cast<std::size_t>(resource.sourceAddress);
+    const auto sourceEnd = resource.listRange.end();
+    if (sourceEnd >= sourceOffset)
+        copyRange(resource.sourceBytes, payload, sourceOffset, sourceEnd - sourceOffset);
+    return resource;
 }
 
-[[nodiscard]] ParsedEntryListItem makeEntryListItem(std::span<const std::uint8_t> payload,
-    const model::IndexEntry& entry,
-    const Endian endian) {
+[[nodiscard]] ParsedEntryListItem makeEntryListItem(const model::IndexEntry& entry,
+    const std::map<std::uint32_t, model::MldTextureListResource>& textureLists) {
     ParsedEntryListItem item{};
     item.tableIndex = entry.tableIndex;
     item.entryId = entry.entryId;
@@ -646,7 +784,12 @@ using SpatialOwnerMap = std::unordered_map<std::uint32_t, std::vector<BlockOwner
     item.objectAddresses = entry.objectAddresses ? entry.objectAddresses->values : std::vector<std::uint32_t>{};
     item.groundAddresses = entry.groundAddresses ? entry.groundAddresses->values : std::vector<std::uint32_t>{};
     item.motionAddresses = entry.motionAddresses ? entry.motionAddresses->values : std::vector<std::uint32_t>{};
-    item.textureNames = parseEntryTextureNames(payload, entry.texturesPointer, endian);
+    const auto textureList = textureLists.find(entry.texturesPointer);
+    if (textureList != textureLists.end()) {
+        item.textureNames.reserve(textureList->second.entries.size());
+        for (const auto& texture : textureList->second.entries)
+            item.textureNames.push_back(texture.name);
+    }
     item.textureCount = item.textureNames.size();
     return item;
 }
@@ -1260,6 +1403,14 @@ void buildCanonicalRanges(model::MldFile& file) {
     for (const auto& [_, resource] : file.groundResources) {
         addRange(resource.sourceAddress, resource.blockSize);
     }
+    for (const auto& [_, resource] : file.textureListResources) {
+        if (resource.wrapperRange.has_value())
+            addRange(resource.wrapperRange->offset, resource.wrapperRange->size);
+        addRange(resource.listRange.offset, resource.listRange.size);
+        for (const auto& entry : resource.entries)
+            if (entry.nameRange.has_value())
+                addRange(entry.nameRange->offset, entry.nameRange->size);
+    }
     if (file.textureArchive.has_value()) {
         addRange(file.textureArchive->archiveStartOffset,
             file.textureArchive->archiveEndOffset - file.textureArchive->archiveStartOffset);
@@ -1432,6 +1583,8 @@ model::MldFile MldParser::parseBytes(
     }
 
     const auto njBlocks = buildExtractedNjBlocks(payload, objectAddresses, motionAddresses, textureAddresses);
+    for (const auto address : textureAddresses)
+        file.textureListResources.emplace(address, parseTextureListResource(payload, address, file.endian));
     for (const auto& block : njBlocks) {
         if (block.kind == ExtractedNjBlock::Kind::Object) {
             const auto sourceAddress = block.sourceObjectAddress.value_or(block.offset);
@@ -1448,6 +1601,9 @@ model::MldFile MldParser::parseBytes(
             resource.originalSemanticHash = hashBytes(resource.rawBytes);
             resource.model = readCanonicalModel(block);
             resource.originalModel = resource.model;
+            resource.status = resource.model
+                ? model::MldResourceStatus::Complete
+                : model::MldResourceStatus::Partial;
             if (!resource.model) {
                 resource.diagnostics.push_back(model::MldDiagnostic{
                     .severity = model::MldDiagnostic::Severity::Warning,
@@ -1464,6 +1620,19 @@ model::MldFile MldParser::parseBytes(
             resource.rawBytes = block.bytes;
             resource.structure = Sa3Dport::File::AnimationFile::parse_structure(
                 asByteSpan(resource.rawBytes));
+            switch (resource.structure.status) {
+            case Sa3Dport::File::NinjaMotionParseStatus::Complete:
+                resource.status = model::MldResourceStatus::Complete;
+                break;
+            case Sa3Dport::File::NinjaMotionParseStatus::Partial:
+                resource.status = model::MldResourceStatus::Partial;
+                break;
+            default:
+                resource.status = resource.rawBytes.empty()
+                    ? model::MldResourceStatus::Failed
+                    : model::MldResourceStatus::Partial;
+                break;
+            }
             for (const auto& diagnostic : resource.structure.diagnostics) {
                 resource.diagnostics.push_back(model::MldDiagnostic{
                     .severity = diagnostic.error
@@ -1498,6 +1667,9 @@ model::MldFile MldParser::parseBytes(
             resource.kind = model::MldGroundResource::Kind::Grnd;
             auto parsed = grndParser.decode(block.bytes, block.offset, block.endian);
             resource.grnd = std::move(parsed.data);
+            resource.status = parsed.decoded
+                ? model::MldResourceStatus::Complete
+                : model::MldResourceStatus::Partial;
             resource.originalSemanticHash = model::semanticHash(*resource.grnd);
             for (const auto& message : parsed.diagnostics) {
                 resource.diagnostics.push_back(model::MldDiagnostic{
@@ -1510,6 +1682,9 @@ model::MldFile MldParser::parseBytes(
             resource.kind = model::MldGroundResource::Kind::Gobj;
             auto parsed = gobjParser.decode(block.bytes, block.offset, block.endian);
             resource.gobj = std::move(parsed.data);
+            resource.status = parsed.decoded
+                ? model::MldResourceStatus::Complete
+                : model::MldResourceStatus::Partial;
             resource.originalSemanticHash = model::semanticHash(*resource.gobj);
             for (const auto& message : parsed.diagnostics) {
                 resource.diagnostics.push_back(model::MldDiagnostic{
@@ -1736,16 +1911,45 @@ model::MldFile MldParser::parseBytes(
         }
     }
 
+    for (auto& [_, resource] : file.motionResources) {
+        if (resource.status == model::MldResourceStatus::Complete &&
+            (resource.structure.header.kind == Sa3Dport::File::NinjaMotionKind::Unknown ||
+             resource.variants.empty()))
+            resource.status = model::MldResourceStatus::Partial;
+    }
+
+    const auto markResourceDiagnostics = [](auto& resources, const model::MldResourceKind kind) {
+        for (auto& [_, resource] : resources) {
+            for (auto& diagnostic : resource.diagnostics) {
+                diagnostic.scope = model::MldDiagnosticScope::Resource;
+                diagnostic.resourceKind = kind;
+            }
+        }
+    };
+    markResourceDiagnostics(file.objectResources, model::MldResourceKind::Object);
+    markResourceDiagnostics(file.motionResources, model::MldResourceKind::Motion);
+    markResourceDiagnostics(file.groundResources, model::MldResourceKind::Ground);
+    markResourceDiagnostics(file.textureListResources, model::MldResourceKind::TextureList);
+
+    const auto mergeAssetStatus = [&](const model::MldResourceStatus status) {
+        const auto rank = [](const model::MldResourceStatus value) {
+            switch (value) {
+            case model::MldResourceStatus::Failed: return 3;
+            case model::MldResourceStatus::Partial: return 2;
+            case model::MldResourceStatus::Complete: return 1;
+            default: return 0;
+            }
+        };
+        if (rank(status) > rank(file.assetStatus))
+            file.assetStatus = status;
+    };
+    for (const auto& [_, resource] : file.objectResources) mergeAssetStatus(resource.status);
+    for (const auto& [_, resource] : file.motionResources) mergeAssetStatus(resource.status);
+    for (const auto& [_, resource] : file.groundResources) mergeAssetStatus(resource.status);
+    for (const auto& [_, resource] : file.textureListResources) mergeAssetStatus(resource.status);
+    if (file.textureArchive.has_value()) mergeAssetStatus(file.textureArchive->status);
+
     buildCanonicalRanges(file);
-    for (const auto& [_, resource] : file.objectResources) {
-        file.parseDiagnostics.insert(file.parseDiagnostics.end(), resource.diagnostics.begin(), resource.diagnostics.end());
-    }
-    for (const auto& [_, resource] : file.motionResources) {
-        file.parseDiagnostics.insert(file.parseDiagnostics.end(), resource.diagnostics.begin(), resource.diagnostics.end());
-    }
-    for (const auto& [_, resource] : file.groundResources) {
-        file.parseDiagnostics.insert(file.parseDiagnostics.end(), resource.diagnostics.begin(), resource.diagnostics.end());
-    }
     file.parseStatus = std::any_of(file.parseDiagnostics.begin(), file.parseDiagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.severity != model::MldDiagnostic::Severity::Info;
     }) ? model::MldParseStatus::Partial : model::MldParseStatus::Complete;
@@ -1762,14 +1966,25 @@ ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& o
     result.coordinatePolicy = options.coordinates;
     const auto payload = std::span<const std::uint8_t>(file.decodedBytes.data(), file.decodedBytes.size());
 
-    for (const auto& diagnostic : file.parseDiagnostics) {
-        ParseDiagnostic::Severity severity = ParseDiagnostic::Severity::Info;
-        if (diagnostic.severity == model::MldDiagnostic::Severity::Warning) {
-            severity = ParseDiagnostic::Severity::Warning;
-        } else if (diagnostic.severity == model::MldDiagnostic::Severity::Error) {
-            severity = ParseDiagnostic::Severity::Error;
+    const auto appendDiagnostics = [&](const std::vector<model::MldDiagnostic>& diagnostics) {
+        for (const auto& diagnostic : diagnostics) {
+            ParseDiagnostic::Severity severity = ParseDiagnostic::Severity::Info;
+            if (diagnostic.severity == model::MldDiagnostic::Severity::Warning) {
+                severity = ParseDiagnostic::Severity::Warning;
+            } else if (diagnostic.severity == model::MldDiagnostic::Severity::Error) {
+                severity = ParseDiagnostic::Severity::Error;
+            }
+            result.diagnostics.push_back(ParseDiagnostic{ .severity = severity, .message = diagnostic.message });
         }
-        result.diagnostics.push_back(ParseDiagnostic{ .severity = severity, .message = diagnostic.message });
+    };
+    appendDiagnostics(file.parseDiagnostics);
+    for (const auto& [_, resource] : file.objectResources) appendDiagnostics(resource.diagnostics);
+    for (const auto& [_, resource] : file.motionResources) appendDiagnostics(resource.diagnostics);
+    for (const auto& [_, resource] : file.groundResources) appendDiagnostics(resource.diagnostics);
+    for (const auto& [_, resource] : file.textureListResources) appendDiagnostics(resource.diagnostics);
+    if (file.textureArchive.has_value()) {
+        appendDiagnostics(file.textureArchive->diagnostics);
+        for (const auto& entry : file.textureArchive->entries) appendDiagnostics(entry.diagnostics);
     }
     if (file.parseStatus == model::MldParseStatus::Failed || file.entries.empty()) {
         if (result.diagnostics.empty()) {
@@ -1784,7 +1999,7 @@ ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& o
     result.textureArchive = file.textureArchive;
     result.entryList.reserve(file.entries.size());
     for (const auto& record : file.entries) {
-        result.entryList.push_back(makeEntryListItem(payload, record.entry, file.endian));
+        result.entryList.push_back(makeEntryListItem(record.entry, file.textureListResources));
     }
 
     std::unordered_map<std::string, std::size_t> histogram{};

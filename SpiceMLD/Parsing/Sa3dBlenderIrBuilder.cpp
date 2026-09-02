@@ -1023,7 +1023,9 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
         outTexture.sourceContainer = "gvm";
         outTexture.sourceTextureFormat = tx.sourceFormat;
         outTexture.sourcePaletteFormat = tx.sourcePaletteFormat;
-        outTexture.decodeWarnings = tx.diagnostics;
+        outTexture.decodeWarnings.reserve(tx.diagnostics.size());
+        for (const auto& diagnostic : tx.diagnostics)
+            outTexture.decodeWarnings.push_back(diagnostic.message);
         outTexture.width = tx.width;
         outTexture.height = tx.height;
         outTexture.pixelFormat = "rgba8";

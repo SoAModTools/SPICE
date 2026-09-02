@@ -139,6 +139,10 @@ std::vector<MldTextureSnapshot> projectMldTextures(const spice::mld::model::MldF
     out.reserve(file.textureArchive->entries.size());
     for (std::size_t index = 0; index < file.textureArchive->entries.size(); ++index) {
         const auto& texture = file.textureArchive->entries[index];
+        std::vector<std::string> textureDiagnostics{};
+        textureDiagnostics.reserve(texture.diagnostics.size());
+        for (const auto& diagnostic : texture.diagnostics)
+            textureDiagnostics.push_back(diagnostic.message);
         out.push_back(MldTextureSnapshot{
             .index = index,
             .name = texture.textureName,
@@ -153,7 +157,7 @@ std::vector<MldTextureSnapshot> projectMldTextures(const spice::mld::model::MldF
             .encodedSize = texture.encodedData.size(),
             .decoded = texture.decoded && !texture.rgba8.empty(),
             .dirty = index < dirtyTextures.size() && dirtyTextures[index],
-            .diagnostics = texture.diagnostics,
+            .diagnostics = std::move(textureDiagnostics),
         });
     }
     return out;
@@ -163,10 +167,21 @@ std::vector<DocumentDiagnostic> projectMldDiagnostics(const spice::mld::model::M
     std::vector<DocumentDiagnostic> out{};
     out.reserve(file.parseDiagnostics.size());
     for (const auto& diagnostic : file.parseDiagnostics) out.push_back(convertDiagnostic(diagnostic));
+    const auto appendResources = [&](const auto& resources) {
+        for (const auto& [_, resource] : resources)
+            for (const auto& diagnostic : resource.diagnostics)
+                out.push_back(convertDiagnostic(diagnostic));
+    };
+    appendResources(file.objectResources);
+    appendResources(file.motionResources);
+    appendResources(file.groundResources);
+    appendResources(file.textureListResources);
     if (file.textureArchive.has_value()) {
-        for (const auto& message : file.textureArchive->diagnostics) {
-            out.push_back({ .level = EventLevel::Warning, .message = message });
-        }
+        for (const auto& diagnostic : file.textureArchive->diagnostics)
+            out.push_back(convertDiagnostic(diagnostic));
+        for (const auto& texture : file.textureArchive->entries)
+            for (const auto& diagnostic : texture.diagnostics)
+                out.push_back(convertDiagnostic(diagnostic));
     }
     return out;
 }

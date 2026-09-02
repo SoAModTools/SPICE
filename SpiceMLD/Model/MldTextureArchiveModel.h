@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MldDiagnostics.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -14,6 +16,7 @@ enum class MldTextureEncoding {
 };
 
 struct MldTextureEntry {
+    MldResourceStatus status = MldResourceStatus::Empty;
     std::uint32_t archiveTextureIndex = 0;
     std::size_t archiveOffset = 0;
     std::size_t encodedDataOffset = 0;
@@ -41,16 +44,17 @@ struct MldTextureEntry {
     std::vector<std::uint8_t> encodedData{};
     bool decoded = false;
     std::vector<std::uint8_t> rgba8{};
-    std::vector<std::string> diagnostics{};
+    std::vector<MldDiagnostic> diagnostics{};
 };
 
 struct MldTextureArchive {
+    MldResourceStatus status = MldResourceStatus::Empty;
     std::size_t tableOffset = 0;
     std::size_t archiveStartOffset = 0;
     std::size_t archiveEndOffset = 0;
     std::vector<std::uint8_t> archivePrefixBytes{};
     std::vector<MldTextureEntry> entries{};
-    std::vector<std::string> diagnostics{};
+    std::vector<MldDiagnostic> diagnostics{};
 };
 
 } // namespace spice::mld::model

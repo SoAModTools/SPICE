@@ -107,6 +107,7 @@
     <ClInclude Include="Model\GeometryModel.h" />
     <ClInclude Include="Model\BlenderIrModel.h" />
     <ClInclude Include="Model\MldFile.h" />
+    <ClInclude Include="Model\MldDiagnostics.h" />
     <ClInclude Include="Model\MldGroundModel.h" />
     <ClInclude Include="Model\MldGroundEditing.h" />
     <ClInclude Include="Model\TriangleMetadata.h" />

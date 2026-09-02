@@ -78,6 +78,21 @@ std::size_t twiddle(const std::uint32_t value)
     return result;
 }
 
+std::size_t rectangleTwiddledIndex(
+    const std::uint32_t x,
+    const std::uint32_t y,
+    const std::uint32_t width,
+    const std::uint32_t height)
+{
+    const auto tileSize = std::min(width, height);
+    const auto tileX = x / tileSize;
+    const auto tileY = y / tileSize;
+    const auto tilesPerRow = width / tileSize;
+    const auto tileIndex = static_cast<std::size_t>(tileY) * tilesPerRow + tileX;
+    const auto withinTile = (twiddle(x % tileSize) << 1U) | twiddle(y % tileSize);
+    return tileIndex * static_cast<std::size_t>(tileSize) * tileSize + withinTile;
+}
+
 std::uint8_t quantize(const std::uint8_t value, const std::uint32_t maximum)
 {
     return static_cast<std::uint8_t>((static_cast<std::uint32_t>(value) * maximum + 127U) / 255U);
@@ -401,7 +416,13 @@ PvrEncodeResult encodePvrTexture(
             return result;
 
     const auto& base = mipImages.front();
+    if (options.dataLayout == DataLayout::RectangleTwiddled &&
+        (!isPowerOfTwo(base.width) || !isPowerOfTwo(base.height))) {
+        addError(result, 0, "Rectangle-twiddled PVR dimensions must be powers of two");
+        return result;
+    }
     if (options.dataLayout != DataLayout::Rectangle &&
+        options.dataLayout != DataLayout::RectangleTwiddled &&
         (base.width != base.height || !isPowerOfTwo(base.width))) {
         addError(result, 0, "Twiddled and VQ PVR textures must be square powers of two");
         return result;
@@ -472,9 +493,11 @@ PvrEncodeResult encodePvrTexture(
         for (std::uint32_t y = 0; y < image.height; ++y) {
             for (std::uint32_t x = 0; x < image.width; ++x) {
                 const auto pixel = (static_cast<std::size_t>(y) * image.width + x) * 4U;
-                const auto destination = isTwiddled(options.dataLayout)
-                    ? ((twiddle(x) << 1U) | twiddle(y))
-                    : static_cast<std::size_t>(y) * image.width + x;
+                const auto destination = options.dataLayout == DataLayout::RectangleTwiddled
+                    ? rectangleTwiddledIndex(x, y, image.width, image.height)
+                    : (isTwiddled(options.dataLayout)
+                        ? ((twiddle(x) << 1U) | twiddle(y))
+                        : static_cast<std::size_t>(y) * image.width + x);
                 words[destination] = packColor(image.pixels.data() + pixel, options.pixelFormat);
             }
         }

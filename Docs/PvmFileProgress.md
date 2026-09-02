@@ -2,7 +2,7 @@
 
 ## Current Support
 
-SPICE parses standalone and archived Dreamcast textures with optional GBIX metadata and formal PVMH tables. It decodes ARGB1555, RGB565, and ARGB4444 across linear, twiddled, mipmapped, VQ, Small VQ, and DMA-prefixed twiddled layouts. Logical mip results are presented largest to smallest while retaining their physical source ranges.
+SPICE parses standalone and archived Dreamcast textures with optional GBIX metadata and formal PVMH tables. It decodes ARGB1555, RGB565, and ARGB4444 across linear rectangle, square twiddled, rectangle-twiddled `0x0D`, mipmapped, VQ, Small VQ, and DMA-prefixed twiddled layouts. Logical mip results are presented largest to smallest while retaining their physical source ranges.
 
 The same promoted formats can be encoded from RGBA images, including complete mip chains and PVM archives. PVR data embedded in Dreamcast MLD texture archives is handled through this project, so MLD remains responsible only for archive placement and record association.
 

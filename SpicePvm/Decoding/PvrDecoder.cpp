@@ -81,6 +81,21 @@ std::size_t twiddle(const std::uint32_t value)
     return result;
 }
 
+std::size_t rectangleTwiddledIndex(
+    const std::uint32_t x,
+    const std::uint32_t y,
+    const std::uint32_t width,
+    const std::uint32_t height)
+{
+    const auto tileSize = std::min(width, height);
+    const auto tileX = x / tileSize;
+    const auto tileY = y / tileSize;
+    const auto tilesPerRow = width / tileSize;
+    const auto tileIndex = static_cast<std::size_t>(tileY) * tilesPerRow + tileX;
+    const auto withinTile = (twiddle(x % tileSize) << 1U) | twiddle(y % tileSize);
+    return tileIndex * static_cast<std::size_t>(tileSize) * tileSize + withinTile;
+}
+
 std::array<std::uint8_t, 4> decodeColor(const std::uint16_t value, const PixelFormat format)
 {
     switch (format) {
@@ -296,7 +311,13 @@ model::DecodeResult decodePvrTexture(const model::PvrTexture& texture)
         return result;
     }
 
-    if (texture.dataLayout != DataLayout::Rectangle) {
+    if (texture.dataLayout == DataLayout::RectangleTwiddled) {
+        if (!isPowerOfTwo(texture.width) || !isPowerOfTwo(texture.height)) {
+            error(result, texture.pvrtRange.offset + 12,
+                "Rectangle-twiddled PVR dimensions must be powers of two");
+            return result;
+        }
+    } else if (texture.dataLayout != DataLayout::Rectangle) {
         if (texture.width != texture.height) {
             error(result, texture.pvrtRange.offset + 12,
                 "Twiddled and VQ PVR textures must be square");
@@ -321,7 +342,8 @@ model::DecodeResult decodePvrTexture(const model::PvrTexture& texture)
         return result;
     }
 
-    if (texture.dataLayout == DataLayout::Rectangle) {
+    if (texture.dataLayout == DataLayout::Rectangle ||
+        texture.dataLayout == DataLayout::RectangleTwiddled) {
         std::size_t pixels = 0;
         std::size_t expected = 0;
         if (!checkedMul(texture.width, texture.height, pixels) || !checkedMul(pixels, 2, expected)) {
@@ -342,8 +364,10 @@ model::DecodeResult decodePvrTexture(const model::PvrTexture& texture)
         level.image.pixels.resize(pixels * 4);
         for (std::uint32_t y = 0; y < texture.height; ++y) {
             for (std::uint32_t x = 0; x < texture.width; ++x) {
-                const std::size_t source = localDataOffset +
-                    (static_cast<std::size_t>(y) * texture.width + x) * 2;
+                const auto sourcePixel = texture.dataLayout == DataLayout::RectangleTwiddled
+                    ? rectangleTwiddledIndex(x, y, texture.width, texture.height)
+                    : static_cast<std::size_t>(y) * texture.width + x;
+                const std::size_t source = localDataOffset + sourcePixel * 2;
                 writePixel(level.image, x, y,
                     decodeColor(readU16(texture.sourceBytes, source), texture.pixelFormat));
             }

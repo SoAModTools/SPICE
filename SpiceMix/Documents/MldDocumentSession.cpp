@@ -37,6 +37,24 @@ const spice::mld::model::MldTextureEntry* textureAt(const ImplType& impl, const 
     return &impl.file.textureArchive->entries[index];
 }
 
+std::vector<spice::mld::model::MldDiagnostic> typedTextureDiagnostics(
+    const std::vector<std::string>& messages,
+    const std::size_t sourceOffset = 0U)
+{
+    std::vector<spice::mld::model::MldDiagnostic> diagnostics{};
+    diagnostics.reserve(messages.size());
+    for (const auto& message : messages) {
+        diagnostics.push_back(spice::mld::model::MldDiagnostic{
+            .severity = spice::mld::model::MldDiagnostic::Severity::Warning,
+            .message = message,
+            .sourceOffset = static_cast<std::uint32_t>(sourceOffset),
+            .scope = spice::mld::model::MldDiagnosticScope::Resource,
+            .resourceKind = spice::mld::model::MldResourceKind::TextureArchiveEntry,
+        });
+    }
+    return diagnostics;
+}
+
 } // namespace
 
 MldDocumentSession::MldDocumentSession(std::unique_ptr<Impl> impl)
@@ -62,7 +80,8 @@ MldDocumentSession::OpenResult MldDocumentSession::open(
         impl->file = spice::mld::parsing::MldParser{}.parseBytes(bytes);
         if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
         std::vector<std::string> diagnosticText{};
-        for (const auto& diagnostic : impl->file.parseDiagnostics) diagnosticText.push_back(diagnostic.message);
+        for (const auto& diagnostic : documents::projectMldDiagnostics(impl->file))
+            diagnosticText.push_back(diagnostic.message);
         if (impl->file.parseStatus == spice::mld::model::MldParseStatus::Failed) {
             return { .result = documents::failure("MLD parsing failed.", std::move(diagnosticText)) };
         }
@@ -151,7 +170,9 @@ DocumentResult MldDocumentSession::replaceGvrTexture(const std::size_t index,
         texture->paletteDataSize = replacementMetadata.texture.paletteData.size();
         texture->decoded = true;
         texture->rgba8 = replacementMetadata.texture.decodedBaseLevel->rgba8;
-        texture->diagnostics = replacementMetadata.diagnostics;
+        texture->diagnostics = typedTextureDiagnostics(
+            replacementMetadata.diagnostics, texture->encodedDataOffset);
+        texture->status = spice::mld::model::MldResourceStatus::Complete;
         impl_->dirtyTextures[index] = true;
         documents::emit(context, EventLevel::Info, "Staged replacement for MLD texture " + std::to_string(index) + ".");
         return { .message = "Texture replacement staged.", .diagnostics = replacementMetadata.diagnostics };
@@ -208,7 +229,11 @@ DocumentResult MldDocumentSession::replacePvrTexture(const std::size_t index,
         && !candidate.decoded.mipLevels.front().image.pixels.empty();
     replacement.rgba8 = replacement.decoded
         ? candidate.decoded.mipLevels.front().image.pixels : std::vector<std::uint8_t>{};
-    replacement.diagnostics = candidate.diagnostics;
+    replacement.diagnostics = typedTextureDiagnostics(
+        candidate.diagnostics, replacement.encodedDataOffset);
+    replacement.status = replacement.decoded
+        ? spice::mld::model::MldResourceStatus::Complete
+        : spice::mld::model::MldResourceStatus::Partial;
     *texture = std::move(replacement);
     impl_->dirtyTextures[index] = true;
     documents::emit(context, EventLevel::Info,

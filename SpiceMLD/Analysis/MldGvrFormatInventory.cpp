@@ -201,7 +201,9 @@ void writeJsonGroup(std::ostream& out, const MldGvrFormatGroup& group, const std
     sample.paletteDataSize = entry.paletteDataSize;
     sample.decoded = entry.decoded;
     const auto previewCount = std::min(kMaxDiagnosticPreview, entry.diagnostics.size());
-    sample.diagnosticPreview.assign(entry.diagnostics.begin(), entry.diagnostics.begin() + static_cast<std::ptrdiff_t>(previewCount));
+    sample.diagnosticPreview.reserve(previewCount);
+    for (std::size_t i = 0; i < previewCount; ++i)
+        sample.diagnosticPreview.push_back(entry.diagnostics[i].message);
     return sample;
 }
 

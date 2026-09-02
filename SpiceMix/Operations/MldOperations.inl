@@ -119,7 +119,7 @@ void writeMldTextureExtractReport(
         writeMldDiagnostic(reportOut, "mldDiagnostic", diagnostic);
     }
     for (const auto& diagnostic : texture.diagnostics) {
-        reportOut << "textureDiagnostic=" << diagnostic << "\n";
+        writeMldDiagnostic(reportOut, "textureDiagnostic", diagnostic);
     }
     if (pngResult.has_value()) {
         const auto& textureMetadata = pngResult->texture;

@@ -122,7 +122,12 @@ TEST(MldGvrFormatInventory, FormatsJsonAndMarkdownReports) {
     spice::mld::analysis::MldGvrFormatInventoryBuilder builder{};
     builder.noteFileScanned();
     auto texture = makeTexture("RGB565", "None", 0x00, 0x04);
-    texture.diagnostics.push_back("test diagnostic");
+    texture.diagnostics.push_back(spice::mld::model::MldDiagnostic{
+        .severity = spice::mld::model::MldDiagnostic::Severity::Warning,
+        .message = "test diagnostic",
+        .scope = spice::mld::model::MldDiagnosticScope::Resource,
+        .resourceKind = spice::mld::model::MldResourceKind::TextureArchive,
+    });
     builder.addParsedMld("level.mld", makeArchive({ texture }));
     builder.addParseFailure("bad.mld", "parse failed");
 

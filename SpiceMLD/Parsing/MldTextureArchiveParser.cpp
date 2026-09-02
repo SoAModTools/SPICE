@@ -17,6 +17,58 @@ constexpr std::size_t kNameSize = 32U;
 constexpr std::size_t kHardCap = 4096U;
 constexpr std::uint32_t kDreamcastAlignFlag = 0x80000000U;
 
+void addDiagnostic(std::vector<model::MldDiagnostic>& diagnostics,
+    const model::MldDiagnostic::Severity severity,
+    std::string message,
+    const std::size_t offset,
+    const model::MldResourceKind kind = model::MldResourceKind::TextureArchive)
+{
+    diagnostics.push_back(model::MldDiagnostic{
+        .severity = severity,
+        .message = std::move(message),
+        .sourceOffset = static_cast<std::uint32_t>(std::min<std::size_t>(offset, UINT32_MAX)),
+        .scope = model::MldDiagnosticScope::Resource,
+        .resourceKind = kind,
+    });
+}
+
+model::MldDiagnostic::Severity convertSeverity(
+    const spice::pvm::model::DiagnosticSeverity severity)
+{
+    switch (severity) {
+    case spice::pvm::model::DiagnosticSeverity::Information:
+        return model::MldDiagnostic::Severity::Info;
+    case spice::pvm::model::DiagnosticSeverity::Warning:
+        return model::MldDiagnostic::Severity::Warning;
+    default:
+        return model::MldDiagnostic::Severity::Error;
+    }
+}
+
+void finalizeArchiveStatus(model::MldTextureArchive& archive)
+{
+    if (archive.status == model::MldResourceStatus::Failed)
+        return;
+    if (archive.entries.empty()) {
+        archive.status = model::MldResourceStatus::Empty;
+        return;
+    }
+    archive.status = model::MldResourceStatus::Complete;
+    for (const auto& entry : archive.entries) {
+        if (entry.status == model::MldResourceStatus::Failed) {
+            archive.status = model::MldResourceStatus::Failed;
+            return;
+        }
+        if (entry.status != model::MldResourceStatus::Complete)
+            archive.status = model::MldResourceStatus::Partial;
+    }
+    if (archive.status == model::MldResourceStatus::Complete &&
+        std::any_of(archive.diagnostics.begin(), archive.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.severity != model::MldDiagnostic::Severity::Info;
+        }))
+        archive.status = model::MldResourceStatus::Partial;
+}
+
 std::string readFixedAsciiName(std::span<const std::uint8_t> bytes,
     const std::size_t offset, const std::size_t maxLength)
 {
@@ -53,20 +105,24 @@ bool initializeRecords(model::MldTextureArchive& out,
     const spice::root::EndianReader reader(bytes, endian);
     const auto count = reader.try_read_u32(textureTableOffset);
     if (!count.has_value()) {
-        out.diagnostics.push_back("Texture archive record count is unreadable.");
+        addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Error,
+            "Texture archive record count is unreadable.", textureTableOffset);
         return false;
     }
     if (*count > kHardCap) {
-        out.diagnostics.push_back("Texture archive record count exceeds the safety cap.");
+        addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Error,
+            "Texture archive record count exceeds the safety cap.", textureTableOffset);
         return false;
     }
     if (*count > (std::numeric_limits<std::size_t>::max() - 4U) / kRecordSize) {
-        out.diagnostics.push_back("Texture archive record table size overflows addressable input.");
+        addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Error,
+            "Texture archive record table size overflows addressable input.", textureTableOffset);
         return false;
     }
     const auto tableSize = 4U + static_cast<std::size_t>(*count) * kRecordSize;
     if (textureTableOffset > bytes.size() || tableSize > bytes.size() - textureTableOffset) {
-        out.diagnostics.push_back("Texture archive record table overruns file bounds.");
+        addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Error,
+            "Texture archive record table overruns file bounds.", textureTableOffset);
         return false;
     }
     tableEnd = textureTableOffset + tableSize;
@@ -92,7 +148,9 @@ void populateGvrArchive(model::MldTextureArchive& out, const std::span<const std
     options.decodeBaseLevel = true;
     options.keepRawEncodedPayload = false;
     auto archive = spice::gvm::parsing::parseGvmArchive(bytes, textureTableOffset, options);
-    out.diagnostics.insert(out.diagnostics.end(), archive.diagnostics.begin(), archive.diagnostics.end());
+    for (const auto& message : archive.diagnostics)
+        addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Warning,
+            message, textureTableOffset);
 
     std::size_t cursor = tableEnd;
     const auto count = std::min(out.entries.size(), archive.textures.size());
@@ -120,19 +178,28 @@ void populateGvrArchive(model::MldTextureArchive& out, const std::span<const std
         entry.paletteDataSize = texture.paletteData.size();
         copyBytes(entry.encodedData, bytes, texture.sourceOffset,
             std::min(bytes.size(), texture.sourceOffset + texture.sourceSize));
-        entry.diagnostics = texture.diagnostics;
+        for (const auto& message : texture.diagnostics)
+            addDiagnostic(entry.diagnostics, model::MldDiagnostic::Severity::Warning,
+                message, texture.sourceOffset, model::MldResourceKind::TextureArchiveEntry);
         if (texture.decodedBaseLevel.has_value()) {
             entry.decoded = !texture.decodedBaseLevel->rgba8.empty();
             entry.width = static_cast<std::uint16_t>(texture.decodedBaseLevel->width);
             entry.height = static_cast<std::uint16_t>(texture.decodedBaseLevel->height);
             entry.rgba8 = texture.decodedBaseLevel->rgba8;
         }
+        entry.status = entry.decoded
+            ? model::MldResourceStatus::Complete
+            : model::MldResourceStatus::Partial;
         cursor = std::max(cursor, texture.sourceOffset + texture.sourceSize);
         out.archiveEndOffset = std::max(out.archiveEndOffset, cursor);
     }
     if (archive.textures.size() != out.entries.size())
-        out.diagnostics.push_back("Texture record count does not match the number of GVR chunks.");
-    out.diagnostics.push_back("Texture archive parse extracted " + std::to_string(count) + " GVR texture chunk(s).");
+        addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Warning,
+            "Texture record count does not match the number of GVR chunks.", textureTableOffset);
+    addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Info,
+        "Texture archive parse extracted " + std::to_string(count) + " GVR texture chunk(s).",
+        textureTableOffset);
+    finalizeArchiveStatus(out);
 }
 
 void populatePvrArchive(model::MldTextureArchive& out, const std::span<const std::uint8_t> bytes,
@@ -145,8 +212,12 @@ void populatePvrArchive(model::MldTextureArchive& out, const std::span<const std
         entry.archiveOffset = cursor;
         const auto blockSize = static_cast<std::size_t>(entry.declaredBlockSize);
         if (blockSize == 0U || cursor > bytes.size()) {
-            entry.diagnostics.push_back("Dreamcast texture record block size is zero or outside file bounds.");
-            out.diagnostics.push_back("Dreamcast texture archive contains an invalid record block size.");
+            entry.status = model::MldResourceStatus::Failed;
+            addDiagnostic(entry.diagnostics, model::MldDiagnostic::Severity::Error,
+                "Dreamcast texture record block size is zero or outside file bounds.", cursor,
+                model::MldResourceKind::TextureArchiveEntry);
+            addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Warning,
+                "Dreamcast texture archive contains an invalid record block size.", cursor);
             break;
         }
 
@@ -154,20 +225,32 @@ void populatePvrArchive(model::MldTextureArchive& out, const std::span<const std
         if (entry.rawRecordWord1 == kDreamcastAlignFlag)
             prefixSize = (32U - (cursor & 31U)) & 31U;
         else if (entry.rawRecordWord1 != 0U)
-            entry.diagnostics.push_back("Dreamcast texture record has an unknown alignment control word.");
+            addDiagnostic(entry.diagnostics, model::MldDiagnostic::Severity::Warning,
+                "Dreamcast texture record has an unknown alignment control word.", cursor,
+                model::MldResourceKind::TextureArchiveEntry);
         if (prefixSize > bytes.size() - cursor || blockSize > bytes.size() - cursor - prefixSize) {
-            entry.diagnostics.push_back("Dreamcast texture alignment prefix and declared block exceed file bounds.");
+            entry.status = model::MldResourceStatus::Failed;
+            addDiagnostic(entry.diagnostics, model::MldDiagnostic::Severity::Error,
+                "Dreamcast texture alignment prefix and declared block exceed file bounds.", cursor,
+                model::MldResourceKind::TextureArchiveEntry);
             break;
         }
 
         const auto textureOffset = cursor + prefixSize;
         const auto blockEnd = textureOffset + blockSize;
         copyBytes(entry.alignmentPrefixBytes, bytes, cursor, textureOffset);
+        entry.encodedDataOffset = textureOffset;
+        entry.encodedDataSize = blockSize;
+        copyBytes(entry.encodedData, bytes, textureOffset, blockEnd);
         auto texture = spice::pvm::parsing::parsePvrTexture(bytes, textureOffset);
         if (texture.status == spice::pvm::model::ParseStatus::Failed ||
             texture.sourceRange.end() > blockEnd) {
-            entry.diagnostics.push_back("Dreamcast texture record does not contain a bounded PVR texture at its expected offset.");
-            out.diagnostics.push_back("Dreamcast texture archive contains an undecodable record.");
+            entry.status = model::MldResourceStatus::Partial;
+            addDiagnostic(entry.diagnostics, model::MldDiagnostic::Severity::Warning,
+                "Dreamcast texture record does not contain a bounded PVR texture at its expected offset.",
+                textureOffset, model::MldResourceKind::TextureArchiveEntry);
+            addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Warning,
+                "Dreamcast texture archive contains an undecodable record.", textureOffset);
             cursor = blockEnd;
             out.archiveEndOffset = std::max(out.archiveEndOffset, cursor);
             continue;
@@ -190,20 +273,28 @@ void populatePvrArchive(model::MldTextureArchive& out, const std::span<const std
         entry.imageDataOffset = texture.textureDataRange.offset;
         entry.imageDataSize = texture.textureDataRange.size;
         for (const auto& diagnostic : texture.diagnostics)
-            entry.diagnostics.push_back(diagnostic.message);
+            addDiagnostic(entry.diagnostics, convertSeverity(diagnostic.severity),
+                diagnostic.message, diagnostic.offset, model::MldResourceKind::TextureArchiveEntry);
 
         const auto decoded = spice::pvm::decoding::decodePvrTexture(texture);
         for (const auto& diagnostic : decoded.diagnostics)
-            entry.diagnostics.push_back(diagnostic.message);
+            addDiagnostic(entry.diagnostics, convertSeverity(diagnostic.severity),
+                diagnostic.message, diagnostic.offset, model::MldResourceKind::TextureArchiveEntry);
         if (decoded.status != spice::pvm::model::ParseStatus::Failed && !decoded.mipLevels.empty()) {
             entry.decoded = true;
             entry.rgba8 = decoded.mipLevels.front().image.pixels;
         }
+        entry.status = entry.decoded
+            ? model::MldResourceStatus::Complete
+            : model::MldResourceStatus::Partial;
         ++parsedCount;
         cursor = blockEnd;
         out.archiveEndOffset = std::max(out.archiveEndOffset, cursor);
     }
-    out.diagnostics.push_back("Texture archive parse extracted " + std::to_string(parsedCount) + " PVR texture chunk(s).");
+    addDiagnostic(out.diagnostics, model::MldDiagnostic::Severity::Info,
+        "Texture archive parse extracted " + std::to_string(parsedCount) + " PVR texture chunk(s).",
+        out.tableOffset);
+    finalizeArchiveStatus(out);
 }
 
 } // namespace
@@ -212,12 +303,14 @@ model::MldTextureArchive parseMldTextureArchive(const std::span<const std::uint8
     const std::size_t textureTableOffset, const spice::root::Endian endian)
 {
     model::MldTextureArchive out;
+    out.status = model::MldResourceStatus::Failed;
     out.tableOffset = textureTableOffset;
     out.archiveStartOffset = textureTableOffset;
     out.archiveEndOffset = textureTableOffset;
     std::size_t tableEnd = textureTableOffset;
     if (!initializeRecords(out, bytes, textureTableOffset, endian, tableEnd))
         return out;
+    out.status = model::MldResourceStatus::Complete;
     if (endian == spice::root::Endian::Little)
         populatePvrArchive(out, bytes, tableEnd);
     else

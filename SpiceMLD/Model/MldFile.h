@@ -3,6 +3,7 @@
 #include "../../SpiceRoot/Binary/Endian.h"
 #include "IndexEntry.h"
 #include "MldGroundModel.h"
+#include "MldDiagnostics.h"
 #include "MldTextureArchiveModel.h"
 #include "../../Sa3Dport/Animation/MotionTargetLayout.h"
 #include "../../Sa3Dport/File/NinjaMotionBlock.h"
@@ -30,18 +31,6 @@ enum class MldParseStatus {
     Partial,
     Complete,
     Failed,
-};
-
-struct MldDiagnostic {
-    enum class Severity {
-        Info,
-        Warning,
-        Error,
-    };
-
-    Severity severity = Severity::Info;
-    std::string message{};
-    std::optional<std::uint32_t> sourceOffset{};
 };
 
 enum class TargetPlatform {
@@ -102,6 +91,7 @@ struct MldIndexEntryRecord {
 };
 
 struct MldObjectResource {
+    MldResourceStatus status = MldResourceStatus::Empty;
     std::uint32_t sourceAddress = 0;
     std::uint32_t blockOffset = 0;
     std::size_t blockSize = 0;
@@ -128,6 +118,7 @@ struct MldMotionVariant {
 };
 
 struct MldMotionResource {
+    MldResourceStatus status = MldResourceStatus::Empty;
     std::uint32_t sourceAddress = 0;
     std::uint32_t blockOffset = 0;
     std::size_t blockSize = 0;
@@ -192,6 +183,7 @@ struct MldGroundResource {
         Unknown,
     };
 
+    MldResourceStatus status = MldResourceStatus::Empty;
     Kind kind = Kind::Unknown;
     std::uint32_t sourceAddress = 0;
     std::size_t blockSize = 0;
@@ -203,8 +195,43 @@ struct MldGroundResource {
     std::vector<MldDiagnostic> diagnostics{};
 };
 
+enum class MldTextureListLayout {
+    Njtl,
+    Gjtl,
+    Wrapper,
+    CountedRecords,
+    Unknown,
+};
+
+struct MldTextureListEntry {
+    std::size_t ordinal = 0;
+    MldByteRange recordRange{};
+    std::uint32_t rawNamePointer = 0;
+    std::optional<MldByteRange> nameRange{};
+    std::string name{};
+    std::vector<std::uint8_t> rawRecordBytes{};
+    std::vector<std::uint8_t> rawNameBytes{};
+};
+
+struct MldTextureListResource {
+    MldResourceStatus status = MldResourceStatus::Empty;
+    std::uint32_t sourceAddress = 0;
+    std::uint32_t resolvedListOffset = 0;
+    MldTextureListLayout layout = MldTextureListLayout::Unknown;
+    std::optional<MldByteRange> wrapperRange{};
+    MldByteRange listRange{};
+    std::uint32_t declaredSize = 0;
+    std::uint32_t declaredCount = 0;
+    std::vector<std::uint8_t> sourceBytes{};
+    std::vector<std::uint8_t> wrapperBytes{};
+    std::vector<std::uint8_t> listBytes{};
+    std::vector<MldTextureListEntry> entries{};
+    std::vector<MldDiagnostic> diagnostics{};
+};
+
 struct MldFile {
     MldParseStatus parseStatus = MldParseStatus::Empty;
+    MldResourceStatus assetStatus = MldResourceStatus::Empty;
     TargetPlatform sourcePlatform = TargetPlatform::Unknown;
     spice::root::Endian endian = spice::root::Endian::Big;
     bool sourceWasCompressedAklz = false;
@@ -215,6 +242,7 @@ struct MldFile {
     std::map<std::uint32_t, MldObjectResource> objectResources{};
     std::map<std::uint32_t, MldMotionResource> motionResources{};
     std::map<std::uint32_t, MldGroundResource> groundResources{};
+    std::map<std::uint32_t, MldTextureListResource> textureListResources{};
     std::vector<MldEntryMotionRelation> motionRelations{};
     std::vector<MldAnimationBinding> animationBindings{};
     std::vector<MldSourceRange> sourceRanges{};
