@@ -17,10 +17,18 @@ enum class SctScptValueKind {
     ByteVariable,
     BitVariable,
     FloatVariable,
-    DirectIntVariable,
-    NegatedIntVariable,
-    NegatedIntVariableLow16Comparison,
+    // IntegerVariable converts an IntVars slot from signed int32 to float.
+    // The low-16 form uses the same value conversion but sets the interpreter's
+    // comparison flag. FloatBackedIntegerVariable reads the slot as float bits.
+    FloatBackedIntegerVariable,
+    IntegerVariable,
+    IntegerVariableLow16Comparison,
     SecondaryValue,
+
+    // Frozen-v3 source compatibility for names based on a decompiler artifact.
+    DirectIntVariable = FloatBackedIntegerVariable,
+    NegatedIntVariable = IntegerVariable,
+    NegatedIntVariableLow16Comparison = IntegerVariableLow16Comparison,
 };
 
 struct SctScptValueOperation {

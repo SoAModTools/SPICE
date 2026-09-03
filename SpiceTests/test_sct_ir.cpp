@@ -362,7 +362,7 @@ TEST(SctIr, ParserBuildsTypedScptProgramFamilies)
     const auto& intVariable = instructions[2].parameters.front().expression;
     ASSERT_TRUE(intVariable.has_value());
     ASSERT_TRUE(intVariable->program.has_value());
-    EXPECT_EQ(spice::sct::SctScptValueKind::NegatedIntVariableLow16Comparison,
+    EXPECT_EQ(spice::sct::SctScptValueKind::IntegerVariableLow16Comparison,
         std::get<spice::sct::SctScptValueOperation>(intVariable->program->operations.front()).kind);
 
     const auto& floatVariable = instructions[3].parameters.front().expression;

@@ -105,9 +105,9 @@ std::vector<SctOpaqueAttachmentId> crossedAttachments(const SctImportedSourceMap
 
 std::optional<SctVariableKind> variableKind(SctScptValueKind kind) {
     switch (kind) {
-    case SctScptValueKind::DirectIntVariable:
-    case SctScptValueKind::NegatedIntVariable:
-    case SctScptValueKind::NegatedIntVariableLow16Comparison:
+    case SctScptValueKind::FloatBackedIntegerVariable:
+    case SctScptValueKind::IntegerVariable:
+    case SctScptValueKind::IntegerVariableLow16Comparison:
         return SctVariableKind::Integer;
     case SctScptValueKind::FloatVariable: return SctVariableKind::Float;
     case SctScptValueKind::BitVariable: return SctVariableKind::Bit;

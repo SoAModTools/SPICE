@@ -58,9 +58,13 @@ public:
 
     [[nodiscard]] static BuildResult scaledDecimalLiteral(std::int32_t units256);
     [[nodiscard]] static BuildResult integerInput(std::uint32_t index);
-    [[nodiscard]] static BuildResult directIntegerVariable(std::uint32_t index);
-    [[nodiscard]] static BuildResult negatedIntegerVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult integerVariable(std::uint32_t index);
+    [[nodiscard]] static BuildResult floatBackedIntegerVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult low16ComparisonIntegerVariable(std::uint32_t index);
+    [[deprecated("Use floatBackedIntegerVariable(); this path reads the IntVars slot as float.")]]
+    [[nodiscard]] static BuildResult directIntegerVariable(std::uint32_t index);
+    [[deprecated("Use integerVariable(); the runtime does not negate this value.")]]
+    [[nodiscard]] static BuildResult negatedIntegerVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult floatVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult bitVariable(std::uint32_t index);
     [[nodiscard]] static BuildResult byteVariable(std::uint32_t index);

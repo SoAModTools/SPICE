@@ -23,11 +23,21 @@ enum class SctScptWordKind {
     ByteVariable,
     BitVariable,
     FloatVariable,
-    DirectIntVariable,
-    NegatedIntVariable,
-    NegatedIntVariableLow16Comparison,
+    // The 0x50000000 family selects one of three confirmed IntVars access
+    // paths. IntegerVariable performs signed-int32-to-float conversion,
+    // IntegerVariableLow16Comparison additionally sets the comparison flag,
+    // and FloatBackedIntegerVariable reads the IntVars slot directly as float.
+    FloatBackedIntegerVariable,
+    IntegerVariable,
+    IntegerVariableLow16Comparison,
     SecondaryValue,
     Stop,
+
+    // Frozen-v3 source compatibility. These names reflected a decompiler
+    // artifact and must not be used to describe the runtime semantics.
+    DirectIntVariable = FloatBackedIntegerVariable,
+    NegatedIntVariable = IntegerVariable,
+    NegatedIntVariableLow16Comparison = IntegerVariableLow16Comparison,
 };
 
 struct SctScptWordClassification {

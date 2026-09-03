@@ -184,9 +184,9 @@ void expectNeighborhoodEqual(const SctSourceRecordNeighborhood& actual,
 
 SctCanonicalExpression variableExpression() {
     return {SctTypedScptProgram{{
-        SctScptValueOperation{SctScptValueKind::DirectIntVariable, 0x50000018u, {}},
-        SctScptValueOperation{SctScptValueKind::NegatedIntVariable, 0x50000008u, {}},
-        SctScptValueOperation{SctScptValueKind::NegatedIntVariableLow16Comparison, 0x5000000fu, {}},
+        SctScptValueOperation{SctScptValueKind::FloatBackedIntegerVariable, 0x50000018u, {}},
+        SctScptValueOperation{SctScptValueKind::IntegerVariable, 0x50000008u, {}},
+        SctScptValueOperation{SctScptValueKind::IntegerVariableLow16Comparison, 0x5000000fu, {}},
         SctScptValueOperation{SctScptValueKind::FloatVariable, 0x40000003u, {}},
         SctScptValueOperation{SctScptValueKind::BitVariable, 0x20000004u, {}},
         SctScptValueOperation{SctScptValueKind::ByteVariable, 0x10000005u, {}}}},
@@ -491,7 +491,7 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
     EXPECT_EQ(usage.variableUsages().size(), 6u);
     EXPECT_EQ(usage.usagesForVariable({SctVariableKind::Integer, 24u}).size(), 1u);
     EXPECT_TRUE(std::any_of(usage.variableUsages().begin(), usage.variableUsages().end(), [](const auto& item) {
-        return item.encodedForm == SctScptValueKind::NegatedIntVariableLow16Comparison
+        return item.encodedForm == SctScptValueKind::IntegerVariableLow16Comparison
             && item.source.operationOrdinal == 2u;
     }));
     ASSERT_EQ(usage.unresolvedReferences().size(), 1u);

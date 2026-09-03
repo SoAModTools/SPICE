@@ -547,7 +547,7 @@ TEST(SctDocumentEditing, TypedExpressionEditsExportAndReimport) {
     const auto& operations = std::get<SctTypedScptProgram>(editedExpression.body).operations;
     ASSERT_EQ(operations.size(), 3u);
     EXPECT_EQ(std::get<SctScptValueOperation>(operations[0]).kind,
-        SctScptValueKind::NegatedIntVariable);
+        SctScptValueKind::IntegerVariable);
     EXPECT_EQ(std::get<SctScptValueOperation>(operations[0]).encodingWord, 0x50000008u);
     EXPECT_EQ(std::get<SctScptValueOperation>(operations[1]).kind,
         SctScptValueKind::DecimalLiteral);

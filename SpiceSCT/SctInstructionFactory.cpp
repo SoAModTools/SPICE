@@ -128,10 +128,12 @@ SctExpressionBuildResult buildVariable(std::uint32_t prefix, std::uint32_t index
     const auto classified = classifySctScptWord(prefix | index);
     const auto actualKind = [&]() {
         switch (classified.kind) {
-        case SctScptWordKind::DirectIntVariable: return SctScptValueKind::DirectIntVariable;
-        case SctScptWordKind::NegatedIntVariable: return SctScptValueKind::NegatedIntVariable;
-        case SctScptWordKind::NegatedIntVariableLow16Comparison:
-            return SctScptValueKind::NegatedIntVariableLow16Comparison;
+        case SctScptWordKind::FloatBackedIntegerVariable:
+            return SctScptValueKind::FloatBackedIntegerVariable;
+        case SctScptWordKind::IntegerVariable:
+            return SctScptValueKind::IntegerVariable;
+        case SctScptWordKind::IntegerVariableLow16Comparison:
+            return SctScptValueKind::IntegerVariableLow16Comparison;
         case SctScptWordKind::SecondaryValue: return SctScptValueKind::SecondaryValue;
         case SctScptWordKind::FloatVariable: return SctScptValueKind::FloatVariable;
         case SctScptWordKind::BitVariable: return SctScptValueKind::BitVariable;
@@ -178,10 +180,12 @@ SctExpressionBuildResult SctExpressionFactory::integerInput(std::uint32_t index)
     const auto classification = classifySctScptWord(0x50000000u | index);
     SctScptValueKind kind;
     switch (classification.kind) {
-    case SctScptWordKind::DirectIntVariable: kind = SctScptValueKind::DirectIntVariable; break;
-    case SctScptWordKind::NegatedIntVariable: kind = SctScptValueKind::NegatedIntVariable; break;
-    case SctScptWordKind::NegatedIntVariableLow16Comparison:
-        kind = SctScptValueKind::NegatedIntVariableLow16Comparison; break;
+    case SctScptWordKind::FloatBackedIntegerVariable:
+        kind = SctScptValueKind::FloatBackedIntegerVariable; break;
+    case SctScptWordKind::IntegerVariable:
+        kind = SctScptValueKind::IntegerVariable; break;
+    case SctScptWordKind::IntegerVariableLow16Comparison:
+        kind = SctScptValueKind::IntegerVariableLow16Comparison; break;
     case SctScptWordKind::SecondaryValue: kind = SctScptValueKind::SecondaryValue; break;
     default:
         addError(result, SctDiagnosticCode::ExpressionInvalid,
@@ -195,18 +199,24 @@ SctExpressionBuildResult SctExpressionFactory::integerInput(std::uint32_t index)
     return result;
 }
 
-SctExpressionBuildResult SctExpressionFactory::directIntegerVariable(std::uint32_t index) {
+SctExpressionBuildResult SctExpressionFactory::integerVariable(std::uint32_t index) {
     return buildVariable(0x50000000u, index, 0x00ffffffu,
-        SctScptValueKind::DirectIntVariable, "SCPT integer index exceeds 24 bits.");
+        SctScptValueKind::IntegerVariable, "SCPT integer index exceeds 24 bits.");
 }
-SctExpressionBuildResult SctExpressionFactory::negatedIntegerVariable(std::uint32_t index) {
+SctExpressionBuildResult SctExpressionFactory::floatBackedIntegerVariable(std::uint32_t index) {
     return buildVariable(0x50000000u, index, 0x00ffffffu,
-        SctScptValueKind::NegatedIntVariable, "SCPT integer index exceeds 24 bits.");
+        SctScptValueKind::FloatBackedIntegerVariable, "SCPT integer index exceeds 24 bits.");
 }
 SctExpressionBuildResult SctExpressionFactory::low16ComparisonIntegerVariable(std::uint32_t index) {
     return buildVariable(0x50000000u, index, 0x00ffffffu,
-        SctScptValueKind::NegatedIntVariableLow16Comparison,
+        SctScptValueKind::IntegerVariableLow16Comparison,
         "SCPT integer index exceeds 24 bits.");
+}
+SctExpressionBuildResult SctExpressionFactory::directIntegerVariable(std::uint32_t index) {
+    return floatBackedIntegerVariable(index);
+}
+SctExpressionBuildResult SctExpressionFactory::negatedIntegerVariable(std::uint32_t index) {
+    return integerVariable(index);
 }
 SctExpressionBuildResult SctExpressionFactory::floatVariable(std::uint32_t index) {
     return buildVariable(0x40000000u, index, 0x0fffffffu,

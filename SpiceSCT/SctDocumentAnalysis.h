@@ -67,7 +67,7 @@ struct SctVariableIdentity {
 
 struct SctVariableUsage {
     SctVariableIdentity variable;
-    SctScptValueKind encodedForm = SctScptValueKind::DirectIntVariable;
+    SctScptValueKind encodedForm = SctScptValueKind::IntegerVariable;
     SctExpressionOperationSite source;
 };
 

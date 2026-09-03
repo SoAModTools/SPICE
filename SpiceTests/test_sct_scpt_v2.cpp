@@ -205,7 +205,7 @@ TEST(SctScptV3, StackOverwriteClearsOnlyDestinationComparisonFlag) {
         return analyzeSctScptProgram(SctTypedScptProgram{std::move(operations)});
     };
     const auto flaggedThenPlain = analyze({
-        SctScptValueOperation{SctScptValueKind::NegatedIntVariableLow16Comparison, 0x5000000fu, {}},
+        SctScptValueOperation{SctScptValueKind::IntegerVariableLow16Comparison, 0x5000000fu, {}},
         SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}},
         SctScptStackOverwritePreviousWithTopOperation{},
     });
@@ -214,7 +214,7 @@ TEST(SctScptV3, StackOverwriteClearsOnlyDestinationComparisonFlag) {
 
     const auto plainThenFlagged = analyze({
         SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}},
-        SctScptValueOperation{SctScptValueKind::NegatedIntVariableLow16Comparison, 0x5000000fu, {}},
+        SctScptValueOperation{SctScptValueKind::IntegerVariableLow16Comparison, 0x5000000fu, {}},
         SctScptStackOverwritePreviousWithTopOperation{},
     });
     ASSERT_TRUE(plainThenFlagged.returnedExpression);
@@ -252,13 +252,14 @@ TEST(SctScptV3, IntegerInputClassificationCoversConfirmedBoundaries) {
     struct Case { std::uint32_t index; SctScptWordKind kind; };
     const Case cases[]{
         {0u, SctScptWordKind::SecondaryValue}, {7u, SctScptWordKind::SecondaryValue},
-        {8u, SctScptWordKind::NegatedIntVariable}, {14u, SctScptWordKind::NegatedIntVariable},
-        {15u, SctScptWordKind::NegatedIntVariableLow16Comparison},
-        {16u, SctScptWordKind::NegatedIntVariable}, {23u, SctScptWordKind::NegatedIntVariable},
-        {24u, SctScptWordKind::DirectIntVariable}, {32u, SctScptWordKind::DirectIntVariable},
-        {33u, SctScptWordKind::NegatedIntVariable}, {0x4au, SctScptWordKind::SecondaryValue},
-        {0x4bu, SctScptWordKind::NegatedIntVariable},
-        {0x00ffffffu, SctScptWordKind::NegatedIntVariable},
+        {8u, SctScptWordKind::IntegerVariable}, {14u, SctScptWordKind::IntegerVariable},
+        {15u, SctScptWordKind::IntegerVariableLow16Comparison},
+        {16u, SctScptWordKind::IntegerVariable}, {23u, SctScptWordKind::IntegerVariable},
+        {24u, SctScptWordKind::FloatBackedIntegerVariable},
+        {32u, SctScptWordKind::FloatBackedIntegerVariable},
+        {33u, SctScptWordKind::IntegerVariable}, {0x4au, SctScptWordKind::SecondaryValue},
+        {0x4bu, SctScptWordKind::IntegerVariable},
+        {0x00ffffffu, SctScptWordKind::IntegerVariable},
     };
     for (const auto& entry : cases) {
         EXPECT_EQ(classifySctScptWord(0x50000000u | entry.index).kind, entry.kind) << entry.index;
@@ -271,21 +272,43 @@ TEST(SctScptV3, IntegerInputClassificationCoversConfirmedBoundaries) {
     }
 }
 
-TEST(SctScptV3, ExplicitVariableAndScaledDecimalFactoriesRejectWrongDomains) {
-    const auto direct = SctExpressionFactory::directIntegerVariable(24u);
-    ASSERT_TRUE(direct.expression);
-    EXPECT_EQ(direct.selectedValueKind, SctScptValueKind::DirectIntVariable);
-    EXPECT_FALSE(SctExpressionFactory::directIntegerVariable(23u).expression);
+TEST(SctScptV3, IntegerInputPresentationDoesNotClaimArithmeticNegation) {
+    const auto parsed = SctParser{}.parse(makeExpressionFile(
+        {0x50000008u, 0x5000000fu, 0x50000018u, 0x0000001du}));
+    ASSERT_TRUE(parsed.parseOk);
+    const auto& parameter = firstExpression(parsed);
+    ASSERT_TRUE(parameter.expression);
+    ASSERT_EQ(parameter.expression->trace.size(), 4u);
+    EXPECT_EQ(parameter.expression->trace[0].interpretedValue, "IntVar: 8");
+    EXPECT_EQ(parameter.expression->trace[1].interpretedValue,
+        "IntVarLow16Comparison: 15");
+    EXPECT_EQ(parameter.expression->trace[2].interpretedValue,
+        "FloatBackedIntVar: 24");
 
-    const auto negated = SctExpressionFactory::negatedIntegerVariable(8u);
-    ASSERT_TRUE(negated.expression);
-    EXPECT_EQ(negated.selectedValueKind, SctScptValueKind::NegatedIntVariable);
-    EXPECT_FALSE(SctExpressionFactory::negatedIntegerVariable(24u).expression);
+    const auto json = SctJsonExporter{}.toJson(parsed);
+    EXPECT_NE(json.find("\"valueKind\":\"int_variable\""), std::string::npos);
+    EXPECT_NE(json.find("\"valueKind\":\"int_variable_low16_comparison\""),
+        std::string::npos);
+    EXPECT_NE(json.find("\"valueKind\":\"float_backed_int_variable\""),
+        std::string::npos);
+    EXPECT_EQ(json.find("negated_int_variable"), std::string::npos);
+}
+
+TEST(SctScptV3, ExplicitVariableAndScaledDecimalFactoriesRejectWrongDomains) {
+    const auto floatBacked = SctExpressionFactory::floatBackedIntegerVariable(24u);
+    ASSERT_TRUE(floatBacked.expression);
+    EXPECT_EQ(floatBacked.selectedValueKind, SctScptValueKind::FloatBackedIntegerVariable);
+    EXPECT_FALSE(SctExpressionFactory::floatBackedIntegerVariable(23u).expression);
+
+    const auto integer = SctExpressionFactory::integerVariable(8u);
+    ASSERT_TRUE(integer.expression);
+    EXPECT_EQ(integer.selectedValueKind, SctScptValueKind::IntegerVariable);
+    EXPECT_FALSE(SctExpressionFactory::integerVariable(24u).expression);
 
     const auto low16 = SctExpressionFactory::low16ComparisonIntegerVariable(15u);
     ASSERT_TRUE(low16.expression);
     EXPECT_EQ(low16.selectedValueKind,
-        SctScptValueKind::NegatedIntVariableLow16Comparison);
+        SctScptValueKind::IntegerVariableLow16Comparison);
     EXPECT_FALSE(SctExpressionFactory::low16ComparisonIntegerVariable(14u).expression);
 
     EXPECT_TRUE(SctExpressionFactory::floatVariable(0x0fffffffu).expression);
@@ -421,7 +444,7 @@ TEST(SctScptV3, EveryInputRangeAcceptsAndPreservesRuntimeRecognizedPrefixes) {
     EXPECT_EQ(firstValue(*SctExpressionFactory::byteVariable(1).expression).encodingWord, 0x10000001u);
     EXPECT_EQ(firstValue(*SctExpressionFactory::bitVariable(1).expression).encodingWord, 0x20000001u);
     EXPECT_EQ(firstValue(*SctExpressionFactory::floatVariable(1).expression).encodingWord, 0x40000001u);
-    EXPECT_EQ(firstValue(*SctExpressionFactory::directIntegerVariable(24).expression).encodingWord,
+    EXPECT_EQ(firstValue(*SctExpressionFactory::floatBackedIntegerVariable(24).expression).encodingWord,
         0x50000018u);
 }
 

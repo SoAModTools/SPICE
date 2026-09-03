@@ -290,10 +290,11 @@ struct OpcodeBoundaryProbe {
     case SctScptWordKind::ByteVariable: return SctScptValueKind::ByteVariable;
     case SctScptWordKind::BitVariable: return SctScptValueKind::BitVariable;
     case SctScptWordKind::FloatVariable: return SctScptValueKind::FloatVariable;
-    case SctScptWordKind::DirectIntVariable: return SctScptValueKind::DirectIntVariable;
-    case SctScptWordKind::NegatedIntVariable: return SctScptValueKind::NegatedIntVariable;
-    case SctScptWordKind::NegatedIntVariableLow16Comparison:
-        return SctScptValueKind::NegatedIntVariableLow16Comparison;
+    case SctScptWordKind::FloatBackedIntegerVariable:
+        return SctScptValueKind::FloatBackedIntegerVariable;
+    case SctScptWordKind::IntegerVariable: return SctScptValueKind::IntegerVariable;
+    case SctScptWordKind::IntegerVariableLow16Comparison:
+        return SctScptValueKind::IntegerVariableLow16Comparison;
     case SctScptWordKind::SecondaryValue: return SctScptValueKind::SecondaryValue;
     default: break;
     }
@@ -313,10 +314,11 @@ struct OpcodeBoundaryProbe {
     case SctScptWordKind::ByteVariable: return "ByteVar: " + std::to_string(index);
     case SctScptWordKind::BitVariable: return "BitVar: " + std::to_string(index);
     case SctScptWordKind::FloatVariable: return "FloatVar: " + std::to_string(index);
-    case SctScptWordKind::DirectIntVariable: return "IntVar: " + std::to_string(index);
-    case SctScptWordKind::NegatedIntVariable: return "NegatedIntVar: " + std::to_string(index);
-    case SctScptWordKind::NegatedIntVariableLow16Comparison:
-        return "NegatedIntVarLow16: " + std::to_string(index);
+    case SctScptWordKind::FloatBackedIntegerVariable:
+        return "FloatBackedIntVar: " + std::to_string(index);
+    case SctScptWordKind::IntegerVariable: return "IntVar: " + std::to_string(index);
+    case SctScptWordKind::IntegerVariableLow16Comparison:
+        return "IntVarLow16Comparison: " + std::to_string(index);
     case SctScptWordKind::SecondaryValue: {
         const auto name = sctScptSecondaryValueName(index);
         return name.empty() ? "Secondary: " + std::to_string(index) : std::string{name};

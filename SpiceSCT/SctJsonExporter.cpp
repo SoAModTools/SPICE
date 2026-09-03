@@ -90,10 +90,11 @@ const char* toString(SctScptValueKind value) {
     case SctScptValueKind::InlineValue: return "inline_value";
     case SctScptValueKind::FloatLiteral: return "float_literal";
     case SctScptValueKind::DecimalLiteral: return "decimal_literal";
-    case SctScptValueKind::DirectIntVariable: return "int_variable";
-    case SctScptValueKind::NegatedIntVariable: return "negated_int_variable";
-    case SctScptValueKind::NegatedIntVariableLow16Comparison:
-        return "negated_int_variable_low16_comparison";
+    case SctScptValueKind::FloatBackedIntegerVariable:
+        return "float_backed_int_variable";
+    case SctScptValueKind::IntegerVariable: return "int_variable";
+    case SctScptValueKind::IntegerVariableLow16Comparison:
+        return "int_variable_low16_comparison";
     case SctScptValueKind::FloatVariable: return "float_variable";
     case SctScptValueKind::BitVariable: return "bit_variable";
     case SctScptValueKind::ByteVariable: return "byte_variable";

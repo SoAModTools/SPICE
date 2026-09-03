@@ -8,13 +8,13 @@ namespace {
 
 SctScptWordKind integerInputKind(std::uint32_t index) noexcept {
     if (index <= 7u || index == 0x4au) return SctScptWordKind::SecondaryValue;
-    if (index == 0x0fu) return SctScptWordKind::NegatedIntVariableLow16Comparison;
-    if (index >= 24u && index <= 32u) return SctScptWordKind::DirectIntVariable;
-    return SctScptWordKind::NegatedIntVariable;
+    if (index == 0x0fu) return SctScptWordKind::IntegerVariableLow16Comparison;
+    if (index >= 24u && index <= 32u) return SctScptWordKind::FloatBackedIntegerVariable;
+    return SctScptWordKind::IntegerVariable;
 }
 
 SctScptComparisonFlag pushedFlag(SctScptValueKind kind) noexcept {
-    return kind == SctScptValueKind::NegatedIntVariableLow16Comparison
+    return kind == SctScptValueKind::IntegerVariableLow16Comparison
         ? SctScptComparisonFlag::Set : SctScptComparisonFlag::Clear;
 }
 
@@ -72,15 +72,16 @@ bool isSctScptOperationEncodingValid(const SctScptOperation& operation) noexcept
             case SctScptValueKind::FloatVariable:
                 kindMatches = classification.kind == SctScptWordKind::FloatVariable;
                 break;
-            case SctScptValueKind::DirectIntVariable:
-                kindMatches = classification.kind == SctScptWordKind::DirectIntVariable;
-                break;
-            case SctScptValueKind::NegatedIntVariable:
-                kindMatches = classification.kind == SctScptWordKind::NegatedIntVariable;
-                break;
-            case SctScptValueKind::NegatedIntVariableLow16Comparison:
+            case SctScptValueKind::FloatBackedIntegerVariable:
                 kindMatches = classification.kind
-                    == SctScptWordKind::NegatedIntVariableLow16Comparison;
+                    == SctScptWordKind::FloatBackedIntegerVariable;
+                break;
+            case SctScptValueKind::IntegerVariable:
+                kindMatches = classification.kind == SctScptWordKind::IntegerVariable;
+                break;
+            case SctScptValueKind::IntegerVariableLow16Comparison:
+                kindMatches = classification.kind
+                    == SctScptWordKind::IntegerVariableLow16Comparison;
                 break;
             case SctScptValueKind::SecondaryValue:
                 kindMatches = classification.kind == SctScptWordKind::SecondaryValue;
