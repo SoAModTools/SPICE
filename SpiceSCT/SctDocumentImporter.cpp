@@ -6,6 +6,8 @@
 #include "SctTextCodec.h"
 
 #include <algorithm>
+#include <array>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <type_traits>
@@ -178,12 +180,30 @@ TextImportDecision decideTextImport(std::span<const std::uint8_t> bytes,
 }
 
 struct ClaimLedger {
-    std::vector<std::uint8_t> claims;
+    std::size_t size = 0u;
+    std::vector<std::pair<std::size_t, std::size_t>> claimedSpans;
+
     bool claim(std::size_t begin, std::size_t size) {
-        if (begin > claims.size() || size > claims.size() - begin) return false;
-        for (std::size_t i = begin; i < begin + size; ++i) if (claims[i]) return false;
-        std::fill(claims.begin() + begin, claims.begin() + begin + size, 1);
+        if (begin > this->size || size > this->size - begin) return false;
+        if (size == 0u) return true;
+        const auto end = begin + size;
+        const auto insertion = std::lower_bound(claimedSpans.begin(), claimedSpans.end(), begin,
+            [](const auto& span, const std::size_t offset) { return span.first < offset; });
+        if (insertion != claimedSpans.begin() && std::prev(insertion)->second > begin) return false;
+        if (insertion != claimedSpans.end() && insertion->first < end) return false;
+        claimedSpans.insert(insertion, {begin, end});
         return true;
+    }
+
+    [[nodiscard]] std::vector<std::pair<std::size_t, std::size_t>> gaps() const {
+        std::vector<std::pair<std::size_t, std::size_t>> result;
+        std::size_t cursor = 0u;
+        for (const auto& [begin, end] : claimedSpans) {
+            if (cursor < begin) result.emplace_back(cursor, begin);
+            cursor = end;
+        }
+        if (cursor < size) result.emplace_back(cursor, size);
+        return result;
     }
 };
 
@@ -697,17 +717,21 @@ SctDocumentImportResult SctDocumentImporter::import(
         return result;
     }
     const auto& bytes = parsed.file.originalPayloadBytes;
-    std::vector<std::uint8_t> lineageBytes(bytes.begin(), bytes.end());
-    lineageBytes.push_back(0x53u);
-    lineageBytes.push_back(static_cast<std::uint8_t>(receipt.source.wrapper));
-    lineageBytes.push_back(options.declaredSourcePlatform
-        ? static_cast<std::uint8_t>(*options.declaredSourcePlatform) : 0xffu);
-    lineageBytes.push_back(options.sourceTextEncoding
-        ? static_cast<std::uint8_t>(options.sourceTextEncoding->characters) : 0xffu);
-    lineageBytes.push_back(options.sourceTextEncoding
-        ? static_cast<std::uint8_t>(options.sourceTextEncoding->messageSpace) : 0xffu);
-    lineageBytes.push_back(static_cast<std::uint8_t>(options.footerTextPromotion));
-    receipt.lineage.sha256 = detail::sha256(lineageBytes);
+    detail::Sha256 lineageHash;
+    lineageHash.update(bytes);
+    const std::array<std::uint8_t, 6> lineageOptions{
+        0x53u,
+        static_cast<std::uint8_t>(receipt.source.wrapper),
+        options.declaredSourcePlatform
+            ? static_cast<std::uint8_t>(*options.declaredSourcePlatform) : 0xffu,
+        options.sourceTextEncoding
+            ? static_cast<std::uint8_t>(options.sourceTextEncoding->characters) : 0xffu,
+        options.sourceTextEncoding
+            ? static_cast<std::uint8_t>(options.sourceTextEncoding->messageSpace) : 0xffu,
+        static_cast<std::uint8_t>(options.footerTextPromotion),
+    };
+    lineageHash.update(lineageOptions);
+    receipt.lineage.sha256 = lineageHash.finish();
     const std::uint64_t dataStart64 = 12ull + (20ull * parsed.file.sections.size());
     if (bytes.size() < dataStart64) {
         addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
@@ -792,30 +816,37 @@ SctDocumentImportResult SctDocumentImporter::import(
     }
 
     InstructionMap instructionIds;
+    std::unordered_map<std::uint32_t, const SctInstruction*> parsedInstructions;
     for (const auto& section : parsed.file.sections) {
-        std::vector<int> owners(section.endOffset - section.startOffset, -1);
         std::vector<bool> unsafe(section.instructions.size(), false);
         const auto order = physicalInstructionOrder(section);
+        std::vector<std::pair<std::uint32_t, std::size_t>> active;
         for (const auto i : order) {
             const auto& instruction = section.instructions[i];
             if (!instruction.decodeOk || !findSctOpcodeSchema(instruction.opcode)
-                || instruction.offset > owners.size() || instruction.sizeBytes > owners.size() - instruction.offset) {
+                || instruction.offset > section.endOffset - section.startOffset
+                || instruction.sizeBytes > section.endOffset - section.startOffset - instruction.offset) {
                 unsafe[i] = true;
                 continue;
             }
-            for (std::size_t pos = instruction.offset; pos < instruction.offset + instruction.sizeBytes; ++pos) {
-                if (owners[pos] >= 0) {
-                    unsafe[i] = true;
-                    unsafe[static_cast<std::size_t>(owners[pos])] = true;
-                } else {
-                    owners[pos] = static_cast<int>(i);
-                }
+            const auto begin = instruction.offset;
+            const auto end = begin + instruction.sizeBytes;
+            std::erase_if(active, [&](const auto& span) { return span.first <= begin; });
+            for (const auto& [activeEnd, activeIndex] : active) {
+                (void)activeEnd;
+                unsafe[i] = true;
+                unsafe[activeIndex] = true;
             }
+            if (instruction.sizeBytes != 0u) active.emplace_back(end, i);
         }
         for (const auto i : order) {
-            if (!unsafe[i]) instructionIds.emplace(section.instructions[i].payloadOffset, document.allocateInstructionId());
+            if (!unsafe[i]) {
+                instructionIds.emplace(section.instructions[i].payloadOffset, document.allocateInstructionId());
+                parsedInstructions.emplace(section.instructions[i].payloadOffset, &section.instructions[i]);
+            }
         }
     }
+    std::unordered_set<std::uint64_t> observedFallthroughSources;
     for (const auto& section : parsed.file.sections) {
         std::unordered_map<std::uint32_t, std::uint32_t> switchOrdinals;
         for (const auto& edge : section.edges) {
@@ -823,11 +854,8 @@ SctDocumentImportResult SctDocumentImporter::import(
             const auto kind = controlFlowKind(edge.type);
             const auto sourceId = instructionIds.find(*edge.fromPayloadOffset);
             if (!kind || sourceId == instructionIds.end()) continue;
-            const auto sourceInstruction = std::find_if(section.instructions.begin(),
-                section.instructions.end(), [&](const auto& instruction) {
-                    return instruction.payloadOffset == *edge.fromPayloadOffset;
-                });
-            if (sourceInstruction == section.instructions.end()) continue;
+            const auto sourceInstruction = parsedInstructions.find(*edge.fromPayloadOffset);
+            if (sourceInstruction == parsedInstructions.end()) continue;
             const auto switchOrdinal = *kind == SctControlFlowKind::SwitchCase
                 ? switchOrdinals[*edge.fromPayloadOffset]++ : 0u;
             std::optional<SctInstructionId> targetId;
@@ -836,10 +864,13 @@ SctDocumentImportResult SctDocumentImporter::import(
                     found != instructionIds.end()) targetId = found->second;
             }
             receipt.controlFlow.push_back({sourceId->second, *kind, edge.confidence,
-                controlFlowOrigin(*sourceInstruction, *kind, switchOrdinal, sourceId->second),
+                controlFlowOrigin(*sourceInstruction->second, *kind, switchOrdinal, sourceId->second),
                 targetId, edge.toPayloadOffset
                     ? std::optional<std::uint32_t>{dataStart + *edge.toPayloadOffset}
                     : std::nullopt});
+            if (*kind == SctControlFlowKind::Fallthrough) {
+                observedFallthroughSources.insert(sourceId->second.value());
+            }
         }
         const auto order = physicalInstructionOrder(section);
         for (std::size_t orderIndex = 0; orderIndex + 1u < order.size(); ++orderIndex) {
@@ -851,12 +882,7 @@ SctDocumentImportResult SctDocumentImporter::import(
             if (sourceId == instructionIds.end() || schema == nullptr) continue;
             if (schema->semantic.controlRole != SctOpcodeControlRole::None
                 && schema->semantic.controlRole != SctOpcodeControlRole::CallSubscript) continue;
-            const bool alreadyObserved = std::any_of(receipt.controlFlow.begin(),
-                receipt.controlFlow.end(), [&](const auto& observation) {
-                    return observation.sourceInstruction == sourceId->second
-                        && observation.kind == SctControlFlowKind::Fallthrough;
-                });
-            if (alreadyObserved) continue;
+            if (observedFallthroughSources.contains(sourceId->second.value())) continue;
             receipt.controlFlow.push_back({sourceId->second,
                 SctControlFlowKind::Fallthrough, SctSemanticConfidence::Known, std::nullopt,
                 targetId == instructionIds.end() ? std::nullopt
@@ -875,19 +901,24 @@ SctDocumentImportResult SctDocumentImporter::import(
         });
         const auto footerSize = sourceFooter.payloadEndOffset >= sourceFooter.payloadStartOffset
             ? sourceFooter.payloadEndOffset - sourceFooter.payloadStartOffset : 0;
-        std::vector<int> owners(footerSize, -1);
         std::vector<bool> unsafe(sourceFooter.entries.size(), false);
+        std::vector<std::pair<std::uint32_t, std::size_t>> active;
         for (const auto i : footerEntryOrder) {
             const auto& entry = sourceFooter.entries[i];
             if (entry.payloadOffset < sourceFooter.payloadStartOffset) { unsafe[i] = true; continue; }
             const auto local = entry.payloadOffset - sourceFooter.payloadStartOffset;
-            if (local > owners.size() || entry.rawBytes.size() > owners.size() - local) { unsafe[i] = true; continue; }
-            for (std::size_t pos = local; pos < local + entry.rawBytes.size(); ++pos) {
-                if (owners[pos] >= 0) {
-                    unsafe[i] = true;
-                    unsafe[static_cast<std::size_t>(owners[pos])] = true;
-                } else owners[pos] = static_cast<int>(i);
+            if (local > footerSize || entry.rawBytes.size() > footerSize - local) {
+                unsafe[i] = true;
+                continue;
             }
+            const auto end = local + static_cast<std::uint32_t>(entry.rawBytes.size());
+            std::erase_if(active, [&](const auto& span) { return span.first <= local; });
+            for (const auto& [activeEnd, activeIndex] : active) {
+                (void)activeEnd;
+                unsafe[i] = true;
+                unsafe[activeIndex] = true;
+            }
+            if (!entry.rawBytes.empty()) active.emplace_back(end, i);
         }
         for (const auto i : footerEntryOrder) {
             if (!unsafe[i]) footerIds.emplace(sourceFooter.entries[i].payloadOffset, document.allocateFooterEntryId());
@@ -964,7 +995,7 @@ SctDocumentImportResult SctDocumentImporter::import(
             SctSourceCoverageKind::SemanticEntity, SctDocumentEntityId{targetSection.id},
             targetSection.id, 0u, SctSourceRegion::SectionPayload,
             SctSourceSpanLayer::Envelope, true);
-        ClaimLedger ledger{std::vector<std::uint8_t>(sourceSection.endOffset - sourceSection.startOffset)};
+        ClaimLedger ledger{sourceSection.endOffset - sourceSection.startOffset};
 
         if (sourceSection.stringEntry) {
             const auto stringIdIt = stringIds.find(sourceSection.startOffset - dataStart);
@@ -1011,7 +1042,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                 textDecision.disposition, std::move(textDecision.viableAlternativeConventions),
                 std::move(textDecision.reason)});
             const bool validPreamble = detail::isValidIndexedStringPreamble(entry.preambleWords);
-            if (!validPreamble || local > ledger.claims.size() || physicalTextSize > ledger.claims.size() - local
+            if (!validPreamble || local > ledger.size || physicalTextSize > ledger.size - local
                 || !ledger.claim(0u, preambleSize) || !ledger.claim(local, recordSize)) {
                 addDiagnostic(result, SctDiagnosticSeverity::Warning, SctDiagnosticCode::OverlappingSourceClaims,
                     "String evidence overlapped or exceeded its physical section and was preserved opaquely.", SctDocumentEntityId{stringId});
@@ -1115,18 +1146,15 @@ SctDocumentImportResult SctDocumentImporter::import(
             targetSection.content = SctOpaqueSectionContent{};
         }
 
-        for (std::size_t pos = 0; pos < ledger.claims.size();) {
-            if (ledger.claims[pos]) { ++pos; continue; }
-            const auto begin = pos;
-            while (pos < ledger.claims.size() && !ledger.claims[pos]) ++pos;
+        for (const auto& [begin, end] : ledger.gaps()) {
             const bool derivedStringPadding = std::holds_alternative<SctStringSectionContent>(targetSection.content)
                 && std::all_of(bytes.begin() + sourceSection.startOffset + begin,
-                    bytes.begin() + sourceSection.startOffset + pos,
+                    bytes.begin() + sourceSection.startOffset + end,
                     [](std::uint8_t value) { return value == 0; });
             if (derivedStringPadding) {
                 addSourceRecord(sourceRecords,
                     sourceSection.startOffset + static_cast<std::uint32_t>(begin),
-                    static_cast<std::uint32_t>(pos - begin), SctSourceSpanRole::DerivedPadding,
+                    static_cast<std::uint32_t>(end - begin), SctSourceSpanRole::DerivedPadding,
                     SctSourceCoverageKind::DerivedLayout, SctDocumentEntityId{targetSection.id},
                     targetSection.id, static_cast<std::uint32_t>(begin), SctSourceRegion::SectionPayload);
                 continue;
@@ -1134,7 +1162,7 @@ SctDocumentImportResult SctDocumentImporter::import(
             addAttachment(document, sourceRecords, targetSection.id,
                 sourceSection.startOffset + static_cast<std::uint32_t>(begin),
                 std::vector<std::uint8_t>(bytes.begin() + sourceSection.startOffset + begin,
-                    bytes.begin() + sourceSection.startOffset + pos),
+                    bytes.begin() + sourceSection.startOffset + end),
                 SctOpaqueReason::Gap, targetSection.id, static_cast<std::uint32_t>(begin),
                 SctSourceRegion::SectionPayload);
         }
@@ -1142,7 +1170,7 @@ SctDocumentImportResult SctDocumentImporter::import(
     }
 
     if (footer) {
-        ClaimLedger ledger{std::vector<std::uint8_t>(footer->payloadEndOffset - footer->payloadStartOffset)};
+        ClaimLedger ledger{footer->payloadEndOffset - footer->payloadStartOffset};
         const auto footerAbsolute = dataStart + footer->payloadStartOffset;
         addSourceRecord(sourceRecords, footerAbsolute,
             footer->payloadEndOffset - footer->payloadStartOffset, SctSourceSpanRole::FooterRegion,
@@ -1190,59 +1218,67 @@ SctDocumentImportResult SctDocumentImporter::import(
                     "Footer entry evidence overlapped or exceeded the footer and remains opaque.", SctDocumentEntityId{id});
             }
         }
-        for (std::size_t pos = 0; pos < ledger.claims.size();) {
-            if (ledger.claims[pos]) { ++pos; continue; }
-            const auto begin = pos;
-            while (pos < ledger.claims.size() && !ledger.claims[pos]) ++pos;
+        for (const auto& [begin, end] : ledger.gaps()) {
             const bool derivedFooterPadding = std::all_of(
-                bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + pos,
+                bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + end,
                 [](std::uint8_t value) { return value == 0; });
             if (derivedFooterPadding) {
                 addSourceRecord(sourceRecords, footerAbsolute + static_cast<std::uint32_t>(begin),
-                    static_cast<std::uint32_t>(pos - begin), SctSourceSpanRole::DerivedPadding,
+                    static_cast<std::uint32_t>(end - begin), SctSourceSpanRole::DerivedPadding,
                     SctSourceCoverageKind::DerivedLayout, std::nullopt, std::nullopt,
                     std::nullopt, SctSourceRegion::Footer);
                 continue;
             }
             addAttachment(document, sourceRecords, SctDocumentAnchor{},
                 footerAbsolute + static_cast<std::uint32_t>(begin),
-                std::vector<std::uint8_t>(bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + pos),
+                std::vector<std::uint8_t>(bytes.begin() + footerAbsolute + begin, bytes.begin() + footerAbsolute + end),
                 SctOpaqueReason::Gap, std::nullopt, std::nullopt,
                 SctSourceRegion::Footer);
         }
     }
 
-    std::vector<std::uint8_t> totalCoverage(bytes.size(), 0);
+    std::vector<SctImportedByteSpan> leafCoverage;
+    leafCoverage.reserve(sourceRecords.size());
     for (const auto& record : sourceRecords) {
         if (record.layer != SctSourceSpanLayer::Leaf) continue;
         const auto begin = static_cast<std::size_t>(record.span.offset);
         const auto size = static_cast<std::size_t>(record.span.size);
-        if (begin > totalCoverage.size() || size > totalCoverage.size() - begin) {
+        if (begin > bytes.size() || size > bytes.size() - begin) {
             addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
                 "An imported source claim exceeds the decoded SCT payload.");
             result.context = SctDocumentImportContext{std::move(receipt)};
             return result;
         }
-        for (std::size_t pos = begin; pos < begin + size; ++pos) {
-            if (totalCoverage[pos] != 0) {
-                addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
-                    "Contradictory physical bounds prevent lossless decoded-payload coverage.");
-                result.context = SctDocumentImportContext{std::move(receipt)};
-                return result;
-            }
-            totalCoverage[pos] = 1;
-        }
+        leafCoverage.push_back(record.span);
     }
-    for (std::size_t pos = 0; pos < totalCoverage.size();) {
-        if (totalCoverage[pos]) { ++pos; continue; }
-        const auto begin = pos;
-        while (pos < totalCoverage.size() && !totalCoverage[pos]) ++pos;
+    std::ranges::stable_sort(leafCoverage, {}, &SctImportedByteSpan::offset);
+    std::size_t coveredEnd = 0;
+    for (const auto span : leafCoverage) {
+        const auto begin = static_cast<std::size_t>(span.offset);
+        if (begin < coveredEnd) {
+            addDiagnostic(result, SctDiagnosticSeverity::Error, SctDiagnosticCode::UnsafePhysicalStructure,
+                "Contradictory physical bounds prevent lossless decoded-payload coverage.");
+            result.context = SctDocumentImportContext{std::move(receipt)};
+            return result;
+        }
+        if (begin > coveredEnd) {
+            SctSourceRegion region = SctSourceRegion::SectionPayload;
+            if (coveredEnd < 8u) region = SctSourceRegion::Header;
+            else if (coveredEnd < dataStart) region = SctSourceRegion::SectionIndex;
+            else if (footer && coveredEnd >= dataStart + footer->payloadStartOffset) region = SctSourceRegion::Footer;
+            addAttachment(document, sourceRecords, SctDocumentAnchor{}, static_cast<std::uint32_t>(coveredEnd),
+                std::vector<std::uint8_t>(bytes.begin() + coveredEnd, bytes.begin() + begin),
+                SctOpaqueReason::Gap, std::nullopt, std::nullopt, region);
+        }
+        coveredEnd = static_cast<std::size_t>(span.endOffset());
+    }
+    if (coveredEnd < bytes.size()) {
         SctSourceRegion region = SctSourceRegion::SectionPayload;
-        if (begin < 8u) region = SctSourceRegion::Header;
-        else if (begin < dataStart) region = SctSourceRegion::SectionIndex;
-        else if (footer && begin >= dataStart + footer->payloadStartOffset) region = SctSourceRegion::Footer;
-        addAttachment(document, sourceRecords, SctDocumentAnchor{}, static_cast<std::uint32_t>(begin),
-            std::vector<std::uint8_t>(bytes.begin() + begin, bytes.begin() + pos),
+        if (coveredEnd < 8u) region = SctSourceRegion::Header;
+        else if (coveredEnd < dataStart) region = SctSourceRegion::SectionIndex;
+        else if (footer && coveredEnd >= dataStart + footer->payloadStartOffset) region = SctSourceRegion::Footer;
+        addAttachment(document, sourceRecords, SctDocumentAnchor{}, static_cast<std::uint32_t>(coveredEnd),
+            std::vector<std::uint8_t>(bytes.begin() + coveredEnd, bytes.end()),
             SctOpaqueReason::Gap, std::nullopt, std::nullopt, region);
     }
 

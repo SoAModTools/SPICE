@@ -4,10 +4,12 @@
 #include "SctOpcodeMetadata.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <exception>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -15,6 +17,7 @@
 #include <ranges>
 #include <set>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -1080,35 +1083,65 @@ void resolveNesting(SctSectionStructure& output) {
 }  // namespace
 
 SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::build(
-    const SctDocument& document, const SctBoundImportEvidence* evidence) {
+    const SctDocument& document, const SctBoundImportEvidence* evidence,
+    const SctAnalysisExecutionOptions execution) {
     const auto controlFlow = SctControlFlowIndex::build(document, evidence);
     const auto opaqueContext = SctOpaqueContextIndex::build(document, evidence, controlFlow);
-    return buildFromIndexes(document, controlFlow, opaqueContext);
+    return buildFromIndexes(document, controlFlow, opaqueContext, execution);
 }
 
 SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::buildFromIndexes(
     const SctDocument& document, const SctControlFlowIndex& controlFlow,
-    const SctOpaqueContextIndex& opaqueContext) {
+    const SctOpaqueContextIndex& opaqueContext, const SctAnalysisExecutionOptions execution) {
     SctStructuredControlFlowAnalysis result;
     std::unordered_map<std::uint64_t, InstructionLocation> locations;
+    struct SectionJob final {
+        const SctDocumentSection* section = nullptr;
+        const SctScriptSectionContent* script = nullptr;
+        std::vector<EffectiveEdge> currentEdges{};
+        std::vector<const SctControlFlowEdge*> importedEdges{};
+    };
+    std::vector<SectionJob> jobs;
+    std::map<SctSectionId, std::size_t> jobBySection;
     for (const auto& section : document.sections) {
         const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
         if (script == nullptr) continue;
+        jobBySection.emplace(section.id, jobs.size());
+        jobs.push_back({&section, script});
         for (std::size_t ordinal = 0; ordinal < script->instructions.size(); ++ordinal) {
             locations.emplace(script->instructions[ordinal].id.value(),
                 InstructionLocation{section.id, ordinal, &script->instructions[ordinal]});
         }
     }
-    std::vector<EffectiveEdge> currentEdges;
-    currentEdges.reserve(controlFlow.currentEdges().size());
-    for (const auto& edge : controlFlow.currentEdges()) currentEdges.push_back({edge});
 
-    for (const auto& section : document.sections) {
-        const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
-        if (script == nullptr) continue;
+    // Each section receives edges originating in it plus cross-section edges
+    // entering it. This preserves entry-point discovery without repeatedly
+    // scanning the complete document edge set.
+    for (const auto& edge : controlFlow.currentEdges()) {
+        const auto source = locations.find(edge.sourceInstruction.value());
+        if (source == locations.end()) continue;
+        const auto sourceJob = jobBySection.find(source->second.section);
+        if (sourceJob == jobBySection.end()) continue;
+        jobs[sourceJob->second].currentEdges.push_back({edge});
+        if (!edge.targetInstruction) continue;
+        const auto target = locations.find(edge.targetInstruction->value());
+        if (target == locations.end() || target->second.section == source->second.section) continue;
+        const auto targetJob = jobBySection.find(target->second.section);
+        if (targetJob != jobBySection.end()) jobs[targetJob->second].currentEdges.push_back({edge});
+    }
+    for (const auto& edge : controlFlow.importedEdges()) {
+        const auto source = locations.find(edge.sourceInstruction.value());
+        if (source == locations.end()) continue;
+        const auto job = jobBySection.find(source->second.section);
+        if (job != jobBySection.end()) jobs[job->second].importedEdges.push_back(&edge);
+    }
+
+    auto analyzeJob = [&](const SectionJob& job) {
+        const auto& section = *job.section;
+        const auto& script = *job.script;
         SctSectionStructure output;
         output.section = section.id;
-        auto graph = buildGraph(section, *script, currentEdges, locations, output);
+        auto graph = buildGraph(section, script, job.currentEdges, locations, output);
         if (!graph.blocks.empty()) {
             detectLoops(graph, output);
             detectConditionals(graph, output);
@@ -1117,18 +1150,17 @@ SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::buildFromInde
 
             // Historical source topology is evaluated separately. It can suggest
             // a shape, but never changes the current graph or its regions.
-            for (const auto& imported : controlFlow.importedEdges()) {
-                const auto source = locations.find(imported.sourceInstruction.value());
-                if (source == locations.end() || source->second.section != section.id) continue;
+            for (const auto* importedValue : job.importedEdges) {
+                const auto& imported = *importedValue;
                 EffectiveEdge hint{imported, true,
                     qualifyingOpaqueGaps(opaqueContext, imported)};
-                const auto matchingCurrent = std::ranges::find_if(currentEdges,
+                const auto matchingCurrent = std::ranges::find_if(job.currentEdges,
                     [&](const auto& candidate) {
                         return candidate.edge.sourceInstruction == imported.sourceInstruction
                             && candidate.edge.kind == imported.kind
                             && candidate.edge.origin == imported.origin;
                     });
-                if (matchingCurrent != currentEdges.end()) {
+                if (matchingCurrent != job.currentEdges.end()) {
                     if (sameTarget(matchingCurrent->edge, imported)) continue;
                     SctHistoricalStructureCandidate candidate;
                     candidate.section = section.id;
@@ -1175,12 +1207,12 @@ SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::buildFromInde
                     continue;
                 }
 
-                auto augmentedEdges = currentEdges;
+                auto augmentedEdges = job.currentEdges;
                 augmentedEdges.push_back(hint);
                 SctSectionStructure candidateOutput;
                 candidateOutput.section = section.id;
                 auto candidateGraph = buildGraph(
-                    section, *script, augmentedEdges, locations, candidateOutput);
+                    section, script, augmentedEdges, locations, candidateOutput);
                 detectLoops(candidateGraph, candidateOutput);
                 detectConditionals(candidateGraph, candidateOutput);
                 detectSwitches(candidateGraph, candidateOutput);
@@ -1210,7 +1242,44 @@ SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::buildFromInde
             }
         }
         output.blocks = std::move(graph.blocks);
-        result.sections_.push_back(std::move(output));
+        return output;
+    };
+
+    std::vector<std::optional<SctSectionStructure>> outputs(jobs.size());
+    const auto concurrency = std::max<std::size_t>(1u,
+        std::min(execution.maxConcurrency, jobs.size()));
+    if (concurrency == 1u) {
+        for (std::size_t index = 0; index < jobs.size(); ++index) {
+            outputs[index] = analyzeJob(jobs[index]);
+        }
+    } else {
+        std::atomic_size_t next{0u};
+        std::vector<std::exception_ptr> exceptions(jobs.size());
+        auto worker = [&] {
+            for (;;) {
+                const auto index = next.fetch_add(1u, std::memory_order_relaxed);
+                if (index >= jobs.size()) return;
+                try {
+                    outputs[index] = analyzeJob(jobs[index]);
+                } catch (...) {
+                    exceptions[index] = std::current_exception();
+                }
+            }
+        };
+        std::vector<std::thread> workers;
+        workers.reserve(concurrency - 1u);
+        for (std::size_t index = 1u; index < concurrency; ++index) {
+            workers.emplace_back(worker);
+        }
+        worker();
+        for (auto& thread : workers) thread.join();
+        for (const auto& exception : exceptions) {
+            if (exception) std::rethrow_exception(exception);
+        }
+    }
+    result.sections_.reserve(outputs.size());
+    for (auto& output : outputs) {
+        result.sections_.push_back(std::move(*output));
     }
     result.buildIndexes();
     return result;

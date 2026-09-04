@@ -23,9 +23,11 @@ SctDocumentExportAssessment SctDocumentWorkflow::assessForExport(
     if (!result.documentValidation.validDocument) return result;
     result.readiness = SctDocumentReadiness::StructurallyValid;
     result.targetValidation = SctDocumentValidator::validateForTarget(
-        document, options.targetPlatform, options.textEncoding, evidence);
+        document, options.targetPlatform, options.textEncoding, evidence,
+        result.documentValidation.receipt ? &*result.documentValidation.receipt : nullptr);
     if (!result.targetValidation.validForTarget) return result;
-    result.layout = SctDocumentLayoutEngine::layout(document, options, evidence);
+    result.layout = SctDocumentLayoutEngine::layout(document, options, evidence,
+        result.targetValidation.receipt ? &*result.targetValidation.receipt : nullptr);
     if (result.layout.success) result.readiness = SctDocumentReadiness::ExportReady;
     return result;
 }

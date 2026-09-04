@@ -63,7 +63,13 @@ std::optional<SctControlFlowKind> unresolvedKind(const SctOpcodeSchema& schema,
     return std::nullopt;
 }
 
+struct ImportedOpaqueSpan {
+    SctImportedByteSpan span;
+    SctOpaqueAttachmentId id;
+};
+
 std::vector<SctOpaqueAttachmentId> crossedAttachments(const SctImportedSourceMap& sourceMap,
+    std::span<const ImportedOpaqueSpan> opaqueSpans,
     const SctImportedControlFlowObservation& observation) {
     std::vector<SctOpaqueAttachmentId> result;
     const auto source = sourceMap.location(SctDocumentEntityId{observation.sourceInstruction});
@@ -89,16 +95,12 @@ std::vector<SctOpaqueAttachmentId> crossedAttachments(const SctImportedSourceMap
         high = source->primarySpan.offset;
     } else return result;
 
-    for (const auto& record : sourceMap.records()) {
-        if (record.role != SctSourceSpanRole::OpaqueAttachment || !record.primaryEntityLocation
-            || !record.target) continue;
-        const auto* entity = std::get_if<SctDocumentEntityId>(&*record.target);
-        const auto* id = entity == nullptr ? nullptr : std::get_if<SctOpaqueAttachmentId>(entity);
-        if (id == nullptr) continue;
-        if (record.span.endOffset() > low && record.span.offset < high
-            && std::find(result.begin(), result.end(), *id) == result.end()) {
-            result.push_back(*id);
-        }
+    auto found = std::lower_bound(opaqueSpans.begin(), opaqueSpans.end(), low,
+        [](const ImportedOpaqueSpan& candidate, std::uint64_t offset) {
+            return candidate.span.endOffset() <= offset;
+        });
+    for (; found != opaqueSpans.end() && found->span.offset < high; ++found) {
+        result.push_back(found->id);
     }
     return result;
 }
@@ -124,20 +126,6 @@ int confidenceRank(SctSemanticConfidence confidence) {
     case SctSemanticConfidence::Known: return 3;
     }
     return 0;
-}
-
-SctSemanticConfidence weakestConfidence(std::span<const SctControlFlowEdge> edges,
-    SctOpaqueAttachmentId attachment, bool switchesOnly) {
-    auto result = SctSemanticConfidence::Known;
-    bool found = false;
-    for (const auto& edge : edges) {
-        if (switchesOnly && edge.kind != SctControlFlowKind::SwitchCase) continue;
-        if (std::find(edge.crossedOpaqueAttachments.begin(), edge.crossedOpaqueAttachments.end(), attachment)
-            == edge.crossedOpaqueAttachments.end()) continue;
-        if (!found || confidenceRank(edge.confidence) < confidenceRank(result)) result = edge.confidence;
-        found = true;
-    }
-    return found ? result : SctSemanticConfidence::Unknown;
 }
 
 SctOpcodeEffectUsability parameterUsability(const SctDocumentInstruction& instruction,
@@ -201,8 +189,13 @@ bool expressionOperationAddressable(const SctCanonicalExpression& expression,
 
 SctControlFlowIndex SctControlFlowIndex::build(const SctDocument& document,
     const SctBoundImportEvidence* evidence) {
-    SctControlFlowIndex result;
     const auto documentIndex = SctDocumentIndex::build(document);
+    return buildFromIndex(document, documentIndex, evidence);
+}
+
+SctControlFlowIndex SctControlFlowIndex::buildFromIndex(const SctDocument& document,
+    const SctDocumentIndex& documentIndex, const SctBoundImportEvidence* evidence) {
+    SctControlFlowIndex result;
     for (const auto& section : document.sections) {
         const auto* script = std::get_if<SctScriptSectionContent>(&section.content);
         if (script == nullptr) continue;
@@ -256,8 +249,22 @@ SctControlFlowIndex SctControlFlowIndex::build(const SctDocument& document,
         }
     }
 
-    if (evidence == nullptr) return result;
+    if (evidence == nullptr) {
+        result.buildIndexes();
+        return result;
+    }
     const auto& receipt = evidence->receipt();
+    std::vector<ImportedOpaqueSpan> opaqueSpans;
+    for (const auto& record : receipt.sourceMap.records()) {
+        if (record.role != SctSourceSpanRole::OpaqueAttachment || !record.primaryEntityLocation
+            || !record.target) continue;
+        const auto* entity = std::get_if<SctDocumentEntityId>(&*record.target);
+        const auto* id = entity == nullptr ? nullptr : std::get_if<SctOpaqueAttachmentId>(entity);
+        if (id != nullptr) opaqueSpans.push_back({record.span, *id});
+    }
+    std::ranges::sort(opaqueSpans, {}, [](const ImportedOpaqueSpan& value) {
+        return value.span.offset;
+    });
     std::vector<SctImportedControlFlowObservation> observations = receipt.controlFlow;
     for (const auto& unresolved : receipt.unresolvedReferences) {
         const bool present = std::any_of(observations.begin(), observations.end(), [&](const auto& item) {
@@ -284,20 +291,35 @@ SctControlFlowIndex SctControlFlowIndex::build(const SctDocument& document,
         result.importedEdges_.push_back({observation.sourceInstruction, observation.kind,
             observation.confidence, observation.origin, observation.targetInstruction,
             observation.targetInstruction ? std::nullopt : observation.targetPayloadOffset,
-            crossedAttachments(receipt.sourceMap, observation)});
+            crossedAttachments(receipt.sourceMap, opaqueSpans, observation)});
     }
+    result.buildIndexes();
     return result;
+}
+
+void SctControlFlowIndex::buildIndexes() {
+    for (std::size_t index = 0; index < currentEdges_.size(); ++index) {
+        const auto& edge = currentEdges_[index];
+        currentOutboundIndex_[edge.sourceInstruction].push_back(index);
+        if (edge.targetInstruction) currentInboundIndex_[*edge.targetInstruction].push_back(index);
+    }
 }
 
 std::vector<SctControlFlowEdge> SctControlFlowIndex::currentOutbound(SctInstructionId source) const {
     std::vector<SctControlFlowEdge> result;
-    for (const auto& edge : currentEdges_) if (edge.sourceInstruction == source) result.push_back(edge);
+    const auto found = currentOutboundIndex_.find(source);
+    if (found == currentOutboundIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(currentEdges_[index]);
     return result;
 }
 
 std::vector<SctControlFlowEdge> SctControlFlowIndex::currentInbound(SctInstructionId target) const {
     std::vector<SctControlFlowEdge> result;
-    for (const auto& edge : currentEdges_) if (edge.targetInstruction == target) result.push_back(edge);
+    const auto found = currentInboundIndex_.find(target);
+    if (found == currentInboundIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(currentEdges_[index]);
     return result;
 }
 
@@ -423,32 +445,56 @@ SctSemanticUsageIndex SctSemanticUsageIndex::build(
         result.opaqueExpressions_.insert(result.opaqueExpressions_.end(),
             contribution.opaqueExpressions.begin(), contribution.opaqueExpressions.end());
     }
+    result.buildIndexes();
     return result;
+}
+
+void SctSemanticUsageIndex::buildIndexes() {
+    for (std::size_t index = 0; index < opcodeUsages_.size(); ++index)
+        opcodeIndex_[opcodeUsages_[index].opcode].push_back(index);
+    for (std::size_t index = 0; index < referenceUsages_.size(); ++index) {
+        outboundReferenceIndex_[referenceUsages_[index].source.instruction].push_back(index);
+        inboundReferenceIndex_[referenceUsages_[index].target].push_back(index);
+    }
+    for (std::size_t index = 0; index < variableUsages_.size(); ++index)
+        variableIndex_[variableUsages_[index].variable].push_back(index);
 }
 
 std::vector<SctOpcodeUsage> SctSemanticUsageIndex::usagesForOpcode(std::uint16_t opcode) const {
     std::vector<SctOpcodeUsage> result;
-    for (const auto& usage : opcodeUsages_) if (usage.opcode == opcode) result.push_back(usage);
+    const auto found = opcodeIndex_.find(opcode);
+    if (found == opcodeIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(opcodeUsages_[index]);
     return result;
 }
 
 std::vector<SctReferenceUsage> SctSemanticUsageIndex::outboundReferences(SctInstructionId source) const {
     std::vector<SctReferenceUsage> result;
-    for (const auto& usage : referenceUsages_) if (usage.source.instruction == source) result.push_back(usage);
+    const auto found = outboundReferenceIndex_.find(source);
+    if (found == outboundReferenceIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(referenceUsages_[index]);
     return result;
 }
 
 std::vector<SctReferenceUsage> SctSemanticUsageIndex::inboundReferences(
     const SctDocumentReferenceTarget& target) const {
     std::vector<SctReferenceUsage> result;
-    for (const auto& usage : referenceUsages_) if (usage.target == target) result.push_back(usage);
+    const auto found = inboundReferenceIndex_.find(target);
+    if (found == inboundReferenceIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(referenceUsages_[index]);
     return result;
 }
 
 std::vector<SctVariableUsage> SctSemanticUsageIndex::usagesForVariable(
     SctVariableIdentity variable) const {
     std::vector<SctVariableUsage> result;
-    for (const auto& usage : variableUsages_) if (usage.variable == variable) result.push_back(usage);
+    const auto found = variableIndex_.find(variable);
+    if (found == variableIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(variableUsages_[index]);
     return result;
 }
 
@@ -457,6 +503,33 @@ SctOpaqueContextIndex SctOpaqueContextIndex::build(const SctDocument& document,
     SctOpaqueContextIndex result;
     if (evidence == nullptr) return result;
     const auto& receipt = evidence->receipt();
+    struct CrossingSummary {
+        std::vector<SctControlFlowEdgeKey> edges;
+        SctSemanticConfidence confidence = SctSemanticConfidence::Known;
+        SctSemanticConfidence switchConfidence = SctSemanticConfidence::Known;
+        bool hasConfidence = false;
+        bool hasSwitch = false;
+    };
+    std::map<SctOpaqueAttachmentId, CrossingSummary> crossings;
+    for (const auto& edge : controlFlow.importedEdges()) {
+        for (const auto attachment : edge.crossedOpaqueAttachments) {
+            auto& summary = crossings[attachment];
+            summary.edges.push_back({edge.sourceInstruction, edge.kind,
+                edge.origin, edge.targetInstruction});
+            if (!summary.hasConfidence
+                || confidenceRank(edge.confidence) < confidenceRank(summary.confidence)) {
+                summary.confidence = edge.confidence;
+            }
+            summary.hasConfidence = true;
+            if (edge.kind == SctControlFlowKind::SwitchCase) {
+                if (!summary.hasSwitch
+                    || confidenceRank(edge.confidence) < confidenceRank(summary.switchConfidence)) {
+                    summary.switchConfidence = edge.confidence;
+                }
+                summary.hasSwitch = true;
+            }
+        }
+    }
     for (const auto& attachment : document.opaqueAttachments) {
         const auto location = receipt.sourceMap.location(SctDocumentEntityId{attachment.id});
         if (!location) continue;
@@ -465,31 +538,26 @@ SctOpaqueContextIndex SctOpaqueContextIndex::build(const SctDocument& document,
             receipt.sourceMap.previousSemanticEntity(SctDocumentEntityId{attachment.id}),
             receipt.sourceMap.nextSemanticEntity(SctDocumentEntityId{attachment.id})};
         context.sourceNeighborhood = receipt.sourceMap.neighborhood(location->primarySpan);
-        bool hasSwitch = false;
-        for (const auto& edge : controlFlow.importedEdges()) {
-            if (std::find(edge.crossedOpaqueAttachments.begin(), edge.crossedOpaqueAttachments.end(),
-                    attachment.id) == edge.crossedOpaqueAttachments.end()) continue;
-            context.crossingImportedEdges.push_back({edge.sourceInstruction, edge.kind,
-                edge.origin, edge.targetInstruction});
-            hasSwitch = hasSwitch || edge.kind == SctControlFlowKind::SwitchCase;
-        }
-        if (!context.crossingImportedEdges.empty()) {
+        const auto crossing = crossings.find(attachment.id);
+        if (crossing != crossings.end()) {
+            context.crossingImportedEdges = crossing->second.edges;
             context.interpretations.push_back({SctOpaqueInterpretationKind::ControlFlowGap,
-                weakestConfidence(controlFlow.importedEdges(), attachment.id, false)});
-        }
-        if (hasSwitch) {
-            context.interpretations.push_back({SctOpaqueInterpretationKind::SwitchDispatchGap,
-                weakestConfidence(controlFlow.importedEdges(), attachment.id, true)});
+                crossing->second.confidence});
+            if (crossing->second.hasSwitch) {
+                context.interpretations.push_back({SctOpaqueInterpretationKind::SwitchDispatchGap,
+                    crossing->second.switchConfidence});
+            }
         }
         result.records_.push_back(std::move(context));
     }
+    for (std::size_t index = 0; index < result.records_.size(); ++index)
+        result.recordIndex_.emplace(result.records_[index].attachment, index);
     return result;
 }
 
 const SctOpaqueContextRecord* SctOpaqueContextIndex::find(SctOpaqueAttachmentId id) const noexcept {
-    const auto found = std::find_if(records_.begin(), records_.end(),
-        [&](const auto& record) { return record.attachment == id; });
-    return found == records_.end() ? nullptr : &*found;
+    const auto found = recordIndex_.find(id);
+    return found == recordIndex_.end() ? nullptr : &records_[found->second];
 }
 
 SctOpcodeEffectIndex SctOpcodeEffectIndex::build(const SctDocument& document) {
@@ -504,24 +572,33 @@ SctOpcodeEffectIndex SctOpcodeEffectIndex::build(
         result.effects_.insert(result.effects_.end(),
             contribution.effects.begin(), contribution.effects.end());
     }
+    result.buildIndexes();
     return result;
+}
+
+void SctOpcodeEffectIndex::buildIndexes() {
+    for (std::size_t index = 0; index < effects_.size(); ++index) {
+        const auto source = std::visit([](const auto& value) { return value.sourceInstruction; },
+            effects_[index].effect);
+        instructionIndex_[source].push_back(index);
+        if (effects_[index].usability == SctOpcodeEffectUsability::Usable)
+            usableIndexes_.push_back(index);
+    }
 }
 
 std::vector<SctOpcodeEffectOccurrence> SctOpcodeEffectIndex::effectsForInstruction(SctInstructionId id) const {
     std::vector<SctOpcodeEffectOccurrence> result;
-    for (const auto& occurrence : effects_) {
-        const auto source = std::visit([](const auto& value) { return value.sourceInstruction; },
-            occurrence.effect);
-        if (source == id) result.push_back(occurrence);
-    }
+    const auto found = instructionIndex_.find(id);
+    if (found == instructionIndex_.end()) return result;
+    result.reserve(found->second.size());
+    for (const auto index : found->second) result.push_back(effects_[index]);
     return result;
 }
 
 std::vector<SctOpcodeEffectOccurrence> SctOpcodeEffectIndex::usableEffects() const {
     std::vector<SctOpcodeEffectOccurrence> result;
-    for (const auto& occurrence : effects_) {
-        if (occurrence.usability == SctOpcodeEffectUsability::Usable) result.push_back(occurrence);
-    }
+    result.reserve(usableIndexes_.size());
+    for (const auto index : usableIndexes_) result.push_back(effects_[index]);
     return result;
 }
 
@@ -655,7 +732,7 @@ const SctImportedSiteAddressabilityRecord* SctImportedSiteAddressabilityIndex::f
 }
 
 SctDocumentAnalysis SctDocumentAnalysis::build(const SctDocument& document,
-    const SctBoundImportEvidence* evidence) {
+    const SctBoundImportEvidence* evidence, const SctAnalysisExecutionOptions execution) {
     SctDocumentAnalysis result;
     result.entities = SctDocumentIndex::build(document);
     result.stringGroups = SctIndexedStringGroupIndex::build(document,
@@ -663,12 +740,13 @@ SctDocumentAnalysis SctDocumentAnalysis::build(const SctDocument& document,
             ? std::span<const SctImportedIndexedStringGroupObservation>{}
             : std::span<const SctImportedIndexedStringGroupObservation>{
                 evidence->receipt().indexedStringGroups});
-    result.controlFlow = SctControlFlowIndex::build(document, evidence);
+    result.controlFlow = SctControlFlowIndex::buildFromIndex(
+        document, result.entities, evidence);
     const auto contributions = semanticContributions(document);
     result.usage = SctSemanticUsageIndex::build(contributions);
     result.opaqueContext = SctOpaqueContextIndex::build(document, evidence, result.controlFlow);
     result.structuredControlFlow = SctStructuredControlFlowAnalysis::buildFromIndexes(
-        document, result.controlFlow, result.opaqueContext);
+        document, result.controlFlow, result.opaqueContext, execution);
     result.effects = SctOpcodeEffectIndex::build(contributions);
     if (evidence != nullptr) {
         result.importedSites = SctImportedSiteAddressabilityIndex::build(

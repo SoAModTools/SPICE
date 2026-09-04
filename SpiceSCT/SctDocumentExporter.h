@@ -111,6 +111,7 @@ struct SctDocumentLayoutResult {
     std::optional<SctDocumentLayout> layout;
     std::vector<SctDocumentDiagnostic> diagnostics;
     SctPreservationReport preservation;
+    SctValidationReceiptUse validationReceiptUse = SctValidationReceiptUse::NotProvided;
 };
 
 struct SctDocumentExportResult {
@@ -121,6 +122,7 @@ struct SctDocumentExportResult {
     SctPreservationReport preservation;
     std::uint32_t decodedPayloadSize = 0;
     std::uint64_t outputSize = 0;
+    SctValidationReceiptUse validationReceiptUse = SctValidationReceiptUse::NotProvided;
 };
 
 class SctDocumentLayoutEngine {
@@ -128,7 +130,8 @@ public:
     [[nodiscard]] static SctDocumentLayoutResult layout(
         const SctDocument& document,
         const SctDocumentExportOptions& options,
-        const SctBoundImportEvidence* evidence = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr,
+        const SctTargetValidationReceipt* validationReceipt = nullptr);
 };
 
 class SctDocumentExporter {
@@ -136,7 +139,8 @@ public:
     [[nodiscard]] static SctDocumentExportResult exportDocument(
         const SctDocument& document,
         const SctDocumentExportOptions& options,
-        const SctBoundImportEvidence* evidence = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr,
+        const SctTargetValidationReceipt* validationReceipt = nullptr);
 };
 
 } // namespace spice::sct

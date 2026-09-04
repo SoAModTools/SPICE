@@ -43,8 +43,15 @@ public:
         SctInstructionId target) const;
 
 private:
+    friend struct SctDocumentAnalysis;
+    [[nodiscard]] static SctControlFlowIndex buildFromIndex(
+        const SctDocument& document, const SctDocumentIndex& documentIndex,
+        const SctBoundImportEvidence* evidence);
+    void buildIndexes();
     std::vector<SctControlFlowEdge> currentEdges_;
     std::vector<SctControlFlowEdge> importedEdges_;
+    std::map<SctInstructionId, std::vector<std::size_t>> currentOutboundIndex_;
+    std::map<SctInstructionId, std::vector<std::size_t>> currentInboundIndex_;
 };
 
 struct SctOpcodeUsage {
@@ -116,12 +123,17 @@ public:
     [[nodiscard]] std::vector<SctVariableUsage> usagesForVariable(SctVariableIdentity variable) const;
 
 private:
+    void buildIndexes();
     std::vector<SctOpcodeUsage> opcodeUsages_;
     std::vector<SctReferenceUsage> referenceUsages_;
     std::vector<SctVariableUsage> variableUsages_;
     std::vector<SctUnresolvedReferenceUsage> unresolvedReferences_;
     std::vector<SctOpaqueParameterUsage> opaqueParameters_;
     std::vector<SctOpaqueExpressionUsage> opaqueExpressions_;
+    std::map<std::uint16_t, std::vector<std::size_t>> opcodeIndex_;
+    std::map<SctInstructionId, std::vector<std::size_t>> outboundReferenceIndex_;
+    std::map<SctDocumentReferenceTarget, std::vector<std::size_t>> inboundReferenceIndex_;
+    std::map<SctVariableIdentity, std::vector<std::size_t>> variableIndex_;
 };
 
 enum class SctOpaqueInterpretationKind { ControlFlowGap, SwitchDispatchGap };
@@ -159,6 +171,7 @@ public:
 
 private:
     std::vector<SctOpaqueContextRecord> records_;
+    std::map<SctOpaqueAttachmentId, std::size_t> recordIndex_;
 };
 
 enum class SctResourceKind { Script, Mld };
@@ -222,7 +235,10 @@ public:
     [[nodiscard]] std::vector<SctOpcodeEffectOccurrence> usableEffects() const;
 
 private:
+    void buildIndexes();
     std::vector<SctOpcodeEffectOccurrence> effects_;
+    std::map<SctInstructionId, std::vector<std::size_t>> instructionIndex_;
+    std::vector<std::size_t> usableIndexes_;
 };
 
 enum class SctImportedSiteAddressability {
@@ -282,7 +298,8 @@ struct SctDocumentAnalysis {
     std::optional<SctImportedSiteAddressabilityIndex> importedSites;
 
     [[nodiscard]] static SctDocumentAnalysis build(const SctDocument& document,
-        const SctBoundImportEvidence* evidence = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr,
+        SctAnalysisExecutionOptions execution = {});
 };
 
 } // namespace spice::sct

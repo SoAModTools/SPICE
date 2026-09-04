@@ -1,6 +1,7 @@
 #include "SctDocumentValidator.h"
 
 #include "SctIndexedPreamble.h"
+#include "SctDocumentFingerprint.h"
 #include "SctTextBuilder.h"
 #include "SctTextCodec.h"
 #include "SctScptEncoding.h"
@@ -10,6 +11,27 @@
 #include <unordered_set>
 
 namespace spice::sct {
+
+std::span<const std::uint8_t, 32>
+SctDocumentValidationReceipt::validationFingerprint() const noexcept {
+    return state_->fingerprint;
+}
+
+std::span<const SctDocumentDiagnostic>
+SctDocumentValidationReceipt::diagnostics() const noexcept {
+    return state_->diagnostics;
+}
+
+std::span<const std::uint8_t, 32>
+SctTargetValidationReceipt::validationFingerprint() const noexcept {
+    return state_->fingerprint;
+}
+
+std::span<const SctDocumentDiagnostic>
+SctTargetValidationReceipt::diagnostics() const noexcept {
+    return state_->diagnostics;
+}
+
 namespace {
 
 void error(SctDocumentValidationResult& result, SctDiagnosticCode code, std::string message,
@@ -534,6 +556,12 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
 
     result.validDocument = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
         [](const auto& diagnostic) { return diagnostic.severity == SctDiagnosticSeverity::Error; });
+    if (result.validDocument) {
+        auto state = std::make_shared<detail::SctValidationReceiptState>();
+        state->fingerprint = detail::fingerprintDocument(document);
+        state->diagnostics = result.diagnostics;
+        result.receipt = SctDocumentValidationReceipt{std::move(state)};
+    }
     return result;
 }
 
@@ -541,11 +569,31 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
     const SctDocument& document,
     SctPlatform targetPlatform,
     SctTextEncoding textEncoding,
-    const SctBoundImportEvidence* evidence) {
+    const SctBoundImportEvidence* evidence,
+    const SctDocumentValidationReceipt* documentReceipt) {
     SctTargetValidationResult result;
     const auto* receipt = evidence == nullptr ? nullptr : &evidence->receipt();
-    auto structural = validateDocument(document);
-    result.diagnostics = std::move(structural.diagnostics);
+    std::optional<detail::SctValidationFingerprint> documentFingerprint;
+    bool structurallyValid = false;
+    if (documentReceipt != nullptr) {
+        documentFingerprint = detail::fingerprintDocument(document);
+        if (documentReceipt->state_
+            && documentReceipt->state_->fingerprint == *documentFingerprint) {
+            result.neutralReceiptUse = SctValidationReceiptUse::Reused;
+            result.diagnostics = documentReceipt->state_->diagnostics;
+            structurallyValid = true;
+        } else {
+            result.neutralReceiptUse = SctValidationReceiptUse::MismatchRevalidated;
+        }
+    }
+    if (!structurallyValid) {
+        auto structural = validateDocument(document);
+        structurallyValid = structural.validDocument;
+        result.diagnostics = std::move(structural.diagnostics);
+        if (structural.receipt) {
+            documentFingerprint = structural.receipt->state_->fingerprint;
+        }
+    }
 
     const auto addTargetError = [&](SctDiagnosticCode code, std::string message,
         std::optional<SctDocumentEntityId> entity = std::nullopt,
@@ -625,6 +673,13 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
 
     result.validForTarget = std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
         [](const auto& diagnostic) { return diagnostic.severity == SctDiagnosticSeverity::Error; });
+    if (result.validForTarget && structurallyValid) {
+        auto state = std::make_shared<detail::SctValidationReceiptState>();
+        state->fingerprint = detail::fingerprintTargetValidation(
+            *documentFingerprint, targetPlatform, textEncoding, evidence);
+        state->diagnostics = result.diagnostics;
+        result.receipt = SctTargetValidationReceipt{std::move(state)};
+    }
     return result;
 }
 

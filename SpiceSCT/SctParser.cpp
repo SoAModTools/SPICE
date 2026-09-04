@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
-#include <iostream>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -445,16 +444,35 @@ void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectio
     }
 }
 
-[[nodiscard]] std::optional<std::uint32_t> sectionIndexForPayloadOffset(
-    const std::vector<SectionRow>& rows,
-    std::uint32_t payloadOffset) {
-    for (std::uint32_t i = 0; i < rows.size(); ++i) {
-        if (payloadOffset >= rows[i].start && payloadOffset < rows[i].end) {
-            return i;
+class SectionRowLookup final {
+public:
+    explicit SectionRowLookup(const std::vector<SectionRow>& rows) noexcept
+        : rows_(rows), monotonic_(std::ranges::is_sorted(rows, {}, &SectionRow::start)) {}
+
+    [[nodiscard]] std::optional<std::uint32_t> find(std::uint32_t payloadOffset) const {
+        if (monotonic_) {
+            const auto after = std::upper_bound(rows_.begin(), rows_.end(), payloadOffset,
+                [](std::uint32_t offset, const SectionRow& row) { return offset < row.start; });
+            if (after != rows_.begin()) {
+                const auto candidate = std::prev(after);
+                if (payloadOffset >= candidate->start && payloadOffset < candidate->end) {
+                    return static_cast<std::uint32_t>(candidate - rows_.begin());
+                }
+            }
+            return std::nullopt;
         }
+        for (std::uint32_t i = 0; i < rows_.size(); ++i) {
+            if (payloadOffset >= rows_[i].start && payloadOffset < rows_[i].end) return i;
+        }
+        return std::nullopt;
     }
-    return std::nullopt;
-}
+
+    [[nodiscard]] const std::vector<SectionRow>& rows() const noexcept { return rows_; }
+
+private:
+    const std::vector<SectionRow>& rows_;
+    bool monotonic_ = false;
+};
 
 [[nodiscard]] std::optional<std::uint32_t> containingInstructionStart(
     const std::map<std::uint32_t, GlobalDecodedInstruction>& instructions,
@@ -489,7 +507,8 @@ void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectio
     const SctInstruction& instruction,
     std::size_t successorIndex,
     std::uint32_t successorPayloadOffset,
-    const std::vector<SectionRow>& rows) {
+    const SectionRowLookup& sectionLookup) {
+    const auto& rows = sectionLookup.rows();
     SctEdge edge{};
     edge.type = edgeTypeForSuccessor(instruction, successorIndex, successorPayloadOffset);
     edge.confidence = SctSemanticConfidence::Known;
@@ -499,7 +518,7 @@ void populateRawWords(SctInstruction& inst, std::span<const std::uint8_t> sectio
     edge.opcode = instruction.opcode;
     edge.detail = "Control-flow successor discovered during SCT parse.";
     edge.attributes.emplace("target_payload_offset", decimalString(successorPayloadOffset));
-    if (const auto targetSection = sectionIndexForPayloadOffset(rows, successorPayloadOffset); targetSection.has_value()) {
+    if (const auto targetSection = sectionLookup.find(successorPayloadOffset); targetSection.has_value()) {
         edge.toOffset = successorPayloadOffset - rows[*targetSection].start;
         edge.attributes.emplace("target_section", rows[*targetSection].name);
         edge.attributes.emplace("target_section_index", decimalString(*targetSection));
@@ -515,7 +534,8 @@ void addInstructionSemanticEdges(
     std::vector<SctEdge>& edges,
     const SctInstruction& instruction,
     std::uint32_t sourceSectionStart,
-    const std::vector<SectionRow>& rows) {
+    const SectionRowLookup& sectionLookup) {
+    const auto& rows = sectionLookup.rows();
     const auto* schema = findSctOpcodeSchema(instruction.opcode);
     if (schema == nullptr) {
         return;
@@ -540,7 +560,7 @@ void addInstructionSemanticEdges(
                 targetPayloadOffset.has_value()) {
                 edge.toPayloadOffset = *targetPayloadOffset;
                 edge.attributes.emplace("target_payload_offset", decimalString(*targetPayloadOffset));
-                if (const auto targetSection = sectionIndexForPayloadOffset(rows, *targetPayloadOffset); targetSection.has_value()) {
+                if (const auto targetSection = sectionLookup.find(*targetPayloadOffset); targetSection.has_value()) {
                     edge.toOffset = *targetPayloadOffset - rows[*targetSection].start;
                     edge.attributes.emplace("target_section", rows[*targetSection].name);
                     edge.attributes.emplace("target_section_index", decimalString(*targetSection));
@@ -603,7 +623,7 @@ void addInstructionSemanticEdges(
             edge.attributes.emplace("operand_payload_offset", decimalString(operandPayloadOffset));
             if (target >= 0 && target <= std::numeric_limits<std::uint32_t>::max()) {
                 edge.toPayloadOffset = static_cast<std::uint32_t>(target);
-                if (const auto targetSection = sectionIndexForPayloadOffset(rows, *edge.toPayloadOffset);
+                if (const auto targetSection = sectionLookup.find(*edge.toPayloadOffset);
                     targetSection.has_value() && rows[*targetSection].start == *edge.toPayloadOffset) {
                     edge.toOffset = 0u;
                     edge.attributes.emplace("target_section", rows[*targetSection].name);
@@ -1180,13 +1200,14 @@ void populateFooterEntriesAndGroups(
 }
 
 void fillUnknownRegions(
-    std::unordered_map<std::uint32_t, std::uint32_t> visitedRegions, std::span<const std::uint8_t> sectionBytes, SctSection& section) 
+    const std::unordered_map<std::uint32_t, std::uint32_t>& visitedRegions,
+    std::span<const std::uint8_t> sectionBytes, SctSection& section)
 {
     std::uint32_t cursor = 0;
     while (cursor < sectionBytes.size()) {
         const bool visited = visitedRegions.contains(cursor);
         if (visited) {
-            cursor += visitedRegions[cursor];
+            cursor += visitedRegions.at(cursor);
             continue;
         }
 
@@ -1320,7 +1341,6 @@ SctParseResult SctParser::parse(
     std::span<const std::uint8_t> bytes,
     std::string sourcePath,
     SctParseOptions options) const {
-    std::cout << "[SpiceSCT] Step 1/5: Starting parse (" << bytes.size() << " bytes).\n";
     SctParseResult result{};
     result.file.sourcePath = std::move(sourcePath);
     result.file.originalBytes.assign(bytes.begin(), bytes.end());
@@ -1329,7 +1349,6 @@ SctParseResult SctParser::parse(
     std::span<const std::uint8_t> payload = bytes;
     if (spice::compression::aklz::isAklz(bytes)) {
         result.file.originalCompressedAklz = true;
-        std::cout << "[SpiceSCT] Step 2/5: Input is AKLZ-compressed, decompressing...\n";
         auto decodedResult = spice::compression::aklz::decompress(bytes);
         if (!decodedResult.ok()) {
             result.diagnostics.push_back({
@@ -1341,9 +1360,6 @@ SctParseResult SctParser::parse(
 
         decoded = std::move(decodedResult.bytes);
         payload = std::span<const std::uint8_t>(decoded.data(), decoded.size());
-    }
-    else {
-        std::cout << "[SpiceSCT] Step 2/5: Input is not AKLZ-compressed.\n";
     }
 
     if (payload.empty()) {
@@ -1370,7 +1386,6 @@ SctParseResult SctParser::parse(
 
     std::vector<SectionRow> rows;
     rows.reserve(sectionCount);
-    std::cout << "[SpiceSCT] Step 3/5: Reading section index (" << sectionCount << " sections)...\n";
 
     for (std::uint32_t i = 0; i < sectionCount; ++i) {
         const auto rowOffset = kHeaderSize + (static_cast<std::size_t>(i) * kIndexEntrySize);
@@ -1576,7 +1591,7 @@ SctParseResult SctParser::parse(
         }
     }
 
-    std::cout << "[SpiceSCT] Step 4/5: Walking global script instructions...\n";
+    const SectionRowLookup sectionLookup(rows);
 
     struct WorkItem {
         std::uint32_t payloadOffset = 0;
@@ -1605,7 +1620,7 @@ SctParseResult SctParser::parse(
 
         std::uint32_t cursor = item.payloadOffset;
         while (isOffsetInBounds(cursor, dataSize)) {
-            const auto cursorSection = sectionIndexForPayloadOffset(rows, cursor);
+            const auto cursorSection = sectionLookup.find(cursor);
             if (cursorSection.has_value() && !rows[*cursorSection].isCode) {
                 break;
             }
@@ -1628,7 +1643,7 @@ SctParseResult SctParser::parse(
             }
             decoded.inst.payloadOffset = cursor;
 
-            const auto sourceSection = sectionIndexForPayloadOffset(rows, cursor);
+            const auto sourceSection = sectionLookup.find(cursor);
             for (auto& diag : inst_diagnostics) {
                 if (sourceSection.has_value()) {
                     diag.section = rows[*sourceSection].name;
@@ -1711,8 +1726,7 @@ SctParseResult SctParser::parse(
                 const auto target = base + relative;
                 if (target >= 0 && target <= std::numeric_limits<std::uint32_t>::max()
                     && static_cast<std::uint32_t>(target) % rule->targetAlignment == 0u) {
-                    const auto sectionIndex = sectionIndexForPayloadOffset(
-                        rows, static_cast<std::uint32_t>(target));
+                    const auto sectionIndex = sectionLookup.find(static_cast<std::uint32_t>(target));
                     if (sectionIndex.has_value()
                         && rows[*sectionIndex].start == static_cast<std::uint32_t>(target)) {
                         referencedIndexedStringRows.insert(*sectionIndex);
@@ -1853,7 +1867,7 @@ SctParseResult SctParser::parse(
     result.file.footer = std::move(footer);
 
     for (const auto& [payloadOffset, global] : globalInstructions) {
-        const auto sectionIndex = sectionIndexForPayloadOffset(rows, payloadOffset);
+        const auto sectionIndex = sectionLookup.find(payloadOffset);
         if (!sectionIndex.has_value() || *sectionIndex >= result.file.sections.size()) {
             continue;
         }
@@ -1878,7 +1892,7 @@ SctParseResult SctParser::parse(
     }
 
     for (const auto& [payloadOffset, global] : globalInstructions) {
-        const auto sectionIndex = sectionIndexForPayloadOffset(rows, payloadOffset);
+        const auto sectionIndex = sectionLookup.find(payloadOffset);
         if (!sectionIndex.has_value() || *sectionIndex >= result.file.sections.size()) {
             continue;
         }
@@ -1889,10 +1903,10 @@ SctParseResult SctParser::parse(
 
         std::size_t successorIndex = 0;
         for (const auto successor : global.decoded.successors) {
-            auto edge = makeControlFlowEdge(localInstruction, successorIndex++, successor, rows);
+            auto edge = makeControlFlowEdge(localInstruction, successorIndex++, successor, sectionLookup);
             section.edges.push_back(std::move(edge));
         }
-        addInstructionSemanticEdges(section.edges, localInstruction, rows[*sectionIndex].start, rows);
+        addInstructionSemanticEdges(section.edges, localInstruction, rows[*sectionIndex].start, sectionLookup);
     }
 
     for (std::uint32_t sectionIndex = 0; sectionIndex < result.file.sections.size(); ++sectionIndex) {
@@ -1922,19 +1936,11 @@ SctParseResult SctParser::parse(
         section.blocks.push_back(std::move(block));
 
         std::unordered_map<std::uint32_t, std::uint32_t> localVisited{};
-        for (const auto& [payloadOffset, global] : globalInstructions) {
-            const auto instStart = payloadOffset;
-            const auto instEnd = payloadOffset + global.decoded.inst.sizeBytes;
-            const auto rowStart = rows[sectionIndex].start;
-            const auto rowEnd = rows[sectionIndex].end;
-            if (instEnd <= rowStart || instStart >= rowEnd) {
-                continue;
-            }
-            const auto localStart = std::max(instStart, rowStart) - rowStart;
-            const auto localEnd = std::min(instEnd, rowEnd) - rowStart;
-            if (localEnd > localStart) {
-                localVisited.emplace(localStart, localEnd - localStart);
-            }
+        const auto sectionSize = rows[sectionIndex].end - rows[sectionIndex].start;
+        for (const auto& instruction : section.instructions) {
+            if (instruction.offset >= sectionSize) continue;
+            localVisited.emplace(instruction.offset,
+                std::min(instruction.sizeBytes, sectionSize - instruction.offset));
         }
         const auto sectionBytes = dataBytes.subspan(rows[sectionIndex].start, rows[sectionIndex].end - rows[sectionIndex].start);
         fillUnknownRegions(localVisited, sectionBytes, section);
@@ -1957,44 +1963,62 @@ SctParseResult SctParser::parse(
         }
     }
 
+    std::unordered_map<std::uint32_t, std::size_t> instructionOrdinals;
+    instructionOrdinals.reserve(globalInstructions.size());
+    std::size_t instructionOrdinal = 0u;
+    for (const auto& [payloadOffset, instruction] : globalInstructions) {
+        (void)instruction;
+        instructionOrdinals.emplace(payloadOffset, instructionOrdinal++);
+    }
+    std::vector<std::uint32_t> instructionVisitGeneration(globalInstructions.size(), 0u);
+    std::vector<std::uint32_t> sectionVisitGeneration(rows.size(), 0u);
+    std::uint32_t visitGeneration = 0u;
+
     for (const auto& row : rows) {
         if (!row.isValid || !row.isCode || row.isString || row.start >= row.end || !isOffsetInBounds(row.start, dataSize)) {
             continue;
+        }
+        if (++visitGeneration == 0u) {
+            std::ranges::fill(instructionVisitGeneration, 0u);
+            std::ranges::fill(sectionVisitGeneration, 0u);
+            ++visitGeneration;
         }
         SctCodeRegion region{};
         region.name = row.name;
         region.entryPayloadOffset = row.start;
 
         std::deque<std::uint32_t> regionWorklist;
-        std::set<std::uint32_t> regionVisited;
         regionWorklist.push_back(row.start);
         while (!regionWorklist.empty()) {
             const auto current = regionWorklist.front();
             regionWorklist.pop_front();
-            if (regionVisited.contains(current)) {
-                continue;
-            }
             const auto it = globalInstructions.find(current);
             if (it == globalInstructions.end()) {
                 continue;
             }
-            regionVisited.insert(current);
+            const auto ordinal = instructionOrdinals.at(current);
+            if (instructionVisitGeneration[ordinal] == visitGeneration) continue;
+            instructionVisitGeneration[ordinal] = visitGeneration;
             region.instructionPayloadOffsets.push_back(current);
-            if (const auto sectionIndex = sectionIndexForPayloadOffset(rows, current); sectionIndex.has_value()) {
-                if (std::find(region.coveredSectionIndexes.begin(), region.coveredSectionIndexes.end(), *sectionIndex)
-                    == region.coveredSectionIndexes.end()) {
+            if (const auto sectionIndex = sectionLookup.find(current); sectionIndex.has_value()) {
+                if (sectionVisitGeneration[*sectionIndex] != visitGeneration) {
+                    sectionVisitGeneration[*sectionIndex] = visitGeneration;
                     region.coveredSectionIndexes.push_back(*sectionIndex);
                 }
             }
             if (!it->second.decoded.successors.empty()) {
                 for (const auto successor : it->second.decoded.successors) {
-                    if (globalInstructions.contains(successor) && !regionVisited.contains(successor)) {
+                    const auto successorOrdinal = instructionOrdinals.find(successor);
+                    if (successorOrdinal != instructionOrdinals.end()
+                        && instructionVisitGeneration[successorOrdinal->second] != visitGeneration) {
                         regionWorklist.push_back(successor);
                     }
                 }
             } else if (!it->second.decoded.blockTerminator) {
                 const auto next = current + it->second.decoded.inst.sizeBytes;
-                if (globalInstructions.contains(next) && !regionVisited.contains(next)) {
+                const auto nextOrdinal = instructionOrdinals.find(next);
+                if (nextOrdinal != instructionOrdinals.end()
+                    && instructionVisitGeneration[nextOrdinal->second] != visitGeneration) {
                     regionWorklist.push_back(next);
                 }
             }
@@ -2010,9 +2034,6 @@ SctParseResult SctParser::parse(
     }
 
     result.parseOk = true;
-    std::cout << "[SpiceSCT] Step 5/5: Parse complete. ParsedSections="
-              << result.file.sections.size()
-              << ", diagnostics=" << result.diagnostics.size() << ".\n";
     result.diagnostics.push_back(
         {"Initial SCT parser pass completed (index + control-flow-guided section walk with placeholder opcode semantics).", 0});
     return result;

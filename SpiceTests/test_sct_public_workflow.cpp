@@ -78,3 +78,52 @@ TEST(SctPublicWorkflow, SalsaStyleCandidateEditUsesOnlyPublicBoundary) {
     EXPECT_EQ(reparsed.file.sections.front().instructions[0].opcode, 15u);
     EXPECT_EQ(reparsed.file.sections.front().instructions[1].opcode, 12u);
 }
+
+TEST(SctPublicWorkflow, ValidationReceiptsSkipOnlyMatchingValidationWork) {
+    SctDocument document;
+    const auto section = document.allocateSectionId();
+    document.sections.push_back({section, "SCRIPT",
+        SctScriptSectionContent{{SctDocumentInstruction{
+            document.allocateInstructionId(), 12u}}}});
+
+    const auto neutral = SctDocumentValidator::validateDocument(document);
+    ASSERT_TRUE(neutral.validDocument);
+    ASSERT_TRUE(neutral.receipt.has_value());
+    EXPECT_FALSE(neutral.receipt->validationFingerprint().empty());
+
+    const auto target = SctDocumentValidator::validateForTarget(document,
+        SctPlatform::GameCube, kSctShiftJisByte7FEncoding, nullptr, &*neutral.receipt);
+    ASSERT_TRUE(target.validForTarget);
+    ASSERT_TRUE(target.receipt.has_value());
+    EXPECT_EQ(target.neutralReceiptUse, SctValidationReceiptUse::Reused);
+
+    const auto exported = SctDocumentExporter::exportDocument(
+        document, gameCubeOptions(), nullptr, &*target.receipt);
+    EXPECT_TRUE(exported.success);
+    EXPECT_EQ(exported.validationReceiptUse, SctValidationReceiptUse::Reused);
+
+    document.sections.front().nameBytes = "EDITED";
+    const auto revalidatedTarget = SctDocumentValidator::validateForTarget(document,
+        SctPlatform::GameCube, kSctShiftJisByte7FEncoding, nullptr, &*neutral.receipt);
+    EXPECT_TRUE(revalidatedTarget.validForTarget);
+    EXPECT_EQ(revalidatedTarget.neutralReceiptUse,
+        SctValidationReceiptUse::MismatchRevalidated);
+
+    const auto revalidatedExport = SctDocumentExporter::exportDocument(
+        document, gameCubeOptions(), nullptr, &*target.receipt);
+    EXPECT_TRUE(revalidatedExport.success);
+    EXPECT_EQ(revalidatedExport.validationReceiptUse,
+        SctValidationReceiptUse::MismatchRevalidated);
+
+    document.sections.front().nameBytes = "NAME_LONGER_THAN_16";
+    const auto rejectedTarget = SctDocumentValidator::validateForTarget(document,
+        SctPlatform::GameCube, kSctShiftJisByte7FEncoding, nullptr, &*neutral.receipt);
+    EXPECT_FALSE(rejectedTarget.validForTarget);
+    EXPECT_EQ(rejectedTarget.neutralReceiptUse,
+        SctValidationReceiptUse::MismatchRevalidated);
+    const auto rejectedExport = SctDocumentExporter::exportDocument(
+        document, gameCubeOptions(), nullptr, &*target.receipt);
+    EXPECT_FALSE(rejectedExport.success);
+    EXPECT_EQ(rejectedExport.validationReceiptUse,
+        SctValidationReceiptUse::MismatchRevalidated);
+}

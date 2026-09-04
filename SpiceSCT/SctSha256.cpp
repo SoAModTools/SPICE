@@ -2,7 +2,8 @@
 
 #include <array>
 #include <bit>
-#include <vector>
+#include <algorithm>
+#include <cstring>
 
 namespace spice::sct::detail {
 namespace {
@@ -26,53 +27,86 @@ constexpr std::uint32_t majority(std::uint32_t x, std::uint32_t y, std::uint32_t
 
 } // namespace
 
-std::array<std::uint8_t, 32> sha256(std::span<const std::uint8_t> bytes) noexcept {
-    std::vector<std::uint8_t> padded(bytes.begin(), bytes.end());
-    const auto bitLength = static_cast<std::uint64_t>(bytes.size()) * 8u;
-    padded.push_back(0x80u);
-    while ((padded.size() % 64u) != 56u) padded.push_back(0u);
-    for (int shift = 56; shift >= 0; shift -= 8) {
-        padded.push_back(static_cast<std::uint8_t>(bitLength >> shift));
-    }
-
-    std::array<std::uint32_t, 8> state{
+Sha256::Sha256() noexcept
+    : state_{
         0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,
-        0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u};
-    for (std::size_t block = 0; block < padded.size(); block += 64u) {
-        std::array<std::uint32_t, 64> words{};
-        for (std::size_t i = 0; i < 16u; ++i) {
-            const auto at = block + i * 4u;
-            words[i] = static_cast<std::uint32_t>(padded[at]) << 24u
-                | static_cast<std::uint32_t>(padded[at + 1u]) << 16u
-                | static_cast<std::uint32_t>(padded[at + 2u]) << 8u
-                | padded[at + 3u];
+        0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u} {}
+
+void Sha256::transform(const std::uint8_t* block) noexcept {
+    std::array<std::uint32_t, 64> words{};
+    for (std::size_t i = 0; i < 16u; ++i) {
+        const auto at = i * 4u;
+        words[i] = static_cast<std::uint32_t>(block[at]) << 24u
+            | static_cast<std::uint32_t>(block[at + 1u]) << 16u
+            | static_cast<std::uint32_t>(block[at + 2u]) << 8u
+            | block[at + 3u];
+    }
+    for (std::size_t i = 16u; i < words.size(); ++i) {
+        const auto s0 = std::rotr(words[i - 15u], 7) ^ std::rotr(words[i - 15u], 18)
+            ^ (words[i - 15u] >> 3u);
+        const auto s1 = std::rotr(words[i - 2u], 17) ^ std::rotr(words[i - 2u], 19)
+            ^ (words[i - 2u] >> 10u);
+        words[i] = words[i - 16u] + s0 + words[i - 7u] + s1;
+    }
+    auto [a,b,c,d,e,f,g,h] = state_;
+    for (std::size_t i = 0; i < words.size(); ++i) {
+        const auto s1 = std::rotr(e, 6) ^ std::rotr(e, 11) ^ std::rotr(e, 25);
+        const auto t1 = h + s1 + choose(e, f, g) + kRound[i] + words[i];
+        const auto s0 = std::rotr(a, 2) ^ std::rotr(a, 13) ^ std::rotr(a, 22);
+        const auto t2 = s0 + majority(a, b, c);
+        h=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
+    }
+    state_[0]+=a; state_[1]+=b; state_[2]+=c; state_[3]+=d;
+    state_[4]+=e; state_[5]+=f; state_[6]+=g; state_[7]+=h;
+}
+
+void Sha256::update(std::span<const std::uint8_t> bytes) noexcept {
+    if (finished_ || bytes.empty()) return;
+    byteCount_ += bytes.size();
+    while (!bytes.empty()) {
+        const auto amount = std::min(buffer_.size() - buffered_, bytes.size());
+        std::memcpy(buffer_.data() + buffered_, bytes.data(), amount);
+        buffered_ += amount;
+        bytes = bytes.subspan(amount);
+        if (buffered_ == buffer_.size()) {
+            transform(buffer_.data());
+            buffered_ = 0;
         }
-        for (std::size_t i = 16u; i < words.size(); ++i) {
-            const auto s0 = std::rotr(words[i - 15u], 7) ^ std::rotr(words[i - 15u], 18)
-                ^ (words[i - 15u] >> 3u);
-            const auto s1 = std::rotr(words[i - 2u], 17) ^ std::rotr(words[i - 2u], 19)
-                ^ (words[i - 2u] >> 10u);
-            words[i] = words[i - 16u] + s0 + words[i - 7u] + s1;
+    }
+}
+
+std::array<std::uint8_t, 32> Sha256::finish() noexcept {
+    if (!finished_) {
+        const auto bitLength = byteCount_ * 8u;
+        buffer_[buffered_++] = 0x80u;
+        if (buffered_ > 56u) {
+            std::fill(buffer_.begin() + buffered_, buffer_.end(), 0u);
+            transform(buffer_.data());
+            buffered_ = 0;
         }
-        auto [a,b,c,d,e,f,g,h] = state;
-        for (std::size_t i = 0; i < words.size(); ++i) {
-            const auto s1 = std::rotr(e, 6) ^ std::rotr(e, 11) ^ std::rotr(e, 25);
-            const auto t1 = h + s1 + choose(e, f, g) + kRound[i] + words[i];
-            const auto s0 = std::rotr(a, 2) ^ std::rotr(a, 13) ^ std::rotr(a, 22);
-            const auto t2 = s0 + majority(a, b, c);
-            h=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
+        std::fill(buffer_.begin() + buffered_, buffer_.begin() + 56u, 0u);
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            buffer_[56u + static_cast<std::size_t>((56 - shift) / 8)] =
+                static_cast<std::uint8_t>(bitLength >> shift);
         }
-        state[0]+=a; state[1]+=b; state[2]+=c; state[3]+=d;
-        state[4]+=e; state[5]+=f; state[6]+=g; state[7]+=h;
+        transform(buffer_.data());
+        buffered_ = 0;
+        finished_ = true;
     }
     std::array<std::uint8_t, 32> result{};
-    for (std::size_t i = 0; i < state.size(); ++i) {
-        result[i*4u]=static_cast<std::uint8_t>(state[i]>>24u);
-        result[i*4u+1u]=static_cast<std::uint8_t>(state[i]>>16u);
-        result[i*4u+2u]=static_cast<std::uint8_t>(state[i]>>8u);
-        result[i*4u+3u]=static_cast<std::uint8_t>(state[i]);
+    for (std::size_t i = 0; i < state_.size(); ++i) {
+        result[i*4u]=static_cast<std::uint8_t>(state_[i]>>24u);
+        result[i*4u+1u]=static_cast<std::uint8_t>(state_[i]>>16u);
+        result[i*4u+2u]=static_cast<std::uint8_t>(state_[i]>>8u);
+        result[i*4u+3u]=static_cast<std::uint8_t>(state_[i]);
     }
     return result;
+}
+
+std::array<std::uint8_t, 32> sha256(std::span<const std::uint8_t> bytes) noexcept {
+    Sha256 hash;
+    hash.update(bytes);
+    return hash.finish();
 }
 
 } // namespace spice::sct::detail

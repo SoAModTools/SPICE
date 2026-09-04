@@ -1,15 +1,18 @@
 #include "SctDocumentExporter.h"
 
 #include "SctOpcodeMetadata.h"
+#include "SctDocumentFingerprint.h"
 #include "SctScptEncoding.h"
 #include "SctTextCodec.h"
 
 #include "../Compression/Aklz.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -101,16 +104,6 @@ std::vector<std::uint8_t> encodeHeaderValues(const SctHeaderValues& values,
     return bytes;
 }
 
-template <typename Id>
-bool anchorIs(const SctOpaqueAttachment& attachment, Id id) {
-    const auto* anchor = std::get_if<Id>(&attachment.anchor);
-    return anchor != nullptr && *anchor == id;
-}
-
-bool anchorIsDocument(const SctOpaqueAttachment& attachment) {
-    return std::holds_alternative<SctDocumentAnchor>(attachment.anchor);
-}
-
 class PayloadCanvas {
 public:
     explicit PayloadCanvas(std::vector<SctDocumentDiagnostic>& diagnostics)
@@ -147,7 +140,19 @@ public:
 
     bool claimZeros(std::uint32_t offset, std::uint32_t size, SctDiagnosticCode code,
         std::string message, std::optional<SctDocumentEntityId> entity = std::nullopt) {
-        return claim(offset, std::vector<std::uint8_t>(size, 0), code, std::move(message), std::move(entity));
+        const auto end = static_cast<std::uint64_t>(offset) + size;
+        if (!ensure(end)) return false;
+        if (std::any_of(claimed_.begin() + offset,
+                claimed_.begin() + static_cast<std::size_t>(end),
+                [](const bool claimed) { return claimed; })) {
+            addDiagnostic(diagnostics_, code, std::move(message), std::move(entity));
+            return false;
+        }
+        std::fill(bytes_.begin() + offset,
+            bytes_.begin() + static_cast<std::size_t>(end), 0u);
+        std::fill(claimed_.begin() + offset,
+            claimed_.begin() + static_cast<std::size_t>(end), true);
+        return true;
     }
 
     bool claimUnclaimedZeros(std::uint32_t offset, std::uint32_t size) {
@@ -345,19 +350,37 @@ struct InternalBuildResult {
     std::optional<SctDocumentLayout> layout;
     std::vector<SctDocumentDiagnostic> diagnostics;
     SctPreservationReport preservation;
+    SctValidationReceiptUse validationReceiptUse = SctValidationReceiptUse::NotProvided;
 };
 
 InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentExportOptions& options,
-    const SctBoundImportEvidence* evidence) {
+    const SctBoundImportEvidence* evidence,
+    const SctTargetValidationReceipt* validationReceipt) {
     InternalBuildResult result;
     const auto* receipt = evidence == nullptr ? nullptr : &evidence->receipt();
     switch (options.opaquePolicy) {
     case SctOpaquePreservationPolicy::RequirePreservation:
         break;
     }
-    const auto validation = SctDocumentValidator::validateForTarget(
-        document, options.targetPlatform, options.textEncoding, evidence);
-    result.diagnostics = validation.diagnostics;
+    bool reusedValidation = false;
+    if (validationReceipt != nullptr) {
+        const auto documentFingerprint = detail::fingerprintDocument(document);
+        const auto targetFingerprint = detail::fingerprintTargetValidation(
+            documentFingerprint, options.targetPlatform, options.textEncoding, evidence);
+        if (std::ranges::equal(validationReceipt->validationFingerprint(), targetFingerprint)) {
+            result.validationReceiptUse = SctValidationReceiptUse::Reused;
+            result.diagnostics.assign(validationReceipt->diagnostics().begin(),
+                validationReceipt->diagnostics().end());
+            reusedValidation = true;
+        } else {
+            result.validationReceiptUse = SctValidationReceiptUse::MismatchRevalidated;
+        }
+    }
+    if (!reusedValidation) {
+        const auto validation = SctDocumentValidator::validateForTarget(
+            document, options.targetPlatform, options.textEncoding, evidence);
+        result.diagnostics = validation.diagnostics;
+    }
     if (hasErrors(result.diagnostics)) return result;
 
     const auto dataStart64 = static_cast<std::uint64_t>(kHeaderSize)
@@ -398,7 +421,11 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     result.preservation.header = headerRecord;
 
     std::unordered_map<std::uint64_t, SctOpaquePlacementRecord> opaquePlacements;
+    using AttachmentLists = std::array<std::vector<const SctOpaqueAttachment*>, 3u>;
+    std::map<SctOpaqueAnchor, AttachmentLists> attachmentsByAnchor;
     for (const auto& attachment : document.opaqueAttachments) {
+        attachmentsByAnchor[attachment.anchor][static_cast<std::size_t>(attachment.placement)]
+            .push_back(&attachment);
         if (attachment.placement != SctOpaquePlacement::FixedOffset || !attachment.fixedOffset) continue;
         const auto offset = *attachment.fixedOffset;
         const bool aligned = offset % attachment.alignment == 0;
@@ -460,22 +487,25 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         return true;
     };
 
-    const auto placeAttachments = [&](const auto& anchorPredicate, SctOpaquePlacement placement,
+    const auto placeAttachments = [&](const SctOpaqueAnchor& anchor, SctOpaquePlacement placement,
         std::uint32_t& cursor) -> bool {
-        for (const auto& attachment : document.opaqueAttachments) {
-            if (attachment.placement == placement && anchorPredicate(attachment)) {
-                if (!placeRelativeAttachment(attachment, cursor)) return false;
-            }
+        const auto found = attachmentsByAnchor.find(anchor);
+        if (found == attachmentsByAnchor.end()) return true;
+        for (const auto* attachment : found->second[static_cast<std::size_t>(placement)]) {
+            if (!placeRelativeAttachment(*attachment, cursor)) return false;
         }
         return true;
     };
 
-    const auto fixedEndFor = [&](const auto& anchorPredicate, std::uint32_t floor) {
+    const auto fixedEndFor = [&](const SctOpaqueAnchor& anchor, std::uint32_t floor) {
         std::uint32_t end = floor;
-        for (const auto& attachment : document.opaqueAttachments) {
-            if (attachment.placement == SctOpaquePlacement::FixedOffset && attachment.fixedOffset
-                && *attachment.fixedOffset >= dataStart && anchorPredicate(attachment)) {
-                const auto attachmentEnd = static_cast<std::uint64_t>(*attachment.fixedOffset) + attachment.bytes.size();
+        const auto found = attachmentsByAnchor.find(anchor);
+        if (found == attachmentsByAnchor.end()) return end;
+        for (const auto* attachment : found->second[
+                 static_cast<std::size_t>(SctOpaquePlacement::FixedOffset)]) {
+            if (attachment->fixedOffset && *attachment->fixedOffset >= dataStart) {
+                const auto attachmentEnd = static_cast<std::uint64_t>(*attachment->fixedOffset)
+                    + attachment->bytes.size();
                 if (attachmentEnd <= kMaximumPayloadSize) end = std::max(end, static_cast<std::uint32_t>(attachmentEnd));
             }
         }
@@ -489,11 +519,12 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     std::unordered_set<std::uint64_t> placedStrings;
     std::vector<PendingRelocation> pendingRelocations;
     std::uint32_t cursor = dataStart;
-    if (!placeAttachments(anchorIsDocument, SctOpaquePlacement::Before, cursor)) return result;
+    const SctOpaqueAnchor documentAnchor{SctDocumentAnchor{}};
+    if (!placeAttachments(documentAnchor, SctOpaquePlacement::Before, cursor)) return result;
 
     for (std::size_t sectionIndex = 0; sectionIndex < document.sections.size(); ++sectionIndex) {
         const auto& section = document.sections[sectionIndex];
-        const auto sectionAnchor = [&](const auto& attachment) { return anchorIs(attachment, section.id); };
+        const SctOpaqueAnchor sectionAnchor{section.id};
         if (!placeAttachments(sectionAnchor, SctOpaquePlacement::Before, cursor)) return result;
         const auto alignedSectionStart = alignUp(cursor, 4u);
         if (!alignedSectionStart) return result;
@@ -503,7 +534,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
 
         if (const auto* script = std::get_if<SctScriptSectionContent>(&section.content)) {
             for (const auto& instruction : script->instructions) {
-                const auto instructionAnchor = [&](const auto& attachment) { return anchorIs(attachment, instruction.id); };
+                const SctOpaqueAnchor instructionAnchor{instruction.id};
                 if (!placeAttachments(instructionAnchor, SctOpaquePlacement::Before, cursor)) return result;
                 const auto* schema = findSctOpcodeSchema(instruction.opcode);
                 if (!schema) {
@@ -556,7 +587,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             cursor = *preambleOffset + static_cast<std::uint32_t>(preambleBytes.size());
             indexedStringTargetSpans.emplace(string.id.value(),
                 SctDocumentByteSpan{sectionStart, static_cast<std::uint32_t>(preambleBytes.size())});
-            const auto stringAnchor = [&](const auto& attachment) { return anchorIs(attachment, string.id); };
+            const SctOpaqueAnchor stringAnchor{string.id};
             if (!placeAttachments(stringAnchor, SctOpaquePlacement::Before, cursor)) return result;
             const auto encodedText = encodeSctTextRecord(string.value, string.kind,
                 SctTextStorage::IndexedSection, options.textEncoding);
@@ -586,7 +617,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     }
 
     for (const auto& footer : document.footerEntries) {
-        const auto footerAnchor = [&](const auto& attachment) { return anchorIs(attachment, footer.id); };
+        const SctOpaqueAnchor footerAnchor{footer.id};
         if (!placeAttachments(footerAnchor, SctOpaquePlacement::Before, cursor)) return result;
         const auto encodedText = encodeSctTextRecord(footer.value, footer.kind,
             SctTextStorage::Footer, options.textEncoding);
@@ -607,8 +638,8 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         cursor = fixedEndFor(footerAnchor, cursor);
         if (!placeAttachments(footerAnchor, SctOpaquePlacement::After, cursor)) return result;
     }
-    cursor = fixedEndFor(anchorIsDocument, cursor);
-    if (!placeAttachments(anchorIsDocument, SctOpaquePlacement::After, cursor)) return result;
+    cursor = fixedEndFor(documentAnchor, cursor);
+    if (!placeAttachments(documentAnchor, SctOpaquePlacement::After, cursor)) return result;
     if (!canvas.ensure(cursor)) return result;
 
     for (const auto& pending : pendingRelocations) {
@@ -708,23 +739,27 @@ void markFailedPreservation(const SctDocument& document, InternalBuildResult& re
 SctDocumentLayoutResult SctDocumentLayoutEngine::layout(
     const SctDocument& document,
     const SctDocumentExportOptions& options,
-    const SctBoundImportEvidence* evidence) {
-    auto built = buildPayload(document, options, evidence);
+    const SctBoundImportEvidence* evidence,
+    const SctTargetValidationReceipt* validationReceipt) {
+    auto built = buildPayload(document, options, evidence, validationReceipt);
     markFailedPreservation(document, built);
-    return {built.success, std::move(built.layout), std::move(built.diagnostics), std::move(built.preservation)};
+    return {built.success, std::move(built.layout), std::move(built.diagnostics),
+        std::move(built.preservation), built.validationReceiptUse};
 }
 
 SctDocumentExportResult SctDocumentExporter::exportDocument(
     const SctDocument& document,
     const SctDocumentExportOptions& options,
-    const SctBoundImportEvidence* evidence) {
-    auto built = buildPayload(document, options, evidence);
+    const SctBoundImportEvidence* evidence,
+    const SctTargetValidationReceipt* validationReceipt) {
+    auto built = buildPayload(document, options, evidence, validationReceipt);
     markFailedPreservation(document, built);
     SctDocumentExportResult result;
     result.success = built.success;
     result.layout = std::move(built.layout);
     result.diagnostics = std::move(built.diagnostics);
     result.preservation = std::move(built.preservation);
+    result.validationReceiptUse = built.validationReceiptUse;
     if (!built.success) return result;
     result.decodedPayloadSize = static_cast<std::uint32_t>(built.payload.size());
     if (options.wrapper == SctDocumentOutputWrapper::Aklz) {

@@ -7,6 +7,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace {
@@ -753,6 +754,39 @@ TEST(SctStructuredControlFlow, AggregateAndStandaloneBuildersProduceIdenticalCor
     ASSERT_NE(standalone.blockContaining(bodyId), nullptr);
     EXPECT_EQ(aggregate.structuredControlFlow.blockContaining(bodyId)->id,
         standalone.blockContaining(bodyId)->id);
+}
+
+TEST(SctStructuredControlFlow, BoundedParallelBuildMatchesSequentialPhysicalOrder) {
+    SctDocument document;
+    for (std::uint32_t sectionOrdinal = 0; sectionOrdinal < 8u; ++sectionOrdinal) {
+        const auto sectionId = document.allocateSectionId();
+        std::vector<SctDocumentInstruction> instructions;
+        for (std::uint32_t instructionOrdinal = 0; instructionOrdinal < 12u;
+             ++instructionOrdinal) {
+            instructions.push_back(ordinary(document));
+        }
+        instructions.push_back(returnInstruction(document));
+        document.sections.push_back({sectionId, "S" + std::to_string(sectionOrdinal),
+            SctScriptSectionContent{std::move(instructions)}});
+    }
+    ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
+
+    const auto sequential = SctStructuredControlFlowAnalysis::build(
+        document, nullptr, SctAnalysisExecutionOptions{1u});
+    const auto parallel = SctStructuredControlFlowAnalysis::build(
+        document, nullptr, SctAnalysisExecutionOptions{4u});
+    EXPECT_TRUE(std::ranges::equal(sequential.sections(), parallel.sections()));
+    ASSERT_EQ(parallel.sections().size(), document.sections.size());
+    for (std::size_t index = 0; index < parallel.sections().size(); ++index) {
+        EXPECT_EQ(parallel.sections()[index].section, document.sections[index].id);
+    }
+
+    const auto sequentialAggregate = SctDocumentAnalysis::build(
+        document, nullptr, SctAnalysisExecutionOptions{1u});
+    const auto parallelAggregate = SctDocumentAnalysis::build(
+        document, nullptr, SctAnalysisExecutionOptions{4u});
+    EXPECT_TRUE(std::ranges::equal(sequentialAggregate.structuredControlFlow.sections(),
+        parallelAggregate.structuredControlFlow.sections()));
 }
 
 }  // namespace

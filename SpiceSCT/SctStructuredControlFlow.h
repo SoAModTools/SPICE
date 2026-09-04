@@ -4,6 +4,7 @@
 #include "SctSourceMap.h"
 
 #include <compare>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -207,6 +208,14 @@ struct SctSectionStructure final {
     auto operator<=>(const SctSectionStructure&) const = default;
 };
 
+// Controls bounded execution of section-independent structured analysis.
+// A value of one is deterministic sequential execution. Values above one
+// permit at most that many worker threads; result ordering remains physical
+// document section order.
+struct SctAnalysisExecutionOptions final {
+    std::size_t maxConcurrency = 1u;
+};
+
 // Revision-scoped derived analysis. Rebuild after mutating the document.
 // Stored results contain stable IDs and no pointers into the source document.
 class SctStructuredControlFlowAnalysis final {
@@ -215,7 +224,8 @@ public:
     // document revision, preventing accidental cross-revision composition.
     [[nodiscard]] static SctStructuredControlFlowAnalysis build(
         const SctDocument& document,
-        const SctBoundImportEvidence* evidence = nullptr);
+        const SctBoundImportEvidence* evidence = nullptr,
+        SctAnalysisExecutionOptions execution = {});
 
     [[nodiscard]] std::span<const SctSectionStructure> sections() const noexcept {
         return sections_;
@@ -235,7 +245,8 @@ private:
     [[nodiscard]] static SctStructuredControlFlowAnalysis buildFromIndexes(
         const SctDocument& document,
         const SctControlFlowIndex& controlFlow,
-        const SctOpaqueContextIndex& opaqueContext);
+        const SctOpaqueContextIndex& opaqueContext,
+        SctAnalysisExecutionOptions execution);
     void buildIndexes();
 
     std::vector<SctSectionStructure> sections_{};

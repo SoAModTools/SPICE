@@ -62,11 +62,6 @@ bool validTarget(const SctImportedSourceTarget& target) {
 SctImportedSourceMap::SctImportedSourceMap(std::uint32_t decodedPayloadSize,
     std::vector<SctSourceSpanRecord> records)
     : decodedPayloadSize_(decodedPayloadSize), records_(std::move(records)) {
-    std::stable_sort(records_.begin(), records_.end(), [](const auto& left, const auto& right) {
-        if (left.span.offset != right.span.offset) return left.span.offset < right.span.offset;
-        if (left.layer != right.layer) return left.layer == SctSourceSpanLayer::Envelope;
-        return left.span.size > right.span.size;
-    });
     buildIndexes();
 }
 
