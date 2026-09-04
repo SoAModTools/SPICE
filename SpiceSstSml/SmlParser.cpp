@@ -9,7 +9,7 @@
 #include <limits>
 #include <string_view>
 
-namespace spice::sstsml {
+namespace spice::sstsml::detail {
 namespace {
 
 using spice::root::Endian;
@@ -235,4 +235,4 @@ SmlParseResult SmlParser::parse(std::span<const std::uint8_t> bytes,
     return result;
 }
 
-} // namespace spice::sstsml
+} // namespace spice::sstsml::detail

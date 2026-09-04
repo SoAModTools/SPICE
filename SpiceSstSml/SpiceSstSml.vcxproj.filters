@@ -28,13 +28,25 @@
     <ClInclude Include="SstSmlExport.h">
       <Filter>Parser</Filter>
     </ClInclude>
-    <ClInclude Include="BattleStageParser.h">
-      <Filter>Parser</Filter>
-    </ClInclude>
     <ClInclude Include="SstCommandCatalog.h">
       <Filter>Parser</Filter>
     </ClInclude>
     <ClInclude Include="SmlBlenderIrCombiner.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="SstSmlDocument.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SstSmlDocumentAnalysis.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="SstSmlDocumentImporter.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="SstSmlDocumentValidator.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="SstSmlSha256.h">
       <Filter>Parser</Filter>
     </ClInclude>
   </ItemGroup>
@@ -45,9 +57,6 @@
     <ClCompile Include="SstParser.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
-    <ClCompile Include="BattleStageParser.cpp">
-      <Filter>Parser</Filter>
-    </ClCompile>
     <ClCompile Include="SstCommandCatalog.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
@@ -55,6 +64,18 @@
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="SmlBlenderIrCombiner.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlDocumentImporter.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlDocumentAnalysis.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlDocumentValidator.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlSha256.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>

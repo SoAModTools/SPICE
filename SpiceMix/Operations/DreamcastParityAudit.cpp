@@ -7,7 +7,8 @@
 #include "../../SpiceMlk/MlkParser.h"
 #include "../../SpiceMll/MllParser.h"
 #include "../../SpiceSCT/SctParser.h"
-#include "../../SpiceSstSml/BattleStageParser.h"
+#include "../../SpiceSstSml/SstSmlDocumentAnalysis.h"
+#include "../../SpiceSstSml/SstSmlDocumentImporter.h"
 #include "../../SpiceStd/StdParser.h"
 
 #include <algorithm>
@@ -248,38 +249,41 @@ Row inspect(const Corpus& corpus, const std::filesystem::path& path) {
         const auto sst = companionSst(path);
         if (sst.empty()) { row.diagnostics = "same-stem SST companion missing"; return row; }
         const auto sstBytes = readBytes(sst);
-        const auto forced = spice::sstsml::BattleStageParser::parsePair(bytes, sstBytes, path.stem().string(),
-            { .forcedEndian = corpus.expectedEndian });
-        const auto automatic = spice::sstsml::BattleStageParser::parsePair(bytes, sstBytes, path.stem().string());
-        row.parsed = forced.ok();
-        if (automatic.ok()) {
-            row.detectedEndian = endianName(automatic.sml.sourceEndian);
-            row.automaticAgreement = automatic.sml.sourceEndian == corpus.expectedEndian
-                && automatic.sst.sourceEndian == corpus.expectedEndian;
+        const auto imported = spice::sstsml::SstSmlDocumentImporter::importBytes(bytes, sstBytes);
+        if (!imported.ok()) {
+            row.diagnostics = diagnosticJoin(imported.diagnostics);
+            return row;
+        }
+        const auto& document = *imported.document;
+        const auto analysis = spice::sstsml::SstSmlDocumentAnalyzer::analyze(document, imported.receipt);
+        row.parsed = analysis.ok();
+        if (imported.receipt.sml.endian && imported.receipt.sst.endian) {
+            row.detectedEndian = endianName(*imported.receipt.sml.endian);
+            row.automaticAgreement = *imported.receipt.sml.endian == corpus.expectedEndian
+                && *imported.receipt.sst.endian == corpus.expectedEndian;
         }
         SemanticHasher hash;
-        hash.add(forced.sml.records.size());
-        for (const auto& item : forced.sml.records) {
-            hash.add(item.rawWord0);
-            hash.add(item.rawWord12);
-            hash.add(item.embeddedMldSummary.has_value());
-            if (item.embeddedMldSummary) {
-                const auto& summary = *item.embeddedMldSummary;
-                hash.add(summary.entryCount.value_or(0U));
-                hash.add(summary.textureArchiveCount.value_or(0U));
-                hash.add(summary.hasNjcm);
-                hash.add(summary.hasNjtl);
-                hash.add(summary.hasNmdm);
-                hash.add(summary.hasGcix || summary.hasGbix);
-                hash.add(summary.hasGvrt || summary.hasPvrt || summary.hasPvmh);
-            }
-            row.records.push_back({ "sml-record", item.index, std::to_string(item.index),
-                "embeddedMldEntries=" + std::to_string(item.embeddedMldSummary
-                    ? item.embeddedMldSummary->entryCount.value_or(0U) : 0U)
-                    + ";embeddedMldInBounds=" + std::to_string(item.embeddedMldInBounds) });
+        hash.add(document.stageId);
+        hash.add(document.members.size());
+        for (std::size_t index = 0U; index < document.members.size(); ++index) {
+            const auto& item = document.members[index];
+            const auto& inspection = analysis.embeddedResources[index];
+            hash.add(item.sml.resourceIndexWord);
+            hash.add(item.sml.reservedWord);
+            hash.add(inspection.entryCount.value_or(0U));
+            hash.add(inspection.textureArchiveCount.value_or(0U));
+            hash.add(inspection.hasNjcm);
+            hash.add(inspection.hasNjtl);
+            hash.add(inspection.hasNmdm);
+            hash.add(inspection.hasGcix || inspection.hasGbix);
+            hash.add(inspection.hasGvrt || inspection.hasPvrt || inspection.hasPvmh);
+            row.records.push_back({ "sml-record", index, std::to_string(item.id.value),
+                "embeddedMldEntries=" + std::to_string(inspection.entryCount.value_or(0U))
+                    + ";embeddedMldAvailable=true" });
         }
         std::size_t commandRecordIndex = 0U;
-        for (const auto& block : forced.sst.commandBlocks) {
+        for (const auto& member : document.members) {
+            const auto& block = member.sst.commandBlock;
             hash.add(block.commands.size());
             for (const auto& command : block.commands) {
                 hash.add(command.type);
@@ -287,41 +291,36 @@ Row inspect(const Corpus& corpus, const std::filesystem::path& path) {
                 hash.add(command.rawWord4);
                 hash.add(command.rawWord8);
                 hash.add(command.onDiskWord12);
-                hash.add(command.type1LightingRows.size());
-                for (const auto& lighting : command.type1LightingRows) {
+                for (const auto& field : command.fields) {
+                    std::visit([&](const auto value) { hash.add(value); }, field.value);
+                }
+                hash.add(command.lightingRows.size());
+                for (const auto& lighting : command.lightingRows) {
                     hash.add(lighting.state);
                     hash.add(lighting.classSelector);
                     hash.add(lighting.flags);
                     hash.add(lighting.runtimeSlotId);
-                    hash.add(lighting.lightVector.x);
-                    hash.add(lighting.lightVector.y);
-                    hash.add(lighting.lightVector.z);
-                    hash.add(lighting.slotRgb.x);
-                    hash.add(lighting.slotRgb.y);
-                    hash.add(lighting.slotRgb.z);
-                    hash.add(lighting.globalRgb.x);
-                    hash.add(lighting.globalRgb.y);
-                    hash.add(lighting.globalRgb.z);
+                    for (const auto value : lighting.lightVector) hash.add(value);
+                    for (const auto value : lighting.slotRgb) hash.add(value);
+                    for (const auto value : lighting.globalRgb) hash.add(value);
                 }
                 row.records.push_back({ "sst-command", commandRecordIndex++,
-                    std::to_string(block.topLevelRecordIndex) + ":" + std::to_string(command.index),
+                    std::to_string(member.id.value) + ":" + std::to_string(command.id.value),
                     "type=" + std::to_string(command.type) + ";argument=" + std::to_string(command.argument)
-                        + ";payloadWords=" + std::to_string(command.payloadSize / 4U)
-                        + ";payloadInBounds=" + std::to_string(command.payloadInBounds) });
+                        + ";payloadWords=" + std::to_string(command.payloadBytes.size() / 4U)
+                        + ";payloadAvailable=true" });
             }
         }
         std::ostringstream semantic;
-        semantic << "records=" << forced.sml.recordCount << ";commands=";
-        for (const auto& [type, count] : forced.commandTypeHistogram) semantic << type << ':' << count << '|';
+        semantic << "records=" << document.members.size() << ";commands=";
+        for (const auto& [type, count] : analysis.commandTypeHistogram) semantic << type << ':' << count << '|';
         semantic << ";mldEntries=";
-        for (const auto& item : forced.sml.records) {
-            semantic << (item.embeddedMldSummary && item.embeddedMldSummary->entryCount
-                ? *item.embeddedMldSummary->entryCount : 0U) << '|';
+        for (const auto& item : analysis.embeddedResources) {
+            semantic << item.entryCount.value_or(0U) << '|';
         }
         semantic << ";orderedDigest=" << hash.hex();
         row.semantic = semantic.str();
-        row.diagnostics = joinDiagnostics({ diagnosticJoin(forced.sml.diagnostics),
-            diagnosticJoin(forced.sst.diagnostics), diagnosticJoin(forced.diagnostics) });
+        row.diagnostics = joinDiagnostics({ diagnosticJoin(imported.diagnostics), diagnosticJoin(analysis.diagnostics) });
         return row;
     }
     if (extension == ".std") {

@@ -116,7 +116,7 @@ struct SstSmlWorkbench::Impl {
             "<p><b>SML:</b> %2<br><b>SST:</b> %3</p>"
             "<p>SML source/decoded: %4 / %5 bytes (%6)<br>"
             "SST source/decoded: %7 / %8 bytes (%9)</p>"
-            "<p><b>Platform context:</b> %10<br>SML byte order: %11 &nbsp; SST byte order: %12</p>"
+            "<p><b>Encoding context:</b> %10<br>SML byte order: %11 &nbsp; SST byte order: %12</p>"
             "<p>Paired records: %13 &nbsp; Count agreement: %14<br>"
             "Embedded MLD parsed: %15 &nbsp; Failed: %16</p>"
             "<p><b>Command histogram:</b> %17</p>")
@@ -137,14 +137,13 @@ struct SstSmlWorkbench::Impl {
         for (int row = 0; row < records->rowCount(); ++row) {
             const auto& value = values[static_cast<std::size_t>(row)];
             records->setItem(row, 0, item(QString::number(value.index)));
-            records->setItem(row, 1, item(QString::number(value.embeddedMldSize)));
-            records->setItem(row, 2, item(QString::fromStdString(value.embeddedMldParseStatus)));
-            records->setItem(row, 3, item(QString::number(value.embeddedMldEntryCount)));
-            records->setItem(row, 4, item(QString::number(value.embeddedMldTextureCount)));
-            records->setItem(row, 5, item(QString::number(value.commandCount)));
-            records->setItem(row, 6, item(value.commandBlockValid ? "Valid" : "Invalid"));
-            records->setItem(row, 7, item(hexValue(value.embeddedMldOffset)));
-            records->setItem(row, 8, item(hexValue(value.commandBlockOffset)));
+            records->setItem(row, 1, item(QString::number(value.memberId)));
+            records->setItem(row, 2, item(QString::number(value.embeddedMldSize)));
+            records->setItem(row, 3, item(QString::fromStdString(value.embeddedMldParseStatus)));
+            records->setItem(row, 4, item(QString::number(value.embeddedMldEntryCount)));
+            records->setItem(row, 5, item(QString::number(value.embeddedMldTextureCount)));
+            records->setItem(row, 6, item(QString::number(value.commandCount)));
+            records->setItem(row, 7, item(value.commandBlockValid ? "Valid" : "Invalid"));
         }
         if (records->rowCount() > 0) records->setCurrentCell(0, 0);
     }
@@ -166,15 +165,15 @@ struct SstSmlWorkbench::Impl {
             embeddedOverview->setText(QString(
                 "<b>Embedded MLD record %1</b><br>Parse: %2<br>Platform: %3 &nbsp; Endian: %4<br>"
                 "Entries: %5 &nbsp; Textures: %6 &nbsp; Objects: %7 &nbsp; Ground: %8 &nbsp; Motions: %9<br>"
-                "SML payload: %10 + %11 bytes")
+                "SML payload size: %10 bytes")
                 .arg(index).arg(QString::fromStdString(mld->parseStatus), QString::fromStdString(mld->platform),
                     QString::fromStdString(mld->endian))
                 .arg(mld->entryCount).arg(mld->textureCount).arg(mld->objectResourceCount)
                 .arg(mld->groundResourceCount).arg(mld->motionResourceCount)
-                .arg(hexValue(record.embeddedMldOffset)).arg(record.embeddedMldSize));
+                .arg(record.embeddedMldSize));
         } else {
-            embeddedOverview->setText(QString("Embedded MLD record %1 is unavailable. SML payload in bounds: %2.")
-                .arg(index).arg(record.embeddedMldInBounds ? "Yes" : "No"));
+            embeddedOverview->setText(QString("Embedded MLD record %1 is unavailable; the owned payload is %2 bytes.")
+                .arg(index).arg(record.embeddedMldSize));
         }
 
         embeddedEntryInspector->setEntries(session->embeddedMldEntryDetails(index));
@@ -217,7 +216,7 @@ struct SstSmlWorkbench::Impl {
             commands->setItem(commandRow, 4, item(command.localSlotIndex.has_value()
                 ? QString("Local slot %1").arg(*command.localSlotIndex) : QString("—")));
             commands->setItem(commandRow, 5, item(QString::number(command.payloadSize)));
-            commands->setItem(commandRow, 6, item(command.payloadInBounds ? "Valid" : "Invalid"));
+            commands->setItem(commandRow, 6, item(command.typeKnown ? "Known span" : "Opaque tail"));
         }
         if (commands->rowCount() > 0) commands->setCurrentCell(0, 0);
         else selectCommand(-1);
@@ -270,10 +269,10 @@ struct SstSmlWorkbench::Impl {
             }
         }
         commandSummary->setText(QString(
-            "<b>Type %1 — %2</b><br>%3<br>%4<br>Record: %5 &nbsp; Payload: %6 + %7 bytes")
+            "<b>Type %1 — %2</b><br>%3<br>%4<br>Command ID: %5 &nbsp; Payload: %6 bytes")
             .arg(summary.type).arg(QString::fromStdString(summary.typeLabel).toHtmlEscaped(),
                 QString::fromStdString(summary.typeDescription).toHtmlEscaped(), slot)
-            .arg(hexValue(summary.recordOffset)).arg(hexValue(summary.payloadOffset)).arg(summary.payloadSize));
+            .arg(summary.commandId).arg(summary.payloadSize));
 
         commandFields->setRowCount(static_cast<int>(detail->fields.size()));
         for (int fieldRow = 0; fieldRow < commandFields->rowCount(); ++fieldRow) {
@@ -307,10 +306,9 @@ struct SstSmlWorkbench::Impl {
 
         QStringList windows{};
         for (const auto& window : detail->consumerWindows) {
-            windows.push_back(QString("%1 @ %2, %3 bytes, %4\n%5\nRaw: %6")
-                .arg(QString::fromStdString(window.name), hexValue(window.offset))
-                .arg(window.size).arg(window.inBounds ? "in bounds" : "unavailable")
-                .arg(QString::fromStdString(window.description), QString::fromStdString(window.rawHex)));
+            windows.push_back(QString("%1: %2\n%3\nRaw: %4")
+                .arg(QString::fromStdString(window.name), window.available ? "available" : "unavailable",
+                    QString::fromStdString(window.description), QString::fromStdString(window.rawHex)));
             for (const auto& field : window.fields) {
                 windows.push_back(QString("  %1 %2 = %3 [%4; %5]")
                     .arg(hexValue(field.offset, 2), QString::fromStdString(field.name),
@@ -333,8 +331,8 @@ struct SstSmlWorkbench::Impl {
             return;
         }
         gridSummary->setText(QString(
-            "Raw first-block terrain source at %1, %2 bytes. Values are displayed without inferred terrain labels.")
-            .arg(hexValue(value->sourceOffset)).arg(value->sourceSize));
+            "Owned first-block terrain ID %1 contains 9x9 values displayed without inferred terrain labels or source offsets.")
+            .arg(value->terrainId));
         grid->setRowCount(9);
         grid->setColumnCount(9);
         for (int row = 0; row < 9; ++row) {
@@ -414,7 +412,7 @@ SstSmlWorkbench::SstSmlWorkbench(std::shared_ptr<spice::mix::SstSmlDocumentSessi
     auto* splitter = new QSplitter(Qt::Horizontal, recordsPage);
     impl_->records = new QTableWidget(splitter);
     impl_->records->setObjectName("sstSmlRecordTable");
-    configureTable(impl_->records, { "Index", "MLD bytes", "MLD state", "Entries", "Textures", "Commands", "SST block", "MLD offset", "Block offset" });
+    configureTable(impl_->records, { "Index", "Member ID", "MLD bytes", "MLD state", "Entries", "Textures", "Commands", "SST block" });
 
     impl_->embeddedPages = new QTabWidget(splitter);
     impl_->embeddedPages->setObjectName("embeddedMldInspector");

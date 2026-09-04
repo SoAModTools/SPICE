@@ -1,92 +1,34 @@
 // Included by OperationExecution.cpp inside its internal implementation namespace.
 // SCT and joined SST/SML parsing and research-export support.
 
-bool canReadSpan(std::span<const std::uint8_t> bytes, std::size_t offset, std::size_t size) {
-    return offset <= bytes.size() && size <= bytes.size() - offset;
-}
-
-std::optional<std::uint32_t> readBeU32Span(std::span<const std::uint8_t> bytes, std::size_t offset) {
-    if (!canReadSpan(bytes, offset, 4U)) {
-        return std::nullopt;
-    }
-    return (static_cast<std::uint32_t>(bytes[offset]) << 24U) |
-        (static_cast<std::uint32_t>(bytes[offset + 1U]) << 16U) |
-        (static_cast<std::uint32_t>(bytes[offset + 2U]) << 8U) |
-        static_cast<std::uint32_t>(bytes[offset + 3U]);
-}
-
-std::optional<std::int32_t> readBeI32Span(std::span<const std::uint8_t> bytes, std::size_t offset) {
-    const auto raw = readBeU32Span(bytes, offset);
-    if (!raw.has_value()) {
-        return std::nullopt;
-    }
-    return static_cast<std::int32_t>(*raw);
-}
-
-std::optional<float> readBeF32Span(std::span<const std::uint8_t> bytes, std::size_t offset) {
-    const auto raw = readBeU32Span(bytes, offset);
-    if (!raw.has_value()) {
-        return std::nullopt;
-    }
-    return std::bit_cast<float>(*raw);
-}
-
 std::optional<spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay> sstType0PlacementOverlayForRecord(
-    const std::optional<spice::sstsml::SstParseResult>& sstParsed,
+    const spice::sstsml::SstSmlDocument& document,
     std::size_t recordIndex) {
-    if (!sstParsed.has_value()) {
+    if (recordIndex >= document.members.size()) {
         return std::nullopt;
     }
-
-    const auto blockIt = std::find_if(sstParsed->commandBlocks.begin(), sstParsed->commandBlocks.end(), [&](const auto& block) {
-        return block.topLevelRecordIndex == recordIndex;
+    const auto& block = document.members[recordIndex].sst.commandBlock;
+    const auto commandIt = std::find_if(block.commands.begin(), block.commands.end(), [](const auto& command) {
+        return command.type == 0 && command.placement.has_value();
     });
-    if (blockIt == sstParsed->commandBlocks.end()) {
+    if (commandIt == block.commands.end()) {
         return std::nullopt;
     }
-
-    const auto commandIt = std::find_if(blockIt->commands.begin(), blockIt->commands.end(), [](const auto& command) {
-        return command.type == 0 && command.payloadInBounds;
-    });
-    if (commandIt == blockIt->commands.end()) {
-        return std::nullopt;
-    }
-
-    const auto payload = std::span<const std::uint8_t>(commandIt->payloadBytes.data(), commandIt->payloadBytes.size());
+    const auto& placement = *commandIt->placement;
     spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay overlay{};
-
-    const auto px = readBeF32Span(payload, 0x1CU);
-    const auto py = readBeF32Span(payload, 0x20U);
-    const auto pz = readBeF32Span(payload, 0x24U);
-    if (px.has_value() && py.has_value() && pz.has_value()) {
-        overlay.hasPosition = true;
-        overlay.position = spice::mld::model::Vec3{ *px, *py, *pz };
-    }
-
-    const auto sx = readBeF32Span(payload, 0x34U);
-    const auto sy = readBeF32Span(payload, 0x38U);
-    const auto sz = readBeF32Span(payload, 0x3CU);
-    if (sx.has_value() && sy.has_value() && sz.has_value()) {
-        overlay.hasScale = true;
-        overlay.scale = spice::mld::model::Vec3{ *sx, *sy, *sz };
-    }
-
-    const auto rx = readBeI32Span(payload, 0x28U);
-    const auto ry = readBeI32Span(payload, 0x2CU);
-    const auto rz = readBeI32Span(payload, 0x30U);
-    if (rx.has_value() && ry.has_value() && rz.has_value()) {
-        overlay.hasRotationRaw = true;
-        overlay.rotationRaw = spice::mld::model::Vec3{
-            static_cast<float>(*rx),
-            static_cast<float>(*ry),
-            static_cast<float>(*rz),
-        };
-    }
-
+    overlay.hasPosition = true;
+    overlay.position = { placement.positionX, placement.positionY, placement.positionZ };
+    overlay.hasScale = true;
+    overlay.scale = { placement.scaleX, placement.scaleY, placement.scaleZ };
+    overlay.hasRotationRaw = true;
+    overlay.rotationRaw = {
+        static_cast<float>(static_cast<std::int32_t>(placement.rotationAngleX)),
+        static_cast<float>(static_cast<std::int32_t>(placement.rotationAngleY)),
+        static_cast<float>(static_cast<std::int32_t>(placement.rotationAngleZ)),
+    };
     std::ostringstream source;
-    source << "SST record " << recordIndex
-           << " command " << commandIt->index
-           << " payloadOffset=0x" << std::hex << commandIt->payloadOffset;
+    source << "SST member " << document.members[recordIndex].id.value
+           << " command " << commandIt->id.value;
     overlay.sourceDescription = source.str();
     return overlay;
 }
@@ -206,4 +148,3 @@ void writeSctReport(const std::filesystem::path& outPath, const spice::sct::SctP
         }
     }
 }
-

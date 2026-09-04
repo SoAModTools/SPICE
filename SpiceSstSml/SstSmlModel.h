@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-namespace spice::sstsml {
+namespace spice::sstsml::detail {
 
 struct ParseOptions {
     std::optional<spice::root::Endian> forcedEndian{};
@@ -231,45 +231,4 @@ struct SstParseResult {
     [[nodiscard]] bool ok() const;
 };
 
-struct ActiveRowRuntimeField {
-    std::uint32_t offset{ 0U };
-    std::uint32_t size{ 0U };
-    std::string name{};
-    std::string description{};
-};
-
-struct ActiveRowRuntimeContext {
-    std::uint32_t provedRowStride{ 0x14U };
-    std::uint32_t allocationWidthPerRecord{ 0x2CU };
-    std::string allocationWidthNote{
-        "Battle::Stage::JoinSmlSstRecords_8000cb44 allocates recordCount * 0x2c, "
-        "but current direct Gekko evidence addresses active rows with recordIndex * 0x14."
-    };
-    std::vector<ActiveRowRuntimeField> fields{};
-};
-
-struct ResolvedLocalObjectSlotLink {
-    std::size_t topLevelRecordIndex{ 0U };
-    std::size_t commandIndex{ 0U };
-    std::int16_t commandType{ 0 };
-    std::int16_t localSlotIndex{ 0 };
-    bool slotIndexRangeKnown{ false };
-    bool slotIndexInRange{ false };
-    std::optional<std::uint32_t> localSlotCount{};
-    std::optional<std::size_t> owningSmlRecordIndex{};
-};
-
-struct BattleStageParseResult {
-    std::string stem{};
-    SmlParseResult sml{};
-    SstParseResult sst{};
-    bool recordCountsAgree{ false };
-    ActiveRowRuntimeContext activeRowRuntimeContext{};
-    std::vector<ResolvedLocalObjectSlotLink> localObjectSlotLinks{};
-    std::vector<std::pair<std::int16_t, std::uint32_t>> commandTypeHistogram{};
-    std::vector<ParseDiagnostic> diagnostics{};
-
-    [[nodiscard]] bool ok() const;
-};
-
-} // namespace spice::sstsml
+} // namespace spice::sstsml::detail

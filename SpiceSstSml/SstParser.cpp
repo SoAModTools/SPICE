@@ -9,7 +9,7 @@
 #include <initializer_list>
 #include <limits>
 
-namespace spice::sstsml {
+namespace spice::sstsml::detail {
 namespace {
 
 using spice::root::Endian;
@@ -288,7 +288,7 @@ std::uint32_t SstParser::commandPayloadSize(std::int16_t type) {
 }
 
 bool SstParser::isKnownCommandType(std::int16_t type) {
-    return type >= 0 && type <= 11 && type != 5;
+    return type >= 0 && type <= 11;
 }
 
 bool SstParser::isModelIndexCommandType(std::int16_t type) {
@@ -897,4 +897,4 @@ SstParseResult SstParser::parse(std::span<const std::uint8_t> bytes,
     return result;
 }
 
-} // namespace spice::sstsml
+} // namespace spice::sstsml::detail

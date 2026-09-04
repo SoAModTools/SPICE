@@ -99,22 +99,29 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="BattleStageParser.h" />
     <ClInclude Include="SstCommandCatalog.h" />
     <ClInclude Include="SmlBlenderIrCombiner.h" />
     <ClInclude Include="SmlParser.h" />
     <ClInclude Include="SpiceSstSml.h" />
     <ClInclude Include="SstParser.h" />
     <ClInclude Include="SstSmlExport.h" />
+    <ClInclude Include="SstSmlDocument.h" />
+    <ClInclude Include="SstSmlDocumentAnalysis.h" />
+    <ClInclude Include="SstSmlDocumentImporter.h" />
+    <ClInclude Include="SstSmlDocumentValidator.h" />
+    <ClInclude Include="SstSmlSha256.h" />
     <ClInclude Include="SstSmlModel.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="BattleStageParser.cpp" />
     <ClCompile Include="SstCommandCatalog.cpp" />
     <ClCompile Include="SmlBlenderIrCombiner.cpp" />
     <ClCompile Include="SmlParser.cpp" />
     <ClCompile Include="SstParser.cpp" />
     <ClCompile Include="SstSmlExport.cpp" />
+    <ClCompile Include="SstSmlDocumentImporter.cpp" />
+    <ClCompile Include="SstSmlDocumentAnalysis.cpp" />
+    <ClCompile Include="SstSmlDocumentValidator.cpp" />
+    <ClCompile Include="SstSmlSha256.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Compression\Compression.vcxproj">

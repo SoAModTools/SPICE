@@ -7,7 +7,7 @@
 #include "../SpiceMll/MllParser.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 #include "../SpiceRoot/Binary/EndianWriter.h"
-#include "../SpiceSstSml/BattleStageParser.h"
+#include "../SpiceSstSml/SstSmlDocumentImporter.h"
 #include "../SpiceStd/StdFileWriter.h"
 #include "../SpiceStd/StdParser.h"
 
@@ -131,18 +131,18 @@ TEST(SpiceRootEndianMigration, CheckedRangesAndMutableWriterSupportBothEndianMod
 TEST(SpiceEndianMigration, AutoDetectsEquivalentSstSmlPairs) {
     for (const auto endian : { Endian::Big, Endian::Little }) {
         const auto [sml, sst] = makeStage(endian);
-        const auto parsed = spice::sstsml::BattleStageParser::parsePair(sml, sst);
+        const auto parsed = spice::sstsml::SstSmlDocumentImporter::importBytes(sml, sst);
         ASSERT_TRUE(parsed.ok());
-        EXPECT_EQ(parsed.sml.sourceEndian, endian);
-        EXPECT_EQ(parsed.sst.sourceEndian, endian);
-        EXPECT_EQ(parsed.sml.recordCount, 1U);
+        EXPECT_EQ(parsed.receipt.sml.endian, endian);
+        EXPECT_EQ(parsed.receipt.sst.endian, endian);
+        EXPECT_EQ(parsed.document->members.size(), 1U);
     }
 }
 
 TEST(SpiceEndianMigration, RejectsMixedEndianPairsAndRecordsForcedEndian) {
     const auto [bigSml, bigSst] = makeStage(Endian::Big);
     const auto [littleSml, littleSst] = makeStage(Endian::Little);
-    const auto mixed = spice::sstsml::BattleStageParser::parsePair(bigSml, littleSst);
+    const auto mixed = spice::sstsml::SstSmlDocumentImporter::importBytes(bigSml, littleSst);
     EXPECT_FALSE(mixed.ok());
     EXPECT_TRUE(std::any_of(mixed.diagnostics.begin(), mixed.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.message.find("byte orders do not agree") != std::string::npos;

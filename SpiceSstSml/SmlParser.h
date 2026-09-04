@@ -6,7 +6,7 @@
 #include <span>
 #include <string>
 
-namespace spice::sstsml {
+namespace spice::sstsml::detail {
 
 class SmlParser {
 public:
@@ -15,4 +15,4 @@ public:
         const ParseOptions& options = {});
 };
 
-} // namespace spice::sstsml
+} // namespace spice::sstsml::detail

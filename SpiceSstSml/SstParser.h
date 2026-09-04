@@ -6,7 +6,7 @@
 #include <span>
 #include <string>
 
-namespace spice::sstsml {
+namespace spice::sstsml::detail {
 
 class SstParser {
 public:
@@ -20,4 +20,4 @@ public:
     [[nodiscard]] static std::vector<CommandFieldSummary> fieldSummariesForType(std::int16_t type);
 };
 
-} // namespace spice::sstsml
+} // namespace spice::sstsml::detail

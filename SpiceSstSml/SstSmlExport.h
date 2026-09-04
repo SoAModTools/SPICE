@@ -1,6 +1,6 @@
 #pragma once
 
-#include "SstSmlModel.h"
+#include "SstSmlDocumentAnalysis.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -65,8 +65,9 @@ struct SmlSstCommandMapExportResult {
 };
 
 SmlSstCommandMapExportResult exportSmlEmbeddedMldsAndCommandMap(
-    const SmlParseResult& sml,
-    const SstParseResult* sst,
+    const SstSmlDocument& document,
+    const SstSmlDocumentImportReceipt& receipt,
+    const SstSmlDocumentAnalysis& analysis,
     const SmlEmbeddedMldExportOptions& options);
 
 } // namespace spice::sstsml

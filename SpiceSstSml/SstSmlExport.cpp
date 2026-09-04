@@ -1,4 +1,5 @@
 #include "SstSmlExport.h"
+#include "SstParser.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <system_error>
 
 namespace spice::sstsml {
+using namespace detail;
 namespace {
 
 std::string jsonEscape(std::string_view value) {
@@ -821,9 +823,225 @@ void writeCommandMap(const std::filesystem::path& path,
     out << "]\n}\n";
 }
 
+SmlEmbeddedMldSummary legacyInspection(const SmlEmbeddedResourceInspection& source) {
+    SmlEmbeddedMldSummary result{};
+    result.parseAttempted = true;
+    result.validLookingHeader = source.validLookingHeader;
+    result.entryCount = source.entryCount;
+    result.indexTableOffset = source.indexTableOffset;
+    result.textureTableOffset = source.textureTableOffset;
+    result.textureArchiveCount = source.textureArchiveCount;
+    result.hasNjcm = source.hasNjcm;
+    result.hasNjtl = source.hasNjtl;
+    result.hasNmdm = source.hasNmdm;
+    result.hasGcix = source.hasGcix;
+    result.hasGvrt = source.hasGvrt;
+    result.hasGbix = source.hasGbix;
+    result.hasPvrt = source.hasPvrt;
+    result.hasPvmh = source.hasPvmh;
+    return result;
+}
+
+const SmlEmbeddedResourceInspection* findInspection(const SstSmlDocumentAnalysis& analysis,
+    SmlEmbeddedResourceId id) {
+    const auto found = std::find_if(analysis.embeddedResources.begin(), analysis.embeddedResources.end(),
+        [&](const auto& item) { return item.resourceId == id; });
+    return found == analysis.embeddedResources.end() ? nullptr : &*found;
+}
+
+SmlParseResult makeLegacySmlView(const SstSmlDocument& document,
+    const SstSmlDocumentImportReceipt& receipt,
+    const SstSmlDocumentAnalysis& analysis) {
+    SmlParseResult result{};
+    result.sourcePath = receipt.sml.path.has_value() ? receipt.sml.path->string() : std::string{};
+    result.sourceWasCompressedAklz = receipt.sml.wrapper == SstSmlSourceWrapper::Aklz;
+    result.sourceEndian = receipt.sml.endian.value_or(spice::root::Endian::Big);
+    result.decodedSize = static_cast<std::uint32_t>(receipt.sml.decodedSize.value_or(0U));
+    result.recordCount = static_cast<std::uint32_t>(document.members.size());
+    result.rawHeader0 = result.sourceEndian == spice::root::Endian::Big
+        ? (static_cast<std::uint32_t>(document.stageId) << 16U) | document.stageHeaderSentinel
+        : (static_cast<std::uint32_t>(document.stageHeaderSentinel) << 16U) | document.stageId;
+    result.rawRecordCountWord = result.sourceEndian == spice::root::Endian::Big
+        ? (static_cast<std::uint32_t>(result.recordCount) << 16U) | document.recordCountSentinel
+        : (static_cast<std::uint32_t>(document.recordCountSentinel) << 16U) | result.recordCount;
+
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> offsets;
+    std::uint64_t cursor = 8U + static_cast<std::uint64_t>(document.members.size()) * 16U;
+    for (const auto& item : document.smlBodyLayout) {
+        if (const auto id = std::get_if<SmlEmbeddedResourceId>(&item)) {
+            offsets.emplace_back(id->value, static_cast<std::uint32_t>(cursor));
+            const auto member = std::find_if(document.members.begin(), document.members.end(),
+                [&](const auto& candidate) { return candidate.sml.resource.id == *id; });
+            if (member != document.members.end()) cursor += member->sml.resource.bytes.size();
+        } else {
+            cursor += std::get<SstSmlOpaqueBlock>(item).bytes.size();
+        }
+    }
+    result.records.reserve(document.members.size());
+    for (std::size_t index = 0U; index < document.members.size(); ++index) {
+        const auto& source = document.members[index].sml;
+        SmlRecord record{};
+        record.index = index;
+        record.recordOffset = static_cast<std::uint32_t>(8U + index * 16U);
+        record.rawWord0 = source.resourceIndexWord;
+        const auto offset = std::find_if(offsets.begin(), offsets.end(),
+            [&](const auto& item) { return item.first == source.resource.id.value; });
+        record.embeddedMldOffset = offset == offsets.end() ? 0U : offset->second;
+        record.embeddedMldSize = static_cast<std::uint32_t>(source.resource.bytes.size());
+        record.rawWord12 = source.reservedWord;
+        record.embeddedMldInBounds = true;
+        record.embeddedMldBytes = source.resource.bytes;
+        if (const auto inspection = findInspection(analysis, source.resource.id)) {
+            record.embeddedMldSummary = legacyInspection(*inspection);
+        }
+        result.records.push_back(std::move(record));
+    }
+    return result;
+}
+
+std::uint64_t documentBlockSize(const SstStageCommandBlock& block) {
+    std::uint64_t size = 4U + static_cast<std::uint64_t>(block.commands.size()) * 16U + 16U;
+    for (const auto& command : block.commands) size += command.payloadBytes.size();
+    if (block.battleGrid) size += block.battleGrid->values.size();
+    return size + (block.trailingOpaque ? block.trailingOpaque->bytes.size() : 0U);
+}
+
+SstParseResult makeLegacySstView(const SstSmlDocument& document,
+    const SstSmlDocumentImportReceipt& receipt) {
+    SstParseResult result{};
+    result.sourcePath = receipt.sst.path.has_value() ? receipt.sst.path->string() : std::string{};
+    result.sourceWasCompressedAklz = receipt.sst.wrapper == SstSmlSourceWrapper::Aklz;
+    result.sourceEndian = receipt.sst.endian.value_or(spice::root::Endian::Big);
+    result.decodedSize = static_cast<std::uint32_t>(receipt.sst.decodedSize.value_or(0U));
+    result.recordCount = static_cast<std::uint16_t>(document.members.size());
+
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> offsets;
+    std::uint64_t cursor = static_cast<std::uint64_t>(document.members.size()) * 16U;
+    for (const auto& item : document.sstBodyLayout) {
+        if (const auto id = std::get_if<SstCommandBlockId>(&item)) {
+            offsets.emplace_back(id->value, static_cast<std::uint32_t>(cursor));
+            const auto member = std::find_if(document.members.begin(), document.members.end(),
+                [&](const auto& candidate) { return candidate.sst.commandBlock.id == *id; });
+            if (member != document.members.end()) cursor += documentBlockSize(member->sst.commandBlock);
+        } else {
+            cursor += std::get<SstSmlOpaqueBlock>(item).bytes.size();
+        }
+    }
+
+    for (std::size_t index = 0U; index < document.members.size(); ++index) {
+        const auto& source = document.members[index].sst;
+        const auto blockOffset = std::find_if(offsets.begin(), offsets.end(),
+            [&](const auto& item) { return item.first == source.commandBlock.id.value; });
+        SstTopLevelRecord record{};
+        record.index = index;
+        record.recordOffset = static_cast<std::uint32_t>(index * 16U);
+        if (index == 0U) {
+            record.rawWord0 = result.sourceEndian == spice::root::Endian::Big
+                ? (static_cast<std::uint32_t>(document.stageId) << 16U) | document.stageHeaderSentinel
+                : (static_cast<std::uint32_t>(document.stageHeaderSentinel) << 16U) | document.stageId;
+            record.rawWord4 = result.sourceEndian == spice::root::Endian::Big
+                ? (static_cast<std::uint32_t>(result.recordCount) << 16U) | document.recordCountSentinel
+                : (static_cast<std::uint32_t>(document.recordCountSentinel) << 16U) | result.recordCount;
+        } else {
+            record.rawWord0 = source.previousCommandBlockLength.value_or(0U);
+            record.rawWord4 = source.reservedWord.value_or(0U);
+        }
+        record.rawWord8 = source.recordIndexWord;
+        record.commandBlockOffset = blockOffset == offsets.end() ? 0U : blockOffset->second;
+        result.topLevelRecords.push_back(record);
+
+        const auto& blockSource = source.commandBlock;
+        SstCommandBlock block{};
+        block.topLevelRecordIndex = index;
+        block.blockOffset = record.commandBlockOffset;
+        block.commandCount = static_cast<std::uint32_t>(blockSource.commands.size());
+        block.recordsOffset = block.blockOffset + 4U;
+        block.sentinelOffset = block.recordsOffset + block.commandCount * 16U;
+        block.payloadStartOffset = block.sentinelOffset + 16U;
+        block.sentinelType = blockSource.sentinelType;
+        block.sentinelArgument = blockSource.sentinelArgument;
+        std::uint32_t payloadCursor = block.payloadStartOffset;
+        for (std::size_t commandIndex = 0U; commandIndex < blockSource.commands.size(); ++commandIndex) {
+            const auto& commandSource = blockSource.commands[commandIndex];
+            SstCommandRecord command{};
+            command.index = commandIndex;
+            command.sourceEndian = result.sourceEndian;
+            command.recordOffset = block.recordsOffset + static_cast<std::uint32_t>(commandIndex * 16U);
+            command.type = commandSource.type;
+            command.argument = commandSource.argument;
+            command.rawWord4 = commandSource.rawWord4;
+            command.rawWord8 = commandSource.rawWord8;
+            command.onDiskWord12 = commandSource.onDiskWord12;
+            command.payloadOffset = payloadCursor;
+            command.payloadSize = static_cast<std::uint32_t>(commandSource.payloadBytes.size());
+            command.typeKnown = commandSource.payloadSpanKnown;
+            command.payloadInBounds = true;
+            command.payloadBytes = commandSource.payloadBytes;
+            command.fieldSummaries = SstParser::fieldSummariesForType(command.type);
+            command.modelIndexCandidate = SstParser::isModelIndexCommandType(command.type);
+            const auto modelField = std::find_if(commandSource.fields.begin(), commandSource.fields.end(),
+                [](const auto& field) { return field.name == "modelIndex"; });
+            if (modelField != commandSource.fields.end()) {
+                if (const auto value = std::get_if<std::int16_t>(&modelField->value)) command.modelIndex = *value;
+            }
+            for (std::size_t rowIndex = 0U; rowIndex < commandSource.lightingRows.size(); ++rowIndex) {
+                const auto& rowSource = commandSource.lightingRows[rowIndex];
+                SstType1LightingRow row{};
+                row.index = rowIndex;
+                row.rowOffset = payloadCursor + static_cast<std::uint32_t>(rowIndex * 0x68U);
+                row.state = rowSource.state;
+                row.sentinel = rowSource.sentinel;
+                row.classSelector = rowSource.classSelector;
+                row.flags = rowSource.flags;
+                row.enablesLightSetup = (row.flags & 0x40000000U) != 0U;
+                row.enablesVectorSetup = (row.flags & 0x20000000U) != 0U;
+                row.runtimeSlotId = rowSource.runtimeSlotId;
+                row.lightVector = { rowSource.lightVector[0], rowSource.lightVector[1], rowSource.lightVector[2] };
+                row.slotRgb = { rowSource.slotRgb[0], rowSource.slotRgb[1], rowSource.slotRgb[2] };
+                row.globalRgb = { rowSource.globalRgb[0], rowSource.globalRgb[1], rowSource.globalRgb[2] };
+                row.attenuationOrSpot0 = rowSource.attenuationOrSpot0;
+                row.attenuationOrSpot1 = rowSource.attenuationOrSpot1;
+                row.rawTailWord = rowSource.rawTailWord;
+                if (rowIndex * 0x68U + 0x68U <= commandSource.payloadBytes.size()) {
+                    row.rawBytes.assign(commandSource.payloadBytes.begin() + static_cast<std::ptrdiff_t>(rowIndex * 0x68U),
+                        commandSource.payloadBytes.begin() + static_cast<std::ptrdiff_t>((rowIndex + 1U) * 0x68U));
+                }
+                command.type1LightingRows.push_back(std::move(row));
+            }
+            payloadCursor += command.payloadSize;
+            block.commands.push_back(std::move(command));
+        }
+        block.payloadEndOffset = payloadCursor;
+        block.postCommandTailOffset = payloadCursor;
+        if (blockSource.battleGrid) {
+            block.postCommandTailBytes.assign(blockSource.battleGrid->values.begin(), blockSource.battleGrid->values.end());
+        }
+        if (blockSource.trailingOpaque) {
+            block.postCommandTailBytes.insert(block.postCommandTailBytes.end(),
+                blockSource.trailingOpaque->bytes.begin(), blockSource.trailingOpaque->bytes.end());
+        }
+        block.postCommandTailSize = static_cast<std::uint32_t>(block.postCommandTailBytes.size());
+        block.nextCommandBlockOffset = block.postCommandTailOffset + block.postCommandTailSize;
+        block.postCommandTailInBounds = true;
+        block.valid = block.sentinelType < 0;
+        if (blockSource.battleGrid) {
+            SstBattleGridTerrainSource grid{};
+            grid.sourceOffset = block.postCommandTailOffset;
+            grid.inBounds = true;
+            grid.source9x9 = blockSource.battleGrid->values;
+            if (blockSource.trailingOpaque) {
+                grid.paddingAfterSource = blockSource.trailingOpaque->bytes;
+            }
+            block.battleGridTerrainSource = std::move(grid);
+        }
+        result.commandBlocks.push_back(std::move(block));
+    }
+    return result;
+}
+
 } // namespace
 
-SmlSstCommandMapExportResult exportSmlEmbeddedMldsAndCommandMap(
+static SmlSstCommandMapExportResult exportLegacySmlEmbeddedMldsAndCommandMap(
     const SmlParseResult& sml,
     const SstParseResult* sst,
     const SmlEmbeddedMldExportOptions& options) {
@@ -934,6 +1152,16 @@ SmlSstCommandMapExportResult exportSmlEmbeddedMldsAndCommandMap(
     result.wroteManifest = std::filesystem::exists(result.manifestPath);
 
     return result;
+}
+
+SmlSstCommandMapExportResult exportSmlEmbeddedMldsAndCommandMap(
+    const SstSmlDocument& document,
+    const SstSmlDocumentImportReceipt& receipt,
+    const SstSmlDocumentAnalysis& analysis,
+    const SmlEmbeddedMldExportOptions& options) {
+    auto sml = makeLegacySmlView(document, receipt, analysis);
+    auto sst = makeLegacySstView(document, receipt);
+    return exportLegacySmlEmbeddedMldsAndCommandMap(sml, &sst, options);
 }
 
 } // namespace spice::sstsml

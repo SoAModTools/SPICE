@@ -42,31 +42,25 @@ struct SstSmlPairOverviewSnapshot {
 
 struct SstSmlRecordSnapshot {
     std::size_t index = 0;
-    std::uint32_t smlRecordOffset = 0;
-    std::uint32_t embeddedMldOffset = 0;
+    std::uint64_t memberId = 0;
     std::uint32_t embeddedMldSize = 0;
-    bool embeddedMldInBounds = false;
     bool embeddedMldParsed = false;
     std::string embeddedMldParseStatus{};
     std::size_t embeddedMldEntryCount = 0;
     std::size_t embeddedMldTextureCount = 0;
-    std::uint32_t sstRecordOffset = 0;
-    std::uint32_t commandBlockOffset = 0;
     std::uint32_t commandCount = 0;
     bool commandBlockValid = false;
 };
 
 struct SstSmlCommandSummarySnapshot {
     std::size_t index = 0;
+    std::uint64_t commandId = 0;
     std::int16_t type = 0;
     std::string typeLabel{};
     std::string typeDescription{};
     std::int16_t argument = 0;
-    std::uint32_t recordOffset = 0;
-    std::uint32_t payloadOffset = 0;
     std::uint32_t payloadSize = 0;
     bool typeKnown = false;
-    bool payloadInBounds = false;
     std::optional<std::int16_t> localSlotIndex{};
     bool localSlotRangeKnown = false;
     bool localSlotInRange = false;
@@ -89,9 +83,7 @@ struct SstSmlCommandFieldSnapshot {
 
 struct SstSmlConsumerWindowSnapshot {
     std::string name{};
-    std::uint32_t offset = 0;
-    std::uint32_t size = 0;
-    bool inBounds = false;
+    bool available = false;
     std::string rawHex{};
     std::string description{};
     std::vector<SstSmlCommandFieldSnapshot> fields{};
@@ -152,9 +144,7 @@ struct SstSmlLocalSlotLinkSnapshot {
 };
 
 struct SstSmlBattleGridSnapshot {
-    std::uint32_t sourceOffset = 0;
-    std::uint32_t sourceSize = 0;
-    bool inBounds = false;
+    std::uint64_t terrainId = 0;
     std::array<std::uint8_t, 81> values{};
     std::string paddingHex{};
 };

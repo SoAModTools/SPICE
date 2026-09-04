@@ -355,19 +355,21 @@ int executeDirectoryOperation(
             const auto stageOutputDir = outputDir / stem;
 
             try {
-                const auto smlParsed = spice::sstsml::SmlParser::parse(
-                    std::span<const std::uint8_t>(bytes.data(), bytes.size()),
-                    entry.path().string());
-
-                std::optional<spice::sstsml::SstParseResult> sstParsed{};
-                const auto sstPath = entry.path().parent_path() / (stem + ".sst");
-                if (std::filesystem::exists(sstPath) && std::filesystem::is_regular_file(sstPath)) {
-                    const auto sstBytes = readAllBytes(sstPath);
-                    if (!sstBytes.empty()) {
-                        sstParsed = spice::sstsml::SstParser::parse(
-                            std::span<const std::uint8_t>(sstBytes.data(), sstBytes.size()),
-                            sstPath.string());
+                const auto imported = spice::sstsml::SstSmlDocumentImporter::importFile(entry.path());
+                if (!imported.ok()) {
+                    for (const auto& diagnostic : imported.diagnostics) {
+                        emit(context, spice::mix::EventLevel::Warning,
+                            "WARNING: SST/SML import: ", diagnostic.message);
                     }
+                    continue;
+                }
+                const auto& document = *imported.document;
+                const auto analysis = spice::sstsml::SstSmlDocumentAnalyzer::analyze(
+                    document, imported.receipt);
+                if (!analysis.ok()) {
+                    emit(context, spice::mix::EventLevel::Warning,
+                        "WARNING: SST/SML analysis failed for ", entry.path().string());
+                    continue;
                 }
 
                 std::map<std::size_t, std::filesystem::path> blenderIrPaths{};
@@ -379,16 +381,17 @@ int executeDirectoryOperation(
                 }
 
                 if (operation.embeddedMldBlenderIr || operation.combinedBlenderIr) {
-                    for (const auto& record : smlParsed.records) {
+                    for (std::size_t recordIndex = 0U; recordIndex < document.members.size(); ++recordIndex) {
                         if (context.stopToken.stop_requested()) {
                             break;
                         }
-                        if (!record.embeddedMldInBounds || record.embeddedMldBytes.empty()) {
+                        const auto& embeddedMldBytes = document.members[recordIndex].sml.resource.bytes;
+                        if (embeddedMldBytes.empty()) {
                             continue;
                         }
 
                         const auto blenderIrDir = stageOutputDir / "blender_ir" /
-                            ("entry_" + std::to_string(record.index));
+                            ("entry_" + std::to_string(recordIndex));
                         spice::mld::parsing::ParseOptions embeddedMldOptions{};
                         embeddedMldOptions.buildBlenderIntermediateIr = true;
                         embeddedMldOptions.exportBlenderIrJson = false;
@@ -396,26 +399,26 @@ int executeDirectoryOperation(
                         try {
                             auto parsedEmbeddedMld = mldParser.parse(
                                 std::span<const std::uint8_t>(
-                                    record.embeddedMldBytes.data(),
-                                    record.embeddedMldBytes.size()),
+                                    embeddedMldBytes.data(),
+                                    embeddedMldBytes.size()),
                                 embeddedMldOptions);
                             if (parsedEmbeddedMld.blenderIrScene.has_value()) {
-                                blenderIrSummaries[record.index] = summarizeSmlEntryBlenderIr(*parsedEmbeddedMld.blenderIrScene);
+                                blenderIrSummaries[recordIndex] = summarizeSmlEntryBlenderIr(*parsedEmbeddedMld.blenderIrScene);
                                 if (combinedBlenderIr.has_value()) {
                                     const auto sstPlacementOverlay = operation.combinedRawPlacement
                                         ? std::optional<spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay>{}
-                                        : sstType0PlacementOverlayForRecord(sstParsed, record.index);
+                                        : sstType0PlacementOverlayForRecord(document, recordIndex);
                                     if (operation.embeddedMldBlenderIr) {
                                         combinedBlenderIr->appendEntryScene(
                                             *parsedEmbeddedMld.blenderIrScene,
                                             stem,
-                                            record.index,
+                                            recordIndex,
                                             sstPlacementOverlay);
                                     } else {
                                         combinedBlenderIr->appendEntryScene(
                                             std::move(*parsedEmbeddedMld.blenderIrScene),
                                             stem,
-                                            record.index,
+                                            recordIndex,
                                             sstPlacementOverlay);
                                     }
                                 }
@@ -426,26 +429,26 @@ int executeDirectoryOperation(
                                     spice::sstsml::exporting::namespaceSmlEntryBlenderIrScene(
                                         *parsedEmbeddedMld.blenderIrScene,
                                         stem,
-                                        record.index);
+                                        recordIndex);
                                     std::ofstream blenderIrOut(blenderIrPath, std::ios::binary);
                                     blenderIrOut << exporter.toJson(*parsedEmbeddedMld.blenderIrScene);
                                     if (!blenderIrOut.good()) {
                                         emit(context, spice::mix::EventLevel::Warning,
                                             "WARNING: failed to write embedded MLD Blender IR for ",
-                                            entry.path().filename().string(), " record ", record.index);
+                                            entry.path().filename().string(), " record ", recordIndex);
                                         continue;
                                     }
-                                    blenderIrPaths[record.index] = blenderIrPath;
+                                    blenderIrPaths[recordIndex] = blenderIrPath;
                                 }
                             } else {
                                 emit(context, spice::mix::EventLevel::Warning,
                                     "WARNING: embedded MLD Blender IR was not produced for ",
-                                    entry.path().filename().string(), " record ", record.index);
+                                    entry.path().filename().string(), " record ", recordIndex);
                             }
                         } catch (const std::exception& ex) {
                             emit(context, spice::mix::EventLevel::Warning,
                                 "WARNING: embedded MLD parse failed for ",
-                                entry.path().filename().string(), " record ", record.index, ": ", ex.what());
+                                entry.path().filename().string(), " record ", recordIndex, ": ", ex.what());
                         }
                     }
 
@@ -474,8 +477,9 @@ int executeDirectoryOperation(
                 exportOptions.blenderIrPathsByRecordIndex = std::move(blenderIrPaths);
                 exportOptions.blenderIrSummariesByRecordIndex = std::move(blenderIrSummaries);
                 const auto exportResult = spice::sstsml::exportSmlEmbeddedMldsAndCommandMap(
-                    smlParsed,
-                    sstParsed.has_value() ? &*sstParsed : nullptr,
+                    document,
+                    imported.receipt,
+                    analysis,
                     exportOptions);
 
                 if (!exportResult.wroteManifest) {
