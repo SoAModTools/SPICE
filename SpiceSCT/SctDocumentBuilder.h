@@ -25,7 +25,7 @@ public:
     [[nodiscard]] SctSectionId allocateSectionId() noexcept { return document_.allocateSectionId(); }
     [[nodiscard]] SctInstructionId allocateInstructionId() noexcept { return document_.allocateInstructionId(); }
     [[nodiscard]] SctStringId allocateStringId() noexcept { return document_.allocateStringId(); }
-    [[nodiscard]] SctFooterEntryId allocateFooterEntryId() noexcept { return document_.allocateFooterEntryId(); }
+    [[nodiscard]] SctSupplementaryTextId allocateSupplementaryTextId() noexcept { return document_.allocateSupplementaryTextId(); }
     [[nodiscard]] SctOpaqueAttachmentId allocateOpaqueAttachmentId() noexcept {
         return document_.allocateOpaqueAttachmentId();
     }

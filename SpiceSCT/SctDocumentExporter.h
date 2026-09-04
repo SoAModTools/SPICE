@@ -54,12 +54,12 @@ struct SctEntityLayoutRecord {
 
 using SctInstructionLayoutRecord = SctEntityLayoutRecord<SctInstructionId>;
 using SctStringLayoutRecord = SctEntityLayoutRecord<SctStringId>;
-using SctFooterEntryLayoutRecord = SctEntityLayoutRecord<SctFooterEntryId>;
+using SctSupplementaryTextLayoutRecord = SctEntityLayoutRecord<SctSupplementaryTextId>;
 
 using SctParameterLocation = SctParameterAddress;
 
 enum class SctRelocationFormula { InstructionEndMinusWord, OperandWordRelative };
-using SctRelocationTarget = std::variant<SctInstructionId, SctStringId, SctFooterEntryId>;
+using SctRelocationTarget = std::variant<SctInstructionId, SctStringId, SctSupplementaryTextId>;
 
 struct SctRelocationRecord {
     SctInstructionId sourceInstruction;
@@ -101,7 +101,7 @@ struct SctDocumentLayout {
     std::vector<SctSectionLayoutRecord> sections;
     std::vector<SctInstructionLayoutRecord> instructions;
     std::vector<SctStringLayoutRecord> strings;
-    std::vector<SctFooterEntryLayoutRecord> footerEntries;
+    std::vector<SctSupplementaryTextLayoutRecord> supplementaryText;
     std::vector<SctRelocationRecord> relocations;
     std::vector<SctOpaquePlacementRecord> opaquePlacements;
 };

@@ -104,7 +104,7 @@ TEST(SctDocumentModel, AllocatesSeparatedMonotonicIdentityDomains) {
     EXPECT_EQ(document.allocateSectionId().value(), 2u);
     EXPECT_EQ(document.allocateInstructionId().value(), 1u);
     EXPECT_EQ(document.allocateStringId().value(), 1u);
-    EXPECT_EQ(document.allocateFooterEntryId().value(), 1u);
+    EXPECT_EQ(document.allocateSupplementaryTextId().value(), 1u);
     EXPECT_EQ(document.allocateOpaqueAttachmentId().value(), 1u);
 }
 
@@ -170,11 +170,11 @@ TEST(SctDocumentImporter, ConvertsIndexedTextOffsetsToStorageTypedStringReferenc
     EXPECT_TRUE(SctDocumentValidator::validateDocument(*imported.document).validDocument);
 
     auto wrongStorage = *imported.document;
-    const auto footerId = wrongStorage.allocateFooterEntryId();
-    wrongStorage.footerEntries.push_back({footerId, SctTextKind::SctString,
+    const auto footerId = wrongStorage.allocateSupplementaryTextId();
+    wrongStorage.supplementaryText.push_back({footerId, SctTextKind::SctString,
         SctMessage{std::nullopt, SctFormattedText{{SctTextChunk{"footer"}}}}});
     std::get<SctScriptSectionContent>(wrongStorage.sections[0].content)
-        .instructions.front().fixedParameters[0].value = SctFooterEntryReference{footerId};
+        .instructions.front().fixedParameters[0].value = SctSupplementaryTextReference{footerId};
     EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongStorage).validDocument);
 
     auto wrongKind = *imported.document;
@@ -260,10 +260,10 @@ TEST(SctDocumentImporter, ConvertsControlAndFooterOffsetsToStableEntityReference
     ASSERT_EQ(instructions.size(), 3u);
     ASSERT_TRUE(std::holds_alternative<SctInstructionReference>(instructions[0].fixedParameters[0].value));
     EXPECT_EQ(std::get<SctInstructionReference>(instructions[0].fixedParameters[0].value).target, instructions[1].id);
-    ASSERT_TRUE(std::holds_alternative<SctFooterEntryReference>(instructions[2].fixedParameters[0].value));
-    EXPECT_EQ(std::get<SctFooterEntryReference>(instructions[2].fixedParameters[0].value).target,
-        imported.document->footerEntries[0].id);
-    EXPECT_EQ(imported.document->footerEntries[0].kind, SctDocumentFooterEntryKind::String);
+    ASSERT_TRUE(std::holds_alternative<SctSupplementaryTextReference>(instructions[2].fixedParameters[0].value));
+    EXPECT_EQ(std::get<SctSupplementaryTextReference>(instructions[2].fixedParameters[0].value).target,
+        imported.document->supplementaryText[0].id);
+    EXPECT_EQ(imported.document->supplementaryText[0].kind, SctSupplementaryTextKind::String);
     const auto validation = SctDocumentValidator::validateForTarget(
         *imported.document, SctPlatform::GameCube, kSctShiftJisByte7FEncoding, &*referenceEvidence);
     std::string messages;
@@ -327,19 +327,29 @@ TEST(SctDocumentImporter, ConvertsFooterSctStringOffsetsForOpcodes24And25) {
     ASSERT_TRUE(imported.document.has_value());
     const auto evidence = imported.context.bind(imported.context.revisionProvenance());
     ASSERT_TRUE(evidence);
-    ASSERT_EQ(1u, imported.document->footerEntries.size());
-    EXPECT_EQ(SctTextKind::SctString, imported.document->footerEntries.front().kind);
+    ASSERT_EQ(1u, imported.document->supplementaryText.size());
+    EXPECT_EQ(SctTextKind::SctString, imported.document->supplementaryText.front().kind);
     const auto& instructions = std::get<SctScriptSectionContent>(
         imported.document->sections.front().content).instructions;
     ASSERT_EQ(2u, instructions.size());
-    ASSERT_TRUE(std::holds_alternative<SctFooterEntryReference>(
+    ASSERT_TRUE(std::holds_alternative<SctSupplementaryTextReference>(
         instructions[0].fixedParameters[0].value));
-    ASSERT_TRUE(std::holds_alternative<SctFooterEntryReference>(
+    ASSERT_TRUE(std::holds_alternative<SctSupplementaryTextReference>(
         instructions[1].fixedParameters[1].value));
+    EXPECT_EQ(std::get<SctSupplementaryTextReference>(
+        instructions[0].fixedParameters[0].value).target,
+        imported.document->supplementaryText.front().id);
+    EXPECT_EQ(std::get<SctSupplementaryTextReference>(
+        instructions[1].fixedParameters[1].value).target,
+        imported.document->supplementaryText.front().id);
+    const auto associations = SctSupplementaryTextIndex::build(*imported.document);
+    ASSERT_EQ(associations.associations().size(), 1u);
+    EXPECT_EQ(associations.associations().front().useKind,
+        SctSupplementaryTextUseKind::Shared);
     EXPECT_TRUE(SctDocumentValidator::validateDocument(*imported.document).validDocument);
 
     auto wrongKind = *imported.document;
-    wrongKind.footerEntries.front().kind = SctTextKind::PlainString;
+    wrongKind.supplementaryText.front().kind = SctTextKind::PlainString;
     EXPECT_FALSE(SctDocumentValidator::validateDocument(wrongKind).validDocument);
 }
 

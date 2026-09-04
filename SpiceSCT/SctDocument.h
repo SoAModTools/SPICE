@@ -29,12 +29,12 @@ private:
 struct SctSectionIdTag;
 struct SctInstructionIdTag;
 struct SctStringIdTag;
-struct SctFooterEntryIdTag;
+struct SctSupplementaryTextIdTag;
 struct SctOpaqueAttachmentIdTag;
 using SctSectionId = SctEntityId<SctSectionIdTag>;
 using SctInstructionId = SctEntityId<SctInstructionIdTag>;
 using SctStringId = SctEntityId<SctStringIdTag>;
-using SctFooterEntryId = SctEntityId<SctFooterEntryIdTag>;
+using SctSupplementaryTextId = SctEntityId<SctSupplementaryTextIdTag>;
 using SctOpaqueAttachmentId = SctEntityId<SctOpaqueAttachmentIdTag>;
 
 struct SctEntityIdHash {
@@ -45,7 +45,7 @@ struct SctEntityIdHash {
 };
 
 using SctDocumentEntityId = std::variant<std::monostate, SctSectionId, SctInstructionId,
-    SctStringId, SctFooterEntryId, SctOpaqueAttachmentId>;
+    SctStringId, SctSupplementaryTextId, SctOpaqueAttachmentId>;
 
 struct SctParameterAddress {
     std::uint32_t schemaIndex = 0;
@@ -79,7 +79,7 @@ struct SctExpressionOperationSite {
     auto operator<=>(const SctExpressionOperationSite&) const = default;
 };
 
-using SctTextEntityId = std::variant<SctStringId, SctFooterEntryId>;
+using SctTextEntityId = std::variant<SctStringId, SctSupplementaryTextId>;
 enum class SctTextRegion { Header, Body };
 struct SctUtf8ByteRange {
     std::uint32_t offset = 0;
@@ -163,9 +163,11 @@ struct SctEncodedWordValue { std::uint32_t value = 0; };
 struct SctTerminatedWordSequenceValue { std::vector<std::uint32_t> words; };
 struct SctInstructionReference { SctInstructionId target; };
 struct SctStringReference { SctStringId target; };
-struct SctFooterEntryReference { SctFooterEntryId target; };
-using SctDocumentReferenceTarget = std::variant<SctInstructionId, SctStringId, SctFooterEntryId>;
-enum class SctReferenceTargetStorage { Instruction, IndexedString, FooterEntry };
+// Instruction-associated text whose serialized storage is selected by the
+// opcode contract. The value remains document-owned so references may alias it.
+struct SctSupplementaryTextReference { SctSupplementaryTextId target; };
+using SctDocumentReferenceTarget = std::variant<SctInstructionId, SctStringId, SctSupplementaryTextId>;
+enum class SctReferenceTargetStorage { Instruction, IndexedString, SupplementaryText };
 struct SctExpectedReferenceTarget {
     SctReferenceTargetStorage storage = SctReferenceTargetStorage::Instruction;
     std::optional<SctTextKind> textKind;
@@ -178,7 +180,7 @@ struct SctUnresolvedReferenceValue {
 struct SctOpaqueParameterValue { std::vector<std::uint32_t> words; };
 using SctDocumentParameterValue = std::variant<SctEncodedWordValue, SctCanonicalExpression,
     SctTerminatedWordSequenceValue, SctInstructionReference, SctStringReference,
-    SctFooterEntryReference, SctUnresolvedReferenceValue, SctOpaqueParameterValue>;
+    SctSupplementaryTextReference, SctUnresolvedReferenceValue, SctOpaqueParameterValue>;
 
 struct SctDocumentParameter {
     std::uint32_t schemaIndex = 0;
@@ -233,10 +235,10 @@ struct SctDocumentString {
     SctTextKind kind = SctTextKind::SctString;
 };
 
-using SctDocumentFooterEntryKind = SctTextKind;
+using SctSupplementaryTextKind = SctTextKind;
 
-struct SctDocumentFooterEntry {
-    SctFooterEntryId id;
+struct SctDocumentSupplementaryText {
+    SctSupplementaryTextId id;
     SctTextKind kind = SctTextKind::PlainString;
     SctTextValue value;
 };
@@ -261,7 +263,7 @@ struct SctDocumentSection {
 
 struct SctDocumentAnchor { auto operator<=>(const SctDocumentAnchor&) const = default; };
 using SctOpaqueAnchor = std::variant<SctDocumentAnchor, SctSectionId, SctInstructionId,
-    SctStringId, SctFooterEntryId>;
+    SctStringId, SctSupplementaryTextId>;
 enum class SctOpaquePlacement { Before, After, FixedOffset };
 enum class SctOpaqueRelocationSupport { Relocatable, FixedOnly };
 enum class SctOpaqueReason { Header, Preamble, Padding, Gap, Unreached, UnknownEncoding, ContradictoryEvidence };
@@ -280,38 +282,42 @@ struct SctOpaqueAttachment {
 class SctDocument {
 public:
     std::vector<SctDocumentSection> sections;
-    std::vector<SctDocumentFooterEntry> footerEntries;
+    // Ordered semantic values materialized in the physical SCT footer. Values
+    // remain document-owned because multiple instruction parameters may share one.
+    std::vector<SctDocumentSupplementaryText> supplementaryText;
     std::vector<SctOpaqueAttachment> opaqueAttachments;
 
     [[nodiscard]] SctSectionId allocateSectionId() noexcept { return SctSectionId(nextSectionId_++); }
     [[nodiscard]] SctInstructionId allocateInstructionId() noexcept { return SctInstructionId(nextInstructionId_++); }
     [[nodiscard]] SctStringId allocateStringId() noexcept { return SctStringId(nextStringId_++); }
-    [[nodiscard]] SctFooterEntryId allocateFooterEntryId() noexcept { return SctFooterEntryId(nextFooterEntryId_++); }
+    [[nodiscard]] SctSupplementaryTextId allocateSupplementaryTextId() noexcept {
+        return SctSupplementaryTextId(nextSupplementaryTextId_++);
+    }
     [[nodiscard]] SctOpaqueAttachmentId allocateOpaqueAttachmentId() noexcept { return SctOpaqueAttachmentId(nextOpaqueAttachmentId_++); }
 
     [[nodiscard]] std::uint64_t nextSectionIdValue() const noexcept { return nextSectionId_; }
     [[nodiscard]] std::uint64_t nextInstructionIdValue() const noexcept { return nextInstructionId_; }
     [[nodiscard]] std::uint64_t nextStringIdValue() const noexcept { return nextStringId_; }
-    [[nodiscard]] std::uint64_t nextFooterEntryIdValue() const noexcept { return nextFooterEntryId_; }
+    [[nodiscard]] std::uint64_t nextSupplementaryTextIdValue() const noexcept { return nextSupplementaryTextId_; }
     [[nodiscard]] std::uint64_t nextOpaqueAttachmentIdValue() const noexcept { return nextOpaqueAttachmentId_; }
 
 private:
     friend class SctDocumentBuilder;
 
     void restoreAllocatorState(std::uint64_t nextSectionId, std::uint64_t nextInstructionId,
-        std::uint64_t nextStringId, std::uint64_t nextFooterEntryId,
+        std::uint64_t nextStringId, std::uint64_t nextSupplementaryTextId,
         std::uint64_t nextOpaqueAttachmentId) noexcept {
         nextSectionId_ = nextSectionId;
         nextInstructionId_ = nextInstructionId;
         nextStringId_ = nextStringId;
-        nextFooterEntryId_ = nextFooterEntryId;
+        nextSupplementaryTextId_ = nextSupplementaryTextId;
         nextOpaqueAttachmentId_ = nextOpaqueAttachmentId;
     }
 
     std::uint64_t nextSectionId_ = 1;
     std::uint64_t nextInstructionId_ = 1;
     std::uint64_t nextStringId_ = 1;
-    std::uint64_t nextFooterEntryId_ = 1;
+    std::uint64_t nextSupplementaryTextId_ = 1;
     std::uint64_t nextOpaqueAttachmentId_ = 1;
 };
 
@@ -321,6 +327,6 @@ namespace std {
 template <> struct hash<spice::sct::SctSectionId> : spice::sct::SctEntityIdHash {};
 template <> struct hash<spice::sct::SctInstructionId> : spice::sct::SctEntityIdHash {};
 template <> struct hash<spice::sct::SctStringId> : spice::sct::SctEntityIdHash {};
-template <> struct hash<spice::sct::SctFooterEntryId> : spice::sct::SctEntityIdHash {};
+template <> struct hash<spice::sct::SctSupplementaryTextId> : spice::sct::SctEntityIdHash {};
 template <> struct hash<spice::sct::SctOpaqueAttachmentId> : spice::sct::SctEntityIdHash {};
 }

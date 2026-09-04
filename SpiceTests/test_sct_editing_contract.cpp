@@ -64,7 +64,7 @@ SctParseResult parseEditableStringFixture(std::string text) {
 
 std::vector<SctInstructionParameterOverride> requiredOverrides(
     const SctOpcodeSchema& schema, SctInstructionId target,
-    SctFooterEntryId stringFooter, SctFooterEntryId sctStringFooter) {
+    SctSupplementaryTextId stringFooter, SctSupplementaryTextId sctStringFooter) {
     std::vector<SctInstructionParameterOverride> result;
     for (std::uint32_t index = 0; index < schema.parameterCatalogCount; ++index) {
         const auto& parameter = schema.parameterCatalog[index];
@@ -83,7 +83,7 @@ std::vector<SctInstructionParameterOverride> requiredOverrides(
                 const auto footer = parameter.textReference->kind == SctTextKind::SctString
                     ? sctStringFooter
                     : stringFooter;
-                result.push_back({address, SctFooterEntryReference{footer}});
+                result.push_back({address, SctSupplementaryTextReference{footer}});
             }
             break;
         case SctOpcodeReferenceKind::None:
@@ -171,7 +171,7 @@ TEST(SctDocumentBuilder, ReconstitutesSparseIdsAndRejectsInvalidIdentityState) {
     external.sections.push_back({SctSectionId{7}, "SCRIPT", SctScriptSectionContent{{instruction}}});
     external.sections.push_back({SctSectionId{20}, "STRING",
         SctStringSectionContent{SctDocumentString{SctStringId{3}, message("text")}}});
-    external.footerEntries.push_back({SctFooterEntryId{9}, SctDocumentFooterEntryKind::String, SctPlainText{"footer"}});
+    external.supplementaryText.push_back({SctSupplementaryTextId{9}, SctSupplementaryTextKind::String, SctPlainText{"footer"}});
     external.opaqueAttachments.push_back({SctOpaqueAttachmentId{11}, {0xaa}, SctSectionId{7},
         SctOpaquePlacement::FixedOffset, 200u, 1, SctOpaqueRelocationSupport::FixedOnly,
         SctOpaqueReason::UnknownEncoding});
@@ -181,7 +181,7 @@ TEST(SctDocumentBuilder, ReconstitutesSparseIdsAndRejectsInvalidIdentityState) {
     EXPECT_EQ(rebuilt.document->allocateSectionId().value(), 21u);
     EXPECT_EQ(rebuilt.document->allocateInstructionId().value(), 43u);
     EXPECT_EQ(rebuilt.document->allocateStringId().value(), 4u);
-    EXPECT_EQ(rebuilt.document->allocateFooterEntryId().value(), 10u);
+    EXPECT_EQ(rebuilt.document->allocateSupplementaryTextId().value(), 10u);
     EXPECT_EQ(rebuilt.document->allocateOpaqueAttachmentId().value(), 12u);
 
     SctDocument invalid;
@@ -200,7 +200,7 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     const auto targetId = document.allocateInstructionId();
     const auto attachmentId = document.allocateOpaqueAttachmentId();
     const auto stringId = document.allocateStringId();
-    const auto footerId = document.allocateFooterEntryId();
+    const auto footerId = document.allocateSupplementaryTextId();
     SctDocumentInstruction jump{jumpId, 10};
     jump.fixedParameters.push_back({0, SctInstructionReference{targetId}});
     SctDocumentInstruction target{targetId, 12};
@@ -208,7 +208,7 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     const auto stringSectionId = document.allocateSectionId();
     document.sections.push_back({stringSectionId, "STRING",
         SctStringSectionContent{SctDocumentString{stringId, message("text")}}});
-    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"footer"}});
+    document.supplementaryText.push_back({footerId, SctSupplementaryTextKind::String, SctPlainText{"footer"}});
     document.opaqueAttachments.push_back({attachmentId, {0xaa}, sectionId,
         SctOpaquePlacement::FixedOffset, 100u, 1, SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
 
@@ -228,7 +228,7 @@ TEST(SctDocumentIndex, DerivesAttachmentsAndTypedReferenceDirectionsFromTheCurre
     ASSERT_TRUE(first.stringLocation(stringId).has_value());
     EXPECT_EQ(first.stringLocation(stringId)->sectionId, stringSectionId);
     EXPECT_EQ(first.stringLocation(stringId)->sectionOrdinal, 1u);
-    EXPECT_EQ(first.footerEntryOrdinal(footerId), 0u);
+    EXPECT_EQ(first.supplementaryTextOrdinal(footerId), 0u);
 
     const auto movedSectionId = document.allocateSectionId();
     auto& originalInstructions = std::get<SctScriptSectionContent>(document.sections.front().content).instructions;
@@ -405,10 +405,10 @@ TEST(SctInstructionFactory, CreatedInstructionValidatesExportsReparsesAndReimpor
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
     const auto targetId = document.allocateInstructionId();
-    const auto stringFooter = document.allocateFooterEntryId();
-    const auto sctStringFooter = document.allocateFooterEntryId();
-    document.footerEntries.push_back({stringFooter, SctDocumentFooterEntryKind::String, SctPlainText{"file.mld"}});
-    document.footerEntries.push_back({sctStringFooter, SctDocumentFooterEntryKind::SctString, message("message")});
+    const auto stringFooter = document.allocateSupplementaryTextId();
+    const auto sctStringFooter = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({stringFooter, SctSupplementaryTextKind::String, SctPlainText{"file.mld"}});
+    document.supplementaryText.push_back({sctStringFooter, SctSupplementaryTextKind::SctString, message("message")});
 
     const auto& schema = *findSctOpcodeSchema(3);
     SctInstructionFactoryRequest request;
@@ -683,38 +683,61 @@ TEST(SctDocumentEditing, MovesTargetsAcrossSectionsAndRetargetsSwitchAndCallRefe
     EXPECT_EQ(callReferences[0].target, SctDocumentReferenceTarget{importedSecondTargets.front().id});
 }
 
-TEST(SctDocumentEditing, ReferencedFooterTextCanGrowAndReimport) {
+TEST(SctDocumentEditing, ReferencedSupplementaryTextCanGrowAndReimport) {
     SctDocument document;
     const auto sectionId = document.allocateSectionId();
     const auto loadId = document.allocateInstructionId();
     const auto returnId = document.allocateInstructionId();
-    const auto footerId = document.allocateFooterEntryId();
+    const auto footerId = document.allocateSupplementaryTextId();
     SctDocumentInstruction load{loadId, 23};
-    load.fixedParameters.push_back({0, SctFooterEntryReference{footerId}});
+    load.fixedParameters.push_back({0, SctSupplementaryTextReference{footerId}});
     document.sections.push_back({sectionId, "FOOTER", SctScriptSectionContent{{load, {returnId, 12}}}});
-    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"a"}});
-    std::get<SctPlainText>(document.footerEntries.front().value).utf8 =
+    document.supplementaryText.push_back({footerId, SctSupplementaryTextKind::String, SctPlainText{"a"}});
+    std::get<SctPlainText>(document.supplementaryText.front().value).utf8 =
         "a much longer footer resource name.mld";
 
     ASSERT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
     ASSERT_TRUE(exported.success);
     ASSERT_TRUE(exported.layout.has_value());
-    ASSERT_EQ(exported.layout->footerEntries.size(), 1u);
-    EXPECT_EQ(exported.layout->footerEntries.front().span.size, 39u);
+    ASSERT_EQ(exported.layout->supplementaryText.size(), 1u);
+    EXPECT_EQ(exported.layout->supplementaryText.front().span.size, 39u);
     const auto reparsed = SctParser{}.parse(exported.bytes, "footer_edit.sct");
     ASSERT_TRUE(reparsed.parseOk);
     const auto reimported = SctDocumentImporter::import(
         reparsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
     ASSERT_TRUE(reimported.document.has_value());
-    ASSERT_EQ(reimported.document->footerEntries.size(), 1u);
-    EXPECT_EQ(std::get<SctPlainText>(reimported.document->footerEntries.front().value).utf8,
+    ASSERT_EQ(reimported.document->supplementaryText.size(), 1u);
+    EXPECT_EQ(std::get<SctPlainText>(reimported.document->supplementaryText.front().value).utf8,
         "a much longer footer resource name.mld");
     const auto& importedInstructions = std::get<SctScriptSectionContent>(
         reimported.document->sections.front().content).instructions;
     ASSERT_FALSE(importedInstructions.empty());
     EXPECT_EQ(SctSemanticUsageIndex::build(*reimported.document).outboundReferences(
         importedInstructions.front().id).size(), 1u);
+}
+
+TEST(SctDocumentEditing, UnreferencedSupplementaryTextRemainsValidAndExportable) {
+    SctDocument document;
+    const auto sectionId = document.allocateSectionId();
+    const auto returnId = document.allocateInstructionId();
+    const auto textId = document.allocateSupplementaryTextId();
+    document.sections.push_back(
+        {sectionId, "MAIN", SctScriptSectionContent{{{returnId, 12u}}}});
+    document.supplementaryText.push_back(
+        {textId, SctTextKind::PlainString, SctPlainText{"unused"}});
+
+    const auto validation = SctDocumentValidator::validateDocument(document);
+    ASSERT_TRUE(validation.validDocument);
+    const auto associations = SctSupplementaryTextIndex::build(document);
+    ASSERT_NE(associations.find(textId), nullptr);
+    EXPECT_EQ(associations.find(textId)->useKind,
+        SctSupplementaryTextUseKind::Unreferenced);
+    const auto exported = SctDocumentExporter::exportDocument(document, rawGameCubeOptions());
+    ASSERT_TRUE(exported.success);
+    ASSERT_TRUE(exported.layout.has_value());
+    ASSERT_EQ(exported.layout->supplementaryText.size(), 1u);
+    EXPECT_EQ(exported.layout->supplementaryText.front().id, textId);
 }
 
 TEST(SctDocumentValidator, LocatesNestedExpressionErrorsInsideRepeatedGroups) {

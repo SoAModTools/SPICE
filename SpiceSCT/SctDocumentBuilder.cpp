@@ -39,12 +39,12 @@ SctDocumentBuildResult SctDocumentBuilder::reconstitute(SctDocument document) {
     std::unordered_set<std::uint64_t> sectionIds;
     std::unordered_set<std::uint64_t> instructionIds;
     std::unordered_set<std::uint64_t> stringIds;
-    std::unordered_set<std::uint64_t> footerIds;
+    std::unordered_set<std::uint64_t> supplementaryTextIds;
     std::unordered_set<std::uint64_t> attachmentIds;
     std::uint64_t maxSection = 0;
     std::uint64_t maxInstruction = 0;
     std::uint64_t maxString = 0;
-    std::uint64_t maxFooter = 0;
+    std::uint64_t maxSupplementaryText = 0;
     std::uint64_t maxAttachment = 0;
 
     for (const auto& section : document.sections) {
@@ -57,8 +57,9 @@ SctDocumentBuildResult SctDocumentBuilder::reconstitute(SctDocument document) {
             observeId(string->string.id, "String", stringIds, maxString, result.diagnostics);
         }
     }
-    for (const auto& footer : document.footerEntries) {
-        observeId(footer.id, "Footer entry", footerIds, maxFooter, result.diagnostics);
+    for (const auto& text : document.supplementaryText) {
+        observeId(text.id, "Supplementary text", supplementaryTextIds,
+            maxSupplementaryText, result.diagnostics);
     }
     for (const auto& attachment : document.opaqueAttachments) {
         observeId(attachment.id, "Opaque attachment", attachmentIds, maxAttachment, result.diagnostics);
@@ -66,7 +67,7 @@ SctDocumentBuildResult SctDocumentBuilder::reconstitute(SctDocument document) {
 
     if (!result.diagnostics.empty()) return result;
     document.restoreAllocatorState(maxSection + 1, maxInstruction + 1, maxString + 1,
-        maxFooter + 1, maxAttachment + 1);
+        maxSupplementaryText + 1, maxAttachment + 1);
     result.document = std::move(document);
     return result;
 }

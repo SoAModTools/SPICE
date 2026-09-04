@@ -244,7 +244,7 @@ TEST(SctDocumentExporter, RetargetsAndRelocatesIndexedSctStringsByOwningSectionS
     EXPECT_EQ("b", std::get<SctTextChunk>(editable->body.elements.front()).utf8);
 }
 
-TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema) {
+TEST(SctDocumentExporter, EncodesSwitchSupplementaryTextAndScheduledContractsFromTheSchema) {
     SctDocument document;
     const auto switchSection = document.allocateSectionId();
     const auto footerSection = document.allocateSectionId();
@@ -254,7 +254,7 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
     const auto signedFooterLoadId = document.allocateInstructionId();
     const auto targetLeadId = document.allocateInstructionId();
     const auto targetId = document.allocateInstructionId();
-    const auto footerId = document.allocateFooterEntryId();
+    const auto footerId = document.allocateSupplementaryTextId();
 
     SctDocumentInstruction sw;
     sw.id = switchId;
@@ -268,12 +268,12 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
     footerLoad.opcode = 43;
     footerLoad.skipRefresh = true;
     footerLoad.scheduledExpression = noLoop(0x00800000u);
-    footerLoad.fixedParameters.push_back({0, SctFooterEntryReference{footerId}});
+    footerLoad.fixedParameters.push_back({0, SctSupplementaryTextReference{footerId}});
 
     SctDocumentInstruction signedFooterLoad;
     signedFooterLoad.id = signedFooterLoadId;
     signedFooterLoad.opcode = 23;
-    signedFooterLoad.fixedParameters.push_back({0, SctFooterEntryReference{footerId}});
+    signedFooterLoad.fixedParameters.push_back({0, SctSupplementaryTextReference{footerId}});
 
     SctDocumentInstruction targetLead;
     targetLead.id = targetLeadId;
@@ -282,9 +282,9 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
     target.id = targetId;
     target.opcode = 12;
     document.sections.push_back({switchSection, "SWITCH", SctScriptSectionContent{{sw}}});
-    document.sections.push_back({footerSection, "FOOTER", SctScriptSectionContent{{footerLoad, signedFooterLoad}}});
+    document.sections.push_back({footerSection, "SUPPLEMENT", SctScriptSectionContent{{footerLoad, signedFooterLoad}}});
     document.sections.push_back({targetSection, "TARGET", SctScriptSectionContent{{targetLead, target}}});
-    document.footerEntries.push_back({footerId, SctDocumentFooterEntryKind::String, SctPlainText{"entry"}});
+    document.supplementaryText.push_back({footerId, SctSupplementaryTextKind::String, SctPlainText{"entry"}});
 
     const auto exported = SctDocumentExporter::exportDocument(document, rawOptions());
     ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
@@ -296,7 +296,7 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
                 && std::holds_alternative<SctInstructionId>(relocation.target);
         }));
     EXPECT_TRUE(std::any_of(exported.layout->relocations.begin(), exported.layout->relocations.end(),
-        [](const auto& relocation) { return std::holds_alternative<SctFooterEntryId>(relocation.target); }));
+        [](const auto& relocation) { return std::holds_alternative<SctSupplementaryTextId>(relocation.target); }));
 
     const auto reparsed = SctParser{}.parse(exported.bytes, "document_contracts.sct");
     ASSERT_TRUE(reparsed.parseOk);
@@ -315,6 +315,75 @@ TEST(SctDocumentExporter, EncodesSwitchFooterAndScheduledContractsFromTheSchema)
     ASSERT_EQ(reparsed.file.footer->entries.size(), 1u) << parseMessages;
     EXPECT_EQ(reparsed.file.footer->entries[0].rawBytes,
         (std::vector<std::uint8_t>{'e', 'n', 't', 'r', 'y', 0}));
+
+    auto split = document;
+    const auto clonedTextId = split.allocateSupplementaryTextId();
+    split.supplementaryText.push_back(
+        {clonedTextId, SctTextKind::PlainString, SctPlainText{"cloned"}});
+    auto& splitInstructions = std::get<SctScriptSectionContent>(
+        split.sections[1].content).instructions;
+    std::get<SctSupplementaryTextReference>(
+        splitInstructions[1].fixedParameters[0].value).target = clonedTextId;
+    const auto splitExport = SctDocumentExporter::exportDocument(split, rawOptions());
+    ASSERT_TRUE(splitExport.success) << diagnosticMessages(splitExport.diagnostics);
+    const auto splitParse = SctParser{}.parse(splitExport.bytes, "split_supplementary_text.sct");
+    ASSERT_TRUE(splitParse.parseOk);
+    ASSERT_TRUE(splitParse.file.footer.has_value());
+    ASSERT_EQ(splitParse.file.footer->entries.size(), 2u);
+    EXPECT_EQ(splitParse.file.footer->entries[0].rawBytes,
+        (std::vector<std::uint8_t>{'e', 'n', 't', 'r', 'y', 0}));
+    EXPECT_EQ(splitParse.file.footer->entries[1].rawBytes,
+        (std::vector<std::uint8_t>{'c', 'l', 'o', 'n', 'e', 'd', 0}));
+}
+
+TEST(SctDocumentExporter, SupplementaryOrderIsIndependentFromInstructionOrder) {
+    SctDocument document;
+    const auto sectionId = document.allocateSectionId();
+    const auto firstInstructionId = document.allocateInstructionId();
+    const auto secondInstructionId = document.allocateInstructionId();
+    const auto returnId = document.allocateInstructionId();
+    const auto firstTextId = document.allocateSupplementaryTextId();
+    const auto secondTextId = document.allocateSupplementaryTextId();
+
+    SctDocumentInstruction first{firstInstructionId, 23u};
+    first.fixedParameters.push_back(
+        {0u, SctSupplementaryTextReference{firstTextId}});
+    SctDocumentInstruction second{secondInstructionId, 43u};
+    second.fixedParameters.push_back(
+        {0u, SctSupplementaryTextReference{secondTextId}});
+    document.sections.push_back({sectionId, "MAIN",
+        SctScriptSectionContent{{second, first, {returnId, 12u}}}});
+    document.supplementaryText = {
+        {secondTextId, SctTextKind::PlainString, SctPlainText{"second"}},
+        {firstTextId, SctTextKind::PlainString, SctPlainText{"first"}},
+    };
+
+    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions());
+    ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
+    ASSERT_TRUE(exported.layout.has_value());
+    ASSERT_EQ(exported.layout->supplementaryText.size(), 2u);
+    EXPECT_EQ(exported.layout->supplementaryText[0].id, secondTextId);
+    EXPECT_EQ(exported.layout->supplementaryText[1].id, firstTextId);
+
+    const auto reparsed = SctParser{}.parse(exported.bytes, "supplementary_order.sct");
+    ASSERT_TRUE(reparsed.parseOk);
+    const auto reimported = SctDocumentImporter::import(
+        reparsed, {{SctPlatform::GameCube}, kSctShiftJisByte7FEncoding});
+    ASSERT_TRUE(reimported.document.has_value());
+    const auto analysis = SctDocumentAnalysis::build(*reimported.document);
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        reimported.document->sections.front().content).instructions;
+    ASSERT_GE(instructions.size(), 2u);
+    for (const auto& instruction : instructions) {
+        if (instruction.opcode != 23u && instruction.opcode != 43u) continue;
+        const auto* text = analysis.supplementaryText.resolve(
+            *reimported.document, analysis.entities,
+            {instruction.id, {0u, std::nullopt}});
+        ASSERT_NE(text, nullptr);
+        const auto* plain = std::get_if<SctPlainText>(&text->value);
+        ASSERT_NE(plain, nullptr);
+        EXPECT_EQ(plain->utf8, instruction.opcode == 23u ? "first" : "second");
+    }
 }
 
 TEST(SctDocumentExporter, PreservesFixedAndRelocatableOpaqueAttachmentsOrRejectsConflict) {

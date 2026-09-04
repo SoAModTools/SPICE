@@ -136,6 +136,46 @@ private:
     std::map<SctVariableIdentity, std::vector<std::size_t>> variableIndex_;
 };
 
+enum class SctSupplementaryTextUseKind {
+    Unreferenced,
+    Unique,
+    Shared,
+};
+
+struct SctSupplementaryTextAssociation {
+    SctSupplementaryTextId text;
+    SctSupplementaryTextUseKind useKind = SctSupplementaryTextUseKind::Unreferenced;
+    std::vector<SctParameterSite> uses;
+};
+
+// Revision-scoped instruction associations for document-owned supplementary
+// text. Associations follow supplementary-text collection order, while each
+// use list follows physical instruction/parameter order.
+class SctSupplementaryTextIndex {
+public:
+    [[nodiscard]] static SctSupplementaryTextIndex build(const SctDocument& document);
+
+    [[nodiscard]] std::span<const SctSupplementaryTextAssociation> associations() const noexcept {
+        return associations_;
+    }
+    [[nodiscard]] const SctSupplementaryTextAssociation* find(
+        SctSupplementaryTextId text) const noexcept;
+    [[nodiscard]] std::optional<SctSupplementaryTextId> targetFor(
+        const SctParameterSite& site) const noexcept;
+    [[nodiscard]] const SctDocumentSupplementaryText* resolve(
+        const SctDocument& document, const SctDocumentIndex& entities,
+        const SctParameterSite& site) const noexcept;
+
+private:
+    friend struct SctDocumentAnalysis;
+    [[nodiscard]] static SctSupplementaryTextIndex buildFromUsage(
+        const SctDocument& document, const SctSemanticUsageIndex& usage);
+
+    std::vector<SctSupplementaryTextAssociation> associations_;
+    std::map<SctSupplementaryTextId, std::size_t> associationIndex_;
+    std::map<SctParameterSite, SctSupplementaryTextId> siteTargets_;
+};
+
 enum class SctOpaqueInterpretationKind { ControlFlowGap, SwitchDispatchGap };
 
 struct SctOpaqueInterpretation {
@@ -292,6 +332,7 @@ struct SctDocumentAnalysis {
     SctIndexedStringGroupIndex stringGroups;
     SctControlFlowIndex controlFlow;
     SctSemanticUsageIndex usage;
+    SctSupplementaryTextIndex supplementaryText;
     SctOpaqueContextIndex opaqueContext;
     SctStructuredControlFlowAnalysis structuredControlFlow;
     SctOpcodeEffectIndex effects;

@@ -132,7 +132,7 @@ TEST(SctReferenceSafety, ImportClassifiesEveryKnownUnresolvedReferenceKind) {
             {SctReferenceTargetStorage::IndexedString, SctTextKind::SctString}},
         UnresolvedParseCase{23u, {parsedParameter(0u, 100u)},
             std::nullopt, {0u, std::nullopt},
-            {SctReferenceTargetStorage::FooterEntry, SctTextKind::PlainString}},
+            {SctReferenceTargetStorage::SupplementaryText, SctTextKind::PlainString}},
     };
 
     for (const auto& testCase : cases) {
@@ -249,7 +249,7 @@ TEST(SctReferenceRepair, ReportsExactEvidenceCandidatesAndReturnsTypedReplacemen
         .outboundReferences(reimportedInstructions.front().id).size(), 1u);
 }
 
-TEST(SctReferenceRepair, CreatesOnlySchemaCompatibleInstructionIndexedAndFooterReferences) {
+TEST(SctReferenceRepair, CreatesOnlySchemaCompatibleInstructionIndexedAndSupplementaryReferences) {
     SctDocument document;
     const auto scriptSection = document.allocateSectionId();
     const auto jumpId = document.allocateInstructionId();
@@ -257,7 +257,7 @@ TEST(SctReferenceRepair, CreatesOnlySchemaCompatibleInstructionIndexedAndFooterR
     const auto footerSourceId = document.allocateInstructionId();
     const auto targetId = document.allocateInstructionId();
     const auto stringId = document.allocateStringId();
-    const auto footerId = document.allocateFooterEntryId();
+    const auto footerId = document.allocateSupplementaryTextId();
     SctDocumentInstruction jump{jumpId, 10u};
     jump.fixedParameters.push_back({0u, SctUnresolvedReferenceValue{
         {SctReferenceTargetStorage::Instruction, std::nullopt}, {0u}}});
@@ -267,14 +267,14 @@ TEST(SctReferenceRepair, CreatesOnlySchemaCompatibleInstructionIndexedAndFooterR
         {1u, noLoop()}};
     SctDocumentInstruction footer{footerSourceId, 23u};
     footer.fixedParameters.push_back({0u, SctUnresolvedReferenceValue{
-        {SctReferenceTargetStorage::FooterEntry, SctTextKind::PlainString}, {0u}}});
+        {SctReferenceTargetStorage::SupplementaryText, SctTextKind::PlainString}, {0u}}});
     SctDocumentInstruction target{targetId, 12u};
     document.sections.push_back({scriptSection, "SCRIPT",
         SctScriptSectionContent{{jump, indexed, footer, target}}});
     const auto stringSection = document.allocateSectionId();
     document.sections.push_back({stringSection, "STRING",
         SctStringSectionContent{SctDocumentString{stringId, message("text")}}});
-    document.footerEntries.push_back({footerId, SctTextKind::PlainString, SctPlainText{"footer"}});
+    document.supplementaryText.push_back({footerId, SctTextKind::PlainString, SctPlainText{"footer"}});
 
     EXPECT_TRUE(SctReferenceRepair::createReferenceValue(document, jumpId, {0u, std::nullopt}, targetId).value);
     EXPECT_TRUE(SctReferenceRepair::createReferenceValue(document, indexedSourceId,
@@ -373,13 +373,13 @@ TEST(SctDocumentEntityFactory, ConstructsDetachedEntitiesWithoutConsumingIdsOnFa
     EXPECT_TRUE(string.id);
     EXPECT_EQ(string.kind, SctTextKind::SctString);
 
-    const auto badFooter = SctDocumentEntityFactory::createFooterEntry(
+    const auto badFooter = SctDocumentEntityFactory::createSupplementaryText(
         document, SctTextKind::PlainString, message("wrong kind"));
-    EXPECT_FALSE(badFooter.entry.has_value());
-    EXPECT_EQ(document.nextFooterEntryIdValue(), 1u);
-    const auto footer = SctDocumentEntityFactory::createFooterEntry(
+    EXPECT_FALSE(badFooter.text.has_value());
+    EXPECT_EQ(document.nextSupplementaryTextIdValue(), 1u);
+    const auto footer = SctDocumentEntityFactory::createSupplementaryText(
         document, SctTextKind::PlainString, SctPlainText{"plain"});
-    EXPECT_TRUE(footer.entry.has_value());
+    EXPECT_TRUE(footer.text.has_value());
 
     SctOpaqueSectionAttachmentRequest invalidOpaque;
     const auto rejectedOpaque = SctDocumentEntityFactory::createOpaqueSection(

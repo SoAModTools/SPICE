@@ -103,15 +103,16 @@ SctSectionFactoryResult SctDocumentEntityFactory::createOpaqueSection(
     return result;
 }
 
-SctFooterEntryFactoryResult SctDocumentEntityFactory::createFooterEntry(
+SctSupplementaryTextFactoryResult SctDocumentEntityFactory::createSupplementaryText(
     SctDocument& document, SctTextKind kind, SctTextValue value) {
-    SctFooterEntryFactoryResult result;
+    SctSupplementaryTextFactoryResult result;
     SctDocument validationDocument;
-    const auto id = validationDocument.allocateFooterEntryId();
-    validationDocument.footerEntries.push_back({id, kind, value});
+    const auto id = validationDocument.allocateSupplementaryTextId();
+    validationDocument.supplementaryText.push_back({id, kind, value});
     appendValidation(result, SctDocumentValidator::validateDocument(validationDocument));
     if (hasErrors(result)) return result;
-    result.entry = SctDocumentFooterEntry{document.allocateFooterEntryId(), kind, std::move(value)};
+    result.text = SctDocumentSupplementaryText{
+        document.allocateSupplementaryTextId(), kind, std::move(value)};
     return result;
 }
 

@@ -125,7 +125,7 @@ void writeParameter(FingerprintWriter& out, const SctDocumentParameter& paramete
             out.sequence(value.words, [&](std::uint32_t word) { out.integral(word); });
         } else if constexpr (std::is_same_v<T, SctInstructionReference>
             || std::is_same_v<T, SctStringReference>
-            || std::is_same_v<T, SctFooterEntryReference>) {
+            || std::is_same_v<T, SctSupplementaryTextReference>) {
             out.integral(value.target.value());
         } else if constexpr (std::is_same_v<T, SctUnresolvedReferenceValue>) {
             out.enumeration(value.expectedTarget.storage);
@@ -170,7 +170,7 @@ SctValidationFingerprint fingerprintDocument(const SctDocument& document) noexce
     out.integral(document.nextSectionIdValue());
     out.integral(document.nextInstructionIdValue());
     out.integral(document.nextStringIdValue());
-    out.integral(document.nextFooterEntryIdValue());
+    out.integral(document.nextSupplementaryTextIdValue());
     out.integral(document.nextOpaqueAttachmentIdValue());
     out.sequence(document.sections, [&](const SctDocumentSection& section) {
         out.integral(section.id.value());
@@ -193,10 +193,10 @@ SctValidationFingerprint fingerprintDocument(const SctDocument& document) noexce
             }
         }, section.content);
     });
-    out.sequence(document.footerEntries, [&](const SctDocumentFooterEntry& footer) {
-        out.integral(footer.id.value());
-        out.enumeration(footer.kind);
-        writeText(out, footer.value);
+    out.sequence(document.supplementaryText, [&](const SctDocumentSupplementaryText& text) {
+        out.integral(text.id.value());
+        out.enumeration(text.kind);
+        writeText(out, text.value);
     });
     out.sequence(document.opaqueAttachments, [&](const SctOpaqueAttachment& attachment) {
         out.integral(attachment.id.value());

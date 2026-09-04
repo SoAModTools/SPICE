@@ -86,7 +86,9 @@ void textError(SctDocumentValidationResult& result, std::string message,
     std::optional<std::uint32_t> elementOrdinal, std::uint32_t offset, std::uint32_t size) {
     std::optional<SctTextEntityId> textEntity;
     if (const auto* string = std::get_if<SctStringId>(&entity)) textEntity = *string;
-    if (const auto* footer = std::get_if<SctFooterEntryId>(&entity)) textEntity = *footer;
+    if (const auto* supplementary = std::get_if<SctSupplementaryTextId>(&entity)) {
+        textEntity = *supplementary;
+    }
     SctDocumentDiagnostic diagnostic{SctDiagnosticSeverity::Error,
         SctDiagnosticCode::TextInvalid, std::move(message)};
     if (textEntity) {
@@ -272,12 +274,14 @@ void validateText(const SctTextValue& value, SctTextKind kind, SctTextStorage st
 
 SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocument& document) {
     SctDocumentValidationResult result;
-    std::unordered_set<std::uint64_t> sectionIds, instructionIds, stringIds, footerIds, attachmentIds;
+    std::unordered_set<std::uint64_t> sectionIds, instructionIds, stringIds,
+        supplementaryTextIds, attachmentIds;
     std::unordered_map<std::uint64_t, const SctDocumentString*> indexedStrings;
-    for (const auto& footer : document.footerEntries) {
-        recordId(result, footer.id, footerIds, document.nextFooterEntryIdValue(), "Footer entry");
-        validateText(footer.value, footer.kind, SctTextStorage::Footer,
-            result, SctDocumentEntityId{footer.id});
+    for (const auto& text : document.supplementaryText) {
+        recordId(result, text.id, supplementaryTextIds,
+            document.nextSupplementaryTextIdValue(), "Supplementary text");
+        validateText(text.value, text.kind, SctTextStorage::Footer,
+            result, SctDocumentEntityId{text.id});
     }
 
     for (const auto& section : document.sections) {
@@ -459,22 +463,23 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                                 "Indexed string reference kind is incompatible with the opcode schema.", entity, address);
                         }
                     }
-                } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&parameter.value)) {
-                    if (!reference->target || !footerIds.contains(reference->target.value())) {
+                } else if (const auto* reference = std::get_if<SctSupplementaryTextReference>(&parameter.value)) {
+                    if (!reference->target
+                        || !supplementaryTextIds.contains(reference->target.value())) {
                         error(result, SctDiagnosticCode::UnresolvedReference,
-                            "Instruction parameter references a missing footer entry.", entity, address);
+                            "Instruction parameter references missing supplementary text.", entity, address);
                     }
                     const auto rule = sctOpcodeTextReference(*schema, parameter.schemaIndex);
                     if (!rule.has_value() || rule->storage != SctTextStorage::Footer) {
                         error(result, SctDiagnosticCode::ParameterMismatch,
-                            "Footer reference is assigned to a parameter without a footer-reference rule.", entity, address);
+                            "Supplementary-text reference is assigned to a parameter without a footer storage rule.", entity, address);
                     } else {
-                        const auto found = std::find_if(document.footerEntries.begin(), document.footerEntries.end(),
+                        const auto found = std::find_if(document.supplementaryText.begin(), document.supplementaryText.end(),
                             [&](const auto& entry) { return entry.id == reference->target; });
-                        if (found != document.footerEntries.end()
+                        if (found != document.supplementaryText.end()
                             && found->kind != rule->kind) {
                             error(result, SctDiagnosticCode::ParameterMismatch,
-                                "Footer reference kind is incompatible with the opcode schema.", entity, address);
+                                "Supplementary-text reference kind is incompatible with the opcode schema.", entity, address);
                         }
                     }
                 } else if (const auto* unresolved = std::get_if<SctUnresolvedReferenceValue>(&parameter.value)) {
@@ -487,7 +492,7 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
                     } else if (const auto rule = sctOpcodeTextReference(*schema, parameter.schemaIndex)) {
                         expected = {rule->storage == SctTextStorage::IndexedSection
                                 ? SctReferenceTargetStorage::IndexedString
-                                : SctReferenceTargetStorage::FooterEntry,
+                                : SctReferenceTargetStorage::SupplementaryText,
                             rule->kind};
                         referenceParameter = true;
                     }
@@ -548,7 +553,7 @@ SctDocumentValidationResult SctDocumentValidator::validateDocument(const SctDocu
             else if constexpr (std::is_same_v<T, SctSectionId>) return anchor && sectionIds.contains(anchor.value());
             else if constexpr (std::is_same_v<T, SctInstructionId>) return anchor && instructionIds.contains(anchor.value());
             else if constexpr (std::is_same_v<T, SctStringId>) return anchor && stringIds.contains(anchor.value());
-            else return anchor && footerIds.contains(anchor.value());
+            else return anchor && supplementaryTextIds.contains(anchor.value());
         }, attachment.anchor);
         if (!anchorExists) error(result, SctDiagnosticCode::AttachmentInvalid,
             "Opaque attachment anchor does not resolve to a document entity.", entity);
@@ -661,8 +666,8 @@ SctTargetValidationResult SctDocumentValidator::validateForTarget(
                 SctTextStorage::IndexedSection, SctDocumentEntityId{content->string.id});
         }
     }
-    for (const auto& footer : document.footerEntries) validateTargetText(footer.value, footer.kind,
-        SctTextStorage::Footer, SctDocumentEntityId{footer.id});
+    for (const auto& text : document.supplementaryText) validateTargetText(text.value, text.kind,
+        SctTextStorage::Footer, SctDocumentEntityId{text.id});
     if (!document.opaqueAttachments.empty()
         && (receipt == nullptr
             || !receipt->declaredSourcePlatform.has_value()

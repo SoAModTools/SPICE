@@ -17,6 +17,8 @@ enum class SctTextKind {
 
 enum class SctTextStorage {
     IndexedSection,
+    // Physical SCT footer storage; canonical documents expose known records as
+    // document-owned supplementary text rather than an editable footer container.
     Footer,
 };
 

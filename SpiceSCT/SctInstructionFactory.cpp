@@ -47,7 +47,7 @@ bool valueMatches(const SctOpcodeParameterSchema& schema, const SctDocumentParam
         if (!schema.textReference.has_value()) return false;
         return schema.textReference->storage == SctTextStorage::IndexedSection
             ? std::holds_alternative<SctStringReference>(value)
-            : std::holds_alternative<SctFooterEntryReference>(value);
+            : std::holds_alternative<SctSupplementaryTextReference>(value);
     case SctOpcodeReferenceKind::None:
         break;
     }
@@ -551,17 +551,17 @@ SctInstructionMaterializationResult SctInstructionFactory::materialize(
                 addError(result, SctDiagnosticCode::ParameterMismatch,
                     "Resolved indexed string reference disagrees with the opcode schema.", parameter.address);
             }
-        } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&*parameter.value)) {
-            const auto* footer = index.find(document, reference->target);
-            if (footer == nullptr) {
+        } else if (const auto* reference = std::get_if<SctSupplementaryTextReference>(&*parameter.value)) {
+            const auto* text = index.find(document, reference->target);
+            if (text == nullptr) {
                 addError(result, SctDiagnosticCode::UnresolvedReference,
-                    "Resolved draft parameter references a missing footer entry.", parameter.address);
+                    "Resolved draft parameter references missing supplementary text.", parameter.address);
             } else {
                 const auto rule = sctOpcodeTextReference(*schema, parameter.address.schemaIndex);
                 if (!rule.has_value() || rule->storage != SctTextStorage::Footer
-                    || footer->kind != rule->kind) {
+                    || text->kind != rule->kind) {
                     addError(result, SctDiagnosticCode::ParameterMismatch,
-                        "Resolved footer reference kind disagrees with the opcode schema.", parameter.address);
+                        "Resolved supplementary-text kind disagrees with the opcode schema.", parameter.address);
                 }
             }
         }

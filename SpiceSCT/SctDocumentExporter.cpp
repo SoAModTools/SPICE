@@ -276,12 +276,13 @@ EncodedInstruction encodeInstruction(const SctDocumentInstruction& instruction,
             result.relocations.push_back({instruction.id, {parameter.schemaIndex, groupOrdinal},
                 reference->target, formula, rule->signedRelative, rule->targetAlignment,
                 rule->encodedValueMask, wordIndex * 4u});
-        } else if (const auto* reference = std::get_if<SctFooterEntryReference>(&parameter.value)) {
+        } else if (const auto* reference = std::get_if<SctSupplementaryTextReference>(&parameter.value)) {
             words.push_back(0);
             const auto rule = sctOpcodeTextReference(schema, parameter.schemaIndex);
             if (!rule.has_value() || rule->storage != SctTextStorage::Footer) {
                 addDiagnostic(diagnostics, SctDiagnosticCode::EncodingUnsupported,
-                    "Footer reference has no matching opcode schema rule.", SctDocumentEntityId{instruction.id});
+                    "Supplementary-text reference has no matching opcode schema rule.",
+                    SctDocumentEntityId{instruction.id});
                 return;
             }
             const auto formula = rule->relativeBase == SctRelativeReferenceBase::InstructionEndMinusWord
@@ -515,7 +516,7 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     SctDocumentLayout layout;
     std::unordered_map<std::uint64_t, SctDocumentByteSpan> instructionSpans;
     std::unordered_map<std::uint64_t, SctDocumentByteSpan> indexedStringTargetSpans;
-    std::unordered_map<std::uint64_t, SctDocumentByteSpan> footerSpans;
+    std::unordered_map<std::uint64_t, SctDocumentByteSpan> supplementaryTextSpans;
     std::unordered_set<std::uint64_t> placedStrings;
     std::vector<PendingRelocation> pendingRelocations;
     std::uint32_t cursor = dataStart;
@@ -616,27 +617,27 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
         patchWord(canvas.bytes(), rowOffset, sectionStart - dataStart, options.byteOrder);
     }
 
-    for (const auto& footer : document.footerEntries) {
-        const SctOpaqueAnchor footerAnchor{footer.id};
-        if (!placeAttachments(footerAnchor, SctOpaquePlacement::Before, cursor)) return result;
-        const auto encodedText = encodeSctTextRecord(footer.value, footer.kind,
+    for (const auto& text : document.supplementaryText) {
+        const SctOpaqueAnchor textAnchor{text.id};
+        if (!placeAttachments(textAnchor, SctOpaquePlacement::Before, cursor)) return result;
+        const auto encodedText = encodeSctTextRecord(text.value, text.kind,
             SctTextStorage::Footer, options.textEncoding);
         if (!encodedText.bytes) {
             addDiagnostic(result.diagnostics, SctDiagnosticCode::EncodingUnsupported,
-                encodedText.error, SctDocumentEntityId{footer.id});
+                encodedText.error, SctDocumentEntityId{text.id});
             return result;
         }
         const auto& bytes = *encodedText.bytes;
         const auto offset = canvas.placeAtFirstFit(cursor, bytes);
         if (!offset) return result;
         const SctDocumentByteSpan span{*offset, static_cast<std::uint32_t>(bytes.size())};
-        layout.footerEntries.push_back({footer.id, span});
+        layout.supplementaryText.push_back({text.id, span});
         result.preservation.text.push_back(
-            {SctDocumentEntityId{footer.id}, span, textMaterializationStatus(footer.value)});
-        footerSpans.emplace(footer.id.value(), span);
+            {SctDocumentEntityId{text.id}, span, textMaterializationStatus(text.value)});
+        supplementaryTextSpans.emplace(text.id.value(), span);
         cursor = span.offset + span.size;
-        cursor = fixedEndFor(footerAnchor, cursor);
-        if (!placeAttachments(footerAnchor, SctOpaquePlacement::After, cursor)) return result;
+        cursor = fixedEndFor(textAnchor, cursor);
+        if (!placeAttachments(textAnchor, SctOpaquePlacement::After, cursor)) return result;
     }
     cursor = fixedEndFor(documentAnchor, cursor);
     if (!placeAttachments(documentAnchor, SctOpaquePlacement::After, cursor)) return result;
@@ -657,7 +658,8 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
             } else if constexpr (std::is_same_v<T, SctStringId>) {
                 if (const auto found = indexedStringTargetSpans.find(target.value()); found != indexedStringTargetSpans.end()) targetSpan = found->second;
             } else {
-                if (const auto found = footerSpans.find(target.value()); found != footerSpans.end()) targetSpan = found->second;
+                if (const auto found = supplementaryTextSpans.find(target.value());
+                    found != supplementaryTextSpans.end()) targetSpan = found->second;
             }
         }, pending.target);
         if (!targetSpan || pending.wordOffsetWithinInstruction < dataStart) {

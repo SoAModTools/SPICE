@@ -19,9 +19,9 @@ SctDocumentIndex SctDocumentIndex::build(const SctDocument& document) {
                 SctStringDocumentLocation{section.id, sectionOrdinal});
         }
     }
-    for (std::size_t ordinal = 0; ordinal < document.footerEntries.size(); ++ordinal) {
-        const auto& footer = document.footerEntries[ordinal];
-        result.footerEntryOrdinals_.emplace(footer.id.value(), ordinal);
+    for (std::size_t ordinal = 0; ordinal < document.supplementaryText.size(); ++ordinal) {
+        const auto& text = document.supplementaryText[ordinal];
+        result.supplementaryTextOrdinals_.emplace(text.id.value(), ordinal);
     }
     for (std::size_t ordinal = 0; ordinal < document.opaqueAttachments.size(); ++ordinal) {
         const auto& attachment = document.opaqueAttachments[ordinal];
@@ -57,11 +57,11 @@ const SctDocumentString* SctDocumentIndex::find(
     const auto* content = std::get_if<SctStringSectionContent>(&section.content);
     return content != nullptr && content->string.id == id ? &content->string : nullptr;
 }
-const SctDocumentFooterEntry* SctDocumentIndex::find(
-    const SctDocument& document, SctFooterEntryId id) const noexcept {
-    const auto ordinal = footerEntryOrdinal(id);
-    if (!ordinal || *ordinal >= document.footerEntries.size()) return nullptr;
-    return document.footerEntries[*ordinal].id == id ? &document.footerEntries[*ordinal] : nullptr;
+const SctDocumentSupplementaryText* SctDocumentIndex::find(
+    const SctDocument& document, SctSupplementaryTextId id) const noexcept {
+    const auto ordinal = supplementaryTextOrdinal(id);
+    if (!ordinal || *ordinal >= document.supplementaryText.size()) return nullptr;
+    return document.supplementaryText[*ordinal].id == id ? &document.supplementaryText[*ordinal] : nullptr;
 }
 const SctOpaqueAttachment* SctDocumentIndex::find(
     const SctDocument& document, SctOpaqueAttachmentId id) const noexcept {
@@ -95,9 +95,9 @@ std::optional<SctStringDocumentLocation> SctDocumentIndex::stringLocation(SctStr
         ? std::nullopt : std::optional<SctStringDocumentLocation>{found->second};
 }
 
-std::optional<std::size_t> SctDocumentIndex::footerEntryOrdinal(SctFooterEntryId id) const noexcept {
-    const auto found = footerEntryOrdinals_.find(id.value());
-    return found == footerEntryOrdinals_.end() ? std::nullopt
+std::optional<std::size_t> SctDocumentIndex::supplementaryTextOrdinal(SctSupplementaryTextId id) const noexcept {
+    const auto found = supplementaryTextOrdinals_.find(id.value());
+    return found == supplementaryTextOrdinals_.end() ? std::nullopt
                                                : std::optional<std::size_t>{found->second};
 }
 

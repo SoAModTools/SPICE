@@ -209,7 +209,7 @@ struct ClaimLedger {
 
 using InstructionMap = std::unordered_map<std::uint32_t, SctInstructionId>;
 using StringMap = std::unordered_map<std::uint32_t, SctStringId>;
-using FooterMap = std::unordered_map<std::uint32_t, SctFooterEntryId>;
+using FooterMap = std::unordered_map<std::uint32_t, SctSupplementaryTextId>;
 
 std::vector<std::size_t> physicalInstructionOrder(const SctSection& section) {
     std::vector<std::size_t> order(section.instructions.size());
@@ -256,7 +256,7 @@ ControlTarget edgeTarget(const SctSection& section, const SctInstruction& instru
     return {found == ids.end() ? std::nullopt : std::optional(found->second), selected->toPayloadOffset};
 }
 
-std::optional<SctFooterEntryId> footerTarget(const SctInstruction& instruction,
+std::optional<SctSupplementaryTextId> footerTarget(const SctInstruction& instruction,
     std::uint32_t parameterIndex, const SctFooter& footer, const FooterMap& ids) {
     for (const auto& entry : footer.entries) {
         for (const auto& reference : entry.references) {
@@ -378,7 +378,7 @@ SctExpectedReferenceTarget expectedInstructionTarget() {
 
 SctExpectedReferenceTarget expectedTextTarget(const SctOpcodeTextReferenceRule& rule) {
     return {rule.storage == SctTextStorage::IndexedSection
-            ? SctReferenceTargetStorage::IndexedString : SctReferenceTargetStorage::FooterEntry,
+            ? SctReferenceTargetStorage::IndexedString : SctReferenceTargetStorage::SupplementaryText,
         rule.kind};
 }
 
@@ -446,14 +446,14 @@ SctDocumentParameter makeParameter(const SctParameter& parameter, const SctInstr
         }
         if (footer) {
             if (const auto target = footerTarget(instruction, parameter.index, *footer, footerIds)) {
-                converted.value = SctFooterEntryReference{*target};
+                converted.value = SctSupplementaryTextReference{*target};
                 return converted;
             }
         }
         return unresolvedReference(parameter, instruction, schema, expectedTextTarget(*textReference),
             operandOffset, calculatedTarget, receipt, result, entityId,
             dataStart,
-            "Footer target could not be resolved to a footer-entry ID.");
+            "Footer target could not be resolved to a supplementary-text ID.");
     }
     const auto encoding = sctOpcodeParameterEncoding(schema, parameter.index);
     if (encoding == SctOpcodeParameterEncoding::ScptExpression) {
@@ -921,7 +921,7 @@ SctDocumentImportResult SctDocumentImporter::import(
             if (!entry.rawBytes.empty()) active.emplace_back(end, i);
         }
         for (const auto i : footerEntryOrder) {
-            if (!unsafe[i]) footerIds.emplace(sourceFooter.entries[i].payloadOffset, document.allocateFooterEntryId());
+            if (!unsafe[i]) footerIds.emplace(sourceFooter.entries[i].payloadOffset, document.allocateSupplementaryTextId());
         }
     }
 
@@ -1188,7 +1188,7 @@ SctDocumentImportResult SctDocumentImporter::import(
             const auto kind = entry.kind == SctFooterEntryKind::SctString
                 ? SctTextKind::SctString
                 : SctTextKind::PlainString;
-            SctDocumentFooterEntry converted{id, kind, SctOpaqueText{entry.rawBytes}};
+            SctDocumentSupplementaryText converted{id, kind, SctOpaqueText{entry.rawBytes}};
             auto textDecision = decideTextImport(
                 entry.rawBytes, kind, SctTextStorage::Footer, options);
             const bool semanticText = textDecision.semanticValue.has_value();
@@ -1203,7 +1203,7 @@ SctDocumentImportResult SctDocumentImporter::import(
                 std::move(textDecision.reason)});
             const auto local = entry.payloadOffset - footer->payloadStartOffset;
             if (ledger.claim(local, entry.rawBytes.size())) {
-                document.footerEntries.push_back(std::move(converted));
+                document.supplementaryText.push_back(std::move(converted));
                 addSemanticEntityEnvelopeAndLeaf(sourceRecords, dataStart + entry.payloadOffset,
                     static_cast<std::uint32_t>(entry.rawBytes.size()), SctSourceSpanRole::FooterEntry,
                     SctDocumentEntityId{id}, std::nullopt, std::nullopt, SctSourceRegion::Footer);

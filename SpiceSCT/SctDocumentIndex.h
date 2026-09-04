@@ -31,7 +31,7 @@ public:
     [[nodiscard]] const SctDocumentSection* find(const SctDocument& document, SctSectionId id) const noexcept;
     [[nodiscard]] const SctDocumentInstruction* find(const SctDocument& document, SctInstructionId id) const noexcept;
     [[nodiscard]] const SctDocumentString* find(const SctDocument& document, SctStringId id) const noexcept;
-    [[nodiscard]] const SctDocumentFooterEntry* find(const SctDocument& document, SctFooterEntryId id) const noexcept;
+    [[nodiscard]] const SctDocumentSupplementaryText* find(const SctDocument& document, SctSupplementaryTextId id) const noexcept;
     [[nodiscard]] const SctOpaqueAttachment* find(const SctDocument& document, SctOpaqueAttachmentId id) const noexcept;
 
     [[nodiscard]] std::optional<std::size_t> sectionOrdinal(SctSectionId id) const noexcept;
@@ -40,7 +40,7 @@ public:
     [[nodiscard]] const SctDocumentSection* owningSection(
         const SctDocument& document, SctInstructionId id) const noexcept;
     [[nodiscard]] std::optional<SctStringDocumentLocation> stringLocation(SctStringId id) const noexcept;
-    [[nodiscard]] std::optional<std::size_t> footerEntryOrdinal(SctFooterEntryId id) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> supplementaryTextOrdinal(SctSupplementaryTextId id) const noexcept;
     [[nodiscard]] std::optional<std::size_t> opaqueAttachmentOrdinal(
         SctOpaqueAttachmentId id) const noexcept;
 
@@ -50,7 +50,7 @@ private:
     std::unordered_map<std::uint64_t, std::size_t> sectionOrdinals_;
     std::unordered_map<std::uint64_t, SctInstructionDocumentLocation> instructionLocations_;
     std::unordered_map<std::uint64_t, SctStringDocumentLocation> stringLocations_;
-    std::unordered_map<std::uint64_t, std::size_t> footerEntryOrdinals_;
+    std::unordered_map<std::uint64_t, std::size_t> supplementaryTextOrdinals_;
     std::unordered_map<std::uint64_t, std::size_t> attachmentOrdinals_;
     std::vector<std::pair<SctOpaqueAttachmentId, SctOpaqueAnchor>> attachmentOrder_;
 };

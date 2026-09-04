@@ -142,8 +142,8 @@ TEST(SctSemanticText, EncodingsDecodeStrictTextAndPreserveEmptyIndexedRecords) {
 
 TEST(SctSemanticText, TargetValidationAcceptsPlatformIndependentEncodingsAndRejectsLiteralCommands) {
     SctDocument document;
-    const auto footerId = document.allocateFooterEntryId();
-    document.footerEntries.push_back({footerId, SctTextKind::SctString, messageWithText("literal \\c")});
+    const auto footerId = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({footerId, SctTextKind::SctString, messageWithText("literal \\c")});
     EXPECT_TRUE(SctDocumentValidator::validateDocument(document).validDocument);
     const auto invalidLiteral = SctDocumentValidator::validateForTarget(document,
         SctPlatform::GameCube, kSctShiftJisByte7FEncoding);
@@ -151,7 +151,7 @@ TEST(SctSemanticText, TargetValidationAcceptsPlatformIndependentEncodingsAndReje
     EXPECT_TRUE(std::any_of(invalidLiteral.diagnostics.begin(), invalidLiteral.diagnostics.end(),
         [](const auto& item) { return item.code == SctDiagnosticCode::EncodingUnsupported; }));
 
-    document.footerEntries.front().value = messageWithText("safe");
+    document.supplementaryText.front().value = messageWithText("safe");
     constexpr std::array encodings{
         kSctShiftJisByte7FEncoding,
         kSctShiftJis8140Encoding,
@@ -224,11 +224,11 @@ TEST(SctSemanticText, PCommandPreservesEmptyAndArbitraryByteLists) {
 
 TEST(SctSemanticText, StructuralDiagnosticsLocateHeaderAndBodyElements) {
     SctDocument document;
-    const auto id = document.allocateFooterEntryId();
+    const auto id = document.allocateSupplementaryTextId();
     SctMessage invalid;
     invalid.headerUtf8 = "bad\rheader";
     invalid.body.elements = {SctTextChunk{"left"}, SctTextChunk{"right"}};
-    document.footerEntries.push_back({id, SctTextKind::SctString, std::move(invalid)});
+    document.supplementaryText.push_back({id, SctTextKind::SctString, std::move(invalid)});
     const auto result = SctDocumentValidator::validateDocument(document);
     EXPECT_FALSE(result.validDocument);
     EXPECT_TRUE(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& item) {
@@ -246,8 +246,8 @@ TEST(SctSemanticText, StructuralDiagnosticsLocateHeaderAndBodyElements) {
 
 TEST(SctSemanticText, SemanticMessagesCanExportAcrossCompatiblePlatforms) {
     SctDocument document;
-    const auto id = document.allocateFooterEntryId();
-    document.footerEntries.push_back({id, SctTextKind::SctString, messageWithText("Cross platform")});
+    const auto id = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back({id, SctTextKind::SctString, messageWithText("Cross platform")});
     SctDocumentExportOptions options{SctPlatform::Dreamcast, kSctShiftJisByte7FEncoding,
         SctDocumentOutputByteOrder::LittleEndian};
     const auto exported = SctDocumentExporter::exportDocument(document, options);
@@ -263,9 +263,9 @@ TEST(SctSemanticText, SemanticMessagesCanExportAcrossCompatiblePlatforms) {
 
 TEST(SctSemanticText, OpaqueTextExportsAcrossPlatformAndEncodingWithoutTranscoding) {
     SctDocument document;
-    const auto id = document.allocateFooterEntryId();
+    const auto id = document.allocateSupplementaryTextId();
     const std::vector<std::uint8_t> raw{0x81u, 0u};
-    document.footerEntries.push_back({id, SctTextKind::SctString, SctOpaqueText{raw}});
+    document.supplementaryText.push_back({id, SctTextKind::SctString, SctOpaqueText{raw}});
 
     SctDocumentExportOptions options{SctPlatform::Dreamcast, kSctWindows1252Byte7FEncoding,
         SctDocumentOutputByteOrder::LittleEndian};
@@ -365,9 +365,9 @@ TEST(SctSemanticText, ConservativeFooterImportPreservesConflictingInterpretation
         const auto imported = SctDocumentImporter::import(parsed,
             {{SctPlatform::Dreamcast}, kSctWindows1252Byte7FEncoding});
         ASSERT_TRUE(imported.document.has_value());
-        ASSERT_EQ(imported.document->footerEntries.size(), 1u);
+        ASSERT_EQ(imported.document->supplementaryText.size(), 1u);
         const auto* opaque = std::get_if<SctOpaqueText>(
-            &imported.document->footerEntries.front().value);
+            &imported.document->supplementaryText.front().value);
         ASSERT_NE(opaque, nullptr);
         EXPECT_EQ(opaque->bytes, (std::vector<std::uint8_t>{0x82u, 0xa0u, 0u}));
         ASSERT_EQ(imported.context.receipt().text.size(), 1u);
@@ -385,7 +385,7 @@ TEST(SctSemanticText, ConservativeFooterImportPreservesConflictingInterpretation
             != observation.viableAlternativeConventions.end());
 
         const auto inspected = SctTextInspectionService::inspectKnownConventions(
-            *opaque, imported.document->footerEntries.front().kind,
+            *opaque, imported.document->supplementaryText.front().kind,
             SctTextStorage::Footer);
         EXPECT_EQ(inspected.bytes, opaque->bytes);
         EXPECT_TRUE(inspected.ambiguous);
@@ -401,9 +401,9 @@ TEST(SctSemanticText, ExplicitFooterTrustPromotesSelectedInterpretationAndChange
     trustedOptions.footerTextPromotion = SctFooterTextPromotionPolicy::TrustSelectedEncoding;
     const auto trusted = SctDocumentImporter::import(parsed, trustedOptions);
     ASSERT_TRUE(trusted.document.has_value());
-    ASSERT_EQ(trusted.document->footerEntries.size(), 1u);
+    ASSERT_EQ(trusted.document->supplementaryText.size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctMessage>(
-        trusted.document->footerEntries.front().value));
+        trusted.document->supplementaryText.front().value));
     ASSERT_EQ(trusted.context.receipt().text.size(), 1u);
     EXPECT_EQ(trusted.context.receipt().text.front().disposition,
         SctTextImportDisposition::Semantic);
@@ -420,9 +420,9 @@ TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFa
         parsedFooterText({'P', 'A', 'T', 'H', 0u}, SctFooterEntryKind::String),
         {{SctPlatform::GameCube}, kSctWindows1252Byte7FEncoding});
     ASSERT_TRUE(ascii.document.has_value());
-    ASSERT_EQ(ascii.document->footerEntries.size(), 1u);
+    ASSERT_EQ(ascii.document->supplementaryText.size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctPlainText>(
-        ascii.document->footerEntries.front().value));
+        ascii.document->supplementaryText.front().value));
     ASSERT_EQ(ascii.context.receipt().text.size(), 1u);
     EXPECT_EQ(ascii.context.receipt().text.front().disposition,
         SctTextImportDisposition::Semantic);
@@ -431,9 +431,9 @@ TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFa
         parsedFooterText({0x81u, 0u}, SctFooterEntryKind::String),
         {{SctPlatform::GameCube}, kSctWindows1252Byte7FEncoding});
     ASSERT_TRUE(failed.document.has_value());
-    ASSERT_EQ(failed.document->footerEntries.size(), 1u);
+    ASSERT_EQ(failed.document->supplementaryText.size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctOpaqueText>(
-        failed.document->footerEntries.front().value));
+        failed.document->supplementaryText.front().value));
     EXPECT_EQ(failed.context.receipt().text.front().disposition,
         SctTextImportDisposition::OpaqueDecodeFailed);
 
@@ -443,7 +443,7 @@ TEST(SctSemanticText, ConservativeFooterImportPromotesEquivalentTextAndReportsFa
         {{SctPlatform::GameCube}, kSctWindows1252Byte7FEncoding});
     ASSERT_TRUE(malformed.document.has_value());
     EXPECT_TRUE(std::holds_alternative<SctOpaqueText>(
-        malformed.document->footerEntries.front().value));
+        malformed.document->supplementaryText.front().value));
     EXPECT_EQ(malformed.context.receipt().text.front().disposition,
         SctTextImportDisposition::OpaqueDecodeFailed);
 }

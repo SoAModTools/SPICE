@@ -152,7 +152,7 @@ SctOpcodeEffectUsability parameterUsability(const SctDocumentInstruction& instru
         const bool compatible = contract->textReference
             && (contract->textReference->storage == SctTextStorage::IndexedSection
                 ? std::holds_alternative<SctStringReference>(value->value)
-                : std::holds_alternative<SctFooterEntryReference>(value->value));
+                : std::holds_alternative<SctSupplementaryTextReference>(value->value));
         return compatible ? SctOpcodeEffectUsability::Usable
                           : SctOpcodeEffectUsability::IncompatibleInput;
     }
@@ -353,7 +353,7 @@ SctInstructionSemanticContribution SctInstructionSemanticAnalyzer::build(
                 result.references.push_back({site, SctDocumentReferenceTarget{value.target}});
             } else if constexpr (std::is_same_v<T, SctStringReference>) {
                 result.references.push_back({site, SctDocumentReferenceTarget{value.target}});
-            } else if constexpr (std::is_same_v<T, SctFooterEntryReference>) {
+            } else if constexpr (std::is_same_v<T, SctSupplementaryTextReference>) {
                 result.references.push_back({site, SctDocumentReferenceTarget{value.target}});
             } else if constexpr (std::is_same_v<T, SctCanonicalExpression>) {
                 recordExpression(instruction, site.parameter, value);
@@ -496,6 +496,61 @@ std::vector<SctVariableUsage> SctSemanticUsageIndex::usagesForVariable(
     result.reserve(found->second.size());
     for (const auto index : found->second) result.push_back(variableUsages_[index]);
     return result;
+}
+
+SctSupplementaryTextIndex SctSupplementaryTextIndex::build(
+    const SctDocument& document) {
+    const auto usage = SctSemanticUsageIndex::build(document);
+    return buildFromUsage(document, usage);
+}
+
+SctSupplementaryTextIndex SctSupplementaryTextIndex::buildFromUsage(
+    const SctDocument& document, const SctSemanticUsageIndex& usage) {
+    SctSupplementaryTextIndex result;
+    result.associations_.reserve(document.supplementaryText.size());
+    for (const auto& text : document.supplementaryText) {
+        result.associationIndex_.emplace(text.id, result.associations_.size());
+        result.associations_.push_back({text.id});
+    }
+
+    for (const auto& reference : usage.referenceUsages()) {
+        const auto* target = std::get_if<SctSupplementaryTextId>(&reference.target);
+        if (target == nullptr) continue;
+        result.siteTargets_.emplace(reference.source, *target);
+        const auto found = result.associationIndex_.find(*target);
+        if (found != result.associationIndex_.end()) {
+            result.associations_[found->second].uses.push_back(reference.source);
+        }
+    }
+
+    for (auto& association : result.associations_) {
+        association.useKind = association.uses.empty()
+            ? SctSupplementaryTextUseKind::Unreferenced
+            : association.uses.size() == 1u
+                ? SctSupplementaryTextUseKind::Unique
+                : SctSupplementaryTextUseKind::Shared;
+    }
+    return result;
+}
+
+const SctSupplementaryTextAssociation* SctSupplementaryTextIndex::find(
+    SctSupplementaryTextId text) const noexcept {
+    const auto found = associationIndex_.find(text);
+    return found == associationIndex_.end() ? nullptr : &associations_[found->second];
+}
+
+std::optional<SctSupplementaryTextId> SctSupplementaryTextIndex::targetFor(
+    const SctParameterSite& site) const noexcept {
+    const auto found = siteTargets_.find(site);
+    return found == siteTargets_.end()
+        ? std::nullopt : std::optional<SctSupplementaryTextId>{found->second};
+}
+
+const SctDocumentSupplementaryText* SctSupplementaryTextIndex::resolve(
+    const SctDocument& document, const SctDocumentIndex& entities,
+    const SctParameterSite& site) const noexcept {
+    const auto target = targetFor(site);
+    return target.has_value() ? entities.find(document, *target) : nullptr;
 }
 
 SctOpaqueContextIndex SctOpaqueContextIndex::build(const SctDocument& document,
@@ -744,6 +799,8 @@ SctDocumentAnalysis SctDocumentAnalysis::build(const SctDocument& document,
         document, result.entities, evidence);
     const auto contributions = semanticContributions(document);
     result.usage = SctSemanticUsageIndex::build(contributions);
+    result.supplementaryText = SctSupplementaryTextIndex::buildFromUsage(
+        document, result.usage);
     result.opaqueContext = SctOpaqueContextIndex::build(document, evidence, result.controlFlow);
     result.structuredControlFlow = SctStructuredControlFlowAnalysis::buildFromIndexes(
         document, result.controlFlow, result.opaqueContext, execution);

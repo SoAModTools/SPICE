@@ -14,8 +14,8 @@ struct SctSectionFactoryResult {
     std::vector<SctDocumentDiagnostic> diagnostics;
 };
 
-struct SctFooterEntryFactoryResult {
-    std::optional<SctDocumentFooterEntry> entry;
+struct SctSupplementaryTextFactoryResult {
+    std::optional<SctDocumentSupplementaryText> text;
     std::vector<SctDocumentDiagnostic> diagnostics;
 };
 
@@ -41,7 +41,7 @@ public:
     [[nodiscard]] static SctSectionFactoryResult createOpaqueSection(
         SctDocument& document, std::string nameBytes,
         SctOpaqueSectionAttachmentRequest attachment);
-    [[nodiscard]] static SctFooterEntryFactoryResult createFooterEntry(
+    [[nodiscard]] static SctSupplementaryTextFactoryResult createSupplementaryText(
         SctDocument& document, SctTextKind kind, SctTextValue value);
 };
 

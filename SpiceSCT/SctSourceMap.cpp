@@ -21,7 +21,7 @@ bool sameEntity(const std::optional<SctImportedSourceTarget>& candidate,
 bool isSemanticAdjacencyEntity(const SctDocumentEntityId& entity) {
     return std::holds_alternative<SctInstructionId>(entity)
         || std::holds_alternative<SctStringId>(entity)
-        || std::holds_alternative<SctFooterEntryId>(entity);
+        || std::holds_alternative<SctSupplementaryTextId>(entity);
 }
 
 bool contains(SctImportedByteSpan outer, SctImportedByteSpan inner) {

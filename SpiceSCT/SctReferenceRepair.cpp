@@ -38,7 +38,7 @@ std::optional<SctExpectedReferenceTarget> expectedTarget(
         return SctExpectedReferenceTarget{
             rule->storage == SctTextStorage::IndexedSection
                 ? SctReferenceTargetStorage::IndexedString
-                : SctReferenceTargetStorage::FooterEntry,
+                : SctReferenceTargetStorage::SupplementaryText,
             rule->kind};
     }
     return std::nullopt;
@@ -63,9 +63,9 @@ bool targetMatches(const SctDocument& document, const SctDocumentIndex& index,
         const auto* string = id == nullptr ? nullptr : index.find(document, *id);
         return string != nullptr && string->kind == *expected.textKind;
     }
-    const auto* id = std::get_if<SctFooterEntryId>(&target);
-    const auto* footer = id == nullptr ? nullptr : index.find(document, *id);
-    return footer != nullptr && footer->kind == *expected.textKind;
+    const auto* id = std::get_if<SctSupplementaryTextId>(&target);
+    const auto* text = id == nullptr ? nullptr : index.find(document, *id);
+    return text != nullptr && text->kind == *expected.textKind;
 }
 
 SctDocumentParameterValue typedValue(const SctDocumentReferenceTarget& target) {
@@ -73,7 +73,7 @@ SctDocumentParameterValue typedValue(const SctDocumentReferenceTarget& target) {
         using T = std::decay_t<decltype(id)>;
         if constexpr (std::is_same_v<T, SctInstructionId>) return SctInstructionReference{id};
         else if constexpr (std::is_same_v<T, SctStringId>) return SctStringReference{id};
-        else return SctFooterEntryReference{id};
+        else return SctSupplementaryTextReference{id};
     }, target);
 }
 
@@ -122,8 +122,8 @@ SctReferenceRepairAnalysis SctReferenceRepair::analyze(
                                 if (issue.expectedTarget.storage == SctReferenceTargetStorage::Instruction) {
                                     if (const auto* id = std::get_if<SctInstructionId>(entity);
                                         id != nullptr && index.find(document, *id) != nullptr) addCandidate(issue.candidates, *id);
-                                } else if (issue.expectedTarget.storage == SctReferenceTargetStorage::FooterEntry) {
-                                    if (const auto* id = std::get_if<SctFooterEntryId>(entity);
+                                } else if (issue.expectedTarget.storage == SctReferenceTargetStorage::SupplementaryText) {
+                                    if (const auto* id = std::get_if<SctSupplementaryTextId>(entity);
                                         id != nullptr && targetMatches(document, index, issue.expectedTarget, *id)) {
                                         addCandidate(issue.candidates, *id);
                                     }

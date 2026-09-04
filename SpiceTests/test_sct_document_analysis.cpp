@@ -205,7 +205,7 @@ SctDocument semanticCompositionDocument() {
     const auto secondRichId = document.allocateInstructionId();
     const auto targetId = document.allocateInstructionId();
     const auto stringId = document.allocateStringId();
-    const auto footerId = document.allocateFooterEntryId();
+    const auto footerId = document.allocateSupplementaryTextId();
 
     auto rich = instruction(richId, 100u);
     rich.scheduledExpression = SctCanonicalExpression{SctOpaqueExpression{{0x17u, 0x1du}},
@@ -214,21 +214,21 @@ SctDocument semanticCompositionDocument() {
         parameter(0u, variableExpression()),
         parameter(1u, SctInstructionReference{targetId}),
         parameter(2u, SctStringReference{stringId}),
-        parameter(3u, SctFooterEntryReference{footerId}),
+        parameter(3u, SctSupplementaryTextReference{footerId}),
         parameter(4u, SctUnresolvedReferenceValue{{SctReferenceTargetStorage::Instruction,
             std::nullopt}, {4u}}),
         parameter(5u, SctOpaqueParameterValue{{1u, 2u}}),
     };
 
     auto loadMld = instruction(loadMldId, 23u);
-    loadMld.fixedParameters = {parameter(0u, SctFooterEntryReference{footerId})};
+    loadMld.fixedParameters = {parameter(0u, SctSupplementaryTextReference{footerId})};
 
     auto ground = instruction(groundId, 114u);
     ground.fixedParameters = {parameter(0u, SctExpressionFactory::oneWordValue(
         SctExpressionOneWordValue::Value7F7FFFFF))};
 
     auto loadScript = instruction(loadScriptId, 43u);
-    loadScript.fixedParameters = {parameter(0u, SctFooterEntryReference{footerId})};
+    loadScript.fixedParameters = {parameter(0u, SctSupplementaryTextReference{footerId})};
 
     auto secondRich = instruction(secondRichId, 100u);
     secondRich.fixedParameters = {parameter(0u, variableExpression())};
@@ -466,7 +466,7 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
     const auto sourceId = document.allocateInstructionId();
     const auto targetId = document.allocateInstructionId();
     const auto stringId = document.allocateStringId();
-    const auto footerId = document.allocateFooterEntryId();
+    const auto footerId = document.allocateSupplementaryTextId();
 
     auto source = instruction(sourceId, 100u);
     source.scheduledExpression = SctCanonicalExpression{SctOpaqueExpression{{0x17u, 0x1du}},
@@ -475,7 +475,7 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
         parameter(0u, variableExpression()),
         parameter(1u, SctInstructionReference{targetId}),
         parameter(2u, SctStringReference{stringId}),
-        parameter(3u, SctFooterEntryReference{footerId}),
+        parameter(3u, SctSupplementaryTextReference{footerId}),
         parameter(4u, SctUnresolvedReferenceValue{{SctReferenceTargetStorage::Instruction,
             std::nullopt}, {4u}}),
         parameter(5u, SctOpaqueParameterValue{{1u, 2u}}),
@@ -501,6 +501,61 @@ TEST(SctSemanticUsageIndex, RecordsSitesReferencesVariablesAndOpaqueValues) {
     ASSERT_EQ(usage.opaqueExpressions().size(), 1u);
     EXPECT_TRUE(std::holds_alternative<SctScheduledExpressionSite>(
         usage.opaqueExpressions()[0].source.owner));
+}
+
+TEST(SctSupplementaryTextIndex, ResolvesInstructionSitesAndReportsUseCardinality) {
+    SctDocument document;
+    const auto firstSection = document.allocateSectionId();
+    const auto secondSection = document.allocateSectionId();
+    const auto firstUse = document.allocateInstructionId();
+    const auto secondUse = document.allocateInstructionId();
+    const auto uniqueUse = document.allocateInstructionId();
+    const auto unreferenced = document.allocateSupplementaryTextId();
+    const auto shared = document.allocateSupplementaryTextId();
+    const auto unique = document.allocateSupplementaryTextId();
+
+    auto first = instruction(firstUse, 23u);
+    first.fixedParameters = {parameter(0u, SctSupplementaryTextReference{shared})};
+    auto second = instruction(secondUse, 43u);
+    second.fixedParameters = {parameter(0u, SctSupplementaryTextReference{shared})};
+    auto third = instruction(uniqueUse, 69u);
+    third.fixedParameters = {parameter(0u, SctSupplementaryTextReference{unique})};
+    document.sections.push_back({firstSection, "FIRST",
+        SctScriptSectionContent{{first, second}}});
+    document.sections.push_back({secondSection, "SECOND",
+        SctScriptSectionContent{{third}}});
+    document.supplementaryText = {
+        {unreferenced, SctTextKind::PlainString, SctPlainText{"unused"}},
+        {shared, SctTextKind::PlainString, SctPlainText{"shared"}},
+        {unique, SctTextKind::PlainString, SctPlainText{"unique"}},
+    };
+
+    const auto analysis = SctDocumentAnalysis::build(document);
+    const auto associations = analysis.supplementaryText.associations();
+    ASSERT_EQ(associations.size(), 3u);
+    EXPECT_EQ(associations[0].text, unreferenced);
+    EXPECT_EQ(associations[0].useKind, SctSupplementaryTextUseKind::Unreferenced);
+    EXPECT_TRUE(associations[0].uses.empty());
+    EXPECT_EQ(associations[1].text, shared);
+    EXPECT_EQ(associations[1].useKind, SctSupplementaryTextUseKind::Shared);
+    ASSERT_EQ(associations[1].uses.size(), 2u);
+    EXPECT_EQ(associations[1].uses[0], (SctParameterSite{firstUse, {0u, std::nullopt}}));
+    EXPECT_EQ(associations[1].uses[1], (SctParameterSite{secondUse, {0u, std::nullopt}}));
+    EXPECT_EQ(associations[2].text, unique);
+    EXPECT_EQ(associations[2].useKind, SctSupplementaryTextUseKind::Unique);
+
+    const SctParameterSite secondSite{secondUse, {0u, std::nullopt}};
+    EXPECT_EQ(analysis.supplementaryText.targetFor(secondSite), shared);
+    const auto* resolved = analysis.supplementaryText.resolve(
+        document, analysis.entities, secondSite);
+    ASSERT_NE(resolved, nullptr);
+    EXPECT_EQ(resolved->id, shared);
+    EXPECT_EQ(analysis.supplementaryText.resolve(document, analysis.entities,
+        {secondUse, {1u, std::nullopt}}), nullptr);
+
+    const auto standalone = SctSupplementaryTextIndex::build(document);
+    ASSERT_NE(standalone.find(shared), nullptr);
+    EXPECT_EQ(standalone.find(shared)->uses, associations[1].uses);
 }
 
 TEST(SctInstructionSemanticAnalyzer, ContributionsComposeIntoWholeDocumentIndexes) {
@@ -654,20 +709,20 @@ TEST(SctOpcodeEffectIndex, ExposesConfirmedSitesWithoutExternalResolution) {
     const auto loadMldId = document.allocateInstructionId();
     const auto loadScriptId = document.allocateInstructionId();
     const auto groundId = document.allocateInstructionId();
-    const auto mldText = document.allocateFooterEntryId();
-    const auto scriptText = document.allocateFooterEntryId();
+    const auto mldText = document.allocateSupplementaryTextId();
+    const auto scriptText = document.allocateSupplementaryTextId();
     auto loadMld = instruction(loadMldId, 23u);
-    loadMld.fixedParameters = {parameter(0u, SctFooterEntryReference{mldText})};
+    loadMld.fixedParameters = {parameter(0u, SctSupplementaryTextReference{mldText})};
     auto loadScript = instruction(loadScriptId, 43u);
-    loadScript.fixedParameters = {parameter(0u, SctFooterEntryReference{scriptText})};
+    loadScript.fixedParameters = {parameter(0u, SctSupplementaryTextReference{scriptText})};
     auto groundInstruction = instruction(groundId, 114u);
     groundInstruction.fixedParameters = {
         parameter(0u, SctExpressionFactory::encodedDecimalLiteral(1)),
         parameter(1u, SctExpressionFactory::encodedDecimalLiteral(2))};
     document.sections.push_back({sectionId, "MAIN", SctScriptSectionContent{{
         loadMld, loadScript, groundInstruction}}});
-    document.footerEntries.push_back({mldText, SctTextKind::PlainString, SctPlainText{"mld"}});
-    document.footerEntries.push_back({scriptText, SctTextKind::PlainString, SctPlainText{"script"}});
+    document.supplementaryText.push_back({mldText, SctTextKind::PlainString, SctPlainText{"mld"}});
+    document.supplementaryText.push_back({scriptText, SctTextKind::PlainString, SctPlainText{"script"}});
 
     const auto effects = SctOpcodeEffectIndex::build(document);
     ASSERT_EQ(effects.effects().size(), 3u);
@@ -1003,8 +1058,8 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
     document.sections.push_back({stringSectionId, "TEXT", SctStringSectionContent{
         SctDocumentString{stringId, message, SctTextKind::SctString}, {9u, 0x1du}}});
 
-    const auto footerId = document.allocateFooterEntryId();
-    document.footerEntries.push_back(
+    const auto footerId = document.allocateSupplementaryTextId();
+    document.supplementaryText.push_back(
         {footerId, SctTextKind::PlainString, SctPlainText{"Plain"}});
 
     const SctParameterSite fixedSite{instructionId, {0u, std::nullopt}};
@@ -1113,17 +1168,17 @@ TEST(SctImportedSiteAddressability, DistinguishesExactParentEntityAndMissingSite
         SctImportedSiteAddressability::OwningEntityOnly);
 
     auto changedPlain = document;
-    std::get<SctPlainText>(changedPlain.footerEntries[0].value).utf8 = "P";
+    std::get<SctPlainText>(changedPlain.supplementaryText[0].value).utf8 = "P";
     EXPECT_EQ(assess(changedPlain).find(plainSite)->addressability,
         SctImportedSiteAddressability::ParentSiteOnly);
-    changedPlain.footerEntries[0].value = SctOpaqueText{{'P'}};
+    changedPlain.supplementaryText[0].value = SctOpaqueText{{'P'}};
     EXPECT_EQ(assess(changedPlain).find(plainSite)->addressability,
         SctImportedSiteAddressability::OwningEntityOnly);
 
     auto removedEntities = document;
     std::get<SctScriptSectionContent>(removedEntities.sections[0].content).instructions.clear();
     removedEntities.sections.erase(removedEntities.sections.begin() + 1u);
-    removedEntities.footerEntries.clear();
+    removedEntities.supplementaryText.clear();
     const auto missing = assess(removedEntities);
     EXPECT_EQ(missing.find(fixedSite)->addressability,
         SctImportedSiteAddressability::MissingEntity);
@@ -1229,10 +1284,10 @@ TEST(SctOpcodeEffectIndex, KeepsDeclaredEffectsVisibleAcrossEveryUsabilityState)
         return SctOpcodeEffectIndex::build(document);
     };
 
-    const SctFooterEntryId target{1u};
-    const auto usable = buildEffect(SctFooterEntryReference{target});
+    const SctSupplementaryTextId target{1u};
+    const auto usable = buildEffect(SctSupplementaryTextReference{target});
     const auto unresolved = buildEffect(SctUnresolvedReferenceValue{
-        {SctReferenceTargetStorage::FooterEntry, SctTextKind::PlainString},
+        {SctReferenceTargetStorage::SupplementaryText, SctTextKind::PlainString},
         {0u}});
     const auto opaque = buildEffect(SctOpaqueParameterValue{{0u}});
     const auto missing = buildEffect(SctEncodedWordValue{}, false);
