@@ -8,7 +8,7 @@
 #include <span>
 #include <vector>
 
-namespace spice::trade::alx {
+namespace spice::trade::alx::detail {
 
 struct CsvReadResult {
     std::optional<CsvDocument> document{};
@@ -27,4 +27,4 @@ public:
     [[nodiscard]] CsvReadResult readFile(const std::filesystem::path& path) const;
 };
 
-} // namespace spice::trade::alx
+} // namespace spice::trade::alx::detail

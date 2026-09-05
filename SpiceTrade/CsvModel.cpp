@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace spice::trade::alx {
+namespace spice::trade::alx::detail {
 
 std::optional<std::size_t> CsvDocument::columnIndex(const std::string_view header) const noexcept
 {
@@ -44,4 +44,4 @@ bool hasErrors(const std::vector<CsvDiagnostic>& diagnostics) noexcept
     });
 }
 
-} // namespace spice::trade::alx
+} // namespace spice::trade::alx::detail

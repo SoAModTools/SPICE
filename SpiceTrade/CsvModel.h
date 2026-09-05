@@ -7,9 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace spice::trade::alx {
-
-inline constexpr std::string_view kCompatibilityVersion = "5.0.0";
+namespace spice::trade::alx::detail {
 
 enum class DiagnosticSeverity {
     Info,
@@ -53,4 +51,4 @@ struct CsvDocument {
 [[nodiscard]] const char* toString(CsvLineEnding lineEnding) noexcept;
 [[nodiscard]] bool hasErrors(const std::vector<CsvDiagnostic>& diagnostics) noexcept;
 
-} // namespace spice::trade::alx
+} // namespace spice::trade::alx::detail

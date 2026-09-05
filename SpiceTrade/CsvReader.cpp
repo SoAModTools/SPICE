@@ -6,7 +6,7 @@
 #include <string>
 #include <utility>
 
-namespace spice::trade::alx {
+namespace spice::trade::alx::detail {
 namespace {
 
 void addDiagnostic(
@@ -324,4 +324,4 @@ CsvReadResult CsvReader::readFile(const std::filesystem::path& path) const
     return parse(bytes, path);
 }
 
-} // namespace spice::trade::alx
+} // namespace spice::trade::alx::detail

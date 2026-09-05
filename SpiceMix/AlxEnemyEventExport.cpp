@@ -2,19 +2,16 @@
 
 #include "../SpiceTrade/SpiceTrade.h"
 
-#include <charconv>
 #include <fstream>
-#include <map>
 #include <sstream>
 #include <stdexcept>
-#include <string>
 #include <string_view>
-#include <vector>
 
 namespace spice::alx {
 namespace {
 
-std::string jsonEscape(std::string_view value) {
+std::string jsonEscape(std::string_view value)
+{
     std::ostringstream out;
     for (const unsigned char c : value) {
         switch (c) {
@@ -29,169 +26,92 @@ std::string jsonEscape(std::string_view value) {
             if (c < 0x20U) {
                 constexpr char kHex[] = "0123456789ABCDEF";
                 out << "\\u00" << kHex[(c >> 4U) & 0x0fU] << kHex[c & 0x0fU];
-            } else {
-                out << static_cast<char>(c);
-            }
-            break;
+            } else out << static_cast<char>(c);
         }
     }
     return out.str();
 }
 
-int parseInt(std::string_view value, std::string_view fieldName, int row) {
-    int parsed = 0;
-    const auto [end, error] = std::from_chars(
-        value.data(), value.data() + value.size(), parsed);
-    if (error != std::errc() || end != value.data() + value.size()) {
-        throw std::runtime_error(
-            "invalid integer in ALX row " + std::to_string(row)
-            + " field " + std::string(fieldName));
+std::string importError(const spice::trade::alx::EnemyEventImportResult& result)
+{
+    std::string message = "failed to import ALX enemy-event CSV";
+    for (const auto& item : result.diagnostics) {
+        if (item.severity == spice::trade::alx::AlxDiagnosticSeverity::Error) {
+            message += ": " + item.message;
+            break;
+        }
     }
-    return parsed;
+    return message;
 }
 
-std::size_t requireColumn(
-    const std::map<std::string, std::size_t>& columns,
-    std::string_view name) {
-    const auto found = columns.find(std::string(name));
-    if (found == columns.end()) {
-        throw std::runtime_error("missing ALX column: " + std::string(name));
-    }
-    return found->second;
-}
-
-struct CombatantColumns {
-    int slot = -1;
-    std::string side;
-    std::size_t id = 0;
-    std::size_t name = 0;
-    std::size_t x = 0;
-    std::size_t z = 0;
-    int absentId = -1;
-};
-
-std::string csvReadError(const spice::trade::alx::CsvReadResult& result) {
-    std::ostringstream message;
-    message << "failed to read ALX enemy-event CSV";
-    for (const auto& diagnostic : result.diagnostics) {
-        if (diagnostic.severity != spice::trade::alx::DiagnosticSeverity::Error) {
-            continue;
-        }
-        message << ": " << diagnostic.message;
-        if (diagnostic.row.has_value()) {
-            message << " at row " << *diagnostic.row;
-            if (diagnostic.column.has_value()) {
-                message << ", column " << *diagnostic.column;
-            }
-        }
-        break;
-    }
-    return message.str();
+std::string derived(const spice::trade::alx::AlxDerivedContext& context,
+    std::string_view identity, const std::string& column)
+{
+    const auto* cells = context.imported(identity);
+    if (!cells) return {};
+    const auto found = cells->find(column);
+    return found == cells->end() ? std::string{} : found->second;
 }
 
 } // namespace
 
 void exportEnemyEventsCsvToJson(
     const std::filesystem::path& inputCsv,
-    const std::filesystem::path& outputJson) {
-    const auto read = spice::trade::alx::CsvReader{}.readFile(inputCsv);
-    if (!read.ok()) {
-        throw std::runtime_error(csvReadError(read));
-    }
-    const auto& document = *read.document;
-    const auto& headers = document.headers;
-    std::map<std::string, std::size_t> columns;
-    for (std::size_t index = 0; index < headers.size(); ++index) {
-        columns.emplace(headers[index], index);
-    }
+    const std::filesystem::path& outputJson)
+{
+    const auto imported = spice::trade::alx::EnemyEventCsvImporter{}.importFile(inputCsv);
+    if (!imported.ok()) throw std::runtime_error(importError(imported));
 
-    std::vector<CombatantColumns> combatants;
-    for (int pc = 1; pc <= 4; ++pc) {
-        const auto prefix = "PC" + std::to_string(pc);
-        combatants.push_back(CombatantColumns{
-            .slot = pc - 1,
-            .side = "pc",
-            .id = requireColumn(columns, prefix + " ID"),
-            .name = requireColumn(columns, "[" + prefix + " Name]"),
-            .x = requireColumn(columns, prefix + " X"),
-            .z = requireColumn(columns, prefix + " Z"),
-            .absentId = -1,
-        });
-    }
-    for (int enemy = 1; enemy <= 7; ++enemy) {
-        const auto prefix = "EC" + std::to_string(enemy);
-        combatants.push_back(CombatantColumns{
-            .slot = enemy + 3,
-            .side = "enemy",
-            .id = requireColumn(columns, prefix + " ID"),
-            .name = requireColumn(columns, "[" + prefix + " US Name]"),
-            .x = requireColumn(columns, prefix + " X"),
-            .z = requireColumn(columns, prefix + " Z"),
-            .absentId = 255,
-        });
-    }
-
-    const auto entryIdColumn = requireColumn(columns, "Entry ID");
-    const auto magicExpColumn = requireColumn(columns, "Magic EXP");
-    const auto initiativeColumn = requireColumn(columns, "Initiative");
-    const auto defeatColumn = requireColumn(columns, "Defeat Cond ID");
-    const auto escapeColumn = requireColumn(columns, "Escape Cond ID");
-    const auto bgmColumn = requireColumn(columns, "BGM ID");
-
-    if (outputJson.has_parent_path()) {
-        std::filesystem::create_directories(outputJson.parent_path());
-    }
+    if (outputJson.has_parent_path()) std::filesystem::create_directories(outputJson.parent_path());
     std::ofstream output(outputJson, std::ios::binary | std::ios::trunc);
-    if (!output) {
-        throw std::runtime_error("failed to open ALX JSON output: " + outputJson.string());
-    }
+    if (!output) throw std::runtime_error("failed to open ALX JSON output: " + outputJson.string());
 
-    output << "{\n"
-           << "  \"schema\": \"spice_alx_enemy_events_v1\",\n"
+    output << "{\n  \"schema\": \"spice_alx_enemy_events_v1\",\n"
            << "  \"sourceFile\": \"" << jsonEscape(inputCsv.generic_string()) << "\",\n"
            << "  \"events\": [\n";
-
     bool firstEvent = true;
-    int row = 1;
-    for (const auto& fields : document.rows) {
-        ++row;
-        if (!firstEvent) {
-            output << ",\n";
-        }
+    const auto locale = imported.metadata->locale;
+    for (const auto& event : imported.table->records()) {
+        if (!firstEvent) output << ",\n";
         firstEvent = false;
-
+        const auto identity = spice::trade::alx::canonicalIdentity(event.id());
+        const auto& fields = event.fields();
         output << "    {\n"
-               << "      \"entryId\": " << parseInt(fields[entryIdColumn], "Entry ID", row) << ",\n"
-               << "      \"magicExp\": " << parseInt(fields[magicExpColumn], "Magic EXP", row) << ",\n"
-               << "      \"initiative\": " << parseInt(fields[initiativeColumn], "Initiative", row) << ",\n"
-               << "      \"defeatConditionId\": " << parseInt(fields[defeatColumn], "Defeat Cond ID", row) << ",\n"
-               << "      \"escapeConditionId\": " << parseInt(fields[escapeColumn], "Escape Cond ID", row) << ",\n"
-               << "      \"bgmId\": " << parseInt(fields[bgmColumn], "BGM ID", row) << ",\n"
+               << "      \"entryId\": " << event.id().value << ",\n"
+               << "      \"magicExp\": " << static_cast<int>(fields.magicExperience) << ",\n"
+               << "      \"initiative\": " << static_cast<int>(fields.initiative) << ",\n"
+               << "      \"defeatConditionId\": " << static_cast<int>(fields.defeatConditionId) << ",\n"
+               << "      \"escapeConditionId\": " << static_cast<int>(fields.escapeConditionId) << ",\n"
+               << "      \"bgmId\": " << (fields.bgmId ? std::to_string(*fields.bgmId) : "-1") << ",\n"
                << "      \"combatants\": [\n";
-
-        for (std::size_t index = 0; index < combatants.size(); ++index) {
-            const auto& columnsForCombatant = combatants[index];
-            const int id = parseInt(fields[columnsForCombatant.id], "combatant ID", row);
-            const bool present = id != columnsForCombatant.absentId;
-            output << "        {\"slot\": " << columnsForCombatant.slot
-                   << ", \"side\": \"" << columnsForCombatant.side
-                   << "\", \"id\": " << id
-                   << ", \"name\": \"" << jsonEscape(fields[columnsForCombatant.name])
-                   << "\", \"gridX\": " << parseInt(fields[columnsForCombatant.x], "combatant X", row)
-                   << ", \"gridZ\": " << parseInt(fields[columnsForCombatant.z], "combatant Z", row)
-                   << ", \"present\": " << (present ? "true" : "false") << "}";
-            if (index + 1 < combatants.size()) {
-                output << ',';
-            }
+        for (std::size_t i = 0; i < fields.players.size(); ++i) {
+            const auto& player = fields.players[i];
+            const auto id = player.character ? static_cast<int>(player.character->value) : -1;
+            output << "        {\"slot\": " << i << ", \"side\": \"pc\", \"id\": " << id
+                   << ", \"name\": \"" << jsonEscape(derived(imported.derivedContext, identity,
+                        "[PC" + std::to_string(i + 1) + " Name]"))
+                   << "\", \"gridX\": " << static_cast<int>(player.x)
+                   << ", \"gridZ\": " << static_cast<int>(player.z)
+                   << ", \"present\": " << (player.character ? "true" : "false") << "},\n";
+        }
+        for (std::size_t i = 0; i < fields.enemies.size(); ++i) {
+            const auto& enemy = fields.enemies[i];
+            const auto id = enemy.enemy ? static_cast<int>(enemy.enemy->value) : 255;
+            std::string column = "[EC" + std::to_string(i + 1) + " JP Name]";
+            if (locale != spice::trade::alx::AlxLocale::Japanese) column = "[EC" + std::to_string(i + 1)
+                + (locale == spice::trade::alx::AlxLocale::UnitedStates ? " US Name]" : " EU Name]");
+            output << "        {\"slot\": " << i + 4 << ", \"side\": \"enemy\", \"id\": " << id
+                   << ", \"name\": \"" << jsonEscape(derived(imported.derivedContext, identity, column))
+                   << "\", \"gridX\": " << static_cast<int>(enemy.x)
+                   << ", \"gridZ\": " << static_cast<int>(enemy.z)
+                   << ", \"present\": " << (enemy.enemy ? "true" : "false") << "}";
+            if (i + 1 < fields.enemies.size()) output << ',';
             output << '\n';
         }
-        output << "      ]\n"
-               << "    }";
+        output << "      ]\n    }";
     }
     output << "\n  ]\n}\n";
-    if (!output.good()) {
-        throw std::runtime_error("failed while writing ALX JSON output: " + outputJson.string());
-    }
+    if (!output.good()) throw std::runtime_error("failed while writing ALX JSON output: " + outputJson.string());
 }
 
 } // namespace spice::alx
