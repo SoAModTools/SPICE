@@ -2,6 +2,8 @@
 
 ## Current Support
 
+**Capability:** Paired import, in-memory mutation, validation, analysis, and secondary projection or materialization are supported. Complete SST/SML pair writing is not supported.
+
 SPICE reads little-endian raw Dreamcast and big-endian raw or AKLZ-wrapped GameCube SML/SST stage pairs. Byte order is selected from structural candidates or can be forced for corpus research; paired members must agree. Embedded SML payloads are imported as canonical `MldDocument` values when structurally valid and otherwise retained as explicit opaque resources. SST command payloads use canonical typed generic fields, specialized type-0 placement and type-1 lighting entities, and offset-addressed opaque fragments rather than duplicate full payload buffers. Sentinels, raw record words, alignment, and post-command tail bytes are retained.
 
 The current model also identifies the first block’s 9x9 battle-grid source when enough tail data is present. Known command types can be summarized semantically without requiring the parser to reproduce their runtime objects.
@@ -22,4 +24,4 @@ Command payload field names remain incomplete and several meanings depend on the
 
 Editing and repacking require care because SML payload offsets, SST block offsets, payload spans, alignment, and tail boundaries are interdependent. Unknown command fields and tail bytes must remain unchanged unless their ownership is established.
 
-The SpiceRack workbench intentionally does not edit or save the paired stage container in this slice. Secondary extraction, research JSON, stage annotation, and combined Blender IR remain supported over the canonical document. A malformed embedded MLD becomes an opaque record-local resource without rejecting an otherwise structurally valid pair; structural SST/SML parse failures reject the document.
+The SpiceRack workbench intentionally does not edit or save the paired stage container in this slice. Command-payload materialization, embedded-resource materialization, secondary extraction, research JSON, stage annotation, and combined Blender IR do not constitute SST/SML pair persistence. A malformed embedded MLD becomes an opaque record-local resource without rejecting an otherwise structurally valid pair; structural SST/SML parse failures reject the document.

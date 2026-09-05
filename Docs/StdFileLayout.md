@@ -56,6 +56,8 @@ PUTMODEL, MOVE MODEL, and HIT WEAPON each own a fixed 64-entry deterministic mod
 
 PUTMODEL and MOVE MODEL expose their encoded MLD resource identities without resolving external files. Their model flags, frame windows, transforms, scale changes, texture selectors, motion-frame deltas, and model timelines are typed and endian-portable. MOVE MODEL additionally exposes its condition flags and alternate-child parameters. Runtime normalization of invalid source frame windows is not written back into the document.
 
+MOVE MODEL condition bits `0x1000` and `0x8000` are structurally supported by the inspected reader but were absent from the surveyed corpus. They remain valid and representable; corpus absence does not produce a structural validation warning or an invented legality rule.
+
 PUTMODEL bytes +0x192..+0x193 are an established raw byte pair. They are copied in physical order and are never byte-swapped. Unlike an opaque payload, this fixed-width field has a known cross-platform writing rule and does not require a receipt.
 
 MOTION PAUSE exposes its pause flags and start/end frames. Bit `0x8000` selects the established latching state-request path. The game adds common command flag `0x2000` only to a runtime copy; SpiceStd preserves the serialized command flags and never synthesizes that bit.
@@ -69,6 +71,8 @@ The shared model-flag helpers expose only reader-established behavior: low-nibbl
 System Camera stores a bit-exact f32 mode parameter at +0x14; +0x18 is a signed start frame and +0x1A is a separate reserved u16. No fixed-point conversion applies.
 
 Reserved fixed-position byte arrays, PUTMODEL's raw tail, and unknown bits in established numeric flag words remain editable and endian-portable under their documented physical rules. Recognized fixed-size payload alignment is checked and warned about, but not rejected because the inspected loaders do not enforce it.
+
+Names ending in `Raw` mark semantics that remain unresolved at the current evidence level. These fields retain their established numeric width, signedness, and byte-order behavior and are not opaque byte content. For example, `waitValueRaw` remains a signed endian-aware value without a speculative convenience interpretation.
 
 ## Opaque Preservation
 

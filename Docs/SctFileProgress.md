@@ -2,6 +2,8 @@
 
 ## Current Support
 
+**Capability:** Import, in-memory editing, validation, and canonical or preserving whole-file export are supported.
+
 SPICE reads raw and AKLZ-wrapped SCT files in either byte order. It models the header, named section index, script instructions, label and string data, SCPT expressions, scheduled and skip-refresh prefixes, cross-section control flow, and referenced footer strings. Unknown section bytes and footer regions are retained so partially understood scripts remain inspectable.
 
 Canonical export rebuilds section offsets and known instruction references from the parsed representation. A preserving path is also available when exact original bytes are required.

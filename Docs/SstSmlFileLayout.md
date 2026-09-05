@@ -10,6 +10,8 @@ The importer automatically recognizes raw and AKLZ-wrapped inputs and structural
 
 `SstSmlDocumentValidator` checks intrinsic document identities, member shape, command payload ownership, typed field projections, sentinels, body ownership, and keyed embedded-MLD receipts when one is supplied. A valid document reports `Valid` readiness; this is structural validity, not a promise that an SST/SML pair writer exists.
 
+Command-payload and embedded-resource materialization serialize only those bounded secondary artifacts. They are not an SST/SML container writer and cannot persist arbitrary edits to the paired document.
+
 ## Canonical document
 
 `SstSmlDocument` owns the stage ID, paired header sentinels, ordered stage members, and independent SML and SST body layouts. Every stage member owns one SML record and one same-index SST record. IDs are typed, nonzero, unique within their entity category, and stable while the document is edited in memory; repeated imports and cross-document correspondence are consumer concerns.
@@ -19,6 +21,10 @@ Each SML record owns its encoded resource index metadata, reserved word, and one
 Each SST record owns its encoded record index, later-record metadata where applicable, and one command block. A command block owns command records, logical sentinel fields, an optional identified 9x9 terrain entity, and an optional identified opaque tail. Each supported command owns typed generic fields, canonical specialized placement or lighting entities where applicable, and offset-addressed opaque fragments for every uncovered payload byte. It does not retain a duplicate full payload buffer. The validator requires those semantic and opaque ranges to cover the recognized payload exactly once. Unknown command payload boundaries are not guessed; undecoded remaining bytes stay in the explicit opaque block tail.
 
 The document contains no source path, source platform, compression flag, byte order, decoded offsets, hashes, diagnostics, evidence labels, histograms, or runtime context.
+
+SST/SML v1 floating-point members are semantic binary32 values stored as native C++ `float`. The document does not promise bit-exact preservation of the original serialized representation, including NaN payload bits. If future paired-file persistence requires that guarantee, the float representation must first move to a bit-preserving form through a coordinated hard cut.
+
+Raw-named numeric fields retain the width, signedness, and byte-order behavior established by the file structure while intentionally making no stronger semantic claim. They are not equivalent to opaque byte fragments, and v1 adds no speculative convenience meanings for them.
 
 ## Analysis and secondary projections
 

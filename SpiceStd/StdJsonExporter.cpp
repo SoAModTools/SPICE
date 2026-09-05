@@ -482,7 +482,8 @@ void writeDocument(std::ostringstream& out, const StdDocument& document) {
 
 std::string StdJsonExporter::toJson(const StdDocumentImportResult& imported) const {
     std::ostringstream out;
-    out << "{\n  \"schema\": \"spice_std_document_v5\",\n  \"ok\": " << (imported.ok() ? "true" : "false")
+    out << "{\n  \"schema\": \"spice_std_json_export\",\n  \"schemaVersion\": 5,\n  \"ok\": "
+        << (imported.ok() ? "true" : "false")
         << ",\n  \"receipt\": ";
     writeReceipt(out, imported.receipt);
     out << ",\n  \"diagnostics\": ";
@@ -496,7 +497,7 @@ std::string StdJsonExporter::toJson(const StdDocumentImportResult& imported) con
 
 std::string StdJsonExporter::toJson(const StdDocument& document) const {
     std::ostringstream out;
-    out << "{\n  \"schema\": \"spice_std_document_v5\",\n  \"document\": ";
+    out << "{\n  \"schema\": \"spice_std_json_export\",\n  \"schemaVersion\": 5,\n  \"document\": ";
     writeDocument(out, document);
     out << "\n}\n";
     return out.str();

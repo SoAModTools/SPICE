@@ -2,6 +2,8 @@
 
 ## Current Support
 
+**Capability:** Import, in-memory editing, and whole-file writing are supported.
+
 SPICE supports both known ECT layouts: ordinary flat encounter-table sequences and the indexed overworld form used by `A099A.ECT`. Each table exposes its stage, overall encounter rate, and 32 encounter ID/rate pairs. The overworld model also exposes entry titles and the eight tables referenced by each index row.
 
 Dreamcast raw little-endian input and GameCube AKLZ-wrapped big-endian input are converted to the same editable encounter model. Files can be written back to either platform, with platform byte order, outer compression, index offsets, and fixed container values rebuilt as needed.
