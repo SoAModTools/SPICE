@@ -80,11 +80,6 @@ struct ParseMldRequest {
     bool extractGrndGobjBlocks = false;
 };
 
-struct CompareMldSa3dRequest {
-    DirectoryPaths paths{};
-    bool extractGrndGobjBlocks = false;
-};
-
 struct ExportMldEntryListRequest {
     DirectoryPaths paths{};
 };
@@ -239,7 +234,6 @@ struct DecompressAklzRequest {
 
 using OperationRequest = std::variant<
     ParseMldRequest,
-    CompareMldSa3dRequest,
     ExportMldEntryListRequest,
     InventoryMldGvrFormatsRequest,
     ReplaceMldTextureRequest,

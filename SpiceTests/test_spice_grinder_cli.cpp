@@ -70,7 +70,6 @@ TEST(SpiceGrinderCli, NoArgumentsAndHelpAreSuccessfulDiscoveryPaths) {
 TEST(SpiceGrinderCli, ParsesEveryFlatSubcommandToItsTypedRequest) {
     using namespace spice::mix;
     expectRequest<ParseMldRequest>({ "parse-mld", "--input", "in", "--output", "out" });
-    expectRequest<CompareMldSa3dRequest>({ "compare-mld-sa3d", "--input", "in", "--output", "out" });
     expectRequest<ExportMldEntryListRequest>({ "export-mld-entry-list", "--input", "in", "--output", "out" });
     expectRequest<InventoryMldGvrFormatsRequest>({ "inventory-mld-gvr-formats", "--input", "in", "--output", "out" });
     expectRequest<ReplaceMldTextureRequest>({ "replace-mld-texture", "--source", "a.mld", "--replacement", "a.png", "--output", "b.mld", "--texture-index", "2" });

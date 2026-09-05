@@ -31,7 +31,6 @@ std::string lowercase(std::string value) {
 std::optional<std::string> validate(const OperationRequest& request) {
     const auto outputPath = std::visit(Overloaded{
         [](const ParseMldRequest& value) { return value.paths.output; },
-        [](const CompareMldSa3dRequest& value) { return value.paths.output; },
         [](const ExportMldEntryListRequest& value) { return value.paths.output; },
         [](const InventoryMldGvrFormatsRequest& value) { return value.paths.output; },
         [](const ParseSctRequest& value) { return value.paths.output; },
@@ -45,9 +44,6 @@ std::optional<std::string> validate(const OperationRequest& request) {
 
     return std::visit(Overloaded{
         [&](const spice::mix::ParseMldRequest& value) -> std::optional<std::string> {
-            return pathIsDirectory(value.paths.input) ? std::nullopt : std::optional("input directory not found: " + value.paths.input.string());
-        },
-        [&](const spice::mix::CompareMldSa3dRequest& value) -> std::optional<std::string> {
             return pathIsDirectory(value.paths.input) ? std::nullopt : std::optional("input directory not found: " + value.paths.input.string());
         },
         [&](const spice::mix::ExportMldEntryListRequest& value) -> std::optional<std::string> {

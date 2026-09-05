@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Target Name="PublishSpiceMixSa3DReferenceRunner" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
-    <MakeDir Directories="$(OutDir)sa3d_bridge" />
-    <Exec Command="dotnet publish &quot;$(SpiceRepoRoot)tools\sa3d_ref_runner\SA3DRefRunner.csproj&quot; -c $(Configuration) -r win-x64 --self-contained false -p:PublishSingleFile=false -o &quot;$(OutDir)sa3d_bridge&quot;" />
-  </Target>
-</Project>

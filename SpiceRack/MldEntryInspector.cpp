@@ -19,23 +19,20 @@ QString hexValue(const std::uint32_t value) {
     return QString("0x%1").arg(value, 8, 16, QChar('0')).toUpper();
 }
 
-QString validityText(const bool valid) {
-    return valid ? "Valid" : "Invalid";
-}
-
 QTableWidgetItem* readOnlyItem(const QString& value) {
     auto* result = new QTableWidgetItem(value);
     result->setFlags(result->flags() & ~Qt::ItemIsEditable);
     return result;
 }
 
-QString addressValuesText(const spice::mix::MldU32ListSnapshot& list) {
+QString resourceIdValuesText(const spice::mix::MldU32ListSnapshot& list) {
     if (list.values.empty()) return "Empty";
     QStringList values{};
     values.reserve(static_cast<qsizetype>(list.values.size()));
     for (std::size_t index = 0; index < list.values.size(); ++index) {
-        values.push_back(QString("[%1] %2 (%3)")
-            .arg(index).arg(hexValue(list.values[index])).arg(list.values[index]));
+        values.push_back(list.values[index] == 0U
+            ? QString("[%1] empty").arg(index)
+            : QString("[%1] ID %2").arg(index).arg(list.values[index]));
     }
     return values.join(", ");
 }
@@ -55,10 +52,10 @@ struct MldEntryInspector::Impl {
     QLabel* placeholder = nullptr;
     QLabel* scalarDetails = nullptr;
     QTreeWidget* expandableLists = nullptr;
-    QLabel* resourceAddressesHeading = nullptr;
-    QLabel* objectAddresses = nullptr;
-    QLabel* groundAddresses = nullptr;
-    QLabel* motionAddresses = nullptr;
+    QLabel* resourceIdsHeading = nullptr;
+    QLabel* objectIds = nullptr;
+    QLabel* groundIds = nullptr;
+    QLabel* motionIds = nullptr;
     std::vector<spice::mix::MldEntryDetailSnapshot> entries{};
     std::size_t displayedTableIndex = static_cast<std::size_t>(-1);
 
@@ -69,13 +66,13 @@ struct MldEntryInspector::Impl {
         scalarDetails->hide();
         expandableLists->clear();
         expandableLists->hide();
-        resourceAddressesHeading->hide();
-        objectAddresses->clear();
-        groundAddresses->clear();
-        motionAddresses->clear();
-        objectAddresses->hide();
-        groundAddresses->hide();
-        motionAddresses->hide();
+        resourceIdsHeading->hide();
+        objectIds->clear();
+        groundIds->clear();
+        motionIds->clear();
+        objectIds->hide();
+        groundIds->hide();
+        motionIds->hide();
     }
 
     QTreeWidgetItem* addNumericGroup(const QString& name,
@@ -83,9 +80,9 @@ struct MldEntryInspector::Impl {
         const bool expanded) {
         auto* group = new QTreeWidgetItem(expandableLists);
         group->setText(0, name);
-        group->setText(1, hexValue(list.pointer));
+        group->setText(1, {});
         group->setText(2, QString::number(list.values.size()));
-        group->setText(3, validityText(list.valid));
+        group->setText(3, interpretation);
         for (std::size_t index = 0; index < list.values.size(); ++index) {
             auto* child = new QTreeWidgetItem(group);
             child->setText(0, QString("[%1]").arg(index));
@@ -101,9 +98,9 @@ struct MldEntryInspector::Impl {
         const bool expanded) {
         auto* group = new QTreeWidgetItem(expandableLists);
         group->setText(0, "Texture Names");
-        group->setText(1, hexValue(list.pointer));
+        group->setText(1, {});
         group->setText(2, QString::number(list.values.size()));
-        group->setText(3, validityText(list.valid));
+        group->setText(3, "Document values");
         for (std::size_t index = 0; index < list.values.size(); ++index) {
             auto* child = new QTreeWidgetItem(group);
             child->setText(0, QString("[%1]").arg(index));
@@ -113,14 +110,13 @@ struct MldEntryInspector::Impl {
         return group;
     }
 
-    void setAddressLabel(QLabel* label, const QString& name,
+    void setResourceIdLabel(QLabel* label, const QString& name,
         const spice::mix::MldU32ListSnapshot& list) {
         label->setText(QString(
-            "<b>%1</b> — pointer %2 — %3 values / %4 nonzero — %5<br>"
-            "<span style=\"font-family: monospace\">%6</span>")
-            .arg(name, hexValue(list.pointer))
-            .arg(list.values.size()).arg(nonzeroCount(list)).arg(validityText(list.valid))
-            .arg(addressValuesText(list).toHtmlEscaped()));
+            "<b>%1</b> — %2 slots / %3 populated<br>"
+            "<span style=\"font-family: monospace\">%4</span>")
+            .arg(name).arg(list.values.size()).arg(nonzeroCount(list))
+            .arg(resourceIdValuesText(list).toHtmlEscaped()));
         label->show();
     }
 
@@ -144,21 +140,15 @@ struct MldEntryInspector::Impl {
             "<p><b>Position:</b> (%5, %6, %7)<br>"
             "<b>Raw rotation:</b> (%8, %9, %10)<br>"
             "<b>Scale:</b> (%11, %12, %13)</p>"
-            "<p><b>Nonzero resources:</b> %14 objects, %15 ground, %16 motions<br>"
-            "<b>Ground Links pointer:</b> %17 &nbsp; <b>Param List 2 pointer:</b> %18<br>"
-            "<b>Function Parameters pointer:</b> %19<br>"
-            "<b>Object Addresses pointer:</b> %20 &nbsp; <b>Ground Addresses pointer:</b> %21<br>"
-            "<b>Motion Addresses pointer:</b> %22 &nbsp; <b>Texture Names pointer:</b> %23</p>")
+            "<p><b>Linked resources:</b> %14 objects, %15 ground, %16 motions<br>"
+            "<b>Texture-list ID:</b> %17</p>")
             .arg(entry.tableIndex).arg(entry.entryId).arg(entry.tableId)
             .arg(QString::fromStdString(entry.functionName).toHtmlEscaped())
             .arg(entry.positionX).arg(entry.positionY).arg(entry.positionZ)
             .arg(entry.rotationX).arg(entry.rotationY).arg(entry.rotationZ)
             .arg(entry.scaleX).arg(entry.scaleY).arg(entry.scaleZ)
             .arg(entry.objectCount).arg(entry.groundCount).arg(entry.motionCount)
-            .arg(hexValue(detail.groundLinks.pointer)).arg(hexValue(detail.paramList2.pointer))
-            .arg(hexValue(detail.functionParameters.pointer))
-            .arg(hexValue(detail.objectAddresses.pointer)).arg(hexValue(detail.groundAddresses.pointer))
-            .arg(hexValue(detail.motionAddresses.pointer)).arg(hexValue(detail.textureNames.pointer)));
+            .arg(entry.textureListId == 0U ? "None" : QString::number(entry.textureListId)));
         scalarDetails->show();
 
         expandableLists->clear();
@@ -168,10 +158,10 @@ struct MldEntryInspector::Impl {
         addTextureGroup(detail.textureNames, expanded[3]);
         expandableLists->show();
 
-        resourceAddressesHeading->show();
-        setAddressLabel(objectAddresses, "Object Addresses", detail.objectAddresses);
-        setAddressLabel(groundAddresses, "Ground Addresses", detail.groundAddresses);
-        setAddressLabel(motionAddresses, "Motion Addresses", detail.motionAddresses);
+        resourceIdsHeading->show();
+        setResourceIdLabel(objectIds, "Object IDs", detail.objectIds);
+        setResourceIdLabel(groundIds, "Ground IDs", detail.groundIds);
+        setResourceIdLabel(motionIds, "Motion IDs", detail.motionIds);
     }
 };
 
@@ -213,7 +203,7 @@ MldEntryInspector::MldEntryInspector(QWidget* parent)
     impl_->expandableLists = new QTreeWidget(impl_->detailBody);
     impl_->expandableLists->setObjectName("mldEntryExpandableLists");
     impl_->expandableLists->setColumnCount(4);
-    impl_->expandableLists->setHeaderLabels({ "List / slot", "Pointer / hex", "Count / decimal", "State / interpretation" });
+    impl_->expandableLists->setHeaderLabels({ "List / slot", "Hex value", "Count / decimal", "Interpretation" });
     impl_->expandableLists->setEditTriggers(QAbstractItemView::NoEditTriggers);
     impl_->expandableLists->setSelectionMode(QAbstractItemView::NoSelection);
     impl_->expandableLists->setMinimumHeight(250);
@@ -221,9 +211,9 @@ MldEntryInspector::MldEntryInspector(QWidget* parent)
     impl_->expandableLists->header()->setStretchLastSection(true);
     detailsLayout->addWidget(impl_->expandableLists);
 
-    impl_->resourceAddressesHeading = new QLabel("<h3>Resource Addresses</h3>", impl_->detailBody);
-    impl_->resourceAddressesHeading->setObjectName("mldResourceAddressesHeading");
-    detailsLayout->addWidget(impl_->resourceAddressesHeading);
+    impl_->resourceIdsHeading = new QLabel("<h3>Linked Resource IDs</h3>", impl_->detailBody);
+    impl_->resourceIdsHeading->setObjectName("mldResourceIdsHeading");
+    detailsLayout->addWidget(impl_->resourceIdsHeading);
 
     auto makeAddressLabel = [body = impl_->detailBody, detailsLayout](const char* objectName) {
         auto* label = new QLabel(body);
@@ -234,9 +224,9 @@ MldEntryInspector::MldEntryInspector(QWidget* parent)
         detailsLayout->addWidget(label);
         return label;
     };
-    impl_->objectAddresses = makeAddressLabel("mldObjectAddresses");
-    impl_->groundAddresses = makeAddressLabel("mldGroundAddresses");
-    impl_->motionAddresses = makeAddressLabel("mldMotionAddresses");
+    impl_->objectIds = makeAddressLabel("mldObjectIds");
+    impl_->groundIds = makeAddressLabel("mldGroundIds");
+    impl_->motionIds = makeAddressLabel("mldMotionIds");
     detailsLayout->addStretch(1);
     impl_->detailScroll->setWidget(impl_->detailBody);
 
@@ -295,7 +285,7 @@ bool MldEntryInspector::runSmokeChecks() {
     firstGroup->setExpanded(false);
     impl_->table->setCurrentCell(originalRow, 0);
     return selectionUpdated && expanded
-        && !impl_->objectAddresses->text().isEmpty()
-        && !impl_->groundAddresses->text().isEmpty()
-        && !impl_->motionAddresses->text().isEmpty();
+        && !impl_->objectIds->text().isEmpty()
+        && !impl_->groundIds->text().isEmpty()
+        && !impl_->motionIds->text().isEmpty();
 }

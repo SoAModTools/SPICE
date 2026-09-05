@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)SpiceModeling;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -93,10 +93,17 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)SpiceModeling;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="MldBlenderIrProjector.h" />
+    <ClInclude Include="MldDocument.h" />
+    <ClInclude Include="MldDocumentImporter.h" />
+    <ClInclude Include="MldDocumentValidator.h" />
+    <ClInclude Include="MldDocumentWriter.h" />
+    <ClInclude Include="Internal\MldDocumentReceiptState.h" />
+    <ClInclude Include="Internal\MldGroundDocumentConversion.h" />
     <ClInclude Include="Analysis\MldGvrFormatInventory.h" />
     <ClInclude Include="common\ByteUtils.h" />
     <ClInclude Include="Export\BlenderIrJsonExporter.h" />
@@ -129,6 +136,11 @@
     <ClInclude Include="SpiceMLD.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="MldBlenderIrProjector.cpp" />
+    <ClCompile Include="MldDocument.cpp" />
+    <ClCompile Include="MldDocumentImporter.cpp" />
+    <ClCompile Include="MldDocumentValidator.cpp" />
+    <ClCompile Include="MldDocumentWriter.cpp" />
     <ClCompile Include="Analysis\MldGvrFormatInventory.cpp" />
     <ClCompile Include="Model\BlenderIrModel.cpp" />
     <ClCompile Include="Parsing\MldTextureArchiveParser.cpp" />
@@ -150,7 +162,7 @@
     <ProjectReference Include="..\Compression\Compression.vcxproj">
       <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\Sa3Dport\Sa3Dport.vcxproj">
+    <ProjectReference Include="..\SpiceModeling\SpiceModeling.vcxproj">
       <Project>{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}</Project>
     </ProjectReference>
     <ProjectReference Include="..\SpiceRoot\SpiceRoot.vcxproj">
@@ -163,21 +175,6 @@
       <Project>{D15CAA0F-8C20-4740-B50E-27A7539B9287}</Project>
     </ProjectReference>
   </ItemGroup>
-  <PropertyGroup>
-    <BuildSa3dDotnetBridge Condition="'$(BuildSa3dDotnetBridge)'==''">false</BuildSa3dDotnetBridge>
-    <SpiceRepoRoot>$(MSBuildThisFileDirectory)..\</SpiceRepoRoot>
-    <Sa3dSubmoduleRoot>$(SpiceRepoRoot)third-party\SA3D.Modeling\src</Sa3dSubmoduleRoot>
-    <Sa3dBridgeProject>$(SpiceRepoRoot)tools\sa3d_ref_runner\SA3DRefRunner.csproj</Sa3dBridgeProject>
-    <Sa3dBridgeOutputDir>$(SpiceRepoRoot)bin\$(Platform)\$(Configuration)\sa3d_bridge\</Sa3dBridgeOutputDir>
-  </PropertyGroup>
-  <Target Name="BuildSa3dDependencies" AfterTargets="Build" Condition="'$(Platform)' == 'x64' and '$(BuildSa3dDotnetBridge)' == 'true'">
-    <Message Text="[SpiceMLD] Building SA3D submodule (.NET projects) from $(Sa3dSubmoduleRoot)..." Importance="high" />
-    <Exec Condition="Exists('$(Sa3dSubmoduleRoot)')" Command="dotnet build &quot;$(Sa3dSubmoduleRoot)&quot; -c $(Configuration)" />
-    <Error Condition="!Exists('$(Sa3dSubmoduleRoot)')" Text="SA3D submodule directory is missing: $(Sa3dSubmoduleRoot). Initialize submodules before building." />
-    <Message Text="[SpiceMLD] Publishing SA3D .NET bridge to $(Sa3dBridgeOutputDir)..." Importance="high" />
-    <Exec Condition="Exists('$(Sa3dBridgeProject)')" Command="dotnet publish &quot;$(Sa3dBridgeProject)&quot; -c $(Configuration) -r win-x64 --self-contained false -o &quot;$(Sa3dBridgeOutputDir)&quot;" />
-    <Error Condition="!Exists('$(Sa3dBridgeProject)')" Text="SA3D bridge project is missing: $(Sa3dBridgeProject)." />
-  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

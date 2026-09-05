@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace Sa3Dport::Animation {
+namespace spice::modeling::Animation {
 struct Motion;
 }
 
@@ -100,7 +100,7 @@ struct ParsedMldAnimation {
     std::size_t motionSlot = 0;
     std::uint32_t nodeCount = 0;
     bool shortRot = false;
-    std::shared_ptr<const Sa3Dport::Animation::Motion> motion{};
+    std::shared_ptr<const spice::modeling::Animation::Motion> motion{};
 };
 
 struct ParsedMldCameraMotion {
@@ -108,7 +108,7 @@ struct ParsedMldCameraMotion {
     std::size_t tableIndex = 0;
     std::uint32_t sourceMotionAddress = 0;
     std::size_t motionSlot = 0;
-    std::shared_ptr<const Sa3Dport::Animation::Motion> motion{};
+    std::shared_ptr<const spice::modeling::Animation::Motion> motion{};
 };
 
 struct ExtractedNjBlock {

@@ -1,4 +1,5 @@
 #include "../SpiceMLD/SpiceMLD.h"
+#include "../SpiceMLD/Analysis/MldGvrFormatInventory.h"
 
 #include <gtest/gtest.h>
 

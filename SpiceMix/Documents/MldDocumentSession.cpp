@@ -6,8 +6,9 @@
 #include "../../SpiceGvm/Image/PngCodec.h"
 #include "../../SpiceMLD/Export/BlenderIrJsonExporter.h"
 #include "../../SpiceMLD/Export/MldEntryListJsonExporter.h"
-#include "../../SpiceMLD/Export/MldFileWriter.h"
-#include "../../SpiceMLD/Parsing/MldParser.h"
+#include "../../SpiceMLD/MldBlenderIrProjector.h"
+#include "../../SpiceMLD/MldDocumentImporter.h"
+#include "../../SpiceMLD/MldDocumentWriter.h"
 
 #include <algorithm>
 #include <span>
@@ -18,41 +19,25 @@ namespace spice::mix {
 
 struct MldDocumentSession::Impl {
     std::filesystem::path protectedSourcePath{};
-    spice::mld::model::MldFile file{};
-    std::vector<spice::mld::model::MldTextureEntry> savedTextures{};
+    spice::mld::MldDocument document{};
+    spice::mld::MldImportReceipt receipt{};
+    std::vector<spice::mld::MldDocumentDiagnostic> importDiagnostics{};
+    std::vector<spice::mld::MldTexture> savedTextures{};
     std::vector<bool> dirtyTextures{};
 };
 
 namespace {
 
 template <typename ImplType>
-spice::mld::model::MldTextureEntry* textureAt(ImplType& impl, const std::size_t index) {
-    if (!impl.file.textureArchive.has_value() || index >= impl.file.textureArchive->entries.size()) return nullptr;
-    return &impl.file.textureArchive->entries[index];
+spice::mld::MldTexture* textureAt(ImplType& impl, const std::size_t index) {
+    if (impl.document.textureArchives.empty() || index >= impl.document.textureArchives.front().textures.size()) return nullptr;
+    return &impl.document.textureArchives.front().textures[index];
 }
 
 template <typename ImplType>
-const spice::mld::model::MldTextureEntry* textureAt(const ImplType& impl, const std::size_t index) {
-    if (!impl.file.textureArchive.has_value() || index >= impl.file.textureArchive->entries.size()) return nullptr;
-    return &impl.file.textureArchive->entries[index];
-}
-
-std::vector<spice::mld::model::MldDiagnostic> typedTextureDiagnostics(
-    const std::vector<std::string>& messages,
-    const std::size_t sourceOffset = 0U)
-{
-    std::vector<spice::mld::model::MldDiagnostic> diagnostics{};
-    diagnostics.reserve(messages.size());
-    for (const auto& message : messages) {
-        diagnostics.push_back(spice::mld::model::MldDiagnostic{
-            .severity = spice::mld::model::MldDiagnostic::Severity::Warning,
-            .message = message,
-            .sourceOffset = static_cast<std::uint32_t>(sourceOffset),
-            .scope = spice::mld::model::MldDiagnosticScope::Resource,
-            .resourceKind = spice::mld::model::MldResourceKind::TextureArchiveEntry,
-        });
-    }
-    return diagnostics;
+const spice::mld::MldTexture* textureAt(const ImplType& impl, const std::size_t index) {
+    if (impl.document.textureArchives.empty() || index >= impl.document.textureArchives.front().textures.size()) return nullptr;
+    return &impl.document.textureArchives.front().textures[index];
 }
 
 } // namespace
@@ -77,16 +62,20 @@ MldDocumentSession::OpenResult MldDocumentSession::open(
         if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
         auto impl = std::make_unique<Impl>();
         impl->protectedSourcePath = path;
-        impl->file = spice::mld::parsing::MldParser{}.parseBytes(bytes);
+        auto imported = spice::mld::MldDocumentImporter::importBytes(bytes);
         if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
         std::vector<std::string> diagnosticText{};
-        for (const auto& diagnostic : documents::projectMldDiagnostics(impl->file))
+        for (const auto& diagnostic : documents::projectMldDiagnostics(imported.diagnostics))
             diagnosticText.push_back(diagnostic.message);
-        if (impl->file.parseStatus == spice::mld::model::MldParseStatus::Failed) {
+        if (!imported.ok() || !imported.document.has_value()) {
             return { .result = documents::failure("MLD parsing failed.", std::move(diagnosticText)) };
         }
-        if (impl->file.textureArchive.has_value()) {
-            impl->savedTextures = impl->file.textureArchive->entries;
+        impl->document = std::move(*imported.document);
+        impl->receipt = std::move(imported.receipt);
+        impl->receipt.path = path;
+        impl->importDiagnostics = std::move(imported.diagnostics);
+        if (!impl->document.textureArchives.empty()) {
+            impl->savedTextures = impl->document.textureArchives.front().textures;
             impl->dirtyTextures.resize(impl->savedTextures.size(), false);
         }
         auto session = std::shared_ptr<MldDocumentSession>(new MldDocumentSession(std::move(impl)));
@@ -100,27 +89,27 @@ MldDocumentSession::OpenResult MldDocumentSession::open(
 }
 
 MldOverviewSnapshot MldDocumentSession::overview() const {
-    return documents::projectMldOverview(impl_->file, impl_->protectedSourcePath, dirty());
+    return documents::projectMldOverview(impl_->document, impl_->receipt, dirty());
 }
 
 std::vector<MldEntrySnapshot> MldDocumentSession::entries() const {
-    return documents::projectMldEntries(impl_->file);
+    return documents::projectMldEntries(impl_->document);
 }
 
 std::vector<MldEntryDetailSnapshot> MldDocumentSession::entryDetails() const {
-    return documents::projectMldEntryDetails(impl_->file);
+    return documents::projectMldEntryDetails(impl_->document);
 }
 
 std::vector<MldTextureSnapshot> MldDocumentSession::textures() const {
-    return documents::projectMldTextures(impl_->file, impl_->dirtyTextures);
+    return documents::projectMldTextures(impl_->document, impl_->dirtyTextures);
 }
 
 std::vector<DocumentDiagnostic> MldDocumentSession::diagnostics() const {
-    return documents::projectMldDiagnostics(impl_->file);
+    return documents::projectMldDiagnostics(impl_->importDiagnostics);
 }
 
 std::optional<RgbaImageSnapshot> MldDocumentSession::texturePreview(const std::size_t index) const {
-    return documents::projectMldTexturePreview(impl_->file, index);
+    return documents::projectMldTexturePreview(impl_->document, index);
 }
 
 bool MldDocumentSession::dirty() const noexcept {
@@ -140,7 +129,7 @@ DocumentResult MldDocumentSession::replaceGvrTexture(const std::size_t index,
         if (pngPath.empty() || !std::filesystem::is_regular_file(pngPath)) {
             return documents::failure("A readable replacement PNG is required.");
         }
-        const auto source = spice::gvm::ir::readGvrSourceMetadata(texture->encodedData);
+        const auto source = spice::gvm::ir::readGvrSourceMetadata(texture->encodedBytes);
         const auto image = spice::gvm::image::readPngRgba8(pngPath);
         if (!allowDimensionChange && (image.width != source.texture.width || image.height != source.texture.height)) {
             return documents::failure("Replacement PNG dimensions do not match the selected MLD texture.");
@@ -153,26 +142,19 @@ DocumentResult MldDocumentSession::replaceGvrTexture(const std::size_t index,
             || !replacementMetadata.texture.decodedBaseLevel.has_value()) {
             return documents::failure("The staged replacement could not be decoded.", replacementMetadata.diagnostics);
         }
-        texture->encodedData = replacement;
-        texture->encodedDataSize = replacement.size();
+        texture->encodedBytes = replacement;
         texture->hasGlobalIndex = replacementMetadata.texture.hasGlobalIndex;
         texture->globalIndex = replacementMetadata.texture.globalIndex;
         texture->pixelFormat = replacementMetadata.texture.rawFlags;
         texture->dataFormat = replacementMetadata.texture.rawDataFormat;
-        texture->sourceFormat = spice::gvm::model::to_string(replacementMetadata.texture.textureFormat);
-        texture->sourcePaletteFormat = spice::gvm::model::to_string(replacementMetadata.texture.paletteFormat);
+        texture->format = spice::gvm::model::to_string(replacementMetadata.texture.textureFormat);
+        texture->paletteFormat = spice::gvm::model::to_string(replacementMetadata.texture.paletteFormat);
         texture->hasMipmaps = replacementMetadata.texture.hasMipmaps;
         texture->hasInternalPalette = replacementMetadata.texture.hasInternalPalette;
         texture->width = replacementMetadata.texture.width;
         texture->height = replacementMetadata.texture.height;
-        texture->imageDataOffset = replacementMetadata.texture.imageDataOffset;
-        texture->imageDataSize = replacementMetadata.texture.imageDataSize;
-        texture->paletteDataSize = replacementMetadata.texture.paletteData.size();
         texture->decoded = true;
         texture->rgba8 = replacementMetadata.texture.decodedBaseLevel->rgba8;
-        texture->diagnostics = typedTextureDiagnostics(
-            replacementMetadata.diagnostics, texture->encodedDataOffset);
-        texture->status = spice::mld::model::MldResourceStatus::Complete;
         impl_->dirtyTextures[index] = true;
         documents::emit(context, EventLevel::Info, "Staged replacement for MLD texture " + std::to_string(index) + ".");
         return { .message = "Texture replacement staged.", .diagnostics = replacementMetadata.diagnostics };
@@ -193,7 +175,7 @@ DocumentResult MldDocumentSession::replacePvrTexture(const std::size_t index,
     }
     documents::emit(context, EventLevel::Progress,
         "Encoding replacement for MLD PVR texture " + std::to_string(index) + ".");
-    auto encoded = documents::encodePvrFromPng(pngPath, overrides, texture->encodedData);
+    auto encoded = documents::encodePvrFromPng(pngPath, overrides, texture->encodedBytes);
     if (!encoded.result.ok() || !encoded.candidate.has_value()) {
         documents::emit(context, EventLevel::Error, encoded.result.message);
         return encoded.result;
@@ -206,14 +188,13 @@ DocumentResult MldDocumentSession::replacePvrTexture(const std::size_t index,
     if (context.stopToken.stop_requested()) return documents::cancelled();
 
     auto replacement = *texture;
-    replacement.encodedData = candidate.bytes;
-    replacement.encodedDataSize = candidate.bytes.size();
+    replacement.encodedBytes = candidate.bytes;
     replacement.hasGlobalIndex = candidate.texture.globalIndex.has_value();
     replacement.globalIndex = candidate.texture.globalIndex.value_or(0U);
     replacement.pixelFormat = candidate.texture.rawPixelFormat;
     replacement.dataFormat = candidate.texture.rawDataLayout;
-    replacement.sourceFormat = spice::pvm::model::toString(candidate.texture.pixelFormat);
-    replacement.sourcePaletteFormat = spice::pvm::model::toString(candidate.texture.dataLayout);
+    replacement.format = spice::pvm::model::toString(candidate.texture.pixelFormat);
+    replacement.paletteFormat = spice::pvm::model::toString(candidate.texture.dataLayout);
     using Layout = spice::pvm::model::DataLayout;
     replacement.hasMipmaps = candidate.texture.dataLayout == Layout::TwiddledMipmaps
         || candidate.texture.dataLayout == Layout::VqMipmaps
@@ -222,18 +203,10 @@ DocumentResult MldDocumentSession::replacePvrTexture(const std::size_t index,
     replacement.hasInternalPalette = false;
     replacement.width = candidate.texture.width;
     replacement.height = candidate.texture.height;
-    replacement.imageDataOffset = candidate.texture.textureDataRange.offset;
-    replacement.imageDataSize = candidate.texture.textureDataRange.size;
-    replacement.paletteDataSize = 0U;
     replacement.decoded = !candidate.decoded.mipLevels.empty()
         && !candidate.decoded.mipLevels.front().image.pixels.empty();
     replacement.rgba8 = replacement.decoded
         ? candidate.decoded.mipLevels.front().image.pixels : std::vector<std::uint8_t>{};
-    replacement.diagnostics = typedTextureDiagnostics(
-        candidate.diagnostics, replacement.encodedDataOffset);
-    replacement.status = replacement.decoded
-        ? spice::mld::model::MldResourceStatus::Complete
-        : spice::mld::model::MldResourceStatus::Partial;
     *texture = std::move(replacement);
     impl_->dirtyTextures[index] = true;
     documents::emit(context, EventLevel::Info,
@@ -253,8 +226,8 @@ DocumentResult MldDocumentSession::revertTexture(const std::size_t index) {
 }
 
 DocumentResult MldDocumentSession::revertAll() {
-    if (!impl_->file.textureArchive.has_value()) return { .message = "There are no texture changes to revert." };
-    impl_->file.textureArchive->entries = impl_->savedTextures;
+    if (impl_->document.textureArchives.empty()) return { .message = "There are no texture changes to revert." };
+    impl_->document.textureArchives.front().textures = impl_->savedTextures;
     std::fill(impl_->dirtyTextures.begin(), impl_->dirtyTextures.end(), false);
     return { .message = "All staged texture changes reverted." };
 }
@@ -264,10 +237,10 @@ DocumentResult MldDocumentSession::extractNativeTexture(const std::size_t index,
     if (context.stopToken.stop_requested()) return documents::cancelled();
     const auto* texture = textureAt(*impl_, index);
     if (!texture) return documents::failure("The selected MLD texture index is out of range.");
-    if (texture->encoding == spice::mld::model::MldTextureEncoding::Unknown || texture->encodedData.empty()) {
+    if (texture->encoding == spice::mld::model::MldTextureEncoding::Unknown || texture->encodedBytes.empty()) {
         return documents::failure("The selected texture has no native encoded payload.");
     }
-    auto result = documents::writeBytesSafely(outputPath, texture->encodedData);
+    auto result = documents::writeBytesSafely(outputPath, texture->encodedBytes);
     if (result.ok()) documents::emit(context, EventLevel::Info, result.message);
     return result;
 }
@@ -302,27 +275,17 @@ DocumentResult MldDocumentSession::exportBlenderIrJson(
     }
     try {
         documents::emit(context, EventLevel::Progress, "Building MLD Blender IR.");
-        spice::mld::parsing::ParseOptions options{};
-        options.buildBlenderIntermediateIr = true;
-        const auto projected = spice::mld::parsing::MldParser{}.project(impl_->file, options);
-        std::vector<std::string> diagnostics = projected.blenderIrDiagnostics;
+        const auto projected = spice::mld::MldBlenderIrProjector::project(impl_->document);
+        std::vector<std::string> diagnostics = projected.diagnostics;
         for (const auto& diagnostic : projected.diagnostics) {
-            diagnostics.push_back(diagnostic.message);
-            if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Warning) {
-                documents::emit(context, EventLevel::Warning, diagnostic.message);
-            } else if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Error) {
-                documents::emit(context, EventLevel::Error, diagnostic.message);
-            }
-        }
-        for (const auto& diagnostic : projected.blenderIrDiagnostics) {
             documents::emit(context, EventLevel::Warning, diagnostic);
         }
-        if (!projected.blenderIrScene.has_value()) {
+        if (!projected.scene.has_value()) {
             return documents::failure("MLD Blender IR could not be produced.", std::move(diagnostics));
         }
         if (context.stopToken.stop_requested()) return documents::cancelled();
         documents::emit(context, EventLevel::Progress, "Writing MLD Blender IR JSON.");
-        const auto json = spice::mld::exporting::BlenderIrJsonExporter{}.toJson(*projected.blenderIrScene);
+        const auto json = spice::mld::exporting::BlenderIrJsonExporter{}.toJson(*projected.scene);
         auto result = documents::writeTextSafely(outputPath, json);
         result.diagnostics = std::move(diagnostics);
         if (result.ok()) {
@@ -346,24 +309,39 @@ DocumentResult MldDocumentSession::exportEntryListJson(
     }
     try {
         documents::emit(context, EventLevel::Progress, "Building detailed MLD entry list.");
-        spice::mld::parsing::ParseOptions options{};
-        options.entryListOnly = true;
-        options.buildBlenderIntermediateIr = false;
-        const auto projected = spice::mld::parsing::MldParser{}.project(impl_->file, options);
         std::vector<std::string> diagnostics{};
-        diagnostics.reserve(projected.diagnostics.size());
-        for (const auto& diagnostic : projected.diagnostics) {
-            diagnostics.push_back(diagnostic.message);
-            if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Warning) {
-                documents::emit(context, EventLevel::Warning, diagnostic.message);
-            } else if (diagnostic.severity == spice::mld::parsing::ParseDiagnostic::Severity::Error) {
-                documents::emit(context, EventLevel::Error, diagnostic.message);
+        std::vector<spice::mld::parsing::ParsedEntryListItem> entries{};
+        entries.reserve(impl_->document.entries.size());
+        for (std::size_t index = 0U; index < impl_->document.entries.size(); ++index) {
+            const auto& entry = impl_->document.entries[index];
+            spice::mld::parsing::ParsedEntryListItem item{
+                .tableIndex = index,
+                .entryId = entry.entryId,
+                .tblId = entry.tableId,
+                .fxnName = entry.functionName,
+                .objectCount = entry.objectSlots.size(),
+                .groundCount = entry.groundSlots.size(),
+                .motionCount = entry.motionSlots.size(),
+                .groundLinks = entry.groundLinks,
+                .paramList2 = entry.parameterList2,
+                .functionParameters = entry.functionParameters,
+            };
+            for (const auto& slot : entry.objectSlots) item.objectAddresses.push_back(slot ? static_cast<std::uint32_t>(slot->value) : 0U);
+            for (const auto& slot : entry.groundSlots) item.groundAddresses.push_back(slot ? static_cast<std::uint32_t>(slot->value) : 0U);
+            for (const auto& slot : entry.motionSlots) item.motionAddresses.push_back(slot ? static_cast<std::uint32_t>(slot->value) : 0U);
+            if (entry.textureList) {
+                item.texturesPointer = static_cast<std::uint32_t>(entry.textureList->value);
+                const auto found = std::find_if(impl_->document.textureLists.begin(), impl_->document.textureLists.end(),
+                    [&](const auto& list) { return list.id == *entry.textureList; });
+                if (found != impl_->document.textureLists.end()) item.textureNames = found->names;
             }
+            item.textureCount = item.textureNames.size();
+            entries.push_back(std::move(item));
         }
         if (context.stopToken.stop_requested()) return documents::cancelled();
         documents::emit(context, EventLevel::Progress, "Writing detailed MLD entry-list JSON.");
         const auto json = spice::mld::exporting::MldEntryListJsonExporter{}.toJson(
-            impl_->protectedSourcePath, projected.entryList);
+            impl_->protectedSourcePath, entries);
         auto result = documents::writeTextSafely(outputPath, json);
         result.diagnostics = std::move(diagnostics);
         if (result.ok()) {
@@ -386,7 +364,10 @@ DocumentResult MldDocumentSession::saveAs(
     if (documents::samePath(outputPath, impl_->protectedSourcePath)) {
         return documents::failure("Save As cannot overwrite the original MLD source file.");
     }
-    const auto written = spice::mld::exporting::MldFileWriter{}.write(impl_->file);
+    const auto written = spice::mld::MldDocumentWriter::write(
+        impl_->document,
+        { .platform = impl_->receipt.platform, .wrapper = impl_->receipt.wrapper },
+        &impl_->receipt);
     std::vector<std::string> diagnostics{};
     for (const auto& diagnostic : written.diagnostics) diagnostics.push_back(diagnostic.message);
     if (!written.ok() || written.bytes.empty()) {
@@ -396,7 +377,7 @@ DocumentResult MldDocumentSession::saveAs(
     auto result = documents::writeBytesSafely(outputPath, written.bytes);
     result.diagnostics = std::move(diagnostics);
     if (!result.ok()) return result;
-    if (impl_->file.textureArchive.has_value()) impl_->savedTextures = impl_->file.textureArchive->entries;
+    if (!impl_->document.textureArchives.empty()) impl_->savedTextures = impl_->document.textureArchives.front().textures;
     std::fill(impl_->dirtyTextures.begin(), impl_->dirtyTextures.end(), false);
     documents::emit(context, EventLevel::Info, result.message);
     return result;

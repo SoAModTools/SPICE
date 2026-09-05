@@ -149,6 +149,5 @@
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <Import Project="..\SpiceMix\SpiceMixRuntime.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

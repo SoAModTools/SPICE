@@ -4,7 +4,16 @@
 #include "GobjParser.h"
 #include "GvrTextureDecoder.h"
 
-#include "../../Sa3Dport/Sa3Dport.h"
+#include "../../SpiceModeling/Animation/Keyframes.h"
+#include "../../SpiceModeling/Animation/Motion.h"
+#include "../../SpiceModeling/File/ModelFile.h"
+#include "../../SpiceModeling/Mesh/Buffer/BufferMesh.h"
+#include "../../SpiceModeling/Mesh/Chunk/PolyChunks/BitsChunk.h"
+#include "../../SpiceModeling/Mesh/Chunk/PolyChunks/VolumeChunk.h"
+#include "../../SpiceModeling/Mesh/Converters/ActivePolyChunkHelper.h"
+#include "../../SpiceModeling/Mesh/Converters/ChunkBufferConverter.h"
+#include "../../SpiceModeling/ObjectData/Node.h"
+#include "../../SpiceModeling/Structs/MatrixUtilities.h"
 #include "../common/ByteUtils.h"
 
 #include <algorithm>
@@ -25,11 +34,11 @@
 namespace spice::mld::parsing {
 namespace {
 
-using Sa3Dport::Mesh::Buffer::BufferMesh;
-using Sa3Dport::Mesh::Converters::ChunkBufferContext;
-using Sa3Dport::Mesh::Converters::buffer_chunk_attach_with_active_poly_chunks;
-using Sa3Dport::Mesh::Converters::get_active_poly_chunks;
-using Sa3Dport::ObjectData::NodePtr;
+using spice::modeling::Mesh::Buffer::BufferMesh;
+using spice::modeling::Mesh::Converters::ChunkBufferContext;
+using spice::modeling::Mesh::Converters::buffer_chunk_attach_with_active_poly_chunks;
+using spice::modeling::Mesh::Converters::get_active_poly_chunks;
+using spice::modeling::ObjectData::NodePtr;
 
 [[nodiscard]] std::string hexOffset(const std::uint32_t value) {
     constexpr char digits[] = "0123456789abcdef";
@@ -42,23 +51,23 @@ using Sa3Dport::ObjectData::NodePtr;
     return result;
 }
 
-[[nodiscard]] model::Vec3 toVec3(const Sa3Dport::Structs::Vector3& value) {
+[[nodiscard]] model::Vec3 toVec3(const spice::modeling::Structs::Vector3& value) {
     return model::Vec3{ value.x, value.y, value.z };
 }
 
-[[nodiscard]] model::Vec2 toVec2(const Sa3Dport::Structs::Vector2& value) {
+[[nodiscard]] model::Vec2 toVec2(const spice::modeling::Structs::Vector2& value) {
     return model::Vec2{ value.x, value.y };
 }
 
-[[nodiscard]] model::Quat toQuat(const Sa3Dport::Structs::Quaternion& value) {
+[[nodiscard]] model::Quat toQuat(const spice::modeling::Structs::Quaternion& value) {
     return model::Quat{ value.x, value.y, value.z, value.w };
 }
 
-[[nodiscard]] model::ColorRgba8 toColor(const Sa3Dport::Structs::Color& value) {
+[[nodiscard]] model::ColorRgba8 toColor(const spice::modeling::Structs::Color& value) {
     return model::ColorRgba8{ value.red, value.green, value.blue, value.alpha };
 }
 
-[[nodiscard]] model::SpotlightValue toSpotlight(const Sa3Dport::Animation::Spotlight& value) {
+[[nodiscard]] model::SpotlightValue toSpotlight(const spice::modeling::Animation::Spotlight& value) {
     return model::SpotlightValue{
         .nearDistance = value.near_distance,
         .farDistance = value.far_distance,
@@ -67,9 +76,9 @@ using Sa3Dport::ObjectData::NodePtr;
     };
 }
 
-[[nodiscard]] Sa3Dport::Structs::Vector3 transformPoint(
-    const Sa3Dport::Structs::Vector3& point,
-    const Sa3Dport::Structs::Matrix4x4& matrix) {
+[[nodiscard]] spice::modeling::Structs::Vector3 transformPoint(
+    const spice::modeling::Structs::Vector3& point,
+    const spice::modeling::Structs::Matrix4x4& matrix) {
     return {
         point.x * matrix.m11 + point.y * matrix.m21 + point.z * matrix.m31 + matrix.m41,
         point.x * matrix.m12 + point.y * matrix.m22 + point.z * matrix.m32 + matrix.m42,
@@ -77,9 +86,9 @@ using Sa3Dport::ObjectData::NodePtr;
     };
 }
 
-[[nodiscard]] Sa3Dport::Structs::Vector3 transformNormal(
-    const Sa3Dport::Structs::Vector3& normal,
-    const Sa3Dport::Structs::Matrix4x4& matrix) {
+[[nodiscard]] spice::modeling::Structs::Vector3 transformNormal(
+    const spice::modeling::Structs::Vector3& normal,
+    const spice::modeling::Structs::Matrix4x4& matrix) {
     return {
         normal.x * matrix.m11 + normal.y * matrix.m21 + normal.z * matrix.m31,
         normal.x * matrix.m12 + normal.y * matrix.m22 + normal.z * matrix.m32,
@@ -87,21 +96,21 @@ using Sa3Dport::ObjectData::NodePtr;
     };
 }
 
-[[nodiscard]] std::optional<Sa3Dport::Structs::Matrix4x4> inverseMatrix(const Sa3Dport::Structs::Matrix4x4& matrix) {
-    Sa3Dport::Structs::Matrix4x4 inverse{};
-    if (!Sa3Dport::Structs::invert(matrix, inverse)) {
+[[nodiscard]] std::optional<spice::modeling::Structs::Matrix4x4> inverseMatrix(const spice::modeling::Structs::Matrix4x4& matrix) {
+    spice::modeling::Structs::Matrix4x4 inverse{};
+    if (!spice::modeling::Structs::invert(matrix, inverse)) {
         return std::nullopt;
     }
     return inverse;
 }
 
-[[nodiscard]] std::string interpolationModeName(const Sa3Dport::Animation::InterpolationMode mode) {
+[[nodiscard]] std::string interpolationModeName(const spice::modeling::Animation::InterpolationMode mode) {
     switch (mode) {
-    case Sa3Dport::Animation::InterpolationMode::Linear:
+    case spice::modeling::Animation::InterpolationMode::Linear:
         return "linear";
-    case Sa3Dport::Animation::InterpolationMode::Spline:
+    case spice::modeling::Animation::InterpolationMode::Spline:
         return "spline";
-    case Sa3Dport::Animation::InterpolationMode::User:
+    case spice::modeling::Animation::InterpolationMode::User:
         return "user";
     }
     return "unknown";
@@ -116,30 +125,30 @@ using Sa3Dport::ObjectData::NodePtr;
     return result;
 }
 
-[[nodiscard]] Sa3Dport::Structs::Matrix4x4 effectiveLocalMatrix(const NodePtr& node) {
+[[nodiscard]] spice::modeling::Structs::Matrix4x4 effectiveLocalMatrix(const NodePtr& node) {
     auto position = node->position;
     auto rotation = node->quaternion_rotation;
     auto scale = node->scale;
     if (node->no_position()) {
-        position = Sa3Dport::Structs::Vector3::zero();
+        position = spice::modeling::Structs::Vector3::zero();
     }
     if (node->no_rotation()) {
-        rotation = Sa3Dport::Structs::Quaternion::identity();
+        rotation = spice::modeling::Structs::Quaternion::identity();
     }
     if (node->no_scale()) {
-        scale = Sa3Dport::Structs::Vector3::one();
+        scale = spice::modeling::Structs::Vector3::one();
     }
-    return Sa3Dport::Structs::MatrixUtilities::create_transform_matrix(position, rotation, scale);
+    return spice::modeling::Structs::MatrixUtilities::create_transform_matrix(position, rotation, scale);
 }
 
-[[nodiscard]] std::vector<Sa3Dport::Structs::Matrix4x4> buildWorldMatrices(const std::vector<NodePtr>& nodes) {
-    std::unordered_map<const Sa3Dport::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
+[[nodiscard]] std::vector<spice::modeling::Structs::Matrix4x4> buildWorldMatrices(const std::vector<NodePtr>& nodes) {
+    std::unordered_map<const spice::modeling::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
     nodeIndexByPtr.reserve(nodes.size());
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         nodeIndexByPtr[nodes[i].get()] = i;
     }
 
-    std::vector<Sa3Dport::Structs::Matrix4x4> matrices(nodes.size(), Sa3Dport::Structs::identity());
+    std::vector<spice::modeling::Structs::Matrix4x4> matrices(nodes.size(), spice::modeling::Structs::identity());
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         const auto local = effectiveLocalMatrix(nodes[i]);
         if (const auto parent = nodes[i]->parent()) {
@@ -154,7 +163,7 @@ using Sa3Dport::ObjectData::NodePtr;
 }
 
 [[nodiscard]] std::vector<std::optional<std::size_t>> buildParentIndices(const std::vector<NodePtr>& nodes) {
-    std::unordered_map<const Sa3Dport::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
+    std::unordered_map<const spice::modeling::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
     nodeIndexByPtr.reserve(nodes.size());
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         nodeIndexByPtr[nodes[i].get()] = i;
@@ -199,7 +208,7 @@ using Sa3Dport::ObjectData::NodePtr;
     return 0U;
 }
 
-[[nodiscard]] std::uint64_t hashMaterial(const Sa3Dport::Mesh::Buffer::BufferMaterial& material,
+[[nodiscard]] std::uint64_t hashMaterial(const spice::modeling::Mesh::Buffer::BufferMaterial& material,
     const bool strippified,
     const bool hasColors,
     const bool flatShading) {
@@ -235,7 +244,7 @@ using Sa3Dport::ObjectData::NodePtr;
     return h;
 }
 
-[[nodiscard]] std::uint32_t packMaterialStateKey(const Sa3Dport::Mesh::Buffer::BufferMaterial& material) {
+[[nodiscard]] std::uint32_t packMaterialStateKey(const spice::modeling::Mesh::Buffer::BufferMaterial& material) {
     std::uint32_t value = 0U;
     value |= static_cast<std::uint32_t>(material.use_texture ? 1U : 0U) << 0U;
     value |= static_cast<std::uint32_t>(material.anisotropic_filtering ? 1U : 0U) << 1U;
@@ -365,7 +374,7 @@ using Sa3Dport::ObjectData::NodePtr;
 }
 
 struct ParsedSa3dModel {
-    Sa3Dport::File::ModelFile model{};
+    spice::modeling::File::ModelFile model{};
     std::size_t byteTrim = 0;
 };
 
@@ -397,7 +406,7 @@ struct ParsedSa3dModel {
         const auto bytes = asByteSpan(block.bytes).subspan(trim);
         try {
             ParsedSa3dModel parsed{};
-            parsed.model = Sa3Dport::File::ModelFile::read_from_bytes(bytes);
+            parsed.model = spice::modeling::File::ModelFile::read_from_bytes(bytes);
             parsed.byteTrim = trim;
             return parsed;
         } catch (const std::exception&) {
@@ -421,12 +430,12 @@ struct ParsedSa3dModel {
     return std::nullopt;
 }
 
-[[nodiscard]] std::uint32_t vertexKey(const Sa3Dport::Mesh::Buffer::BufferVertex& vertex,
+[[nodiscard]] std::uint32_t vertexKey(const spice::modeling::Mesh::Buffer::BufferVertex& vertex,
     const BufferMesh& mesh) {
     return static_cast<std::uint32_t>(vertex.index) + static_cast<std::uint32_t>(mesh.vertex_write_offset);
 }
 
-[[nodiscard]] std::uint32_t cornerKey(const Sa3Dport::Mesh::Buffer::BufferCorner& corner,
+[[nodiscard]] std::uint32_t cornerKey(const spice::modeling::Mesh::Buffer::BufferCorner& corner,
     const BufferMesh& mesh) {
     return static_cast<std::uint32_t>(corner.vertex_index) + static_cast<std::uint32_t>(mesh.vertex_read_offset);
 }
@@ -451,7 +460,7 @@ struct SplitVertexKeyHash {
 };
 
 [[nodiscard]] SplitVertexKey makeSplitVertexKey(const std::uint32_t sourceIndex,
-    const Sa3Dport::Structs::Vector3& normal) {
+    const spice::modeling::Structs::Vector3& normal) {
     return SplitVertexKey{
         .sourceIndex = sourceIndex,
         .normalXBits = std::bit_cast<std::uint32_t>(normal.x),
@@ -460,8 +469,8 @@ struct SplitVertexKeyHash {
     };
 }
 
-[[nodiscard]] model::BlenderIrVertex toIrVertex(const Sa3Dport::Mesh::Buffer::BufferVertex& sourceVertex,
-    const Sa3Dport::Structs::Vector3& normal,
+[[nodiscard]] model::BlenderIrVertex toIrVertex(const spice::modeling::Mesh::Buffer::BufferVertex& sourceVertex,
+    const spice::modeling::Structs::Vector3& normal,
     const bool hasNormal,
     const bool continueWeight) {
     model::BlenderIrVertex vertex{};
@@ -478,15 +487,15 @@ struct SplitVertexKeyHash {
     return vertex;
 }
 
-[[nodiscard]] model::BlenderIrVertex toIrVertex(const Sa3Dport::Mesh::Buffer::BufferVertex& sourceVertex,
-    const Sa3Dport::Structs::Vector3& normal,
+[[nodiscard]] model::BlenderIrVertex toIrVertex(const spice::modeling::Mesh::Buffer::BufferVertex& sourceVertex,
+    const spice::modeling::Structs::Vector3& normal,
     const bool hasNormal,
     const BufferMesh& bufferMesh) {
     return toIrVertex(sourceVertex, normal, hasNormal, bufferMesh.continue_weight);
 }
 
 struct SourceVertexContribution {
-    Sa3Dport::Mesh::Buffer::BufferVertex vertex{};
+    spice::modeling::Mesh::Buffer::BufferVertex vertex{};
     bool hasNormals = false;
     std::size_t nodeIndex = 0;
 };
@@ -507,21 +516,21 @@ struct SourceVertexRecord {
 
 [[nodiscard]] model::BlenderIrVertex toWeightedIrVertex(
     const SourceVertexRecord& source,
-    const Sa3Dport::Structs::Vector3& fallbackNormal,
+    const spice::modeling::Structs::Vector3& fallbackNormal,
     const bool hasNormal,
     const std::size_t rootNodeIndex,
-    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices) {
+    const std::vector<spice::modeling::Structs::Matrix4x4>& worldMatrices) {
     model::BlenderIrVertex vertex{};
     vertex.hasPosition = true;
     vertex.hasNormal = hasNormal;
 
     auto inverseRoot = rootNodeIndex < worldMatrices.size()
         ? inverseMatrix(worldMatrices[rootNodeIndex])
-        : std::optional<Sa3Dport::Structs::Matrix4x4>{};
+        : std::optional<spice::modeling::Structs::Matrix4x4>{};
 
     float weightSum = 0.0f;
-    Sa3Dport::Structs::Vector3 position{};
-    Sa3Dport::Structs::Vector3 normal{};
+    spice::modeling::Structs::Vector3 position{};
+    spice::modeling::Structs::Vector3 normal{};
     for (const auto& contribution : source.contributions) {
         if (contribution.vertex.weight <= 0.0f) {
             continue;
@@ -547,7 +556,7 @@ struct SourceVertexRecord {
         normal /= weightSum;
     }
     vertex.position = toVec3(position);
-    vertex.normal = toVec3(Sa3Dport::Structs::normalize(normal));
+    vertex.normal = toVec3(spice::modeling::Structs::normalize(normal));
 
     for (const auto& contribution : source.contributions) {
         if (contribution.vertex.weight <= 0.0f) {
@@ -567,7 +576,7 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
     std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
     std::unordered_map<std::uint32_t, std::uint32_t>& vertexIndexByKey,
     const std::size_t targetNodeIndex,
-    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
+    const std::vector<spice::modeling::Structs::Matrix4x4>& worldMatrices,
     const std::vector<std::optional<std::size_t>>& parentIndices) {
     for (const auto& sourceVertex : bufferMesh.vertices) {
         const auto key = vertexKey(sourceVertex, bufferMesh);
@@ -673,7 +682,7 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
 
     std::unordered_map<SplitVertexKey, std::uint32_t, SplitVertexKeyHash> splitVertexIndexByKey{};
     triangleSet.corners.reserve(corners.size());
-    auto convertSourceVertex = [&](const SourceVertexRecord& source, const Sa3Dport::Structs::Vector3& normal, const bool hasNormal) {
+    auto convertSourceVertex = [&](const SourceVertexRecord& source, const spice::modeling::Structs::Vector3& normal, const bool hasNormal) {
         if (hasWeightedBinding) {
             return toWeightedIrVertex(source, normal, hasNormal, rootNodeIndex, worldMatrices);
         }
@@ -694,7 +703,7 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
         return toIrVertex(converted, convertedNormal, hasNormal, false);
     };
 
-    auto resolveCorner = [&](const Sa3Dport::Mesh::Buffer::BufferCorner& sourceCorner) -> std::optional<model::BlenderIrCorner> {
+    auto resolveCorner = [&](const spice::modeling::Mesh::Buffer::BufferCorner& sourceCorner) -> std::optional<model::BlenderIrCorner> {
         const auto key = cornerKey(sourceCorner, bufferMesh);
         model::BlenderIrCorner corner{};
         const auto sourceVertex = sourceVertexByKey.find(key);
@@ -752,13 +761,13 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
 }
 
 void appendType56AuxiliaryGeometry(
-    const Sa3Dport::Mesh::Chunk::ChunkAttach& attach,
-    const std::optional<Sa3Dport::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
+    const spice::modeling::Mesh::Chunk::ChunkAttach& attach,
+    const std::optional<spice::modeling::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
     const ChunkBufferContext& bufferContext,
     const std::size_t nodeIndex,
     const std::uint32_t objectAddress,
     const std::size_t modelSourceOffset,
-    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
+    const std::vector<spice::modeling::Structs::Matrix4x4>& worldMatrices,
     std::vector<model::BlenderIrAuxiliaryGeometry>& destination,
     std::vector<std::string>& diagnostics) {
     if (!activePolyChunks.has_value() || nodeIndex >= worldMatrices.size()) {
@@ -772,19 +781,19 @@ void appendType56AuxiliaryGeometry(
         return;
     }
 
-    std::unordered_set<const Sa3Dport::Mesh::Chunk::PolyChunk*> directlyRendered{};
+    std::unordered_set<const spice::modeling::Mesh::Chunk::PolyChunk*> directlyRendered{};
     bool caching = false;
     for (const auto& maybeChunk : attach.poly_chunks) {
         if (!maybeChunk.has_value()) {
             continue;
         }
         const auto& chunk = *maybeChunk;
-        if (const auto bits = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::PolyChunks::BitsChunk>(chunk)) {
-            if (bits->type == Sa3Dport::Mesh::Chunk::PolyChunkType::CacheList) {
+        if (const auto bits = std::dynamic_pointer_cast<spice::modeling::Mesh::Chunk::PolyChunks::BitsChunk>(chunk)) {
+            if (bits->type == spice::modeling::Mesh::Chunk::PolyChunkType::CacheList) {
                 caching = true;
                 continue;
             }
-            if (bits->type == Sa3Dport::Mesh::Chunk::PolyChunkType::DrawList) {
+            if (bits->type == spice::modeling::Mesh::Chunk::PolyChunkType::DrawList) {
                 continue;
             }
         }
@@ -797,8 +806,8 @@ void appendType56AuxiliaryGeometry(
         if (!maybeChunk.has_value()) {
             continue;
         }
-        const auto volume = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::PolyChunks::VolumeChunk>(*maybeChunk);
-        if (!volume || volume->type != Sa3Dport::Mesh::Chunk::PolyChunkType::Volume_Polygon3) {
+        const auto volume = std::dynamic_pointer_cast<spice::modeling::Mesh::Chunk::PolyChunks::VolumeChunk>(*maybeChunk);
+        if (!volume || volume->type != spice::modeling::Mesh::Chunk::PolyChunkType::Volume_Polygon3) {
             continue;
         }
 
@@ -887,15 +896,15 @@ void appendType56AuxiliaryGeometry(
     const std::size_t nodeIndex,
     const std::uint32_t objectAddress,
     const std::size_t sourceChunkOffset,
-    const std::optional<Sa3Dport::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
+    const std::optional<spice::modeling::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
     const std::vector<std::string>& localTextureNames,
     ChunkBufferContext& bufferContext,
     std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
-    const std::vector<Sa3Dport::Structs::Matrix4x4>& worldMatrices,
+    const std::vector<spice::modeling::Structs::Matrix4x4>& worldMatrices,
     const std::vector<std::optional<std::size_t>>& parentIndices,
     std::vector<model::BlenderIrAuxiliaryGeometry>& auxiliaryGeometry,
     model::BlenderIrScene& out) {
-    const auto chunkAttach = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::ChunkAttach>(node->attach);
+    const auto chunkAttach = std::dynamic_pointer_cast<spice::modeling::Mesh::Chunk::ChunkAttach>(node->attach);
     if (!chunkAttach) {
         return std::nullopt;
     }
@@ -1078,7 +1087,7 @@ template <class Map>
 }
 
 [[nodiscard]] model::Vec3 applyCoordinatePolicy(
-    const Sa3Dport::Structs::Vector3& value,
+    const spice::modeling::Structs::Vector3& value,
     const CoordinatePolicy& policy) {
     model::Vec3 out = toVec3(value);
     if (policy.swapYZ) {
@@ -1539,7 +1548,7 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         tree.sourceChunkOffset = block.offset + parsed->byteTrim;
         tree.nodes.reserve(nodes.size());
 
-        std::unordered_map<const Sa3Dport::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
+        std::unordered_map<const spice::modeling::ObjectData::Node*, std::size_t> nodeIndexByPtr{};
         std::vector<std::optional<std::size_t>> meshIndexByNodeIndex(nodes.size());
         std::vector<std::vector<model::BlenderIrAuxiliaryGeometry>> auxiliaryGeometryByNodeIndex(nodes.size());
         for (std::size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {

@@ -10,7 +10,8 @@
 #include "MldTextureArchiveParser.h"
 
 #include "../../SpiceRoot/Binary/EndianReader.h"
-#include "../../Sa3Dport/Sa3Dport.h"
+#include "../../SpiceModeling/File/AnimationFile.h"
+#include "../../SpiceModeling/File/ModelFile.h"
 
 #include <algorithm>
 #include <array>
@@ -353,12 +354,12 @@ void resolveObjectNjLayout(
 
 struct MotionLayoutResult {
     bool available = false;
-    Sa3Dport::Animation::MotionTargetLayout layout{};
+    spice::modeling::Animation::MotionTargetLayout layout{};
     std::string diagnostic{};
 };
 
 [[nodiscard]] std::uint64_t motionLayoutSignature(
-    const Sa3Dport::Animation::MotionTargetLayout& layout) {
+    const spice::modeling::Animation::MotionTargetLayout& layout) {
     constexpr std::uint64_t offsetBasis = 1469598103934665603ULL;
     constexpr std::uint64_t prime = 1099511628211ULL;
     std::uint64_t result = offsetBasis;
@@ -379,7 +380,7 @@ struct MotionLayoutResult {
 
 [[nodiscard]] MotionLayoutResult deriveMotionTargetLayout(
     const model::MldObjectResource& resource,
-    const Sa3Dport::File::NinjaMotionKind kind) {
+    const spice::modeling::File::NinjaMotionKind kind) {
     MotionLayoutResult result{};
     if (!resource.model || !resource.model->model) {
         result.diagnostic = "object resource is not parseable as an NJCM tree";
@@ -394,10 +395,10 @@ struct MotionLayoutResult {
             continue;
         }
 
-        Sa3Dport::Animation::MotionTargetLane lane{
+        spice::modeling::Animation::MotionTargetLane lane{
             .node_index = static_cast<std::uint32_t>(nodeIndex),
         };
-        if (kind == Sa3Dport::File::NinjaMotionKind::Shape) {
+        if (kind == spice::modeling::File::NinjaMotionKind::Shape) {
             if (node->attach_address == 0U) {
                 lane.vertex_count = 0U;
                 lane.normal_count = 0U;
@@ -406,7 +407,7 @@ struct MotionLayoutResult {
                 result.layout.lanes.clear();
                 return result;
             } else {
-                const auto chunkAttach = std::dynamic_pointer_cast<Sa3Dport::Mesh::Chunk::ChunkAttach>(
+                const auto chunkAttach = std::dynamic_pointer_cast<spice::modeling::Mesh::Chunk::ChunkAttach>(
                     node->attach);
                 if (!chunkAttach) {
                     result.diagnostic = "animated node uses an unsupported attach representation for NSSM";
@@ -1351,7 +1352,7 @@ void addCanonicalDiagnostic(model::MldFile& file,
     });
 }
 
-[[nodiscard]] std::shared_ptr<const Sa3Dport::File::ModelFile> readCanonicalModel(
+[[nodiscard]] std::shared_ptr<const spice::modeling::File::ModelFile> readCanonicalModel(
     const ExtractedNjBlock& block) {
     std::vector<std::size_t> offsets{};
     if (block.modelReadOffset.has_value()) {
@@ -1367,8 +1368,8 @@ void addCanonicalDiagnostic(model::MldFile& file,
         }
         try {
             const auto bytes = asByteSpan(block.bytes).subspan(offset);
-            return std::make_shared<const Sa3Dport::File::ModelFile>(
-                Sa3Dport::File::ModelFile::read_from_bytes(bytes));
+            return std::make_shared<const spice::modeling::File::ModelFile>(
+                spice::modeling::File::ModelFile::read_from_bytes(bytes));
         } catch (const std::exception&) {
         }
     }
@@ -1534,10 +1535,10 @@ model::MldFile MldParser::parseBytes(
     SpatialOwnerMap groundOwners{};
     SpatialOwnerMap objectOwners{};
     struct CachedMotionProbe {
-        Sa3Dport::Animation::MotionTargetLayout layout{};
-        Sa3Dport::File::AnimationProbeResult probe{};
+        spice::modeling::Animation::MotionTargetLayout layout{};
+        spice::modeling::File::AnimationProbeResult probe{};
     };
-    std::map<std::pair<std::uint32_t, Sa3Dport::File::NinjaMotionKind>, MotionLayoutResult>
+    std::map<std::pair<std::uint32_t, spice::modeling::File::NinjaMotionKind>, MotionLayoutResult>
         targetLayoutCache{};
     std::map<std::pair<std::uint32_t, std::uint64_t>, std::vector<CachedMotionProbe>>
         motionProbeCache{};
@@ -1607,7 +1608,7 @@ model::MldFile MldParser::parseBytes(
             if (!resource.model) {
                 resource.diagnostics.push_back(model::MldDiagnostic{
                     .severity = model::MldDiagnostic::Severity::Warning,
-                    .message = "Existing Sa3Dport reader could not decode the object resource.",
+                    .message = "Existing SpiceModeling reader could not decode the object resource.",
                     .sourceOffset = sourceAddress,
                 });
             }
@@ -1618,13 +1619,13 @@ model::MldFile MldParser::parseBytes(
             resource.blockOffset = block.offset;
             resource.blockSize = block.size;
             resource.rawBytes = block.bytes;
-            resource.structure = Sa3Dport::File::AnimationFile::parse_structure(
+            resource.structure = spice::modeling::File::AnimationFile::parse_structure(
                 asByteSpan(resource.rawBytes));
             switch (resource.structure.status) {
-            case Sa3Dport::File::NinjaMotionParseStatus::Complete:
+            case spice::modeling::File::NinjaMotionParseStatus::Complete:
                 resource.status = model::MldResourceStatus::Complete;
                 break;
-            case Sa3Dport::File::NinjaMotionParseStatus::Partial:
+            case spice::modeling::File::NinjaMotionParseStatus::Partial:
                 resource.status = model::MldResourceStatus::Partial;
                 break;
             default:
@@ -1725,11 +1726,11 @@ model::MldFile MldParser::parseBytes(
             }
 
             relation.motionKind = resource->second.structure.header.kind;
-            if (relation.motionKind == Sa3Dport::File::NinjaMotionKind::Camera) {
+            if (relation.motionKind == spice::modeling::File::NinjaMotionKind::Camera) {
                 relation.scope = model::MldMotionRelationScope::NoObjectTarget;
                 relation.status = model::MldMotionRelationStatus::Camera;
-                Sa3Dport::Animation::MotionTargetLayout cameraLayout{};
-                cameraLayout.lanes.push_back(Sa3Dport::Animation::MotionTargetLane{.node_index = 0U});
+                spice::modeling::Animation::MotionTargetLayout cameraLayout{};
+                cameraLayout.lanes.push_back(spice::modeling::Animation::MotionTargetLane{.node_index = 0U});
                 const auto signature = motionLayoutSignature(cameraLayout);
                 const auto existing = std::find_if(
                     resource->second.variants.begin(), resource->second.variants.end(),
@@ -1737,12 +1738,12 @@ model::MldFile MldParser::parseBytes(
                         return item.targetLayoutSignature == signature &&
                             item.targetLayout == cameraLayout && !item.shortRot;
                     });
-                auto probe = Sa3Dport::File::AnimationProbeResult{};
+                auto probe = spice::modeling::File::AnimationProbeResult{};
                 probe.valid = existing != resource->second.variants.end();
                 if (!probe.valid) {
-                    probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
+                    probe = spice::modeling::File::AnimationFile::probe_from_bytes(
                         asByteSpan(block->bytes), cameraLayout,
-                        Sa3Dport::Animation::EulerRecordWidth::Full32);
+                        spice::modeling::Animation::EulerRecordWidth::Full32);
                 }
                 if (!probe.valid) {
                     resource->second.diagnostics.push_back(model::MldDiagnostic{
@@ -1752,15 +1753,15 @@ model::MldFile MldParser::parseBytes(
                     });
                 } else if (existing == resource->second.variants.end()) {
                     try {
-                        const auto parsed = Sa3Dport::File::AnimationFile::read_from_bytes(
+                        const auto parsed = spice::modeling::File::AnimationFile::read_from_bytes(
                             asByteSpan(block->bytes), cameraLayout,
-                            Sa3Dport::Animation::EulerRecordWidth::Full32);
+                            spice::modeling::Animation::EulerRecordWidth::Full32);
                         resource->second.variants.push_back(model::MldMotionVariant{
                             .nodeCount = cameraLayout.lane_count(),
                             .shortRot = false,
                             .targetLayoutSignature = signature,
                             .targetLayout = cameraLayout,
-                            .motion = std::make_shared<const Sa3Dport::Animation::Motion>(parsed.animation),
+                            .motion = std::make_shared<const spice::modeling::Animation::Motion>(parsed.animation),
                             .originalSemanticHash = hashBytes(resource->second.rawBytes),
                         });
                         resource->second.variants.back().originalMotion = resource->second.variants.back().motion;
@@ -1776,8 +1777,8 @@ model::MldFile MldParser::parseBytes(
                 continue;
             }
 
-            if (relation.motionKind != Sa3Dport::File::NinjaMotionKind::Node &&
-                relation.motionKind != Sa3Dport::File::NinjaMotionKind::Shape) {
+            if (relation.motionKind != spice::modeling::File::NinjaMotionKind::Node &&
+                relation.motionKind != spice::modeling::File::NinjaMotionKind::Shape) {
                 relation.scope = model::MldMotionRelationScope::StructuralOnly;
                 relation.status = model::MldMotionRelationStatus::NoCompatibleTarget;
                 file.motionRelations.push_back(std::move(relation));
@@ -1829,13 +1830,13 @@ model::MldFile MldParser::parseBytes(
                         const auto cached = std::find_if(cachedProbes.begin(), cachedProbes.end(), [&](const auto& item) {
                             return item.layout == layout.layout;
                         });
-                        Sa3Dport::File::AnimationProbeResult probe{};
+                        spice::modeling::File::AnimationProbeResult probe{};
                         if (cached != cachedProbes.end()) {
                             probe = cached->probe;
                         } else {
-                            probe = Sa3Dport::File::AnimationFile::probe_from_bytes(
+                            probe = spice::modeling::File::AnimationFile::probe_from_bytes(
                                 asByteSpan(block->bytes), layout.layout,
-                                Sa3Dport::Animation::EulerRecordWidth::Full32);
+                                spice::modeling::Animation::EulerRecordWidth::Full32);
                             cachedProbes.push_back(CachedMotionProbe{layout.layout, probe});
                         }
                         candidate.compatible = probe.valid;
@@ -1849,15 +1850,15 @@ model::MldFile MldParser::parseBytes(
                     }
                     if (variant == resource->second.variants.end()) {
                         try {
-                            const auto parsed = Sa3Dport::File::AnimationFile::read_from_bytes(
+                            const auto parsed = spice::modeling::File::AnimationFile::read_from_bytes(
                                 asByteSpan(block->bytes), layout.layout,
-                                Sa3Dport::Animation::EulerRecordWidth::Full32);
+                                spice::modeling::Animation::EulerRecordWidth::Full32);
                             resource->second.variants.push_back(model::MldMotionVariant{
                                 .nodeCount = layout.layout.lane_count(),
                                 .shortRot = false,
                                 .targetLayoutSignature = candidate.targetLayoutSignature,
                                 .targetLayout = layout.layout,
-                                .motion = std::make_shared<const Sa3Dport::Animation::Motion>(parsed.animation),
+                                .motion = std::make_shared<const spice::modeling::Animation::Motion>(parsed.animation),
                                 .originalSemanticHash = hashBytes(resource->second.rawBytes),
                             });
                             resource->second.variants.back().originalMotion = resource->second.variants.back().motion;
@@ -1913,7 +1914,7 @@ model::MldFile MldParser::parseBytes(
 
     for (auto& [_, resource] : file.motionResources) {
         if (resource.status == model::MldResourceStatus::Complete &&
-            (resource.structure.header.kind == Sa3Dport::File::NinjaMotionKind::Unknown ||
+            (resource.structure.header.kind == spice::modeling::File::NinjaMotionKind::Unknown ||
              resource.variants.empty()))
             resource.status = model::MldResourceStatus::Partial;
     }
@@ -2143,7 +2144,7 @@ ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& o
 
         for (const auto& relation : file.motionRelations) {
             if (relation.scope != model::MldMotionRelationScope::NoObjectTarget ||
-                relation.motionKind != Sa3Dport::File::NinjaMotionKind::Camera) {
+                relation.motionKind != spice::modeling::File::NinjaMotionKind::Camera) {
                 continue;
             }
             const auto resource = file.motionResources.find(relation.motionAddress);

@@ -300,7 +300,6 @@ std::optional<MldTextureSelector> parseTextureSelector(OptionReader& reader) {
 std::string commandHelp(std::string_view command) {
     const std::string prefix = "Usage:\n  SpiceGrinder " + std::string(command) + " ";
     if (command == "parse-mld") return prefix + "--input <dir> --output <dir> [--extract-grnd-gobj-blocks] [--decompressed-output <dir>]\n";
-    if (command == "compare-mld-sa3d") return prefix + "--input <dir> --output <dir> [--extract-grnd-gobj-blocks] [--decompressed-output <dir>]\n";
     if (command == "export-mld-entry-list") return prefix + "--input <dir> --output <dir> [--decompressed-output <dir>]\n";
     if (command == "inventory-mld-gvr-formats") return prefix + "--input <dir> --output <dir> [--decompressed-output <dir>]\n";
     if (command == "replace-mld-texture") return prefix + "--source <mld> --replacement <png> --output <mld> (--texture-index <n>|--texture-name <name>) [encoding options]\n";
@@ -328,7 +327,7 @@ std::string commandHelp(std::string_view command) {
 
 const std::unordered_set<std::string_view>& commands() {
     static const std::unordered_set<std::string_view> result{
-        "parse-mld", "compare-mld-sa3d", "export-mld-entry-list", "inventory-mld-gvr-formats",
+        "parse-mld", "export-mld-entry-list", "inventory-mld-gvr-formats",
         "replace-mld-texture", "extract-mld-texture-gvr", "extract-mld-texture-png",
         "parse-sct", "export-sct", "export-sml-research", "export-std-json", "export-mlk-corpus",
         "export-mlk-blender-ir", "export-content-graph", "export-alx-enemy-events", "create-gvr",
@@ -346,7 +345,6 @@ std::string globalHelp() {
         "  SpiceGrinder <command> [options]\n\n"
         "Commands:\n"
         "  parse-mld                    Parse MLD files and export summaries/Blender IR.\n"
-        "  compare-mld-sa3d             Compare MLD parsing with the SA3D reference bridge.\n"
         "  export-mld-entry-list        Export compact MLD entry lists.\n"
         "  inventory-mld-gvr-formats   Inventory embedded GVR formats in MLD files.\n"
         "  replace-mld-texture          Replace one embedded MLD texture.\n"
@@ -390,12 +388,6 @@ ParseResult parse(std::span<const std::string_view> arguments) {
 
     if (command == "parse-mld") {
         ParseMldRequest request{};
-        parseDirectoryPaths(reader, request, true);
-        request.extractGrndGobjBlocks = reader.flag("--extract-grnd-gobj-blocks");
-        return reader.finish() ? run(request) : error(reader.errorText());
-    }
-    if (command == "compare-mld-sa3d") {
-        CompareMldSa3dRequest request{};
         parseDirectoryPaths(reader, request, true);
         request.extractGrndGobjBlocks = reader.flag("--extract-grnd-gobj-blocks");
         return reader.finish() ? run(request) : error(reader.errorText());

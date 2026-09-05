@@ -1,4 +1,8 @@
 #include "../../SpiceMLD/SpiceMLD.h"
+#include "../../SpiceMLD/Analysis/MldGvrFormatInventory.h"
+#include "../../SpiceMLD/Export/MldFileExporter.h"
+#include "../../SpiceMLD/Export/MldEntryListJsonExporter.h"
+#include "../../SpiceMLD/Parsing/MldParser.h"
 #include "../../SpiceMlk/SpiceMlk.h"
 #include "../../SpiceSstSml/SpiceSstSml.h"
 #include "../../SpiceSCT/SpiceSCT.h"
@@ -6,12 +10,6 @@
 #include "../../SpiceContentGraph/SpiceContentGraph.h"
 #include "../../SpiceGvm/SpiceGvm.h"
 #include "../../Compression/Aklz.h"
-#include "../../Sa3Dport/Testing/Slice2TestApi.h"
-#include "../../Sa3Dport/Testing/Slice5TestApi.h"
-#include "../../Sa3Dport/Testing/Slice6TestApi.h"
-#include "../../Sa3Dport/Testing/Slice7TestApi.h"
-#include "../../Sa3Dport/Testing/Slice8TestApi.h"
-#include "../../Sa3Dport/Testing/Slice9TestApi.h"
 #include "../AlxEnemyEventExport.h"
 #include "OperationExecution.h"
 #include "DreamcastParityAudit.h"
@@ -87,7 +85,6 @@ bool writeAllBytesCreatingParents(const std::filesystem::path& path, std::span<c
 #include "SctSmlOperations.inl"
 enum class DirectoryOperationKind {
     ParseMld,
-    CompareMldSa3d,
     ExportMldEntryList,
     InventoryMldGvrFormats,
     ParseSct,
@@ -187,7 +184,6 @@ namespace {
 int executeDirectoryOperation(
     const DirectoryOperation& operation,
     spice::mix::OperationContext& context) {
-    const std::filesystem::path processDir = context.executableDirectory;
     const std::filesystem::path inputDir = operation.paths.input;
     const std::filesystem::path outputDir = operation.paths.output;
 
@@ -207,9 +203,6 @@ int executeDirectoryOperation(
     if (operation.paths.decompressedOutput.has_value()) {
         std::filesystem::create_directories(*operation.paths.decompressedOutput);
     }
-    if (operation.kind == DirectoryOperationKind::CompareMldSa3d) {
-        writeFixtureManifestFromInputDir(inputDir, outputDir);
-    }
     emit(context, spice::mix::EventLevel::Progress,
         "Step 2/4: Prepared directories.");
 
@@ -220,8 +213,6 @@ int executeDirectoryOperation(
         "Step 3/4: Parsing input files...");
 
     std::size_t filesProcessed = 0;
-    constexpr int kAbStartSlice = 1;
-    constexpr int kAbEndSlice = 9;
     spice::contentgraph::ContentGraphCorpusInput contentGraphInput{};
     spice::mld::analysis::MldGvrFormatInventoryBuilder mldGvrFormatInventoryBuilder{};
 
@@ -506,8 +497,7 @@ int executeDirectoryOperation(
             continue;
         }
 
-        if ((operation.kind == DirectoryOperationKind::CompareMldSa3d
-                || operation.kind == DirectoryOperationKind::ExportMldEntryList
+        if ((operation.kind == DirectoryOperationKind::ExportMldEntryList
                 || operation.kind == DirectoryOperationKind::InventoryMldGvrFormats)
             && extension != ".mld") {
             continue;
@@ -642,70 +632,7 @@ int executeDirectoryOperation(
                 continue;
             }
 
-            if (operation.kind == DirectoryOperationKind::CompareMldSa3d) {
-                spice::mld::parsing::ParseOptions sa3dPortOptions{};
-                sa3dPortOptions.extractGrndGobjBlocks = operation.extractGrndGobjBlocks;
-                auto sa3dPortParsed = mldParser.project(mldFile, sa3dPortOptions);
-
-                const auto sa3dPortOutPath = outputDir / (entry.path().stem().string() + ".mld.sa3d_port.txt");
-                std::ofstream sa3dPortOut(sa3dPortOutPath, std::ios::binary);
-                sa3dPortOut << spice::mld::parsing::formatParseSummary(sa3dPortParsed);
-                if (operation.extractGrndGobjBlocks) {
-                    writeExtractedSpatialBlocks(context, outputDir, entry.path().stem().string(), sa3dPortParsed.extractedSpatialBlocks);
-                }
-
-                const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".sa3d_port.json");
-                std::ofstream jsonOut(jsonOutPath, std::ios::binary);
-                if (sa3dPortParsed.blenderIrScene.has_value()) {
-                    jsonOut << exporter.toJson(*sa3dPortParsed.blenderIrScene).c_str();
-                }
-
-                std::vector<std::filesystem::path> bridgeReportPaths{};
-                std::vector<std::filesystem::path> blockInputPaths{};
-                std::vector<spice::mld::parsing::ExtractedNjBlock> validBlocks{};
-                for (const auto& block : sa3dPortParsed.extractedNjBlocks) {
-                    const auto normalizedBlock = normalizeBlockForSa3dBridge(block);
-                    if (!normalizedBlock.has_value()) {
-                        continue;
-                    }
-
-                    const auto kindLabel = toBlockKindLabel(normalizedBlock->kind);
-                    const auto pairLabel = normalizedBlock->includesNjtlPrefix ? "_njtl_njcm" : "";
-                    const auto blockStem = entry.path().stem().string() + ".block_" + std::to_string(normalizedBlock->offset) + "_" + kindLabel + pairLabel;
-                    const auto blockInputPath = outputDir / (blockStem + ".njblk.bin");
-                    if (!writeAllBytes(blockInputPath, std::span<const std::uint8_t>(normalizedBlock->bytes.data(), normalizedBlock->bytes.size()))) {
-                        emit(context, spice::mix::EventLevel::Warning,
-                            "WARNING: failed to write extracted NJ block input: ",
-                            blockInputPath.string());
-                        continue;
-                    }
-                    blockInputPaths.push_back(blockInputPath);
-                    validBlocks.push_back(*normalizedBlock);
-                }
-
-                const auto blockManifestPath = outputDir / (entry.path().stem().string() + ".block_manifest.json");
-                writeFixtureBlockManifest(blockManifestPath, entry.path().stem().string(), blockInputPaths, validBlocks);
-
-                for (int slice = kAbStartSlice; slice <= kAbEndSlice; ++slice) {
-                    if (context.stopToken.stop_requested()) {
-                        break;
-                    }
-                    const auto bridgeReportPath = maybeInvokeDotnetBridge(
-                        context,
-                        processDir,
-                        entry.path(),
-                        outputDir,
-                        outputDir / "FIXTURE_MANIFEST.generated.json",
-                        blockManifestPath,
-                        slice);
-                    if (bridgeReportPath.has_value()) {
-                        bridgeReportPaths.push_back(*bridgeReportPath);
-                    }
-                }
-
-                const auto compareOutPath = outputDir / (entry.path().stem().string() + ".mld.ab.compare.txt");
-                writeBridgeAbComparison(compareOutPath, sa3dPortParsed, validBlocks, bridgeReportPaths);
-            } else {
+            {
                 spice::mld::parsing::ParseOptions parityOptions{};
                 parityOptions.extractGrndGobjBlocks = operation.extractGrndGobjBlocks;
                 auto parityParsed = mldParser.project(mldFile, parityOptions);
@@ -830,14 +757,6 @@ DirectoryOperation makeDirectoryOperation(const spice::mix::ParseMldRequest& req
     return operation;
 }
 
-DirectoryOperation makeDirectoryOperation(const spice::mix::CompareMldSa3dRequest& request) {
-    DirectoryOperation operation{};
-    operation.kind = DirectoryOperationKind::CompareMldSa3d;
-    operation.paths = request.paths;
-    operation.extractGrndGobjBlocks = request.extractGrndGobjBlocks;
-    return operation;
-}
-
 DirectoryOperation makeDirectoryOperation(const spice::mix::ExportMldEntryListRequest& request) {
     DirectoryOperation operation{};
     operation.kind = DirectoryOperationKind::ExportMldEntryList;
@@ -954,9 +873,6 @@ int executeOperationRequest(
         "Step 1/4: Initializing operation.");
     return std::visit(Overloaded{
         [&](const spice::mix::ParseMldRequest& value) {
-            return executeDirectoryOperation(makeDirectoryOperation(value), context);
-        },
-        [&](const spice::mix::CompareMldSa3dRequest& value) {
             return executeDirectoryOperation(makeDirectoryOperation(value), context);
         },
         [&](const spice::mix::ExportMldEntryListRequest& value) {

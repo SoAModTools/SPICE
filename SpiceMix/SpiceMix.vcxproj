@@ -104,7 +104,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SpiceRepoRoot)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SpiceRepoRoot)SpiceModeling;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -118,7 +118,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <UseStandardPreprocessor>true</UseStandardPreprocessor>
-      <AdditionalIncludeDirectories>$(SolutionDir);$(SpiceRepoRoot)Sa3Dport;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SpiceRepoRoot)SpiceModeling;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -201,7 +201,7 @@
     <ProjectReference Include="..\SpiceTrade\SpiceTrade.vcxproj">
       <Project>{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\Sa3Dport\Sa3Dport.vcxproj">
+    <ProjectReference Include="..\SpiceModeling\SpiceModeling.vcxproj">
       <Project>{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}</Project>
     </ProjectReference>
   </ItemGroup>

@@ -5,8 +5,8 @@
 #include "MldGroundModel.h"
 #include "MldDiagnostics.h"
 #include "MldTextureArchiveModel.h"
-#include "../../Sa3Dport/Animation/MotionTargetLayout.h"
-#include "../../Sa3Dport/File/NinjaMotionBlock.h"
+#include "../../SpiceModeling/Animation/MotionTargetLayout.h"
+#include "../../SpiceModeling/File/NinjaMotionBlock.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -16,11 +16,11 @@
 #include <string>
 #include <vector>
 
-namespace Sa3Dport::File {
+namespace spice::modeling::File {
 class ModelFile;
 }
 
-namespace Sa3Dport::Animation {
+namespace spice::modeling::Animation {
 struct Motion;
 }
 
@@ -101,8 +101,8 @@ struct MldObjectResource {
     std::optional<std::uint32_t> textureListOffset{};
     std::string wrapperLayout{};
     std::vector<std::uint8_t> rawBytes{};
-    std::shared_ptr<const Sa3Dport::File::ModelFile> model{};
-    std::shared_ptr<const Sa3Dport::File::ModelFile> originalModel{};
+    std::shared_ptr<const spice::modeling::File::ModelFile> model{};
+    std::shared_ptr<const spice::modeling::File::ModelFile> originalModel{};
     std::uint64_t originalSemanticHash = 0;
     std::vector<MldDiagnostic> diagnostics{};
 };
@@ -111,9 +111,9 @@ struct MldMotionVariant {
     std::uint32_t nodeCount = 0;
     bool shortRot = false;
     std::uint64_t targetLayoutSignature = 0;
-    Sa3Dport::Animation::MotionTargetLayout targetLayout{};
-    std::shared_ptr<const Sa3Dport::Animation::Motion> motion{};
-    std::shared_ptr<const Sa3Dport::Animation::Motion> originalMotion{};
+    spice::modeling::Animation::MotionTargetLayout targetLayout{};
+    std::shared_ptr<const spice::modeling::Animation::Motion> motion{};
+    std::shared_ptr<const spice::modeling::Animation::Motion> originalMotion{};
     std::uint64_t originalSemanticHash = 0;
 };
 
@@ -123,7 +123,7 @@ struct MldMotionResource {
     std::uint32_t blockOffset = 0;
     std::size_t blockSize = 0;
     std::vector<std::uint8_t> rawBytes{};
-    Sa3Dport::File::NinjaMotionBlock structure{};
+    spice::modeling::File::NinjaMotionBlock structure{};
     std::vector<MldMotionVariant> variants{};
     std::vector<MldDiagnostic> diagnostics{};
 };
@@ -157,7 +157,7 @@ struct MldEntryMotionRelation {
     std::uint32_t sourceEntryId = 0;
     std::size_t motionSlot = 0;
     std::uint32_t motionAddress = 0;
-    Sa3Dport::File::NinjaMotionKind motionKind = Sa3Dport::File::NinjaMotionKind::Unknown;
+    spice::modeling::File::NinjaMotionKind motionKind = spice::modeling::File::NinjaMotionKind::Unknown;
     MldMotionRelationScope scope = MldMotionRelationScope::StructuralOnly;
     std::vector<MldMotionTargetCandidate> targetCandidates{};
     MldMotionRelationStatus status = MldMotionRelationStatus::NoCompatibleTarget;

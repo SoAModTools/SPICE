@@ -25,6 +25,13 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="MldBlenderIrProjector.h" />
+    <ClInclude Include="MldDocument.h" />
+    <ClInclude Include="MldDocumentImporter.h" />
+    <ClInclude Include="MldDocumentValidator.h" />
+    <ClInclude Include="MldDocumentWriter.h" />
+    <ClInclude Include="Internal\MldDocumentReceiptState.h" />
+    <ClInclude Include="Internal\MldGroundDocumentConversion.h" />
     <ClInclude Include="Analysis\MldGvrFormatInventory.h">
       <Filter>Analysis</Filter>
     </ClInclude>
@@ -111,6 +118,11 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="MldBlenderIrProjector.cpp" />
+    <ClCompile Include="MldDocument.cpp" />
+    <ClCompile Include="MldDocumentImporter.cpp" />
+    <ClCompile Include="MldDocumentValidator.cpp" />
+    <ClCompile Include="MldDocumentWriter.cpp" />
     <ClCompile Include="Analysis\MldGvrFormatInventory.cpp">
       <Filter>Analysis</Filter>
     </ClCompile>

@@ -55,7 +55,6 @@
   <ItemGroup><ProjectReference Include="..\SpiceMix\SpiceMix.vcxproj"><Project>{92E102AE-65E7-4C12-98B1-3C5EBDCE83A0}</Project></ProjectReference></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Condition="Exists('$(QtMsBuild)\qt.targets')"><Import Project="$(QtMsBuild)\qt.targets" /></ImportGroup>
-  <Import Project="..\SpiceMix\SpiceMixRuntime.targets" />
   <Target Name="DeploySpiceRackQt" AfterTargets="Build" Condition="'$(DesignTimeBuild)'!='true'">
     <PropertyGroup><SpiceRackDeployMode Condition="'$(Configuration)'=='Debug'">--debug</SpiceRackDeployMode><SpiceRackDeployMode Condition="'$(Configuration)'!='Debug'">--release</SpiceRackDeployMode></PropertyGroup>
     <Error Condition="!Exists('$(QtInstallDir)\bin\windeployqt.exe')" Text="SpiceRack Qt deployment tool was not found at '$(QtInstallDir)\bin\windeployqt.exe'." />

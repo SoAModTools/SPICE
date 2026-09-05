@@ -41,18 +41,14 @@ struct MldEntrySnapshot {
     std::size_t objectCount = 0;
     std::size_t groundCount = 0;
     std::size_t motionCount = 0;
-    std::uint32_t texturesPointer = 0;
+    std::uint32_t textureListId = 0;
 };
 
 struct MldU32ListSnapshot {
-    std::uint32_t pointer = 0;
-    bool valid = false;
     std::vector<std::uint32_t> values{};
 };
 
 struct MldStringListSnapshot {
-    std::uint32_t pointer = 0;
-    bool valid = false;
     std::vector<std::string> values{};
 };
 
@@ -61,9 +57,9 @@ struct MldEntryDetailSnapshot {
     MldU32ListSnapshot groundLinks{};
     MldU32ListSnapshot paramList2{};
     MldU32ListSnapshot functionParameters{};
-    MldU32ListSnapshot objectAddresses{};
-    MldU32ListSnapshot groundAddresses{};
-    MldU32ListSnapshot motionAddresses{};
+    MldU32ListSnapshot objectIds{};
+    MldU32ListSnapshot groundIds{};
+    MldU32ListSnapshot motionIds{};
     MldStringListSnapshot textureNames{};
 };
 

@@ -6,7 +6,7 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Compression", "Compression\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceRoot", "SpiceRoot\SpiceRoot.vcxproj", "{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Sa3Dport", "Sa3Dport\Sa3Dport.vcxproj", "{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceModeling", "SpiceModeling\SpiceModeling.vcxproj", "{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceGvm", "SpiceGvm\SpiceGvm.vcxproj", "{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}"
 EndProject
@@ -45,10 +45,6 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceGrinder", "SpiceGrinder\SpiceGrinder.vcxproj", "{5D3077BE-5394-4707-8080-378AB630E54D}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "SpiceRack", "SpiceRack\SpiceRack.vcxproj", "{63884A71-F9D6-4B1B-B872-2DCA76359940}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SA3DRefRunner", "tools\sa3d_ref_runner\SA3DRefRunner.csproj", "{31E00E18-8936-0269-3A5A-6095F03E8447}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SA3D.Modeling", "third-party\SA3D.Modeling\src\SA3D.Modeling\SA3D.Modeling.csproj", "{5C24B79B-F710-961F-A834-73CD2EA72F0A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -144,14 +140,6 @@ Global
 		{63884A71-F9D6-4B1B-B872-2DCA76359940}.Debug|x64.Build.0 = Debug|x64
 		{63884A71-F9D6-4B1B-B872-2DCA76359940}.Release|x64.ActiveCfg = Release|x64
 		{63884A71-F9D6-4B1B-B872-2DCA76359940}.Release|x64.Build.0 = Release|x64
-		{31E00E18-8936-0269-3A5A-6095F03E8447}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{31E00E18-8936-0269-3A5A-6095F03E8447}.Debug|x64.Build.0 = Debug|Any CPU
-		{31E00E18-8936-0269-3A5A-6095F03E8447}.Release|x64.ActiveCfg = Release|Any CPU
-		{31E00E18-8936-0269-3A5A-6095F03E8447}.Release|x64.Build.0 = Release|Any CPU
-		{5C24B79B-F710-961F-A834-73CD2EA72F0A}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{5C24B79B-F710-961F-A834-73CD2EA72F0A}.Debug|x64.Build.0 = Debug|Any CPU
-		{5C24B79B-F710-961F-A834-73CD2EA72F0A}.Release|x64.ActiveCfg = Release|Any CPU
-		{5C24B79B-F710-961F-A834-73CD2EA72F0A}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
