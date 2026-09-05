@@ -1,6 +1,8 @@
 #pragma once
 
-#include "StdFileWriter.h"
+#include "StdDocument.h"
+#include "StdDocumentImporter.h"
+#include "StdDocumentValidator.h"
+#include "StdDocumentWriter.h"
 #include "StdJsonExporter.h"
-#include "StdParser.h"
 #include "StdUsage.h"

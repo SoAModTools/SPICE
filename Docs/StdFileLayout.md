@@ -1,63 +1,29 @@
 # STD File Layout
 
-STD data is big-endian after AKLZ decompression. Two related serialized forms are known: action-row tables named like `%s_STD` and entry/payload tables named like `%s0_STD`.
+`SpiceStd` imports STD bytes into a platform-neutral `StdDocument`. Platform and compression are explicit I/O policy: Dreamcast output is little-endian, GameCube output is big-endian, and either may be raw or AKLZ-compressed. AKLZ is therefore not evidence of platform or byte order.
 
-## Action-Row Table
+## Action-Row Layout
 
-The header is `0x10` bytes and rows begin immediately afterward.
+The header is `0x10` bytes followed by one or more `0x18`-byte rows. The serialized row count and total span are derived when writing.
 
-| Header offset | Size | Field | Meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 2 | `commandLow` | Low half of the combined table kind. |
-| `0x02` | 2 | `commandHigh` | High half of the combined table kind. |
-| `0x04` | 4 | `loaderContextWord` | Preserved source word. |
-| `0x08` | 4 | `rowCount` | Number of `0x18`-byte action rows. |
-| `0x0C` | 4 | `rowTablePointer` | Preserved source word. |
-
-The known action table kind is `(commandHigh << 16) | commandLow == 0x00010000`.
-
-Each action row is `0x18` bytes:
-
-| Row offset | Size | Field |
+| Offset | Size | Document field |
 | --- | ---: | --- |
-| `0x00` | 2 | Signed action ID |
-| `0x02` | 2 | Signed row type |
-| `0x04` | 2 | Callback index |
-| `0x06` | 2 | Callback-local ordinal |
-| `0x08` | 4 | Flags |
-| `0x0C` | 2 | Secondary key |
-| `0x0E` | 2 | Callback-local auxiliary parameter |
-| `0x10` | 4 | Callback-local timing or gate value |
-| `0x14` | 4 | Callback-local progress value |
+| `0x00` | 2 | `rawCommandLow` |
+| `0x02` | 2 | `rawCommandHigh` |
+| `0x04` | 4 | `rawLoaderContextWord` |
+| `0x08` | 4 | Derived row count |
+| `0x0C` | 4 | `rawRowTablePointerWord` |
 
-Fields after the callback index are interpreted by the selected callback family and otherwise remain opaque.
+Each row stores an action ID, row type, callback index, flags, and secondary key. Fields at `+0x06`, `+0x0E`, `+0x10`, and `+0x14` retain neutral raw names until their callback-specific semantics are established. Stable row IDs belong to the document and are not serialized.
 
-## Entry/Payload Table
+## Entry-Table Layout
 
-The header is `0x10` bytes.
+The `0x10`-byte header contains a record count including the terminator, kind `4`, two preserved raw words, and the decoded span after the header. Ordinary `0x10`-byte records contain signed location and opcode fields, a raw word at `+0x04`, a derived payload size, and a derived payload offset relative to decoded `+0x10`.
 
-| Header offset | Size | Field | Meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 2 | `recordCountIncludingSentinel` | Entry count including the terminating row. |
-| `0x02` | 2 | `kind` | Table kind. |
-| `0x04` | 4 | `reserved0` | Preserved. |
-| `0x08` | 4 | `reserved1` | Preserved. |
-| `0x0C` | 4 | `decodedSpanMinusHeader` | Decoded file size minus `0x10`. |
+The last record is a distinct terminator whose location is negative. Its other three words are preserved as raw data and do not describe a payload. A terminator-only table is valid.
 
-Entry records start at `0x10`, have a `0x10`-byte stride, and end at the first negative `locationCode`.
+Payloads are owned entities referenced by stable IDs. The payload area independently records payload order and explicit opaque gaps or trailing fragments. Writing rebuilds all physical offsets and sizes. Combined type `0x0003002A` with size `0x24` is decoded as `StdActionViewPayload`; every other payload remains bounded opaque bytes.
 
-| Entry offset | Size | Field | Meaning |
-| --- | ---: | --- | --- |
-| `0x00` | 2 | `locationCode` | Signed location or type ID; negative terminates the table. |
-| `0x02` | 2 | `opcode` | Signed type group. |
-| `0x04` | 4 | `field2` | Preserved type-specific word. |
-| `0x08` | 4 | `payloadSize` | Payload size in bytes. |
-| `0x0C` | 4 | `payloadOffset` | Offset relative to decoded file `+0x10`. |
+## Opaque Preservation
 
-The combined payload type is:
-
-```text
-(opcode << 16) | locationCode
-```
-
-Payloads are bounded by the entry’s size and offset. Unknown payload bodies and unused header fields must be preserved.
+Genuinely unrecognized nonempty input may be imported as top-level opaque content only when byte order is caller-specified. Opaque content requires the matching import receipt for output and may only be emitted with the same byte order. Top-level opaque bytes must remain identical; recognized documents may edit or relocate receipt-backed bounded opaque payloads and fragments.

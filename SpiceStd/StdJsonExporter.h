@@ -1,6 +1,6 @@
 #pragma once
 
-#include "StdModel.h"
+#include "StdDocumentImporter.h"
 
 #include <string>
 
@@ -8,7 +8,8 @@ namespace spice::stdfile {
 
 class StdJsonExporter {
 public:
-    [[nodiscard]] std::string toJson(const StdFile& file) const;
+    [[nodiscard]] std::string toJson(const StdDocumentImportResult& imported) const;
+    [[nodiscard]] std::string toJson(const StdDocument& document) const;
 };
 
 } // namespace spice::stdfile

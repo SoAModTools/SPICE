@@ -2,12 +2,14 @@
 
 ## Current Support
 
-SPICE recognizes the two STD forms in little-endian raw Dreamcast files and big-endian raw or AKLZ-wrapped GameCube files: fixed action-row tables and sentinel-terminated entry tables with separately addressed payloads. It records source endian, supports a forced-endian research path, and preserves that endian when writing. AKLZ output remains GameCube-only.
+`SpiceStd` provides the canonical pipeline `STD bytes -> StdDocument + receipt -> validation -> target bytes`. It recognizes action-row documents and kind-4 entry tables, including terminator-only entry tables. Import accepts raw or AKLZ input in either byte order, auto-detects byte order from decoded structure, and supports an authoritative caller override.
 
-Action rows and entry payloads are intentionally separate models. An action row selects a callback family; an entry’s combined opcode/location code selects a payload family. Shared action keys can relate the two at runtime, but they do not make them one serialized table.
+The editable document contains semantic and layout state only. Source path, hashes, sizes, compression, detected byte order, and opaque-preservation evidence live in the separate import receipt. Writers accept independent platform and compression choices, supporting raw and AKLZ output for both Dreamcast and GameCube byte orders.
 
-## Known Limitations
+Entry-table output derives record counts, spans, payload sizes, and offsets after insertion, deletion, reordering, or payload resizing. Stable typed local IDs keep document references independent of vector position. Diagnostics expose stable codes, severity, text, and optional decoded offsets.
 
-Many action-row fields are callback-local, and many payload fields are mode- or flag-dependent. They cannot be edited safely from their offset alone. Unknown callback indices, flags, modes, and entry types remain preserve-only. Runtime-created rows and runtime pointer fixups are not source records and are never synthesized as file content.
+## Deliberate Limits
 
-Current semantic support is strongest for selected camera, icon, stream, sound/effect, character, and model-placement payload families, but some field labels remain provisional.
+Only combined type `0x0003002A` is currently a typed action-view payload. Other entry payloads and payload-area gaps are preserved as opaque content and cannot cross byte order. Top-level opaque documents are preservation surfaces rather than semantic editing surfaces.
+
+`StdUsage` remains a source-oriented research utility, and the JSON exporter remains a secondary interchange tool. Cross-file links to MLD, combatants, actions, or other systems are consumer-owned. Additional payload semantics await evidence and consumer feedback before the mutable contract is considered for freezing.

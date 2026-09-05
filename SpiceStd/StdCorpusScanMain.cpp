@@ -1,12 +1,14 @@
-#include "StdFileWriter.h"
-#include "StdParser.h"
+#include "StdDocumentImporter.h"
+#include "StdDocumentWriter.h"
 #include "StdUsage.h"
+#include "../Compression/Aklz.h"
 
 #include <algorithm>
 #include <cctype>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -66,14 +68,18 @@ RoundTripSmokeResult runRoundTripSmoke(const std::filesystem::path& inputPath)
     result.fileCount = paths.size();
 
     for (const auto& path : paths) {
-        const auto parsed = spice::stdfile::parseFile(path);
-        if (parsed.parseStatus != spice::stdfile::StdParseStatus::Complete) {
-            addRoundTripFailure(result, path, std::string("parseStatus=") + spice::stdfile::toString(parsed.parseStatus));
+        const auto parsed = spice::stdfile::StdDocumentImporter::importFile(path);
+        if (!parsed.ok()) {
+            addRoundTripFailure(result, path,
+                parsed.diagnostics.empty() ? "import failed" : parsed.diagnostics.front().message);
             continue;
         }
         ++result.completeParseCount;
 
-        const auto written = spice::stdfile::StdFileWriter{}.write(parsed);
+        const auto platform = parsed.receipt.byteOrder == spice::root::Endian::Little
+            ? spice::stdfile::StdPlatform::Dreamcast : spice::stdfile::StdPlatform::GameCube;
+        const auto written = spice::stdfile::StdDocumentWriter::write(
+            *parsed.document, { platform, parsed.receipt.compression }, &parsed.receipt);
         if (!written.ok()) {
             addRoundTripFailure(
                 result,
@@ -81,8 +87,19 @@ RoundTripSmokeResult runRoundTripSmoke(const std::filesystem::path& inputPath)
                 written.diagnostics.empty() ? "writer failed" : written.diagnostics.front().message);
             continue;
         }
-        if (written.bytes != parsed.rawBytes) {
-            addRoundTripFailure(result, path, "writer output did not exactly match original source bytes");
+        std::ifstream input(path, std::ios::binary);
+        const std::vector<std::uint8_t> original{
+            std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
+        if (parsed.receipt.compression == spice::stdfile::StdCompression::None) {
+            if (written.bytes != original) {
+                addRoundTripFailure(result, path, "raw writer output did not exactly match the source bytes");
+            }
+        } else {
+            const auto originalDecoded = spice::compression::aklz::decompress(original);
+            const auto writtenDecoded = spice::compression::aklz::decompress(written.bytes);
+            if (!originalDecoded.ok() || !writtenDecoded.ok() || originalDecoded.bytes != writtenDecoded.bytes) {
+                addRoundTripFailure(result, path, "AKLZ writer output did not decode exactly to the source payload");
+            }
         }
     }
 

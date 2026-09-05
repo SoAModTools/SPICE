@@ -24,11 +24,14 @@
     <ClInclude Include="SpiceStd.h">
       <Filter>EntryPoint</Filter>
     </ClInclude>
-    <ClInclude Include="StdModel.h">
+    <ClInclude Include="StdDocument.h">
       <Filter>Model</Filter>
     </ClInclude>
-    <ClInclude Include="StdParser.h">
+    <ClInclude Include="StdDocumentImporter.h">
       <Filter>Parser</Filter>
+    </ClInclude>
+    <ClInclude Include="StdDocumentValidator.h">
+      <Filter>Writer</Filter>
     </ClInclude>
     <ClInclude Include="StdUsage.h">
       <Filter>Usage</Filter>
@@ -36,16 +39,25 @@
     <ClInclude Include="StdJsonExporter.h">
       <Filter>Json</Filter>
     </ClInclude>
-    <ClInclude Include="StdFileWriter.h">
+    <ClInclude Include="StdDocumentWriter.h">
       <Filter>Writer</Filter>
+    </ClInclude>
+    <ClInclude Include="StdSha256.h">
+      <Filter>Parser</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SpiceStd.cpp">
       <Filter>EntryPoint</Filter>
     </ClCompile>
-    <ClCompile Include="StdParser.cpp">
+    <ClCompile Include="StdDocument.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="StdDocumentImporter.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="StdDocumentValidator.cpp">
+      <Filter>Writer</Filter>
     </ClCompile>
     <ClCompile Include="StdUsage.cpp">
       <Filter>Usage</Filter>
@@ -53,8 +65,11 @@
     <ClCompile Include="StdJsonExporter.cpp">
       <Filter>Json</Filter>
     </ClCompile>
-    <ClCompile Include="StdFileWriter.cpp">
+    <ClCompile Include="StdDocumentWriter.cpp">
       <Filter>Writer</Filter>
+    </ClCompile>
+    <ClCompile Include="StdSha256.cpp">
+      <Filter>Parser</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

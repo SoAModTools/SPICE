@@ -316,7 +316,7 @@ int executeDirectoryOperation(
             emit(context, spice::mix::EventLevel::Progress,
                 "  - Exporting STD JSON: ", entry.path().filename().string());
             try {
-                const auto parsed = spice::stdfile::parseFile(entry.path());
+                const auto parsed = spice::stdfile::StdDocumentImporter::importFile(entry.path());
                 const auto jsonOutPath = outputDir / (entry.path().stem().string() + ".std.json");
                 std::ofstream jsonOut(jsonOutPath, std::ios::binary);
                 jsonOut << spice::stdfile::StdJsonExporter{}.toJson(parsed);

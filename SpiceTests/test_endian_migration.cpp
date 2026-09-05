@@ -8,8 +8,8 @@
 #include "../SpiceRoot/Binary/EndianReader.h"
 #include "../SpiceRoot/Binary/EndianWriter.h"
 #include "../SpiceSstSml/SstSmlDocumentImporter.h"
-#include "../SpiceStd/StdFileWriter.h"
-#include "../SpiceStd/StdParser.h"
+#include "../SpiceStd/StdDocumentImporter.h"
+#include "../SpiceStd/StdDocumentWriter.h"
 
 #include <gtest/gtest.h>
 
@@ -155,19 +155,19 @@ TEST(SpiceEndianMigration, RejectsMixedEndianPairsAndRecordsForcedEndian) {
 }
 
 TEST(SpiceEndianMigration, StdPreservesLittleEndianThroughEditingAndWriting) {
-    auto parsed = spice::stdfile::parseBytes(makeStd(Endian::Little));
+    auto parsed = spice::stdfile::StdDocumentImporter::importBytes(makeStd(Endian::Little));
     ASSERT_TRUE(parsed.ok());
-    ASSERT_EQ(parsed.sourceEndian, Endian::Little);
-    parsed.actionRows.rows[0].flags = 0x89ABCDEFU;
-    const auto written = spice::stdfile::StdFileWriter{}.write(parsed, {
-        .sourceEncoding = spice::stdfile::StdSourceEncoding::Plain,
-        .preserveExactSourceWhenUnchanged = false,
-    });
+    ASSERT_EQ(parsed.receipt.byteOrder, Endian::Little);
+    auto& rows = std::get<spice::stdfile::StdActionRowsContent>(parsed.document->content);
+    rows.rows[0].flags = 0x89ABCDEFU;
+    const auto written = spice::stdfile::StdDocumentWriter::write(*parsed.document,
+        { spice::stdfile::StdPlatform::Dreamcast, spice::stdfile::StdCompression::None });
     ASSERT_TRUE(written.ok());
-    const auto reparsed = spice::stdfile::parseBytes(written.bytes);
+    const auto reparsed = spice::stdfile::StdDocumentImporter::importBytes(written.bytes);
     ASSERT_TRUE(reparsed.ok());
-    EXPECT_EQ(reparsed.sourceEndian, Endian::Little);
-    EXPECT_EQ(reparsed.actionRows.rows[0].flags, 0x89ABCDEFU);
+    EXPECT_EQ(reparsed.receipt.byteOrder, Endian::Little);
+    EXPECT_EQ(std::get<spice::stdfile::StdActionRowsContent>(reparsed.document->content).rows[0].flags,
+        0x89ABCDEFU);
 }
 
 TEST(SpiceEndianMigration, AutoDetectsMlkMllAndIndexedBin) {

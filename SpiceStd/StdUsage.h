@@ -1,13 +1,41 @@
 #pragma once
 
-#include "StdModel.h"
-
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
 
 namespace spice::stdfile {
+
+enum class StdUsageBucket {
+    Unknown,
+    BcharaMFamily,
+    BcharaCommon,
+    BcharaDamage,
+    BcharaCharacterResource,
+    BcharaOther,
+    OtherDirectory,
+};
+
+struct StdUsageFile {
+    std::string relativePath{};
+    std::string absolutePath{};
+    std::string directory{};
+    std::string stem{};
+    bool sourceWasCompressedAklz{ false };
+    std::uint32_t rawSize{ 0U };
+    std::uint32_t decodedSize{ 0U };
+    bool decodedOk{ true };
+    std::string decodeError{};
+    StdUsageBucket usageBucket{ StdUsageBucket::Unknown };
+    bool alxKnownCoveredPattern{ false };
+    std::string decodedHeader16Hex{};
+    std::string decodedHeader32Hex{};
+    std::vector<std::string> printableStrings{};
+};
+
+[[nodiscard]] const char* toString(StdUsageBucket bucket);
 
 struct StdUsageScanResult {
     std::string inputPath{};

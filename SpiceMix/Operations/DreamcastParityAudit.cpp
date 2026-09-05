@@ -10,7 +10,7 @@
 #include "../../SpiceSstSml/SstSmlDocumentAnalysis.h"
 #include "../../SpiceSstSml/SstSmlDocumentImporter.h"
 #include "../../SpiceSstSml/SstParser.h"
-#include "../../SpiceStd/StdParser.h"
+#include "../../SpiceStd/StdDocumentImporter.h"
 
 #include <algorithm>
 #include <atomic>
@@ -327,42 +327,75 @@ Row inspect(const Corpus& corpus, const std::filesystem::path& path) {
     }
     if (extension == ".std") {
         row.format = "std";
-        const auto forced = spice::stdfile::parseBytes(bytes, path.string(), { .forcedEndian = corpus.expectedEndian });
-        const auto automatic = spice::stdfile::parseBytes(bytes, path.string());
+        const auto forced = spice::stdfile::StdDocumentImporter::importBytes(
+            bytes, { .byteOrder = corpus.expectedEndian });
+        const auto automatic = spice::stdfile::StdDocumentImporter::importBytes(bytes);
         row.parsed = forced.ok();
-        if (automatic.ok()) { row.detectedEndian = endianName(automatic.sourceEndian); row.automaticAgreement = automatic.sourceEndian == corpus.expectedEndian; }
-        SemanticHasher hash;
-        hash.add(static_cast<std::uint32_t>(forced.layoutKind));
-        for (const auto& item : forced.actionRows.rows) {
-            hash.add(item.actionId); hash.add(item.rowType); hash.add(item.callbackIndex);
-            hash.add(item.motionSlotOrdinal); hash.add(item.flags); hash.add(item.secondaryKey);
-            hash.add(item.callbackAuxParam); hash.add(item.selectionTransitionScalarBits);
-            hash.add(item.motionProgressScalarBits);
-            row.records.push_back({ "action-row", item.index, std::to_string(item.actionId),
-                "rowType=" + std::to_string(item.rowType) + ";callback=" + std::to_string(item.callbackIndex)
-                    + ";motionSlot=" + std::to_string(item.motionSlotOrdinal)
-                    + ";flags=" + std::to_string(item.flags) });
+        if (automatic.ok()) {
+            row.detectedEndian = endianName(automatic.receipt.byteOrder);
+            row.automaticAgreement = automatic.receipt.byteOrder == corpus.expectedEndian;
         }
-        for (const auto& item : forced.entryTable.records) {
-            hash.add(item.isSentinel); hash.add(item.locationCode); hash.add(item.opcode);
-            hash.add(item.combinedType); hash.add(item.field2); hash.add(item.payloadSize);
-            if (const auto actionView = spice::stdfile::readActionViewPayload(item)) {
-                hash.add(actionView->primaryActionKey); hash.add(actionView->routeSecondaryKey);
-                hash.add(actionView->directSecondaryKey); hash.add(actionView->lowFlags);
-                hash.add(actionView->actionViewFlags); hash.add(actionView->modeLocalAngleOrOffsetBits);
-                hash.add(actionView->startFrame); hash.add(actionView->endFrame);
-                hash.add(actionView->holdFrameCount); hash.add(actionView->stepFrameCount);
-                hash.add(actionView->requestedMode);
+        SemanticHasher hash;
+        std::size_t rowCount = 0U;
+        std::size_t recordCount = 0U;
+        std::string layout = "none";
+        if (forced.document.has_value()) {
+            if (const auto* actionRows = std::get_if<spice::stdfile::StdActionRowsContent>(&forced.document->content)) {
+                layout = "action-rows";
+                rowCount = actionRows->rows.size();
+                hash.add(1U);
+                for (std::size_t index = 0U; index < actionRows->rows.size(); ++index) {
+                    const auto& item = actionRows->rows[index];
+                    hash.add(item.actionId); hash.add(item.rowType); hash.add(item.callbackIndex);
+                    hash.add(item.raw06); hash.add(item.flags); hash.add(item.secondaryKey);
+                    hash.add(item.raw0e); hash.add(item.raw10Bits); hash.add(item.raw14Bits);
+                    row.records.push_back({ "action-row", index, std::to_string(item.id.value),
+                        "actionId=" + std::to_string(item.actionId)
+                            + ";rowType=" + std::to_string(item.rowType)
+                            + ";callback=" + std::to_string(item.callbackIndex)
+                            + ";flags=" + std::to_string(item.flags) });
+                }
+            } else if (const auto* table = std::get_if<spice::stdfile::StdEntryTableContent>(&forced.document->content)) {
+                layout = "entry-table";
+                recordCount = table->records.size() + 1U;
+                hash.add(2U);
+                for (std::size_t index = 0U; index < table->records.size(); ++index) {
+                    const auto& item = table->records[index];
+                    hash.add(item.locationCode); hash.add(item.opcode); hash.add(item.raw04);
+                    hash.add(item.combinedType()); hash.add(item.payload.has_value());
+                    std::size_t payloadSize = 0U;
+                    if (item.payload.has_value()) {
+                        const auto* payload = spice::stdfile::findEntryPayload(*table, *item.payload);
+                        if (const auto* actionView = payload == nullptr ? nullptr
+                            : std::get_if<spice::stdfile::StdActionViewPayload>(&payload->content)) {
+                            payloadSize = spice::stdfile::kStdActionViewPayloadSize;
+                            hash.add(actionView->primaryActionKey); hash.add(actionView->routeSecondaryKey);
+                            hash.add(actionView->directSecondaryKey); hash.add(actionView->rawLowFlags);
+                            hash.add(actionView->actionViewFlags); hash.add(actionView->modeLocalValueBits);
+                            hash.add(actionView->startFrame); hash.add(actionView->endFrame);
+                            hash.add(actionView->holdFrameCount); hash.add(actionView->stepFrameCount);
+                            hash.add(actionView->requestedMode);
+                        } else if (payload != nullptr) {
+                            payloadSize = std::get<spice::stdfile::StdOpaquePayload>(payload->content).bytes.size();
+                        }
+                    }
+                    row.records.push_back({ "entry", index, std::to_string(item.id.value),
+                        "combinedType=" + std::to_string(item.combinedType())
+                            + ";payloadSize=" + std::to_string(payloadSize)
+                            + ";payloadAvailable=" + std::to_string(item.payload.has_value()) });
+                }
+                const auto& terminal = table->terminator;
+                hash.add(terminal.negativeLocation); hash.add(terminal.raw02); hash.add(terminal.raw04);
+                hash.add(terminal.raw08); hash.add(terminal.raw0c);
+                row.records.push_back({ "terminator", table->records.size(), std::to_string(terminal.id.value),
+                    "negativeLocation=" + std::to_string(terminal.negativeLocation) });
+            } else {
+                layout = "opaque";
+                hash.add(3U);
             }
-            row.records.push_back({ item.isSentinel ? "sentinel" : "entry", item.index,
-                std::to_string(item.locationCode) + ":" + std::to_string(item.opcode),
-                "combinedType=" + std::to_string(item.combinedType)
-                    + ";payloadSize=" + std::to_string(item.payloadSize)
-                    + ";payloadInBounds=" + std::to_string(item.payloadInBounds) });
         }
         std::ostringstream semantic;
-        semantic << "layout=" << spice::stdfile::toString(forced.layoutKind)
-            << ";rows=" << forced.actionRows.rows.size() << ";records=" << forced.entryTable.records.size()
+        semantic << "layout=" << layout << ";rows=" << rowCount << ";records=" << recordCount
             << ";orderedDigest=" << hash.hex();
         row.semantic = semantic.str(); row.diagnostics = diagnosticJoin(forced.diagnostics); return row;
     }

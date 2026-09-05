@@ -96,17 +96,22 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="SpiceStd.h" />
-    <ClInclude Include="StdFileWriter.h" />
+    <ClInclude Include="StdDocument.h" />
+    <ClInclude Include="StdDocumentImporter.h" />
+    <ClInclude Include="StdDocumentValidator.h" />
+    <ClInclude Include="StdDocumentWriter.h" />
     <ClInclude Include="StdJsonExporter.h" />
-    <ClInclude Include="StdModel.h" />
-    <ClInclude Include="StdParser.h" />
+    <ClInclude Include="StdSha256.h" />
     <ClInclude Include="StdUsage.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="SpiceStd.cpp" />
-    <ClCompile Include="StdFileWriter.cpp" />
+    <ClCompile Include="StdDocument.cpp" />
+    <ClCompile Include="StdDocumentImporter.cpp" />
+    <ClCompile Include="StdDocumentValidator.cpp" />
+    <ClCompile Include="StdDocumentWriter.cpp" />
     <ClCompile Include="StdJsonExporter.cpp" />
-    <ClCompile Include="StdParser.cpp" />
+    <ClCompile Include="StdSha256.cpp" />
     <ClCompile Include="StdUsage.cpp" />
   </ItemGroup>
   <ItemGroup>
