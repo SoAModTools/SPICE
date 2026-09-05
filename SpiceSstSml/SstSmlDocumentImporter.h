@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SstSmlDocument.h"
+#include "../SpiceMLD/MldDocumentImporter.h"
 #include "../SpiceRoot/Binary/Endian.h"
 
 #include <array>
@@ -22,6 +23,7 @@ struct SstSmlDocumentDiagnostic {
     SstSmlSourceMember source{ SstSmlSourceMember::Pair };
     std::string message{};
     std::optional<std::uint64_t> decodedOffset{};
+    std::optional<SmlEmbeddedResourceId> embeddedResourceId{};
 };
 
 struct SstSmlSourceReceipt {
@@ -35,8 +37,17 @@ struct SstSmlSourceReceipt {
 };
 
 struct SstSmlDocumentImportReceipt {
+    struct EmbeddedMld {
+        SmlEmbeddedResourceId resourceId{};
+        spice::mld::MldImportReceipt receipt{};
+    };
+
     SstSmlSourceReceipt sml{};
     SstSmlSourceReceipt sst{};
+    std::vector<EmbeddedMld> embeddedMlds{};
+
+    [[nodiscard]] const spice::mld::MldImportReceipt* embeddedMld(
+        SmlEmbeddedResourceId resourceId) const noexcept;
 };
 
 struct SstSmlDocumentImportResult {

@@ -108,6 +108,7 @@
     <ClInclude Include="SstSmlDocument.h" />
     <ClInclude Include="SstSmlDocumentAnalysis.h" />
     <ClInclude Include="SstSmlDocumentImporter.h" />
+    <ClInclude Include="SstSmlDocumentMaterialization.h" />
     <ClInclude Include="SstSmlDocumentValidator.h" />
     <ClInclude Include="SstSmlSha256.h" />
     <ClInclude Include="SstSmlModel.h" />
@@ -119,6 +120,8 @@
     <ClCompile Include="SstParser.cpp" />
     <ClCompile Include="SstSmlExport.cpp" />
     <ClCompile Include="SstSmlDocumentImporter.cpp" />
+    <ClCompile Include="SstSmlDocument.cpp" />
+    <ClCompile Include="SstSmlDocumentMaterialization.cpp" />
     <ClCompile Include="SstSmlDocumentAnalysis.cpp" />
     <ClCompile Include="SstSmlDocumentValidator.cpp" />
     <ClCompile Include="SstSmlSha256.cpp" />

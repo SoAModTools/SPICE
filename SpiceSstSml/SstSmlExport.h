@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SstSmlDocumentAnalysis.h"
+#include "../SpiceMLD/MldDocumentWriter.h"
 
 #include <cstddef>
 #include <filesystem>
@@ -38,6 +39,7 @@ struct SmlEmbeddedMldExportOptions {
     std::optional<std::filesystem::path> combinedBlenderIrPath{};
     std::map<std::size_t, std::filesystem::path> blenderIrPathsByRecordIndex{};
     std::map<std::size_t, SmlBlenderIrEntrySummary> blenderIrSummariesByRecordIndex{};
+    std::optional<spice::mld::MldWriteTarget> constructedMldFallbackTarget{};
 };
 
 struct SmlEmbeddedMldExportedEntry {

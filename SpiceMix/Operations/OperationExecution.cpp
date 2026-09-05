@@ -376,38 +376,38 @@ int executeDirectoryOperation(
                         if (context.stopToken.stop_requested()) {
                             break;
                         }
-                        const auto& embeddedMldBytes = document.members[recordIndex].sml.resource.bytes;
-                        if (embeddedMldBytes.empty()) {
+                        const auto* embeddedMld = std::get_if<spice::mld::MldDocument>(
+                            &document.members[recordIndex].sml.resource.content);
+                        if (!embeddedMld) {
+                            emit(context, spice::mix::EventLevel::Warning,
+                                "WARNING: embedded MLD is opaque and cannot be projected for ",
+                                entry.path().filename().string(), " record ", recordIndex);
                             continue;
                         }
 
                         const auto blenderIrDir = stageOutputDir / "blender_ir" /
                             ("entry_" + std::to_string(recordIndex));
-                        spice::mld::parsing::ParseOptions embeddedMldOptions{};
-                        embeddedMldOptions.buildBlenderIntermediateIr = true;
-                        embeddedMldOptions.exportBlenderIrJson = false;
-                        embeddedMldOptions.blenderIrOutputDir = blenderIrDir.string();
                         try {
-                            auto parsedEmbeddedMld = mldParser.parse(
-                                std::span<const std::uint8_t>(
-                                    embeddedMldBytes.data(),
-                                    embeddedMldBytes.size()),
-                                embeddedMldOptions);
-                            if (parsedEmbeddedMld.blenderIrScene.has_value()) {
-                                blenderIrSummaries[recordIndex] = summarizeSmlEntryBlenderIr(*parsedEmbeddedMld.blenderIrScene);
+                            auto projected = spice::mld::MldBlenderIrProjector::project(*embeddedMld);
+                            for (const auto& diagnostic : projected.diagnostics) {
+                                emit(context, spice::mix::EventLevel::Warning,
+                                    "WARNING: embedded MLD Blender IR: ", diagnostic);
+                            }
+                            if (projected.scene.has_value()) {
+                                blenderIrSummaries[recordIndex] = summarizeSmlEntryBlenderIr(*projected.scene);
                                 if (combinedBlenderIr.has_value()) {
                                     const auto sstPlacementOverlay = operation.combinedRawPlacement
                                         ? std::optional<spice::sstsml::exporting::SmlBlenderIrSstPlacementOverlay>{}
                                         : sstType0PlacementOverlayForRecord(document, recordIndex);
                                     if (operation.embeddedMldBlenderIr) {
                                         combinedBlenderIr->appendEntryScene(
-                                            *parsedEmbeddedMld.blenderIrScene,
+                                            *projected.scene,
                                             stem,
                                             recordIndex,
                                             sstPlacementOverlay);
                                     } else {
                                         combinedBlenderIr->appendEntryScene(
-                                            std::move(*parsedEmbeddedMld.blenderIrScene),
+                                            std::move(*projected.scene),
                                             stem,
                                             recordIndex,
                                             sstPlacementOverlay);
@@ -418,11 +418,11 @@ int executeDirectoryOperation(
                                     const auto blenderIrPath = blenderIrDir / "blender_ir_scene.json";
                                     std::filesystem::create_directories(blenderIrDir);
                                     spice::sstsml::exporting::namespaceSmlEntryBlenderIrScene(
-                                        *parsedEmbeddedMld.blenderIrScene,
+                                        *projected.scene,
                                         stem,
                                         recordIndex);
                                     std::ofstream blenderIrOut(blenderIrPath, std::ios::binary);
-                                    blenderIrOut << exporter.toJson(*parsedEmbeddedMld.blenderIrScene);
+                                    blenderIrOut << exporter.toJson(*projected.scene);
                                     if (!blenderIrOut.good()) {
                                         emit(context, spice::mix::EventLevel::Warning,
                                             "WARNING: failed to write embedded MLD Blender IR for ",
@@ -438,7 +438,7 @@ int executeDirectoryOperation(
                             }
                         } catch (const std::exception& ex) {
                             emit(context, spice::mix::EventLevel::Warning,
-                                "WARNING: embedded MLD parse failed for ",
+                                "WARNING: embedded MLD projection failed for ",
                                 entry.path().filename().string(), " record ", recordIndex, ": ", ex.what());
                         }
                     }

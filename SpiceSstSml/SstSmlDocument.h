@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../SpiceMLD/MldDocument.h"
+
 #include <array>
 #include <compare>
 #include <cstdint>
@@ -35,10 +37,16 @@ struct SstSmlOpaqueBlock {
     bool operator==(const SstSmlOpaqueBlock&) const = default;
 };
 
+struct SmlOpaqueEmbeddedResource {
+    std::vector<std::uint8_t> bytes{};
+    bool operator==(const SmlOpaqueEmbeddedResource&) const = default;
+};
+
+using SmlEmbeddedResourceContent = std::variant<spice::mld::MldDocument, SmlOpaqueEmbeddedResource>;
+
 struct SmlEmbeddedResource {
     SmlEmbeddedResourceId id{};
-    std::vector<std::uint8_t> bytes{};
-    bool operator==(const SmlEmbeddedResource&) const = default;
+    SmlEmbeddedResourceContent content{ SmlOpaqueEmbeddedResource{} };
 };
 
 struct SmlStageRecord {
@@ -46,7 +54,6 @@ struct SmlStageRecord {
     std::uint32_t resourceIndexWord{ 0U };
     std::uint32_t reservedWord{ 0U };
     SmlEmbeddedResource resource{};
-    bool operator==(const SmlStageRecord&) const = default;
 };
 
 using SstCommandFieldValue = std::variant<
@@ -59,9 +66,17 @@ using SstCommandFieldValue = std::variant<
 
 struct SstCommandField {
     SstCommandFieldId id{};
+    std::uint32_t payloadOffset{ 0U };
     std::string name{};
     SstCommandFieldValue value{};
     bool operator==(const SstCommandField&) const = default;
+};
+
+struct SstCommandOpaqueFragment {
+    SstSmlOpaqueBlockId id{};
+    std::uint32_t payloadOffset{ 0U };
+    std::vector<std::uint8_t> bytes{};
+    bool operator==(const SstCommandOpaqueFragment&) const = default;
 };
 
 struct SstPlacement {
@@ -101,11 +116,11 @@ struct SstStageCommand {
     std::uint32_t rawWord4{ 0U };
     std::uint32_t rawWord8{ 0U };
     std::uint32_t onDiskWord12{ 0U };
-    std::vector<std::uint8_t> payloadBytes{};
     bool payloadSpanKnown{ false };
     std::vector<SstCommandField> fields{};
     std::optional<SstPlacement> placement{};
     std::vector<SstLightingRow> lightingRows{};
+    std::vector<SstCommandOpaqueFragment> opaquePayloadFragments{};
     bool operator==(const SstStageCommand&) const = default;
 };
 
@@ -141,7 +156,6 @@ struct SstSmlStageMember {
     SstSmlStageMemberId id{};
     SmlStageRecord sml{};
     SstStageRecord sst{};
-    bool operator==(const SstSmlStageMember&) const = default;
 };
 
 using SmlBodyItem = std::variant<SmlEmbeddedResourceId, SstSmlOpaqueBlock>;
@@ -154,7 +168,18 @@ struct SstSmlDocument {
     std::vector<SstSmlStageMember> members{};
     std::vector<SmlBodyItem> smlBodyLayout{};
     std::vector<SstBodyItem> sstBodyLayout{};
-    bool operator==(const SstSmlDocument&) const = default;
+
+    [[nodiscard]] SstSmlStageMemberId allocateStageMemberId() const noexcept;
+    [[nodiscard]] SmlRecordId allocateSmlRecordId() const noexcept;
+    [[nodiscard]] SmlEmbeddedResourceId allocateEmbeddedResourceId() const noexcept;
+    [[nodiscard]] SstRecordId allocateSstRecordId() const noexcept;
+    [[nodiscard]] SstCommandBlockId allocateCommandBlockId() const noexcept;
+    [[nodiscard]] SstCommandId allocateCommandId() const noexcept;
+    [[nodiscard]] SstCommandFieldId allocateCommandFieldId() const noexcept;
+    [[nodiscard]] SstPlacementId allocatePlacementId() const noexcept;
+    [[nodiscard]] SstLightingRowId allocateLightingRowId() const noexcept;
+    [[nodiscard]] SstBattleGridTerrainId allocateBattleGridTerrainId() const noexcept;
+    [[nodiscard]] SstSmlOpaqueBlockId allocateOpaqueBlockId() const noexcept;
 };
 
 } // namespace spice::sstsml

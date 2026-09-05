@@ -42,9 +42,10 @@ void addDiagnostic(SstSmlDocumentImportResult& result,
     SstSmlDiagnosticSeverity severity,
     SstSmlSourceMember source,
     std::string message,
-    std::optional<std::uint64_t> decodedOffset = std::nullopt) {
+    std::optional<std::uint64_t> decodedOffset = std::nullopt,
+    std::optional<SmlEmbeddedResourceId> embeddedResourceId = std::nullopt) {
     result.diagnostics.push_back(SstSmlDocumentDiagnostic{
-        severity, source, std::move(message), decodedOffset });
+        severity, source, std::move(message), decodedOffset, embeddedResourceId });
 }
 
 SstSmlDiagnosticSeverity convertSeverity(DiagnosticSeverity severity) {
@@ -153,6 +154,64 @@ std::optional<SstCommandFieldValue> readCommandFieldValue(
         break;
     }
     return std::nullopt;
+}
+
+std::uint32_t commandFieldWidth(const CommandFieldWidth width) {
+    switch (width) {
+    case CommandFieldWidth::I8:
+    case CommandFieldWidth::U8: return 1U;
+    case CommandFieldWidth::I16:
+    case CommandFieldWidth::U16: return 2U;
+    case CommandFieldWidth::U32:
+    case CommandFieldWidth::F32: return 4U;
+    }
+    return 0U;
+}
+
+bool isSpecializedField(const std::int16_t commandType, const CommandFieldSummary& field) {
+    if (commandType == 1) return true;
+    return commandType == 0 && field.offset >= 0x1CU && field.offset < 0x40U;
+}
+
+void markRange(std::vector<bool>& covered, const std::uint32_t offset, const std::uint32_t size) {
+    if (offset > covered.size() || size > covered.size() - offset) return;
+    std::fill(covered.begin() + offset, covered.begin() + offset + size, true);
+}
+
+void buildCommandOpaqueFragments(SstStageCommand& command,
+    const detail::SstCommandRecord& source,
+    std::uint64_t& nextOpaqueId) {
+    if (!source.typeKnown || source.payloadBytes.empty()) return;
+    std::vector<bool> covered(source.payloadBytes.size(), false);
+    for (const auto& field : command.fields) {
+        const auto width = std::visit([](const auto value) -> std::uint32_t { return sizeof(value); }, field.value);
+        markRange(covered, field.payloadOffset, width);
+    }
+    if (command.placement) markRange(covered, 0x1CU, 0x24U);
+    if (command.type == 1) {
+        const auto summaries = SstParser::fieldSummariesForType(1);
+        for (std::size_t row = 0U; row < command.lightingRows.size(); ++row) {
+            const auto base = static_cast<std::uint32_t>(row * 0x68U);
+            for (const auto& field : summaries) {
+                markRange(covered, base + field.offset, commandFieldWidth(field.width));
+            }
+        }
+    }
+    std::size_t cursor = 0U;
+    while (cursor < covered.size()) {
+        if (covered[cursor]) {
+            ++cursor;
+            continue;
+        }
+        const auto begin = cursor;
+        while (cursor < covered.size() && !covered[cursor]) ++cursor;
+        command.opaquePayloadFragments.push_back({
+            SstSmlOpaqueBlockId{ nextOpaqueId++ },
+            static_cast<std::uint32_t>(begin),
+            std::vector<std::uint8_t>(source.payloadBytes.begin() + static_cast<std::ptrdiff_t>(begin),
+                source.payloadBytes.begin() + static_cast<std::ptrdiff_t>(cursor)),
+        });
+    }
 }
 
 bool buildSmlLayout(SstSmlDocument& document,
@@ -275,7 +334,9 @@ bool buildSstLayout(SstSmlDocument& document,
             kSstCommandRecordStride +
             [&]() {
                 std::uint64_t total = 0U;
-                for (const auto& command : block.commands) total += command.payloadBytes.size();
+                for (const auto& command : block.commands) {
+                    if (command.payloadSpanKnown) total += SstParser::commandPayloadSize(command.type);
+                }
                 return total;
             }() +
             (block.battleGrid.has_value() ? block.battleGrid->values.size() : 0U) +
@@ -336,6 +397,14 @@ std::optional<std::vector<std::uint8_t>> readFile(const std::filesystem::path& p
 
 bool SstSmlDocumentImportResult::ok() const {
     return document.has_value() && !hasErrors(*this);
+}
+
+const spice::mld::MldImportReceipt* SstSmlDocumentImportReceipt::embeddedMld(
+    const SmlEmbeddedResourceId resourceId) const noexcept {
+    const auto found = std::find_if(embeddedMlds.begin(), embeddedMlds.end(), [&](const auto& value) {
+        return value.resourceId == resourceId;
+    });
+    return found == embeddedMlds.end() ? nullptr : &found->receipt;
 }
 
 SstSmlDocumentImportResult SstSmlDocumentImporter::importBytes(
@@ -414,7 +483,32 @@ SstSmlDocumentImportResult SstSmlDocumentImporter::importBytes(
         member.sml.resourceIndexWord = smlSource.rawWord0;
         member.sml.reservedWord = smlSource.rawWord12;
         member.sml.resource.id = SmlEmbeddedResourceId{ index + 1U };
-        member.sml.resource.bytes = smlSource.embeddedMldBytes;
+        auto embeddedMld = spice::mld::MldDocumentImporter::importBytes(smlSource.embeddedMldBytes);
+        if (embeddedMld.ok()) {
+            member.sml.resource.content = std::move(*embeddedMld.document);
+            result.receipt.embeddedMlds.push_back({ member.sml.resource.id, std::move(embeddedMld.receipt) });
+            for (const auto& diagnostic : embeddedMld.diagnostics) {
+                addDiagnostic(result,
+                    diagnostic.severity == spice::mld::MldDiagnosticSeverity::Info
+                        ? SstSmlDiagnosticSeverity::Info : SstSmlDiagnosticSeverity::Warning,
+                    SstSmlSourceMember::Sml,
+                    "Embedded MLD: " + diagnostic.message,
+                    diagnostic.decodedOffset,
+                    member.sml.resource.id);
+            }
+        } else {
+            member.sml.resource.content = SmlOpaqueEmbeddedResource{ smlSource.embeddedMldBytes };
+            if (embeddedMld.diagnostics.empty()) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Warning, SstSmlSourceMember::Sml,
+                    "Embedded resource could not be decoded as MLD and remains opaque",
+                    smlSource.embeddedMldOffset, member.sml.resource.id);
+            }
+            for (const auto& diagnostic : embeddedMld.diagnostics) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Warning, SstSmlSourceMember::Sml,
+                    "Embedded MLD decode failed; payload remains opaque: " + diagnostic.message,
+                    diagnostic.decodedOffset, member.sml.resource.id);
+            }
+        }
 
         member.sst.id = SstRecordId{ index + 1U };
         if (index != 0U) {
@@ -439,9 +533,9 @@ SstSmlDocumentImportResult SstSmlDocumentImporter::importBytes(
             command.rawWord4 = commandSource.rawWord4;
             command.rawWord8 = commandSource.rawWord8;
             command.onDiskWord12 = commandSource.onDiskWord12;
-            command.payloadBytes = commandSource.payloadBytes;
             command.payloadSpanKnown = commandSource.typeKnown;
             for (const auto& fieldSource : commandSource.fieldSummaries) {
+                if (isSpecializedField(commandSource.type, fieldSource)) continue;
                 const auto value = readCommandFieldValue(commandSource.payloadBytes,
                     sst.sourceEndian,
                     fieldSource);
@@ -454,7 +548,7 @@ SstSmlDocumentImportResult SstSmlDocumentImporter::importBytes(
                     return result;
                 }
                 command.fields.push_back(SstCommandField{
-                    SstCommandFieldId{ nextCommandFieldId++ }, fieldSource.name, *value });
+                    SstCommandFieldId{ nextCommandFieldId++ }, fieldSource.offset, fieldSource.name, *value });
             }
             if (commandSource.type == 0 && commandSource.payloadBytes.size() >= 0x40U) {
                 const EndianReader payloadReader(commandSource.payloadBytes, sst.sourceEndian);
@@ -488,6 +582,7 @@ SstSmlDocumentImportResult SstSmlDocumentImporter::importBytes(
                     rowSource.sentinel,
                 });
             }
+            buildCommandOpaqueFragments(command, commandSource, nextOpaqueId);
             block.commands.push_back(std::move(command));
         }
         const bool hasUnknownCommand = std::any_of(blockSource.commands.begin(), blockSource.commands.end(),
@@ -515,7 +610,7 @@ SstSmlDocumentImportResult SstSmlDocumentImporter::importBytes(
         !buildSstLayout(document, sst, decodedSst.bytes, nextOpaqueId, result)) {
         return result;
     }
-    const auto validation = SstSmlDocumentValidator::validate(document);
+    const auto validation = SstSmlDocumentValidator::validate(document, &result.receipt);
     result.diagnostics.insert(result.diagnostics.end(),
         validation.diagnostics.begin(), validation.diagnostics.end());
     if (!validation.ok()) return result;

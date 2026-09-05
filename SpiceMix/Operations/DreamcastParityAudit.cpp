@@ -9,6 +9,7 @@
 #include "../../SpiceSCT/SctParser.h"
 #include "../../SpiceSstSml/SstSmlDocumentAnalysis.h"
 #include "../../SpiceSstSml/SstSmlDocumentImporter.h"
+#include "../../SpiceSstSml/SstParser.h"
 #include "../../SpiceStd/StdParser.h"
 
 #include <algorithm>
@@ -307,7 +308,8 @@ Row inspect(const Corpus& corpus, const std::filesystem::path& path) {
                 row.records.push_back({ "sst-command", commandRecordIndex++,
                     std::to_string(member.id.value) + ":" + std::to_string(command.id.value),
                     "type=" + std::to_string(command.type) + ";argument=" + std::to_string(command.argument)
-                        + ";payloadWords=" + std::to_string(command.payloadBytes.size() / 4U)
+                        + ";payloadWords=" + std::to_string((command.payloadSpanKnown
+                            ? spice::sstsml::detail::SstParser::commandPayloadSize(command.type) : 0U) / 4U)
                         + ";payloadAvailable=true" });
             }
         }

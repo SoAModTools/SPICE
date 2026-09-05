@@ -1,6 +1,7 @@
 #include "SstSmlDocumentValidator.h"
 
 #include "SstParser.h"
+#include "../SpiceMLD/MldDocumentValidator.h"
 
 #include <algorithm>
 #include <limits>
@@ -16,9 +17,10 @@ using detail::SstParser;
 void addDiagnostic(SstSmlDocumentValidationResult& result,
     SstSmlDiagnosticSeverity severity,
     SstSmlSourceMember source,
-    std::string message) {
+    std::string message,
+    std::optional<SmlEmbeddedResourceId> embeddedResourceId = std::nullopt) {
     result.diagnostics.push_back(SstSmlDocumentDiagnostic{
-        severity, source, std::move(message), std::nullopt });
+        severity, source, std::move(message), std::nullopt, embeddedResourceId });
 }
 
 bool insertId(std::set<std::uint64_t>& ids,
@@ -57,55 +59,53 @@ bool valueMatchesWidth(const SstCommandFieldValue& value, detail::CommandFieldWi
     return false;
 }
 
-template <typename Value>
-std::optional<Value> fieldValue(const SstStageCommand& command, const char* name) {
-    const auto found = std::find_if(command.fields.begin(), command.fields.end(), [&](const auto& field) {
-        return field.name == name;
-    });
-    if (found == command.fields.end()) return std::nullopt;
-    if (const auto value = std::get_if<Value>(&found->value)) return *value;
-    return std::nullopt;
+std::uint32_t valueWidth(const SstCommandFieldValue& value) {
+    return std::visit([](const auto item) -> std::uint32_t { return sizeof(item); }, value);
 }
 
-bool placementAgrees(const SstStageCommand& command) {
-    if (!command.placement) return false;
-    const auto& placement = *command.placement;
-    return fieldValue<float>(command, "transformPositionX") == placement.positionX &&
-        fieldValue<float>(command, "transformPositionY") == placement.positionY &&
-        fieldValue<float>(command, "transformPositionZ") == placement.positionZ &&
-        fieldValue<std::uint32_t>(command, "rotationAngleX") == placement.rotationAngleX &&
-        fieldValue<std::uint32_t>(command, "rotationAngleY") == placement.rotationAngleY &&
-        fieldValue<std::uint32_t>(command, "rotationAngleZ") == placement.rotationAngleZ &&
-        fieldValue<float>(command, "scaleX") == placement.scaleX &&
-        fieldValue<float>(command, "scaleY") == placement.scaleY &&
-        fieldValue<float>(command, "scaleZ") == placement.scaleZ;
+std::uint32_t catalogWidth(const detail::CommandFieldWidth width) {
+    using detail::CommandFieldWidth;
+    switch (width) {
+    case CommandFieldWidth::I8:
+    case CommandFieldWidth::U8: return 1U;
+    case CommandFieldWidth::I16:
+    case CommandFieldWidth::U16: return 2U;
+    case CommandFieldWidth::U32:
+    case CommandFieldWidth::F32: return 4U;
+    }
+    return 0U;
 }
 
-bool firstLightingRowAgrees(const SstStageCommand& command) {
-    if (command.lightingRows.empty()) return false;
-    const auto& row = command.lightingRows.front();
-    return fieldValue<std::int8_t>(command, "rowState") == row.state &&
-        fieldValue<std::int16_t>(command, "classSelector") == row.classSelector &&
-        fieldValue<std::uint32_t>(command, "lightingFlags") == row.flags &&
-        fieldValue<std::int16_t>(command, "runtimeSlotId") == row.runtimeSlotId &&
-        fieldValue<float>(command, "lightVectorX") == row.lightVector[0] &&
-        fieldValue<float>(command, "lightVectorY") == row.lightVector[1] &&
-        fieldValue<float>(command, "lightVectorZ") == row.lightVector[2] &&
-        fieldValue<float>(command, "slotRgbR") == row.slotRgb[0] &&
-        fieldValue<float>(command, "slotRgbG") == row.slotRgb[1] &&
-        fieldValue<float>(command, "slotRgbB") == row.slotRgb[2] &&
-        fieldValue<float>(command, "globalRgbR") == row.globalRgb[0] &&
-        fieldValue<float>(command, "globalRgbG") == row.globalRgb[1] &&
-        fieldValue<float>(command, "globalRgbB") == row.globalRgb[2] &&
-        fieldValue<float>(command, "attenuationOrSpot0") == row.attenuationOrSpot0 &&
-        fieldValue<float>(command, "attenuationOrSpot1") == row.attenuationOrSpot1 &&
-        fieldValue<std::uint32_t>(command, "rowTailWord") == row.rawTailWord;
+bool specialized(const std::int16_t type, const detail::CommandFieldSummary& field) {
+    if (type == 1) return true;
+    return type == 0 && field.offset >= 0x1CU && field.offset < 0x40U;
+}
+
+bool claim(std::vector<bool>& ownership,
+    const std::uint32_t offset,
+    const std::uint32_t size,
+    SstSmlDocumentValidationResult& result,
+    const char* kind) {
+    if (offset > ownership.size() || size > ownership.size() - offset) {
+        addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
+            std::string(kind) + " extends beyond the recognized command payload");
+        return false;
+    }
+    if (std::any_of(ownership.begin() + offset, ownership.begin() + offset + size,
+            [](const bool owned) { return owned; })) {
+        addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
+            std::string(kind) + " overlaps another command-payload owner");
+        return false;
+    }
+    std::fill(ownership.begin() + offset, ownership.begin() + offset + size, true);
+    return true;
 }
 
 } // namespace
 
 SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
-    const SstSmlDocument& document) {
+    const SstSmlDocument& document,
+    const SstSmlDocumentImportReceipt* receipt) {
     SstSmlDocumentValidationResult result{};
     if (document.members.empty()) {
         addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Pair,
@@ -140,6 +140,30 @@ SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
         insertId(memberIds, member.id.value, result, "stage member");
         insertId(smlRecordIds, member.sml.id.value, result, "SML record");
         insertId(resourceIds, member.sml.resource.id.value, result, "SML embedded resource");
+        if (const auto* opaque = std::get_if<SmlOpaqueEmbeddedResource>(&member.sml.resource.content)) {
+            if (opaque->bytes.empty()) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sml,
+                    "Opaque SML embedded resource is empty");
+            }
+        } else if (receipt) {
+            const auto* nestedReceipt = receipt->embeddedMld(member.sml.resource.id);
+            if (!nestedReceipt) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sml,
+                    "Decoded embedded MLD is missing its keyed import receipt", member.sml.resource.id);
+            } else {
+                const auto target = spice::mld::MldWriteTarget{ nestedReceipt->platform, nestedReceipt->wrapper };
+                const auto nested = spice::mld::MldDocumentValidator::validate(
+                    std::get<spice::mld::MldDocument>(member.sml.resource.content), target, nestedReceipt);
+                for (const auto& diagnostic : nested.diagnostics) {
+                    addDiagnostic(result,
+                        diagnostic.severity == spice::mld::MldDiagnosticSeverity::Error
+                            ? SstSmlDiagnosticSeverity::Error : SstSmlDiagnosticSeverity::Warning,
+                        SstSmlSourceMember::Sml,
+                        "Embedded MLD: " + diagnostic.message,
+                        member.sml.resource.id);
+                }
+            }
+        }
         insertId(sstRecordIds, member.sst.id.value, result, "SST record");
         insertId(blockIds, member.sst.commandBlock.id.value, result, "SST command block");
         if (index == 0U) {
@@ -170,11 +194,8 @@ SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
                 addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
                     "SST command payload-span status disagrees with the supported command catalog");
             }
-            if (known && command.payloadBytes.size() != SstParser::commandPayloadSize(command.type)) {
-                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
-                    "SST command payload size disagrees with the supported command catalog");
-            }
-            const auto expectedFields = SstParser::fieldSummariesForType(command.type);
+            auto expectedFields = SstParser::fieldSummariesForType(command.type);
+            std::erase_if(expectedFields, [&](const auto& field) { return specialized(command.type, field); });
             if (command.fields.size() != expectedFields.size()) {
                 addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
                     "SST command typed-field count disagrees with the supported command catalog");
@@ -185,6 +206,10 @@ SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
                 if (fieldIndex < expectedFields.size() && field.name != expectedFields[fieldIndex].name) {
                     addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
                         "SST command typed-field ordering disagrees with the supported command catalog");
+                }
+                if (fieldIndex < expectedFields.size() && field.payloadOffset != expectedFields[fieldIndex].offset) {
+                    addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
+                        "SST command field offset disagrees with the supported command catalog");
                 }
                 if (fieldIndex < expectedFields.size() &&
                     !valueMatchesWidth(field.value, expectedFields[fieldIndex].width)) {
@@ -202,10 +227,6 @@ SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
                 addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
                     "SST command type 0 is missing its typed placement");
             }
-            if (command.type == 0 && command.placement && !placementAgrees(command)) {
-                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
-                    "SST command type 0 placement disagrees with its typed command fields");
-            }
             if (!command.lightingRows.empty() && command.type != 1) {
                 addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
                     "Only SST command type 1 may own lighting rows");
@@ -213,9 +234,45 @@ SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
             for (const auto& row : command.lightingRows) {
                 insertId(lightingRowIds, row.id.value, result, "SST lighting row");
             }
-            if (command.type == 1 && !firstLightingRowAgrees(command)) {
+            if (command.type == 1 && command.lightingRows.empty()) {
                 addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
-                    "SST command type 1 lighting rows disagree with its typed command fields");
+                    "SST command type 1 is missing its canonical lighting rows");
+            }
+            if (known) {
+                std::vector<bool> ownership(SstParser::commandPayloadSize(command.type), false);
+                for (const auto& field : command.fields) {
+                    claim(ownership, field.payloadOffset, valueWidth(field.value), result,
+                        "SST command field");
+                }
+                if (command.placement) claim(ownership, 0x1CU, 0x24U, result, "SST placement");
+                if (command.type == 1) {
+                    const auto rowFields = SstParser::fieldSummariesForType(1);
+                    for (std::size_t row = 0U; row < command.lightingRows.size(); ++row) {
+                        const auto base = static_cast<std::uint32_t>(row * 0x68U);
+                        for (const auto& field : rowFields) {
+                            claim(ownership, base + field.offset, catalogWidth(field.width), result,
+                                "SST lighting-row field");
+                        }
+                    }
+                }
+                for (const auto& fragment : command.opaquePayloadFragments) {
+                    insertId(opaqueIds, fragment.id.value, result, "opaque block");
+                    if (fragment.bytes.empty()) {
+                        addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
+                            "SST command contains an empty opaque payload fragment");
+                    } else {
+                        claim(ownership, fragment.payloadOffset,
+                            static_cast<std::uint32_t>(fragment.bytes.size()), result,
+                            "SST command opaque fragment");
+                    }
+                }
+                if (std::any_of(ownership.begin(), ownership.end(), [](const bool owned) { return !owned; })) {
+                    addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
+                        "SST recognized command payload does not have complete semantic-or-opaque ownership");
+                }
+            } else if (!command.opaquePayloadFragments.empty()) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sst,
+                    "Unknown SST command cannot own payload fragments with an unproved span");
             }
         }
         if (member.sst.commandBlock.battleGrid) {
@@ -284,14 +341,37 @@ SstSmlDocumentValidationResult SstSmlDocumentValidator::validate(
             "SST body layout does not own every command block exactly once");
     }
 
-    if (!hasErrors(result)) result.readiness = SstSmlDocumentReadiness::ReadOnly;
+    if (receipt) {
+        std::set<std::uint64_t> receiptIds;
+        for (const auto& nested : receipt->embeddedMlds) {
+            if (!receiptIds.insert(nested.resourceId.value).second) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sml,
+                    "Embedded MLD receipt IDs are not unique");
+            }
+            if (!resourceIds.contains(nested.resourceId.value)) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sml,
+                    "Embedded MLD receipt refers to an unknown SML resource");
+                continue;
+            }
+            const auto member = std::find_if(document.members.begin(), document.members.end(), [&](const auto& value) {
+                return value.sml.resource.id == nested.resourceId;
+            });
+            if (member != document.members.end() &&
+                std::holds_alternative<SmlOpaqueEmbeddedResource>(member->sml.resource.content)) {
+                addDiagnostic(result, SstSmlDiagnosticSeverity::Error, SstSmlSourceMember::Sml,
+                    "Opaque SML embedded resource must not have an MLD import receipt");
+            }
+        }
+    }
+
+    if (!hasErrors(result)) result.readiness = SstSmlDocumentReadiness::Valid;
     return result;
 }
 
 const char* toString(SstSmlDocumentReadiness readiness) noexcept {
     switch (readiness) {
     case SstSmlDocumentReadiness::Invalid: return "invalid";
-    case SstSmlDocumentReadiness::ReadOnly: return "read_only";
+    case SstSmlDocumentReadiness::Valid: return "valid";
     }
     return "unknown";
 }

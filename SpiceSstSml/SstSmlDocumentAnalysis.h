@@ -59,6 +59,7 @@ struct SstSmlCommandAnalysis {
 
 struct SmlEmbeddedResourceInspection {
     SmlEmbeddedResourceId resourceId{};
+    bool decoded{ false };
     bool validLookingHeader{ false };
     std::optional<std::uint32_t> entryCount{};
     std::optional<std::uint32_t> indexTableOffset{};
@@ -97,6 +98,7 @@ struct SstSmlLocalObjectSlotLink {
     bool slotIndexInRange{ false };
     std::optional<std::uint32_t> localSlotCount{};
     SmlEmbeddedResourceId owningResourceId{};
+    std::optional<spice::mld::MldEntryId> resolvedEntryId{};
 };
 
 struct SstSmlDocumentAnalysis {

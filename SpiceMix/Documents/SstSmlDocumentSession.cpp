@@ -2,10 +2,11 @@
 
 #include "DocumentSupport.h"
 #include "MldInspectionSupport.h"
-#include "../../SpiceMLD/Parsing/MldParser.h"
 #include "../../SpiceSstSml/SstCommandCatalog.h"
+#include "../../SpiceSstSml/SstParser.h"
 #include "../../SpiceSstSml/SstSmlDocumentAnalysis.h"
 #include "../../SpiceSstSml/SstSmlDocumentImporter.h"
+#include "../../SpiceSstSml/SstSmlDocumentMaterialization.h"
 
 #include <algorithm>
 #include <iomanip>
@@ -106,16 +107,6 @@ std::string fieldValue(const spice::sstsml::SstCommandFieldValue& value) {
     return out.str();
 }
 
-std::string mldStatusName(const spice::mld::model::MldParseStatus status) {
-    switch (status) {
-    case spice::mld::model::MldParseStatus::Empty: return "Empty";
-    case spice::mld::model::MldParseStatus::Partial: return "Partial";
-    case spice::mld::model::MldParseStatus::Complete: return "Complete";
-    case spice::mld::model::MldParseStatus::Failed: return "Failed";
-    }
-    return "Unknown";
-}
-
 std::optional<std::int16_t> localSlotIndex(const spice::sstsml::SstStageCommand& command) {
     const auto found = std::find_if(command.fields.begin(), command.fields.end(), [](const auto& field) {
         return field.name == "modelIndex";
@@ -125,13 +116,24 @@ std::optional<std::int16_t> localSlotIndex(const spice::sstsml::SstStageCommand&
     return std::nullopt;
 }
 
+const spice::mld::MldDocument* embeddedDocument(const spice::sstsml::SstSmlDocument& document,
+    const std::size_t recordIndex) {
+    if (recordIndex >= document.members.size()) return nullptr;
+    return std::get_if<spice::mld::MldDocument>(&document.members[recordIndex].sml.resource.content);
+}
+
+std::size_t textureCount(const spice::mld::MldDocument& document) {
+    std::size_t result = 0U;
+    for (const auto& archive : document.textureArchives) result += archive.textures.size();
+    return result;
+}
+
 } // namespace
 
 struct SstSmlDocumentSession::Impl {
     spice::sstsml::SstSmlDocument document{};
     spice::sstsml::SstSmlDocumentImportReceipt receipt{};
     spice::sstsml::SstSmlDocumentAnalysis analysis{};
-    std::vector<std::optional<spice::mld::model::MldFile>> embeddedMlds{};
     std::vector<SstSmlDiagnosticSnapshot> diagnostics{};
 };
 
@@ -167,6 +169,14 @@ SstSmlDocumentSession::OpenResult SstSmlDocumentSession::open(
         impl->receipt = std::move(imported.receipt);
         impl->analysis = spice::sstsml::SstSmlDocumentAnalyzer::analyze(impl->document, impl->receipt);
         for (const auto& diagnostic : imported.diagnostics) {
+            std::optional<std::size_t> recordIndex{};
+            if (diagnostic.embeddedResourceId) {
+                const auto found = std::find_if(impl->document.members.begin(), impl->document.members.end(),
+                    [&](const auto& member) { return member.sml.resource.id == *diagnostic.embeddedResourceId; });
+                if (found != impl->document.members.end()) {
+                    recordIndex = static_cast<std::size_t>(found - impl->document.members.begin());
+                }
+            }
             impl->diagnostics.push_back({
                 .level = eventLevel(diagnostic.severity),
                 .origin = spice::sstsml::toString(diagnostic.source),
@@ -174,6 +184,7 @@ SstSmlDocumentSession::OpenResult SstSmlDocumentSession::open(
                 .sourceOffset = diagnostic.decodedOffset.has_value()
                     ? std::optional<std::uint32_t>(static_cast<std::uint32_t>(*diagnostic.decodedOffset))
                     : std::nullopt,
+                .recordIndex = recordIndex,
             });
         }
         for (const auto& diagnostic : impl->analysis.diagnostics) {
@@ -186,30 +197,6 @@ SstSmlDocumentSession::OpenResult SstSmlDocumentSession::open(
         }
         if (!impl->analysis.ok()) {
             return { .result = documents::failure("SST/SML analysis failed.", std::move(diagnosticText)) };
-        }
-
-        impl->embeddedMlds.resize(impl->document.members.size());
-        for (std::size_t index = 0U; index < impl->document.members.size(); ++index) {
-            if (context.stopToken.stop_requested()) return { .result = documents::cancelled() };
-            const auto& bytes = impl->document.members[index].sml.resource.bytes;
-            if (bytes.empty()) continue;
-            documents::emit(context, EventLevel::Progress,
-                "Inspecting embedded MLD " + std::to_string(index + 1U) + "/" +
-                    std::to_string(impl->document.members.size()) + ".");
-            auto parsed = spice::mld::parsing::MldParser{}.parseBytes(bytes);
-            for (const auto& diagnostic : parsed.parseDiagnostics) {
-                EventLevel level = EventLevel::Info;
-                if (diagnostic.severity == spice::mld::model::MldDiagnostic::Severity::Warning) level = EventLevel::Warning;
-                if (diagnostic.severity == spice::mld::model::MldDiagnostic::Severity::Error) level = EventLevel::Error;
-                impl->diagnostics.push_back({
-                    .level = level,
-                    .origin = "Embedded MLD",
-                    .message = diagnostic.message,
-                    .sourceOffset = diagnostic.sourceOffset,
-                    .recordIndex = index,
-                });
-            }
-            impl->embeddedMlds[index] = std::move(parsed);
         }
 
         auto session = std::shared_ptr<SstSmlDocumentSession>(new SstSmlDocumentSession(std::move(impl)));
@@ -244,10 +231,12 @@ SstSmlPairOverviewSnapshot SstSmlDocumentSession::overview() const {
             impl_->receipt.sst.endian == spice::root::Endian::Big ? "Big-endian convention" : "Mixed / invalid";
     out.recordCount = static_cast<std::uint32_t>(impl_->document.members.size());
     out.recordCountsAgree = true;
-    for (const auto& mld : impl_->embeddedMlds) {
-        if (!mld) continue;
-        if (mld->parseStatus == spice::mld::model::MldParseStatus::Failed) ++out.embeddedMldFailedCount;
-        else ++out.embeddedMldParsedCount;
+    for (const auto& member : impl_->document.members) {
+        if (std::holds_alternative<spice::mld::MldDocument>(member.sml.resource.content)) {
+            ++out.embeddedMldParsedCount;
+        } else {
+            ++out.embeddedMldFailedCount;
+        }
     }
     return out;
 }
@@ -262,16 +251,18 @@ std::vector<SstSmlRecordSnapshot> SstSmlDocumentSession::records() const {
     out.reserve(impl_->document.members.size());
     for (std::size_t index = 0U; index < impl_->document.members.size(); ++index) {
         const auto& member = impl_->document.members[index];
-        const auto* mld = index < impl_->embeddedMlds.size() && impl_->embeddedMlds[index]
-            ? &*impl_->embeddedMlds[index] : nullptr;
+        const auto* mld = embeddedDocument(impl_->document, index);
+        const auto* nestedReceipt = impl_->receipt.embeddedMld(member.sml.resource.id);
+        const auto* opaque = std::get_if<spice::sstsml::SmlOpaqueEmbeddedResource>(&member.sml.resource.content);
         out.push_back({
             .index = index,
             .memberId = member.id.value,
-            .embeddedMldSize = static_cast<std::uint32_t>(member.sml.resource.bytes.size()),
-            .embeddedMldParsed = mld && mld->parseStatus != spice::mld::model::MldParseStatus::Failed,
-            .embeddedMldParseStatus = mld ? mldStatusName(mld->parseStatus) : "Unavailable",
+            .embeddedMldSize = static_cast<std::uint32_t>(nestedReceipt
+                ? nestedReceipt->sourceSize : opaque ? opaque->bytes.size() : 0U),
+            .embeddedMldParsed = mld != nullptr,
+            .embeddedMldParseStatus = mld ? "Complete" : "Opaque",
             .embeddedMldEntryCount = mld ? mld->entries.size() : 0U,
-            .embeddedMldTextureCount = mld && mld->textureArchive ? mld->textureArchive->entries.size() : 0U,
+            .embeddedMldTextureCount = mld ? textureCount(*mld) : 0U,
             .commandCount = static_cast<std::uint32_t>(member.sst.commandBlock.commands.size()),
             .commandBlockValid = member.sst.commandBlock.sentinelType < 0,
         });
@@ -298,7 +289,8 @@ std::vector<SstSmlCommandSummarySnapshot> SstSmlDocumentSession::commands(const 
             snapshot.typeDescription = "The command type is not in the current Gekko-backed catalog.";
         }
         snapshot.argument = command.argument;
-        snapshot.payloadSize = static_cast<std::uint32_t>(command.payloadBytes.size());
+        snapshot.payloadSize = command.payloadSpanKnown
+            ? spice::sstsml::detail::SstParser::commandPayloadSize(command.type) : 0U;
         snapshot.typeKnown = command.payloadSpanKnown;
         snapshot.localSlotIndex = localSlotIndex(command);
         const auto link = std::find_if(impl_->analysis.localObjectSlotLinks.begin(),
@@ -327,7 +319,9 @@ std::optional<SstSmlCommandDetailSnapshot> SstSmlDocumentSession::commandDetail(
     out.rawWord4 = command.rawWord4;
     out.rawWord8 = command.rawWord8;
     out.onDiskWord12 = command.onDiskWord12;
-    out.payloadHex = hexBytes(command.payloadBytes);
+    const auto payload = spice::sstsml::materializeCommandPayload(
+        command, impl_->receipt.sst.endian.value_or(spice::root::Endian::Big));
+    out.payloadHex = hexBytes(payload.bytes);
     const auto analysis = std::find_if(impl_->analysis.commands.begin(), impl_->analysis.commands.end(),
         [&](const auto& candidate) { return candidate.commandId == command.id; });
     if (analysis != impl_->analysis.commands.end()) {
@@ -347,9 +341,9 @@ std::optional<SstSmlCommandDetailSnapshot> SstSmlDocumentSession::commandDetail(
             projected.value = fieldValue(field->value);
             projected.description = fieldAnalysis.description;
             const auto size = widthBytes(fieldAnalysis.width);
-            if (fieldAnalysis.payloadOffset <= command.payloadBytes.size() &&
-                size <= command.payloadBytes.size() - fieldAnalysis.payloadOffset) {
-                projected.rawHex = hexBytes(std::span(command.payloadBytes).subspan(fieldAnalysis.payloadOffset, size));
+            if (fieldAnalysis.payloadOffset <= payload.bytes.size() &&
+                size <= payload.bytes.size() - fieldAnalysis.payloadOffset) {
+                projected.rawHex = hexBytes(std::span(payload.bytes).subspan(fieldAnalysis.payloadOffset, size));
             }
             out.fields.push_back(std::move(projected));
         }
@@ -382,8 +376,8 @@ std::optional<SstSmlCommandDetailSnapshot> SstSmlDocumentSession::commandDetail(
             .attenuationOrSpot0 = row.attenuationOrSpot0,
             .attenuationOrSpot1 = row.attenuationOrSpot1,
             .rawTailWord = row.rawTailWord,
-            .rawHex = rowOffset <= command.payloadBytes.size() && rowStride <= command.payloadBytes.size() - rowOffset
-                ? hexBytes(std::span(command.payloadBytes).subspan(rowOffset, rowStride)) : std::string{},
+            .rawHex = rowOffset <= payload.bytes.size() && rowStride <= payload.bytes.size() - rowOffset
+                ? hexBytes(std::span(payload.bytes).subspan(rowOffset, rowStride)) : std::string{},
         });
     }
     return out;
@@ -440,34 +434,41 @@ std::optional<SstSmlBattleGridSnapshot> SstSmlDocumentSession::battleGrid() cons
 std::vector<SstSmlDiagnosticSnapshot> SstSmlDocumentSession::diagnostics() const { return impl_->diagnostics; }
 
 std::optional<MldOverviewSnapshot> SstSmlDocumentSession::embeddedMldOverview(const std::size_t recordIndex) const {
-    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex]) return std::nullopt;
-    return documents::projectMldOverview(*impl_->embeddedMlds[recordIndex]);
+    const auto* mld = embeddedDocument(impl_->document, recordIndex);
+    if (!mld) return std::nullopt;
+    const auto* receipt = impl_->receipt.embeddedMld(impl_->document.members[recordIndex].sml.resource.id);
+    if (!receipt) return std::nullopt;
+    return documents::projectMldOverview(*mld, *receipt);
 }
 
 std::vector<MldEntrySnapshot> SstSmlDocumentSession::embeddedMldEntries(const std::size_t recordIndex) const {
-    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex]) return {};
-    return documents::projectMldEntries(*impl_->embeddedMlds[recordIndex]);
+    const auto* mld = embeddedDocument(impl_->document, recordIndex);
+    return mld ? documents::projectMldEntries(*mld) : std::vector<MldEntrySnapshot>{};
 }
 
 std::vector<MldEntryDetailSnapshot> SstSmlDocumentSession::embeddedMldEntryDetails(const std::size_t recordIndex) const {
-    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex]) return {};
-    return documents::projectMldEntryDetails(*impl_->embeddedMlds[recordIndex]);
+    const auto* mld = embeddedDocument(impl_->document, recordIndex);
+    return mld ? documents::projectMldEntryDetails(*mld) : std::vector<MldEntryDetailSnapshot>{};
 }
 
 std::vector<MldTextureSnapshot> SstSmlDocumentSession::embeddedMldTextures(const std::size_t recordIndex) const {
-    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex]) return {};
-    return documents::projectMldTextures(*impl_->embeddedMlds[recordIndex]);
+    const auto* mld = embeddedDocument(impl_->document, recordIndex);
+    return mld ? documents::projectMldTextures(*mld) : std::vector<MldTextureSnapshot>{};
 }
 
 std::vector<DocumentDiagnostic> SstSmlDocumentSession::embeddedMldDiagnostics(const std::size_t recordIndex) const {
-    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex]) return {};
-    return documents::projectMldDiagnostics(*impl_->embeddedMlds[recordIndex]);
+    std::vector<DocumentDiagnostic> out{};
+    for (const auto& diagnostic : impl_->diagnostics) {
+        if (diagnostic.recordIndex != recordIndex || diagnostic.origin != "sml") continue;
+        out.push_back({ diagnostic.level, diagnostic.message, diagnostic.sourceOffset });
+    }
+    return out;
 }
 
 std::optional<RgbaImageSnapshot> SstSmlDocumentSession::embeddedMldTexturePreview(
     const std::size_t recordIndex, const std::size_t textureIndex) const {
-    if (recordIndex >= impl_->embeddedMlds.size() || !impl_->embeddedMlds[recordIndex]) return std::nullopt;
-    return documents::projectMldTexturePreview(*impl_->embeddedMlds[recordIndex], textureIndex);
+    const auto* mld = embeddedDocument(impl_->document, recordIndex);
+    return mld ? documents::projectMldTexturePreview(*mld, textureIndex) : std::nullopt;
 }
 
 } // namespace spice::mix

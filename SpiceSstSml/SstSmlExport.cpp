@@ -1,4 +1,5 @@
 #include "SstSmlExport.h"
+#include "SstSmlDocumentMaterialization.h"
 #include "SstParser.h"
 #include "../SpiceRoot/Binary/EndianReader.h"
 
@@ -851,7 +852,9 @@ const SmlEmbeddedResourceInspection* findInspection(const SstSmlDocumentAnalysis
 
 SmlParseResult makeLegacySmlView(const SstSmlDocument& document,
     const SstSmlDocumentImportReceipt& receipt,
-    const SstSmlDocumentAnalysis& analysis) {
+    const SstSmlDocumentAnalysis& analysis,
+    const std::optional<spice::mld::MldWriteTarget> fallbackTarget,
+    std::vector<std::string>& diagnostics) {
     SmlParseResult result{};
     result.sourcePath = receipt.sml.path.has_value() ? receipt.sml.path->string() : std::string{};
     result.sourceWasCompressedAklz = receipt.sml.wrapper == SstSmlSourceWrapper::Aklz;
@@ -865,6 +868,16 @@ SmlParseResult makeLegacySmlView(const SstSmlDocument& document,
         ? (static_cast<std::uint32_t>(result.recordCount) << 16U) | document.recordCountSentinel
         : (static_cast<std::uint32_t>(document.recordCountSentinel) << 16U) | result.recordCount;
 
+    std::map<std::uint64_t, std::vector<std::uint8_t>> resourceBytes;
+    for (const auto& member : document.members) {
+        auto materialized = materializeEmbeddedResource(member.sml.resource, receipt, fallbackTarget);
+        for (const auto& diagnostic : materialized.diagnostics) {
+            diagnostics.push_back("SML resource " + std::to_string(member.sml.resource.id.value) +
+                ": " + diagnostic.message);
+        }
+        if (materialized.ok()) resourceBytes.emplace(member.sml.resource.id.value, std::move(materialized.bytes));
+    }
+
     std::vector<std::pair<std::uint64_t, std::uint32_t>> offsets;
     std::uint64_t cursor = 8U + static_cast<std::uint64_t>(document.members.size()) * 16U;
     for (const auto& item : document.smlBodyLayout) {
@@ -872,7 +885,10 @@ SmlParseResult makeLegacySmlView(const SstSmlDocument& document,
             offsets.emplace_back(id->value, static_cast<std::uint32_t>(cursor));
             const auto member = std::find_if(document.members.begin(), document.members.end(),
                 [&](const auto& candidate) { return candidate.sml.resource.id == *id; });
-            if (member != document.members.end()) cursor += member->sml.resource.bytes.size();
+            if (member != document.members.end()) {
+                const auto bytes = resourceBytes.find(id->value);
+                if (bytes != resourceBytes.end()) cursor += bytes->second.size();
+            }
         } else {
             cursor += std::get<SstSmlOpaqueBlock>(item).bytes.size();
         }
@@ -887,10 +903,12 @@ SmlParseResult makeLegacySmlView(const SstSmlDocument& document,
         const auto offset = std::find_if(offsets.begin(), offsets.end(),
             [&](const auto& item) { return item.first == source.resource.id.value; });
         record.embeddedMldOffset = offset == offsets.end() ? 0U : offset->second;
-        record.embeddedMldSize = static_cast<std::uint32_t>(source.resource.bytes.size());
+        const auto bytes = resourceBytes.find(source.resource.id.value);
+        record.embeddedMldSize = bytes == resourceBytes.end()
+            ? 0U : static_cast<std::uint32_t>(bytes->second.size());
         record.rawWord12 = source.reservedWord;
-        record.embeddedMldInBounds = true;
-        record.embeddedMldBytes = source.resource.bytes;
+        record.embeddedMldInBounds = bytes != resourceBytes.end();
+        if (bytes != resourceBytes.end()) record.embeddedMldBytes = bytes->second;
         if (const auto inspection = findInspection(analysis, source.resource.id)) {
             record.embeddedMldSummary = legacyInspection(*inspection);
         }
@@ -901,7 +919,9 @@ SmlParseResult makeLegacySmlView(const SstSmlDocument& document,
 
 std::uint64_t documentBlockSize(const SstStageCommandBlock& block) {
     std::uint64_t size = 4U + static_cast<std::uint64_t>(block.commands.size()) * 16U + 16U;
-    for (const auto& command : block.commands) size += command.payloadBytes.size();
+    for (const auto& command : block.commands) {
+        if (command.payloadSpanKnown) size += SstParser::commandPayloadSize(command.type);
+    }
     if (block.battleGrid) size += block.battleGrid->values.size();
     return size + (block.trailingOpaque ? block.trailingOpaque->bytes.size() : 0U);
 }
@@ -963,6 +983,7 @@ SstParseResult makeLegacySstView(const SstSmlDocument& document,
         std::uint32_t payloadCursor = block.payloadStartOffset;
         for (std::size_t commandIndex = 0U; commandIndex < blockSource.commands.size(); ++commandIndex) {
             const auto& commandSource = blockSource.commands[commandIndex];
+            const auto payload = materializeCommandPayload(commandSource, result.sourceEndian);
             SstCommandRecord command{};
             command.index = commandIndex;
             command.sourceEndian = result.sourceEndian;
@@ -973,10 +994,10 @@ SstParseResult makeLegacySstView(const SstSmlDocument& document,
             command.rawWord8 = commandSource.rawWord8;
             command.onDiskWord12 = commandSource.onDiskWord12;
             command.payloadOffset = payloadCursor;
-            command.payloadSize = static_cast<std::uint32_t>(commandSource.payloadBytes.size());
+            command.payloadSize = static_cast<std::uint32_t>(payload.bytes.size());
             command.typeKnown = commandSource.payloadSpanKnown;
             command.payloadInBounds = true;
-            command.payloadBytes = commandSource.payloadBytes;
+            command.payloadBytes = payload.bytes;
             command.fieldSummaries = SstParser::fieldSummariesForType(command.type);
             command.modelIndexCandidate = SstParser::isModelIndexCommandType(command.type);
             const auto modelField = std::find_if(commandSource.fields.begin(), commandSource.fields.end(),
@@ -1002,9 +1023,9 @@ SstParseResult makeLegacySstView(const SstSmlDocument& document,
                 row.attenuationOrSpot0 = rowSource.attenuationOrSpot0;
                 row.attenuationOrSpot1 = rowSource.attenuationOrSpot1;
                 row.rawTailWord = rowSource.rawTailWord;
-                if (rowIndex * 0x68U + 0x68U <= commandSource.payloadBytes.size()) {
-                    row.rawBytes.assign(commandSource.payloadBytes.begin() + static_cast<std::ptrdiff_t>(rowIndex * 0x68U),
-                        commandSource.payloadBytes.begin() + static_cast<std::ptrdiff_t>((rowIndex + 1U) * 0x68U));
+                if (rowIndex * 0x68U + 0x68U <= payload.bytes.size()) {
+                    row.rawBytes.assign(payload.bytes.begin() + static_cast<std::ptrdiff_t>(rowIndex * 0x68U),
+                        payload.bytes.begin() + static_cast<std::ptrdiff_t>((rowIndex + 1U) * 0x68U));
                 }
                 command.type1LightingRows.push_back(std::move(row));
             }
@@ -1159,9 +1180,14 @@ SmlSstCommandMapExportResult exportSmlEmbeddedMldsAndCommandMap(
     const SstSmlDocumentImportReceipt& receipt,
     const SstSmlDocumentAnalysis& analysis,
     const SmlEmbeddedMldExportOptions& options) {
-    auto sml = makeLegacySmlView(document, receipt, analysis);
+    std::vector<std::string> materializationDiagnostics;
+    auto sml = makeLegacySmlView(document, receipt, analysis,
+        options.constructedMldFallbackTarget, materializationDiagnostics);
     auto sst = makeLegacySstView(document, receipt);
-    return exportLegacySmlEmbeddedMldsAndCommandMap(sml, &sst, options);
+    auto result = exportLegacySmlEmbeddedMldsAndCommandMap(sml, &sst, options);
+    result.diagnostics.insert(result.diagnostics.begin(),
+        materializationDiagnostics.begin(), materializationDiagnostics.end());
+    return result;
 }
 
 } // namespace spice::sstsml

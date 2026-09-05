@@ -43,6 +43,9 @@
     <ClInclude Include="SstSmlDocumentImporter.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="SstSmlDocumentMaterialization.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
     <ClInclude Include="SstSmlDocumentValidator.h">
       <Filter>Parser</Filter>
     </ClInclude>
@@ -67,6 +70,12 @@
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="SstSmlDocumentImporter.cpp">
+      <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlDocument.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="SstSmlDocumentMaterialization.cpp">
       <Filter>Parser</Filter>
     </ClCompile>
     <ClCompile Include="SstSmlDocumentAnalysis.cpp">

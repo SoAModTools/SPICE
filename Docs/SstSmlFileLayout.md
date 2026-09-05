@@ -8,15 +8,15 @@ Use `SstSmlDocumentImporter::importFile(path)` with either member of a side-by-s
 
 The importer automatically recognizes raw and AKLZ-wrapped inputs and structurally detects little- or big-endian numeric encoding. Callers cannot force a source platform or byte order. Source paths, SHA-256 hashes, raw and decoded sizes, wrapper kind, and detected byte order live in the two-member `SstSmlDocumentImportReceipt`, not in the document.
 
-`SstSmlDocumentValidator` checks intrinsic document identities, member shape, command payload sizes, typed field projections, sentinels, and body ownership. A valid document reports `ReadOnly` readiness because no SST/SML writer is supplied.
+`SstSmlDocumentValidator` checks intrinsic document identities, member shape, command payload ownership, typed field projections, sentinels, body ownership, and keyed embedded-MLD receipts when one is supplied. A valid document reports `Valid` readiness; this is structural validity, not a promise that an SST/SML pair writer exists.
 
 ## Canonical document
 
 `SstSmlDocument` owns the stage ID, paired header sentinels, ordered stage members, and independent SML and SST body layouts. Every stage member owns one SML record and one same-index SST record. IDs are typed, nonzero, unique within their entity category, and stable while the document is edited in memory; repeated imports and cross-document correspondence are consumer concerns.
 
-Each SML record owns its encoded resource index metadata, reserved word, and complete embedded MLD payload. Embedded MLD bytes remain opaque until SpiceMLD supplies a canonical `MldDocument`. SML body-layout entries order embedded resources and explicit opaque gaps without retaining the decoded source image or source offsets.
+Each SML record owns its encoded resource index metadata, reserved word, and one strict embedded-resource variant. A successfully decoded resource owns a canonical platform-neutral `MldDocument`; a failed nested decode owns the complete payload as `SmlOpaqueEmbeddedResource`. Successful nested imports do not duplicate source bytes in the stage document. Their copyable `MldImportReceipt` values are keyed by `SmlEmbeddedResourceId` in the parent import receipt for source-faithful secondary materialization.
 
-Each SST record owns its encoded record index, later-record metadata where applicable, and one command block. A command block owns command records, logical sentinel fields, an optional identified 9x9 terrain entity, and an optional identified opaque tail. Each supported command owns logical record fields, its bounded payload bytes, typed supported fields, and typed placement or lighting rows where applicable. Unknown command payload boundaries are not guessed; undecoded remaining bytes stay in the explicit opaque tail.
+Each SST record owns its encoded record index, later-record metadata where applicable, and one command block. A command block owns command records, logical sentinel fields, an optional identified 9x9 terrain entity, and an optional identified opaque tail. Each supported command owns typed generic fields, canonical specialized placement or lighting entities where applicable, and offset-addressed opaque fragments for every uncovered payload byte. It does not retain a duplicate full payload buffer. The validator requires those semantic and opaque ranges to cover the recognized payload exactly once. Unknown command payload boundaries are not guessed; undecoded remaining bytes stay in the explicit opaque block tail.
 
 The document contains no source path, source platform, compression flag, byte order, decoded offsets, hashes, diagnostics, evidence labels, histograms, or runtime context.
 
@@ -24,7 +24,7 @@ The document contains no source path, source platform, compression flag, byte or
 
 `SstSmlDocumentAnalyzer` derives embedded-resource header inspection, command field evidence, field scope, command histograms, active-row runtime research, and same-member local-slot links from a document plus its receipt. These observations are not document state.
 
-The existing embedded-MLD extraction, command-map JSON, stage-annotation template, and combined Blender IR workflows remain secondary tools. They now consume the canonical document, receipt, and analysis rather than exposing parser-private result structures. Combined Blender IR uses typed command-0 placement data and continues to parse each opaque embedded MLD payload internally.
+The existing embedded-MLD extraction, command-map JSON, stage-annotation template, and combined Blender IR workflows remain secondary tools. They now consume the canonical document, receipt, and analysis rather than exposing parser-private result structures. Combined Blender IR projects decoded resources directly through `MldBlenderIrProjector`; opaque resources are preserved for extraction and reported as unavailable for semantic projection. A constructed decoded MLD can be projected without a receipt, while byte extraction requires either its keyed import receipt or an explicit fallback MLD target.
 
 ## SML binary layout
 

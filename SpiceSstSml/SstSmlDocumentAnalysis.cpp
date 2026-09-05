@@ -38,15 +38,39 @@ bool containsTag(std::span<const std::uint8_t> bytes, std::string_view tag) {
 SmlEmbeddedResourceInspection inspectResource(const SmlEmbeddedResource& resource, Endian endian) {
     SmlEmbeddedResourceInspection inspection{};
     inspection.resourceId = resource.id;
-    inspection.hasNjcm = containsTag(resource.bytes, "NJCM");
-    inspection.hasNjtl = containsTag(resource.bytes, "NJTL");
-    inspection.hasNmdm = containsTag(resource.bytes, "NMDM");
-    inspection.hasGcix = containsTag(resource.bytes, "GCIX");
-    inspection.hasGvrt = containsTag(resource.bytes, "GVRT");
-    inspection.hasGbix = containsTag(resource.bytes, "GBIX");
-    inspection.hasPvrt = containsTag(resource.bytes, "PVRT");
-    inspection.hasPvmh = containsTag(resource.bytes, "PVMH");
-    const EndianReader reader(resource.bytes, endian);
+    if (const auto* document = std::get_if<spice::mld::MldDocument>(&resource.content)) {
+        inspection.decoded = true;
+        inspection.validLookingHeader = true;
+        inspection.entryCount = static_cast<std::uint32_t>(document->entries.size());
+        inspection.textureArchiveCount = static_cast<std::uint32_t>(document->textureArchives.size());
+        inspection.hasNjcm = !document->objects.empty();
+        inspection.hasNjtl = !document->textureLists.empty();
+        inspection.hasNmdm = !document->motions.empty();
+        for (const auto& archive : document->textureArchives) {
+            for (const auto& texture : archive.textures) {
+                if (texture.encoding == spice::mld::model::MldTextureEncoding::Gvr) {
+                    inspection.hasGvrt = true;
+                    inspection.hasGcix = inspection.hasGcix || texture.hasGlobalIndex;
+                } else if (texture.encoding == spice::mld::model::MldTextureEncoding::Pvr) {
+                    inspection.hasPvrt = true;
+                    inspection.hasPvmh = true;
+                    inspection.hasGbix = inspection.hasGbix || texture.hasGlobalIndex;
+                }
+            }
+        }
+        return inspection;
+    }
+
+    const auto& bytes = std::get<SmlOpaqueEmbeddedResource>(resource.content).bytes;
+    inspection.hasNjcm = containsTag(bytes, "NJCM");
+    inspection.hasNjtl = containsTag(bytes, "NJTL");
+    inspection.hasNmdm = containsTag(bytes, "NMDM");
+    inspection.hasGcix = containsTag(bytes, "GCIX");
+    inspection.hasGvrt = containsTag(bytes, "GVRT");
+    inspection.hasGbix = containsTag(bytes, "GBIX");
+    inspection.hasPvrt = containsTag(bytes, "PVRT");
+    inspection.hasPvmh = containsTag(bytes, "PVMH");
+    const EndianReader reader(bytes, endian);
     inspection.entryCount = reader.try_read_u32(0U);
     inspection.indexTableOffset = reader.try_read_u32(4U);
     inspection.textureTableOffset = reader.try_read_u32(0x10U);
@@ -58,7 +82,7 @@ SmlEmbeddedResourceInspection inspectResource(const SmlEmbeddedResource& resourc
         const auto end = static_cast<std::uint64_t>(*inspection.indexTableOffset) +
             static_cast<std::uint64_t>(*inspection.entryCount) * kIndexStride;
         inspection.validLookingHeader = *inspection.entryCount > 0U &&
-            *inspection.indexTableOffset >= 0x14U && end <= resource.bytes.size();
+            *inspection.indexTableOffset >= 0x14U && end <= bytes.size();
     }
     return inspection;
 }
@@ -132,12 +156,15 @@ SstSmlDocumentAnalysis SstSmlDocumentAnalyzer::analyze(
             SstSmlCommandAnalysis commandAnalysis{};
             commandAnalysis.commandId = command.id;
             const auto catalog = SstParser::fieldSummariesForType(command.type);
-            const auto count = std::min(catalog.size(), command.fields.size());
-            commandAnalysis.fields.reserve(count);
-            for (std::size_t index = 0U; index < count; ++index) {
-                const auto& source = catalog[index];
+            commandAnalysis.fields.reserve(command.fields.size());
+            for (const auto& field : command.fields) {
+                const auto sourceIt = std::find_if(catalog.begin(), catalog.end(), [&](const auto& item) {
+                    return item.offset == field.payloadOffset && item.name == field.name;
+                });
+                if (sourceIt == catalog.end()) continue;
+                const auto& source = *sourceIt;
                 commandAnalysis.fields.push_back(SstSmlCommandFieldAnalysis{
-                    command.fields[index].id,
+                    field.id,
                     source.offset,
                     convertWidth(source.width),
                     convertKind(source.kind),
@@ -169,6 +196,10 @@ SstSmlDocumentAnalysis SstSmlDocumentAnalyzer::analyze(
             link.slotIndexInRange = localSlotCount.has_value() && *index >= 0 &&
                 static_cast<std::uint32_t>(*index) < *localSlotCount;
             link.owningResourceId = member.sml.resource.id;
+            if (const auto* mld = std::get_if<spice::mld::MldDocument>(&member.sml.resource.content);
+                mld && *index >= 0 && static_cast<std::size_t>(*index) < mld->entries.size()) {
+                link.resolvedEntryId = mld->entries[static_cast<std::size_t>(*index)].id;
+            }
             if (link.slotIndexRangeKnown && !link.slotIndexInRange) {
                 addDiagnostic(result, SstSmlDiagnosticSeverity::Warning, SstSmlSourceMember::Sst,
                     "SST command model index is outside its same-member embedded-resource slot range");
