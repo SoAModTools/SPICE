@@ -1,7 +1,8 @@
 #include "StdDocument.h"
 
 #include <algorithm>
-#include <type_traits>
+#include <array>
+#include <cstdio>
 #include <utility>
 
 namespace spice::stdfile {
@@ -14,7 +15,48 @@ Id allocateId(const Range& values, GetId getId) noexcept {
     return Id{ next };
 }
 
+constexpr std::array kCommandDescriptors{
+    StdCommandDescriptor{ StdCommandKind::Sparc, kStdSparcCombinedType, "SPARC", kStdSparcPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::PutModel, kStdPutModelCombinedType, "PUTMODEL", kStdPutModelPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::SetCommand, kStdSetCommandCombinedType, "SET COMMAND", kStdSetCommandPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::MotionPause, kStdMotionPauseCombinedType, "MOTION PAUSE", kStdMotionPausePayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::CollisionBox, kStdCollisionBoxCombinedType, "COLISION BOX", kStdCollisionBoxPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::MoveModel, kStdMoveModelCombinedType, "MOVE MODEL", kStdMoveModelPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::HitWeapon, kStdHitWeaponCombinedType, "HIT WEAPON", kStdHitWeaponPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::PointLight, kStdPointLightCombinedType, "POINT LIGHT", kStdPointLightPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::SystemCamera, kStdSystemCameraCombinedType, "SYSTEM CAMERA", kStdSystemCameraPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::EffectWait, kStdEffectWaitCombinedType, "EFFECT WAIT", kStdEffectWaitPayloadSize, true },
+    StdCommandDescriptor{ StdCommandKind::SeRequest, kStdSeRequestCombinedType, "SE REQUEST", kStdSeRequestPayloadSize, true },
+};
+
 } // namespace
+
+std::optional<std::string> StdSparcPayload::formattedMldFilename() const {
+    if (mldFilenameKey == 9999999U) return std::nullopt;
+
+    char buffer[16]{};
+    if (mldFilenameKey < 10000000U) {
+        std::snprintf(buffer, sizeof(buffer), "E%02u%03u%02u.MLD",
+            mldFilenameKey / 100000U,
+            (mldFilenameKey / 100U) % 1000U,
+            mldFilenameKey % 100U);
+        return std::string(buffer);
+    }
+
+    const auto modelKey = mldFilenameKey - 10000000U;
+    constexpr std::array familyLetters{ 'A', 'B', 'G' };
+    const auto familyIndex = modelKey / 1000U;
+    if (familyIndex >= familyLetters.size()) return std::nullopt;
+    std::snprintf(buffer, sizeof(buffer), "M%c%03u.MLD",
+        familyLetters[familyIndex], modelKey % 1000U);
+    return std::string(buffer);
+}
+
+std::int16_t StdActionRow::rowType() const noexcept {
+    if (std::holds_alternative<StdType0ActionRowFields>(fields)) return 0;
+    if (std::holds_alternative<StdMotionActionRowFields>(fields)) return 1;
+    return std::get<StdUnrecognizedActionRowFields>(fields).rowType;
+}
 
 StdActionRowId StdDocument::allocateActionRowId() const noexcept {
     const auto* value = std::get_if<StdActionRowsContent>(&content);
@@ -42,18 +84,28 @@ StdEntryTerminatorId StdDocument::allocateEntryTerminatorId() const noexcept {
 
 StdOpaqueFragmentId StdDocument::allocateOpaqueFragmentId() const noexcept {
     const auto* value = std::get_if<StdEntryTableContent>(&content);
-    return value == nullptr ? StdOpaqueFragmentId{ 1U }
-        : allocateId<StdOpaqueFragmentId>(value->opaqueFragments, [](const auto& item) { return item.id; });
+    if (value == nullptr) return StdOpaqueFragmentId{ 1U };
+    auto result = allocateId<StdOpaqueFragmentId>(value->opaqueFragments, [](const auto& item) { return item.id; });
+    if (value->fileTrailer.has_value()) {
+        result.value = std::max(result.value, value->fileTrailer->id.value + 1U);
+    }
+    return result;
 }
 
 bool StdDocument::hasOpaqueContent() const noexcept {
     if (std::holds_alternative<StdOpaqueContent>(content)) return true;
     const auto* table = std::get_if<StdEntryTableContent>(&content);
     if (table == nullptr) return false;
-    if (!table->opaqueFragments.empty()) return true;
+    if (!table->opaqueFragments.empty() || table->fileTrailer.has_value()) return true;
     return std::any_of(table->payloads.begin(), table->payloads.end(), [](const auto& payload) {
         return std::holds_alternative<StdOpaquePayload>(payload.content);
     });
+}
+
+const StdCommandDescriptor* findStdCommandDescriptor(const std::uint32_t combinedType) noexcept {
+    const auto found = std::find_if(kCommandDescriptors.begin(), kCommandDescriptors.end(),
+        [&](const auto& value) { return value.combinedType == combinedType; });
+    return found == kCommandDescriptors.end() ? nullptr : &*found;
 }
 
 const StdEntryPayload* findEntryPayload(const StdEntryTableContent& table, const StdEntryPayloadId id) noexcept {

@@ -32,7 +32,7 @@ std::vector<std::uint8_t> makeStd(Endian endian) {
     writer.write_u16_at(2U, 0x34U);
     writer.write_u32_at(8U, 1U);
     writer.write_i16_at(0x10U, 7);
-    writer.write_i16_at(0x12U, 2);
+    writer.write_i16_at(0x12U, 1);
     writer.write_u32_at(0x18U, 0x12345678U);
     return bytes;
 }
@@ -159,14 +159,15 @@ TEST(SpiceEndianMigration, StdPreservesLittleEndianThroughEditingAndWriting) {
     ASSERT_TRUE(parsed.ok());
     ASSERT_EQ(parsed.receipt.byteOrder, Endian::Little);
     auto& rows = std::get<spice::stdfile::StdActionRowsContent>(parsed.document->content);
-    rows.rows[0].flags = 0x89ABCDEFU;
+    std::get<spice::stdfile::StdMotionActionRowFields>(rows.rows[0].fields).motionFlags = 0x89ABCDEFU;
     const auto written = spice::stdfile::StdDocumentWriter::write(*parsed.document,
         { spice::stdfile::StdPlatform::Dreamcast, spice::stdfile::StdCompression::None });
     ASSERT_TRUE(written.ok());
     const auto reparsed = spice::stdfile::StdDocumentImporter::importBytes(written.bytes);
     ASSERT_TRUE(reparsed.ok());
     EXPECT_EQ(reparsed.receipt.byteOrder, Endian::Little);
-    EXPECT_EQ(std::get<spice::stdfile::StdActionRowsContent>(reparsed.document->content).rows[0].flags,
+    EXPECT_EQ(std::get<spice::stdfile::StdMotionActionRowFields>(
+        std::get<spice::stdfile::StdActionRowsContent>(reparsed.document->content).rows[0].fields).motionFlags,
         0x89ABCDEFU);
 }
 

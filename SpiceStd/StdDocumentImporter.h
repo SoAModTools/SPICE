@@ -25,6 +25,12 @@ enum class StdDiagnosticCode {
     LayoutAmbiguous,
     MalformedActionRows,
     MalformedEntryTable,
+    KnownPayloadSizeMismatch,
+    KnownPayloadMissing,
+    UnrecognizedActionRowType,
+    KnownPayloadMisaligned,
+    InvalidTimelineRepeatRange,
+    UnsupportedPointLightSlot,
     UnknownLayoutPreserved,
     InvalidDocument,
     DuplicateId,
@@ -48,6 +54,8 @@ struct StdDocumentDiagnostic {
 struct StdOpaqueReceiptEvidence {
     std::vector<StdEntryPayloadId> payloadIds{};
     std::vector<StdOpaqueFragmentId> fragmentIds{};
+    std::optional<StdOpaqueFragmentId> fileTrailerId{};
+    std::optional<std::array<std::uint8_t, 32U>> fileTrailerSha256{};
     std::optional<std::array<std::uint8_t, 32U>> topLevelDecodedSha256{};
 };
 

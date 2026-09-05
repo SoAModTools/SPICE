@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <iostream>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,10 @@ struct RoundTripSmokeResult {
     std::size_t fileCount{ 0U };
     std::size_t completeParseCount{ 0U };
     std::size_t failureCount{ 0U };
+    std::size_t actionRowCount{ 0U };
+    std::size_t entryRecordCount{ 0U };
+    std::size_t fileTrailerCount{ 0U };
+    std::map<std::uint32_t, std::size_t> typedPayloadCounts{};
     std::vector<std::string> firstFailures{};
 };
 
@@ -75,6 +80,19 @@ RoundTripSmokeResult runRoundTripSmoke(const std::filesystem::path& inputPath)
             continue;
         }
         ++result.completeParseCount;
+        if (const auto* rows = std::get_if<spice::stdfile::StdActionRowsContent>(&parsed.document->content)) {
+            result.actionRowCount += rows->rows.size();
+        } else if (const auto* table = std::get_if<spice::stdfile::StdEntryTableContent>(&parsed.document->content)) {
+            result.entryRecordCount += table->records.size();
+            if (table->fileTrailer.has_value()) ++result.fileTrailerCount;
+            for (const auto& record : table->records) {
+                if (!record.payload.has_value()) continue;
+                const auto* payload = spice::stdfile::findEntryPayload(*table, *record.payload);
+                if (payload != nullptr && !std::holds_alternative<spice::stdfile::StdOpaquePayload>(payload->content)) {
+                    ++result.typedPayloadCounts[record.combinedType()];
+                }
+            }
+        }
 
         const auto platform = parsed.receipt.byteOrder == spice::root::Endian::Little
             ? spice::stdfile::StdPlatform::Dreamcast : spice::stdfile::StdPlatform::GameCube;
@@ -135,6 +153,12 @@ int main(int argc, char** argv) {
         std::cout << "canonicalRoundTripFiles=" << roundTrip.fileCount << "\n";
         std::cout << "canonicalRoundTripCompleteParses=" << roundTrip.completeParseCount << "\n";
         std::cout << "canonicalRoundTripFailures=" << roundTrip.failureCount << "\n";
+        std::cout << "canonicalActionRows=" << roundTrip.actionRowCount << "\n";
+        std::cout << "canonicalEntryRecords=" << roundTrip.entryRecordCount << "\n";
+        std::cout << "canonicalFileTrailers=" << roundTrip.fileTrailerCount << "\n";
+        for (const auto& [combinedType, count] : roundTrip.typedPayloadCounts) {
+            std::cout << "canonicalTypedPayload[0x" << std::hex << combinedType << std::dec << "]=" << count << "\n";
+        }
         for (const auto& failure : roundTrip.firstFailures) {
             std::cout << "canonicalRoundTripFailure=" << failure << "\n";
         }
