@@ -47,6 +47,18 @@ MldDocumentValidationResult MldDocumentValidator::validate(
     validateIds(document.textureArchives, "Texture-archive collection", result);
     validateIds(document.opaqueMembers, "Opaque-member collection", result);
 
+    std::set<std::uint64_t> motionVariantIds{};
+    for (const auto& motion : document.motions) {
+        const auto* decoded = std::get_if<MldDecodedMotion>(&motion.payload);
+        if (decoded == nullptr) continue;
+        if (decoded->variants.empty()) error(result, "A decoded motion must contain at least one variant.");
+        for (const auto& variant : decoded->variants) {
+            if (!variant.id || !motionVariantIds.insert(variant.id.value).second)
+                error(result, "Motion variants contain a zero or duplicate stable ID.");
+            if (!variant.document) error(result, "A decoded motion variant has no motion document.");
+        }
+    }
+
     for (const auto& entry : document.entries) {
         if (entry.functionName.size() > 20U || std::any_of(entry.functionName.begin(), entry.functionName.end(), [](const unsigned char value) {
                 return value < 0x20U || value > 0x7EU;

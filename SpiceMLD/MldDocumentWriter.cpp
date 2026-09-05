@@ -163,8 +163,8 @@ template <typename Value, typename Id>
             } else if constexpr (std::is_same_v<Id, MldMotionId>) {
                 const auto* resource = findById(document.motions, id);
                 const auto* decoded = resource == nullptr ? nullptr : std::get_if<MldDecodedMotion>(&resource->payload);
-                if (decoded == nullptr || decoded->variants.empty() || !decoded->variants.front()) { ok = false; return; }
-                const auto encoded = modeling::MotionDocumentCodec::encode(*decoded->variants.front());
+                if (decoded == nullptr || decoded->variants.empty() || !decoded->variants.front().document) { ok = false; return; }
+                const auto encoded = modeling::MotionDocumentCodec::encode(*decoded->variants.front().document);
                 if (!encoded.ok()) { ok = false; return; }
                 const auto address = appendAligned(file.decodedBytes, encoded.bytes);
                 if (address == std::numeric_limits<std::uint32_t>::max()) { ok = false; return; }
@@ -468,8 +468,8 @@ MldDocumentWriteResult MldDocumentWriter::write(
     if (!populateOpaqueOrEncoded(document.motions, motionAddresses, output.motionResources,
         [&](const MldMotionPayload& payload, std::vector<std::uint8_t>& encoded) {
             const auto* decoded = std::get_if<MldDecodedMotion>(&payload);
-            if (decoded == nullptr || decoded->variants.empty() || !decoded->variants.front()) return false;
-            const auto written = modeling::MotionDocumentCodec::encode(*decoded->variants.front());
+            if (decoded == nullptr || decoded->variants.empty() || !decoded->variants.front().document) return false;
+            const auto written = modeling::MotionDocumentCodec::encode(*decoded->variants.front().document);
             if (!written.ok()) return false;
             encoded = written.bytes;
             return true;

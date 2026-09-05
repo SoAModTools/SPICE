@@ -26,6 +26,7 @@ struct MldId {
 using MldEntryId = MldId<struct MldEntryIdTag>;
 using MldObjectId = MldId<struct MldObjectIdTag>;
 using MldMotionId = MldId<struct MldMotionIdTag>;
+using MldMotionVariantId = MldId<struct MldMotionVariantIdTag>;
 using MldGroundId = MldId<struct MldGroundIdTag>;
 using MldTextureListId = MldId<struct MldTextureListIdTag>;
 using MldTextureArchiveId = MldId<struct MldTextureArchiveIdTag>;
@@ -58,9 +59,14 @@ struct MldObjectResource {
     MldObjectPayload payload{ MldOpaquePayload{} };
 };
 
+struct MldMotionVariant {
+    MldMotionVariantId id{};
+    std::shared_ptr<const modeling::MotionDocument> document{};
+};
+
 struct MldDecodedMotion {
     modeling::MotionKind kind{ modeling::MotionKind::Unknown };
-    std::vector<std::shared_ptr<const modeling::MotionDocument>> variants{};
+    std::vector<MldMotionVariant> variants{};
 };
 
 using MldMotionPayload = std::variant<MldDecodedMotion, MldOpaquePayload>;
@@ -163,6 +169,7 @@ struct MldDocument {
     [[nodiscard]] MldEntryId allocateEntryId() const noexcept;
     [[nodiscard]] MldObjectId allocateObjectId() const noexcept;
     [[nodiscard]] MldMotionId allocateMotionId() const noexcept;
+    [[nodiscard]] MldMotionVariantId allocateMotionVariantId() const noexcept;
     [[nodiscard]] MldGroundId allocateGroundId() const noexcept;
     [[nodiscard]] MldTextureListId allocateTextureListId() const noexcept;
     [[nodiscard]] MldTextureArchiveId allocateTextureArchiveId() const noexcept;

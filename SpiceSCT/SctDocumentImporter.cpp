@@ -704,6 +704,9 @@ SctDocumentImportResult SctDocumentImporter::import(
     SctDocumentImportResult result;
     SctDocumentImportReceipt receipt;
     std::vector<SctSourceSpanRecord> sourceRecords;
+    if (!parsed.file.sourcePath.empty()) receipt.sourcePath = std::filesystem::path{parsed.file.sourcePath};
+    receipt.rawSourceSize = parsed.file.originalBytes.size();
+    receipt.rawSourceSha256 = detail::sha256(parsed.file.originalBytes);
     receipt.source.byteOrder = parsed.file.detectedEndian == "big" ? SctSourceByteOrder::BigEndian
         : parsed.file.detectedEndian == "little" ? SctSourceByteOrder::LittleEndian : SctSourceByteOrder::Unknown;
     receipt.source.wrapper = parsed.file.originalCompressedAklz ? SctSourceWrapper::Aklz : SctSourceWrapper::None;

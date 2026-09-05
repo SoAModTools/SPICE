@@ -4,6 +4,7 @@
 #include "Model/MldDiagnostics.h"
 #include "../SpiceRoot/Binary/Endian.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -42,6 +43,7 @@ public:
     MldPlatform platform{ MldPlatform::GameCube };
     MldWrapper wrapper{ MldWrapper::Raw };
     spice::root::Endian endian{ spice::root::Endian::Big };
+    std::array<std::uint8_t, 32U> sourceSha256{};
     std::uint64_t sourceSize{ 0U };
     std::uint64_t decodedSize{ 0U };
     std::vector<MldReceiptLayoutItem> layout{};

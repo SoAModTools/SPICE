@@ -1,5 +1,6 @@
 #include "AlxImporter.h"
 
+#include "AlxSha256.h"
 #include "CsvReader.h"
 
 #include <algorithm>
@@ -168,7 +169,14 @@ void finish(Result& result, AlxTableKind kind, AlxLocale locale,
     if (published == 0) diagnostic(result, AlxDiagnosticCode::EmptyCanonicalTable,
         "Canonical table contains no published records", path);
     if (!hasErrors(result.diagnostics)) {
-        result.metadata = AlxImportMetadata{ kind, locale, path, source, published, source - published };
+        result.metadata = AlxImportMetadata{
+            .table = kind,
+            .locale = locale,
+            .path = path,
+            .sourceRows = source,
+            .publishedRows = published,
+            .excludedRows = source - published,
+        };
     } else {
         result.table.reset();
     }
@@ -185,6 +193,10 @@ Result importTable(std::span<const std::uint8_t> bytes, const AlxImportOptions& 
     if (!locale) return result;
     const std::size_t published = parse(*csv, *locale, result);
     finish(result, kind, *locale, path, csv->rows.size(), published);
+    if (result.metadata) {
+        result.metadata->rawSourceSize = bytes.size();
+        result.metadata->rawSourceSha256 = detail::sha256(bytes);
+    }
     return result;
 }
 

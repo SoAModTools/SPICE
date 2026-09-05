@@ -28,10 +28,12 @@
     <ClInclude Include="MldBlenderIrProjector.h" />
     <ClInclude Include="MldDocument.h" />
     <ClInclude Include="MldDocumentImporter.h" />
+    <ClInclude Include="MldMotionFrameProjector.h" />
     <ClInclude Include="MldDocumentValidator.h" />
     <ClInclude Include="MldDocumentWriter.h" />
     <ClInclude Include="Internal\MldDocumentReceiptState.h" />
     <ClInclude Include="Internal\MldGroundDocumentConversion.h" />
+    <ClInclude Include="Internal\MldSha256.h" />
     <ClInclude Include="Analysis\MldGvrFormatInventory.h">
       <Filter>Analysis</Filter>
     </ClInclude>
@@ -121,8 +123,10 @@
     <ClCompile Include="MldBlenderIrProjector.cpp" />
     <ClCompile Include="MldDocument.cpp" />
     <ClCompile Include="MldDocumentImporter.cpp" />
+    <ClCompile Include="MldMotionFrameProjector.cpp" />
     <ClCompile Include="MldDocumentValidator.cpp" />
     <ClCompile Include="MldDocumentWriter.cpp" />
+    <ClCompile Include="Internal\MldSha256.cpp" />
     <ClCompile Include="Analysis\MldGvrFormatInventory.cpp">
       <Filter>Analysis</Filter>
     </ClCompile>

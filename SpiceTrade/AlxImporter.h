@@ -2,6 +2,7 @@
 
 #include "AlxDerivedView.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -17,6 +18,8 @@ struct AlxImportMetadata {
     AlxTableKind table{};
     AlxLocale locale{};
     std::filesystem::path path{};
+    std::uint64_t rawSourceSize{};
+    std::array<std::uint8_t, 32U> rawSourceSha256{};
     std::size_t sourceRows{};
     std::size_t publishedRows{};
     std::size_t excludedRows{};

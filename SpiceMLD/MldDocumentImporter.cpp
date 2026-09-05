@@ -2,6 +2,7 @@
 
 #include "Internal/MldDocumentReceiptState.h"
 #include "Internal/MldGroundDocumentConversion.h"
+#include "Internal/MldSha256.h"
 #include "Parsing/MldParser.h"
 
 #include <algorithm>
@@ -147,6 +148,7 @@ void preserveFragment(detail::MldImportState& state,
     std::unordered_map<std::uint32_t, MldGroundId> groundIds{};
     std::unordered_map<std::uint32_t, MldTextureListId> textureListIds{};
     std::vector<std::pair<std::uint64_t, MldLayoutItem>> ordered{};
+    std::uint64_t nextMotionVariantId = 1U;
     const auto opaqueBytesAt = [&](const std::uint32_t address) {
         const auto found = std::find_if(source.rawDataBlocks.begin(), source.rawDataBlocks.end(),
             [&](const auto& block) { return block.offset == address; });
@@ -182,7 +184,7 @@ void preserveFragment(detail::MldImportState& state,
                                                : modeling::Animation::EulerRecordWidth::Full32,
             };
             const auto result = modeling::MotionDocumentCodec::decode(resource.rawBytes, context);
-            if (result.ok()) decoded.variants.push_back(result.document);
+            if (result.ok()) decoded.variants.push_back({ MldMotionVariantId{ nextMotionVariantId++ }, result.document });
         }
         if (!decoded.variants.empty()) output.payload = std::move(decoded);
         else output.payload = MldOpaquePayload{ resource.rawBytes };
@@ -359,6 +361,7 @@ MldDocumentImportResult MldDocumentImporter::importBytes(
     result.receipt.platform = detected;
     result.receipt.wrapper = parsed.sourceWasCompressedAklz ? MldWrapper::Aklz : MldWrapper::Raw;
     result.receipt.endian = parsed.endian;
+    result.receipt.sourceSha256 = detail::sha256(bytes);
     result.receipt.sourceSize = bytes.size();
     result.receipt.decodedSize = parsed.decodedBytes.size();
     result.document = makeDocument(parsed, result.receipt);

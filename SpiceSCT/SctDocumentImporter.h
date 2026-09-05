@@ -8,6 +8,8 @@
 #include "SctStringGroups.h"
 
 #include <array>
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -74,6 +76,9 @@ struct SctDocumentRevisionProvenance {
 };
 
 struct SctDocumentImportReceipt {
+    std::optional<std::filesystem::path> sourcePath;
+    std::uint64_t rawSourceSize = 0;
+    std::array<std::uint8_t, 32> rawSourceSha256{};
     SctImportLineageId lineage;
     SctSourceObservations source;
     std::optional<SctPlatform> declaredSourcePlatform;

@@ -68,14 +68,14 @@ template <typename Id>
             else if (decoded->kind == modeling::MotionKind::Shape) resource.structure.header.kind = modeling::File::NinjaMotionKind::Shape;
             else if (decoded->kind == modeling::MotionKind::Camera) resource.structure.header.kind = modeling::File::NinjaMotionKind::Camera;
             for (const auto& value : decoded->variants) {
-                if (!value) continue;
-                const auto encoded = modeling::MotionDocumentCodec::encode(*value);
+                if (!value.document) continue;
+                const auto encoded = modeling::MotionDocumentCodec::encode(*value.document);
                 if (resource.rawBytes.empty()) resource.rawBytes = encoded.bytes;
                 resource.variants.push_back({
-                    .nodeCount = value->targetLayout().lane_count(),
-                    .shortRot = value->eulerWidth() == modeling::Animation::EulerRecordWidth::Short16,
-                    .targetLayout = value->targetLayout(),
-                    .motion = std::make_shared<const modeling::Animation::Motion>(value->motion()),
+                    .nodeCount = value.document->targetLayout().lane_count(),
+                    .shortRot = value.document->eulerWidth() == modeling::Animation::EulerRecordWidth::Short16,
+                    .targetLayout = value.document->targetLayout(),
+                    .motion = std::make_shared<const modeling::Animation::Motion>(value.document->motion()),
                 });
             }
         } else {
