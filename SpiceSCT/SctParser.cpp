@@ -27,6 +27,16 @@ constexpr std::uint32_t kMaxOpcodeProbe = 265;
 
 using Endian = spice::root::Endian;
 
+void emitTrace(const SctParseOptions& options, const SctParseTracePhase phase) {
+    if (options.traceObserver) options.traceObserver(SctParseTraceEvent{phase});
+}
+
+[[nodiscard]] bool hasError(const std::vector<SctDiagnostic>& diagnostics) noexcept {
+    return std::ranges::any_of(diagnostics, [](const SctDiagnostic& diagnostic) {
+        return diagnostic.severity == SctDiagnosticSeverity::Error;
+    });
+}
+
 [[nodiscard]] std::uint32_t readU32(std::span<const std::uint8_t> bytes, std::size_t offset, Endian endian) {
     return spice::root::EndianReader(bytes, endian).try_read_u32(offset).value_or(0U);
 }
@@ -335,7 +345,8 @@ struct OpcodeBoundaryProbe {
     SctInstruction::ScptParameterValueRecord* record) {
 
     if (wordOffset + 4u > sectionBytes.size()) {
-        diagnostics.push_back({"SCPT parameter decode failed: out-of-bounds read.", instructionOffset});
+        diagnostics.push_back({SctDiagnosticSeverity::Warning,
+            "SCPT parameter decode failed: out-of-bounds read.", instructionOffset});
         return 0;
     }
 
@@ -348,7 +359,8 @@ struct OpcodeBoundaryProbe {
     }
     const auto scan = scanner.result();
     if (!scan.complete) {
-        diagnostics.push_back({scan.error == SctScptScanError::TruncatedFloatPayload
+        diagnostics.push_back({SctDiagnosticSeverity::Warning,
+            scan.error == SctScptScanError::TruncatedFloatPayload
             ? "SCPT float literal payload exceeds section bounds."
             : "SCPT parameter decode reached section end before stop code (0x1d).", instructionOffset});
         return static_cast<std::uint32_t>(scan.wordCount);
@@ -418,7 +430,8 @@ struct OpcodeBoundaryProbe {
     record->evaluationTrace.push_back({kSctScptStopCode, "return values (0x1d)"});
     const auto analysis = analyzeSctScptProgram(program);
     if (analysis.maximumLogicalStackDepth > kSctScptRuntimeStackWarningThreshold) {
-        diagnostics.push_back({"SCPT expression exceeds the observed runtime stack-depth warning threshold.",
+        diagnostics.push_back({SctDiagnosticSeverity::Warning,
+            "SCPT expression exceeds the observed runtime stack-depth warning threshold.",
             instructionOffset});
     }
     const SctCanonicalExpression candidate{program, SctExpressionTermination::StopCode};
@@ -811,6 +824,7 @@ void populateFooterEntriesAndGroups(
         const auto rawString = readNullTerminatedBytes(dataBytes, candidate.reference.targetPayloadOffset);
         if (!rawString.has_value()) {
             footer.diagnostics.push_back({
+                SctDiagnosticSeverity::Warning,
                 "Footer reference target is not null-terminated.",
                 candidate.reference.targetPayloadOffset
             });
@@ -900,7 +914,8 @@ void populateFooterEntriesAndGroups(
     if (offset + 4u > sectionBytes.size()) {
         decoded.inst.decodeOk = false;
         decoded.inst.sizeBytes = 0;
-        diagnostics.push_back({"Instruction decode failed: out-of-bounds read.", offset});
+        diagnostics.push_back({SctDiagnosticSeverity::Warning,
+            "Instruction decode failed: out-of-bounds read.", offset});
         decoded.blockTerminator = true;
         return decoded;
     }
@@ -918,6 +933,7 @@ void populateFooterEntriesAndGroups(
     }
     if (wordBase > kMaxOpcodeProbe && wordOther == 4u) {
         diagnostics.push_back({
+            SctDiagnosticSeverity::Warning,
             "Instruction boundary probe rejected swapped opcode 4 because it aliases the SCPT float preamble.",
             offset
         });
@@ -1007,7 +1023,8 @@ void populateFooterEntriesAndGroups(
 
             const auto paramWordOffset = actualOpcodeOffset + 4u + (consumedOperandWords * 4u);
             if (paramWordOffset + 4u > sectionBytes.size()) {
-                diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
+                diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                    "Instruction payload exceeds section bounds.", offset});
                 return false;
             }
 
@@ -1041,7 +1058,8 @@ void populateFooterEntriesAndGroups(
                 }
                 if (wordsForParam == 0u
                     || readU32(sectionBytes, paramWordOffset + (wordsForParam - 1u) * 4u, chosenEndian) != sentinel) {
-                    diagnostics.push_back({"Raw sentinel-terminated parameter reached section end before 0x1d.", offset});
+                    diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                        "Raw sentinel-terminated parameter reached section end before 0x1d.", offset});
                     return false;
                 }
             }
@@ -1078,7 +1096,8 @@ void populateFooterEntriesAndGroups(
             for (std::uint32_t i = 0; i < wordsForParam; ++i) {
                 const auto operandOffset = paramWordOffset + (i * 4u);
                 if (operandOffset + 4u > sectionBytes.size()) {
-                    diagnostics.push_back({"Instruction payload exceeds section bounds.", offset});
+                    diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                        "Instruction payload exceeds section bounds.", offset});
                     return false;
                 }
                 const auto operand = readU32(sectionBytes, operandOffset, chosenEndian);
@@ -1263,7 +1282,8 @@ void decodeUnreachedCodeBlocks(
             std::vector<SctDiagnostic> diagnostics{};
             auto decoded = decodeInstruction(sectionBytes, cursor, indexEndian, diagnostics);
             for (const auto& diagnostic : diagnostics) {
-                block.diagnostics.push_back({diagnostic.message, diagnostic.offset});
+                block.diagnostics.push_back({diagnostic.severity,
+                    diagnostic.message, diagnostic.offset});
             }
 
             if (decoded.inst.sizeBytes == 0u) {
@@ -1283,6 +1303,7 @@ void decodeUnreachedCodeBlocks(
             if (cursor + decoded.inst.sizeBytes > span.endOffset) {
                 block.stopReason = "truncated_instruction";
                 block.diagnostics.push_back({
+                    SctDiagnosticSeverity::Warning,
                     "Speculative unreached-code decode stopped because the instruction exceeds the raw span.",
                     cursor
                 });
@@ -1297,6 +1318,7 @@ void decodeUnreachedCodeBlocks(
 
         if (block.instructions.empty() && block.diagnostics.empty()) {
             block.diagnostics.push_back({
+                SctDiagnosticSeverity::Warning,
                 "No plausible instruction boundary found in unreached raw span.",
                 span.startOffset
             });
@@ -1310,15 +1332,18 @@ void decodeUnreachedCodeBlocks(
 SctParseResult SctParser::parseFile(const std::string& sourcePath, SctParseOptions options) const {
     SctParseResult result{};
     result.file.sourcePath = sourcePath;
+    emitTrace(options, SctParseTracePhase::Starting);
 
     if (sourcePath.empty()) {
-        result.diagnostics.push_back({"SCT parse skipped: source path is empty.", 0});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "SCT parse skipped: source path is empty.", 0});
         return result;
     }
 
     std::ifstream in(sourcePath, std::ios::binary);
     if (!in) {
-        result.diagnostics.push_back({"Unable to open SCT file on disk.", 0});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "Unable to open SCT file on disk.", 0});
         return result;
     }
 
@@ -1327,23 +1352,34 @@ SctParseResult SctParser::parseFile(const std::string& sourcePath, SctParseOptio
     in.seekg(0, std::ios::beg);
 
     if (size <= 0) {
-        result.diagnostics.push_back({"SCT parse skipped: file is empty.", 0});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "SCT parse skipped: file is empty.", 0});
         return result;
     }
 
     std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
     in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 
-    return parse(bytes, sourcePath, options);
+    return parseImpl(bytes, sourcePath, options, false);
 }
 
 SctParseResult SctParser::parse(
     std::span<const std::uint8_t> bytes,
     std::string sourcePath,
     SctParseOptions options) const {
+    return parseImpl(bytes, std::move(sourcePath), options, true);
+}
+
+SctParseResult SctParser::parseImpl(
+    std::span<const std::uint8_t> bytes,
+    std::string sourcePath,
+    const SctParseOptions& options,
+    const bool emitStarting) const {
     SctParseResult result{};
     result.file.sourcePath = std::move(sourcePath);
     result.file.originalBytes.assign(bytes.begin(), bytes.end());
+    if (emitStarting) emitTrace(options, SctParseTracePhase::Starting);
+    emitTrace(options, SctParseTracePhase::Compression);
 
     std::vector<std::uint8_t> decoded;
     std::span<const std::uint8_t> payload = bytes;
@@ -1352,6 +1388,7 @@ SctParseResult SctParser::parse(
         auto decodedResult = spice::compression::aklz::decompress(bytes);
         if (!decodedResult.ok()) {
             result.diagnostics.push_back({
+                SctDiagnosticSeverity::Error,
                 "AKLZ decompression failed: " + std::string(spice::compression::aklz::errorToString(decodedResult.error)),
                 0
             });
@@ -1363,15 +1400,19 @@ SctParseResult SctParser::parse(
     }
 
     if (payload.empty()) {
-        result.diagnostics.push_back({"SCT parse skipped: input byte buffer is empty.", 0});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "SCT parse skipped: input byte buffer is empty.", 0});
         return result;
     }
     result.file.originalPayloadBytes.assign(payload.begin(), payload.end());
 
     if (payload.size() < kHeaderSize) {
-        result.diagnostics.push_back({"SCT parse failed: file too small for header and index count.", 0});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "SCT parse failed: file too small for header and index count.", 0});
         return result;
     }
+
+    emitTrace(options, SctParseTracePhase::SectionIndex);
 
     const auto indexEndian = detectIndexEndian(payload);
     const auto sectionCount = readU32(payload, 8, indexEndian);
@@ -1380,7 +1421,8 @@ SctParseResult SctParser::parse(
     result.file.headerBytes.assign(payload.begin(), payload.begin() + kHeaderSize);
 
     if (kHeaderSize + indexSize > payload.size()) {
-        result.diagnostics.push_back({"SCT parse failed: index table exceeds file bounds.", 8});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "SCT parse failed: index table exceeds file bounds.", 8});
         return result;
     }
 
@@ -1415,7 +1457,8 @@ SctParseResult SctParser::parse(
         if (!rows[i].isValid) {
             section.kind = SctSectionKind::Unknown;
             result.file.sections.push_back(std::move(section));
-            result.diagnostics.push_back({"Invalid section bounds in SCT index.", rows[i].start, rows[i].name});
+            result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+                "Invalid section bounds in SCT index.", rows[i].start, rows[i].name});
             continue;
         }
 
@@ -1471,6 +1514,7 @@ SctParseResult SctParser::parse(
         const auto firstWord = readU32(dataBytes, rows[i].start, indexEndian);
         if (firstWord != 9u) {
             result.diagnostics.push_back({
+                SctDiagnosticSeverity::Warning,
                 "Script index entry does not start with label opcode 9.",
                 rows[i].start,
                 rows[i].name
@@ -1584,6 +1628,7 @@ SctParseResult SctParser::parse(
         const auto firstWord = readU32(dataBytes, rows[i].start, indexEndian);
         if (firstWord != 9u) {
             result.diagnostics.push_back({
+                SctDiagnosticSeverity::Warning,
                 "Script index entry does not start with label opcode 9.",
                 rows[i].start,
                 rows[i].name
@@ -1592,6 +1637,7 @@ SctParseResult SctParser::parse(
     }
 
     const SectionRowLookup sectionLookup(rows);
+    emitTrace(options, SctParseTracePhase::InstructionTraversal);
 
     struct WorkItem {
         std::uint32_t payloadOffset = 0;
@@ -1629,6 +1675,7 @@ SctParseResult SctParser::parse(
             }
             if (const auto containing = containingInstructionStart(globalInstructions, cursor); containing.has_value()) {
                 result.diagnostics.push_back({
+                    SctDiagnosticSeverity::Warning,
                     "Control-flow target lands inside an already decoded instruction; overlapping decode skipped.",
                     cursor,
                     {}
@@ -1662,6 +1709,7 @@ SctParseResult SctParser::parse(
             for (const auto successor : storedDecoded.successors) {
                 if (!isOffsetInBounds(successor, dataSize)) {
                     result.diagnostics.push_back({
+                        SctDiagnosticSeverity::Warning,
                         "Control-flow target is outside the SCT payload; target left unresolved.",
                         successor,
                         sourceSection.has_value() ? rows[*sourceSection].name : std::string{}
@@ -1670,6 +1718,7 @@ SctParseResult SctParser::parse(
                 }
                 if (const auto containing = containingInstructionStart(globalInstructions, successor); containing.has_value()) {
                     result.diagnostics.push_back({
+                        SctDiagnosticSeverity::Warning,
                         "Control-flow target lands inside an already decoded instruction; overlapping decode skipped.",
                         successor,
                         sourceSection.has_value() ? rows[*sourceSection].name : std::string{}
@@ -1692,6 +1741,7 @@ SctParseResult SctParser::parse(
             }
             if (const auto containing = containingInstructionStart(globalInstructions, nextCursor); containing.has_value()) {
                 result.diagnostics.push_back({
+                    SctDiagnosticSeverity::Warning,
                     "Fallthrough lands inside an already decoded instruction; overlapping decode skipped.",
                     nextCursor,
                     sourceSection.has_value() ? rows[*sourceSection].name : std::string{}
@@ -1742,6 +1792,7 @@ SctParseResult SctParser::parse(
         const auto preamble = parseLabelPreamble(sectionBytes, indexEndian);
         if (!preamble.present || !firstStringEndOffset(sectionBytes, preamble).has_value()) {
             result.diagnostics.push_back({
+                SctDiagnosticSeverity::Warning,
                 "Indexed text reference targets a row without a bounded opcode-9 string payload.",
                 row.start,
                 row.name
@@ -1821,8 +1872,9 @@ SctParseResult SctParser::parse(
                 footerBoundaryApplied = true;
             } else {
                 const std::string message = "Final string section did not contain a null terminator; footer left empty.";
-                footer.diagnostics.push_back({message, lastRowStart});
-                result.diagnostics.push_back({message, lastRowStart, rows[lastRowIndex].name});
+                footer.diagnostics.push_back({SctDiagnosticSeverity::Warning, message, lastRowStart});
+                result.diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                    message, lastRowStart, rows[lastRowIndex].name});
                 footer.confidence = SctSemanticConfidence::Unknown;
             }
         }
@@ -1842,16 +1894,20 @@ SctParseResult SctParser::parse(
                 footer.payloadStartOffset = footerBoundary.footerStart;
                 footer.confidence = footerBoundary.confidence;
                 if (!footerBoundary.diagnostic.empty()) {
-                    footer.diagnostics.push_back({footerBoundary.diagnostic, footerBoundary.footerStart});
-                    result.diagnostics.push_back({footerBoundary.diagnostic, footerBoundary.footerStart});
+                    footer.diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                        footerBoundary.diagnostic, footerBoundary.footerStart});
+                    result.diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                        footerBoundary.diagnostic, footerBoundary.footerStart});
                 }
                 footerBoundaryApplied = true;
             } else if (!footerBoundary.diagnostic.empty() && std::any_of(
                 footerCandidates.begin(),
                 footerCandidates.end(),
                 [](const auto& candidate) { return candidate.valid; })) {
-                footer.diagnostics.push_back({footerBoundary.diagnostic, lastRowStart});
-                result.diagnostics.push_back({footerBoundary.diagnostic, lastRowStart});
+                footer.diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                    footerBoundary.diagnostic, lastRowStart});
+                result.diagnostics.push_back({SctDiagnosticSeverity::Warning,
+                    footerBoundary.diagnostic, lastRowStart});
                 footer.confidence = SctSemanticConfidence::Unknown;
             }
         }
@@ -2029,13 +2085,13 @@ SctParseResult SctParser::parse(
     }
 
     if (result.file.sections.empty()) {
-        result.diagnostics.push_back({"No sections were parsed from SCT index.", 0});
+        result.diagnostics.push_back({SctDiagnosticSeverity::Error,
+            "No sections were parsed from SCT index.", 0});
         return result;
     }
 
-    result.parseOk = true;
-    result.diagnostics.push_back(
-        {"Initial SCT parser pass completed (index + control-flow-guided section walk with placeholder opcode semantics).", 0});
+    result.parseOk = !hasError(result.diagnostics);
+    if (result.parseOk) emitTrace(options, SctParseTracePhase::Complete);
     return result;
 }
 

@@ -574,7 +574,8 @@ TEST(SctRoundTrip, UnreachedCodeRejectsScptFloatPreambleAsSwappedOpcode4)
     EXPECT_EQ("opcode4_swapped_rejected", block.stopReason);
     EXPECT_FALSE(block.diagnostics.empty());
     EXPECT_TRUE(std::any_of(block.diagnostics.begin(), block.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.message.find("swapped opcode 4") != std::string::npos;
+        return diagnostic.severity == spice::sct::SctDiagnosticSeverity::Warning
+            && diagnostic.message.find("swapped opcode 4") != std::string::npos;
     }));
 }
 

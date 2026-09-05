@@ -20,6 +20,9 @@
     <ClInclude Include="SctModel.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="SctDiagnosticSeverity.h">
+      <Filter>Model</Filter>
+    </ClInclude>
     <ClInclude Include="SpiceSCT.h">
       <Filter>Entry Point</Filter>
     </ClInclude>

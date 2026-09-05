@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SctDiagnosticSeverity.h"
 #include "SctScptProgram.h"
 #include "SctTextContract.h"
 
@@ -175,6 +176,7 @@ struct SctRawSpan {
 };
 
 struct SctUnreachedCodeDiagnostic {
+    SctDiagnosticSeverity severity = SctDiagnosticSeverity::Warning;
     std::string message;
     std::uint32_t offset = 0;
 };
@@ -248,6 +250,7 @@ struct SctFooterEntry {
 };
 
 struct SctFooterDiagnostic {
+    SctDiagnosticSeverity severity = SctDiagnosticSeverity::Warning;
     std::string message;
     std::uint32_t payloadOffset = 0;
 };
@@ -312,6 +315,7 @@ struct SctFile {
 };
 
 struct SctDiagnostic {
+    SctDiagnosticSeverity severity = SctDiagnosticSeverity::Error;
     std::string message;
     std::uint32_t offset = 0;
     std::string section = {};

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SctDiagnosticSeverity.h"
 #include "SctScptProgram.h"
 #include "SctTextContract.h"
 
@@ -117,7 +118,6 @@ using SctDiagnosticLocation = std::variant<SctDocumentEntityId, SctParameterSite
     SctExpressionSite, SctExpressionOperationSite, SctTextSite, SctDraftParameterSite,
     SctDraftExpressionSite, SctDraftExpressionOperationSite>;
 
-enum class SctDiagnosticSeverity { Info, Warning, Error };
 enum class SctDiagnosticCode {
     ParseFailed,
     UnsafePhysicalStructure,

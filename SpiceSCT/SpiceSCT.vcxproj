@@ -98,6 +98,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="SpiceSCT.h" />
+    <ClInclude Include="SctDiagnosticSeverity.h" />
     <ClInclude Include="SctBinaryExporter.h" />
     <ClInclude Include="SctIrBuilder.h" />
     <ClInclude Include="SctJsonExporter.h" />

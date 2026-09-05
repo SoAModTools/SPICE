@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SctDiagnosticSeverity.h"
 #include "SctTextContract.h"
 #include "SctHeaderContract.h"
 #include "SctModel.h"

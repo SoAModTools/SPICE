@@ -309,7 +309,9 @@ void writeFooter(std::ostringstream& out, const std::optional<SctFooter>& footer
         if (di != 0) {
             out << ',';
         }
-        out << "{\"payloadOffset\":" << footer->diagnostics[di].payloadOffset
+        out << "{\"severity\":\""
+            << sctDiagnosticSeverityName(footer->diagnostics[di].severity)
+            << "\",\"payloadOffset\":" << footer->diagnostics[di].payloadOffset
             << ",\"message\":\"" << jsonEscape(footer->diagnostics[di].message) << "\"}";
     }
     out << "],\"entries\":[";
@@ -453,7 +455,9 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
                 if (di != 0) {
                     out << ',';
                 }
-                out << "{\"offset\":" << block.diagnostics[di].offset
+                out << "{\"severity\":\""
+                    << sctDiagnosticSeverityName(block.diagnostics[di].severity)
+                    << "\",\"offset\":" << block.diagnostics[di].offset
                     << ",\"message\":\"" << jsonEscape(block.diagnostics[di].message) << "\"}";
             }
             out << "],\"instructions\":[";
@@ -565,7 +569,8 @@ std::string SctJsonExporter::toJson(const SctParseResult& result) const {
             out << ',';
         }
         const auto& diagnostic = result.diagnostics[di];
-        out << "{\"section\":\"" << jsonEscape(diagnostic.section)
+        out << "{\"severity\":\"" << sctDiagnosticSeverityName(diagnostic.severity)
+            << "\",\"section\":\"" << jsonEscape(diagnostic.section)
             << "\",\"offset\":" << diagnostic.offset
             << ",\"message\":\"" << jsonEscape(diagnostic.message) << "\"}";
     }

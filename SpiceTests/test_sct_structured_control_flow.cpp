@@ -71,6 +71,205 @@ struct ImportedGapFixture final {
     SctInstructionId historicalJump;
 };
 
+struct ImportedModeledFixture final {
+    SctDocument document;
+    SctBoundImportEvidence evidence;
+    SctInstructionId first;
+    SctInstructionId second;
+    SctInstructionId jump;
+};
+
+ImportedModeledFixture importedFullyModeledFixture() {
+    SctParseResult parsed;
+    parsed.parseOk = true;
+    parsed.file.detectedEndian = "big";
+    parsed.file.originalPayloadBytes.resize(48u, 0u);
+    parsed.file.originalPayloadBytes[11] = 1u;
+    parsed.file.originalPayloadBytes[16] = 'M';
+    parsed.file.originalPayloadBytes[17] = 'A';
+    parsed.file.originalPayloadBytes[18] = 'I';
+    parsed.file.originalPayloadBytes[19] = 'N';
+
+    SctInstruction first;
+    first.offset = 0u;
+    first.payloadOffset = 0u;
+    first.opcode = 125u;
+    first.rawWords = {125u};
+    first.sizeBytes = 4u;
+    first.decodeOk = true;
+
+    SctInstruction second = first;
+    second.offset = 4u;
+    second.payloadOffset = 4u;
+
+    SctInstruction backward;
+    backward.offset = 8u;
+    backward.payloadOffset = 8u;
+    backward.opcode = 10u;
+    backward.rawWords = {10u, 0xfffffff4u};
+    backward.parameters = {{0u, "offset", SctParameterValueKind::Link,
+        SctSemanticConfidence::Known, {0xfffffff4u}}};
+    backward.sizeBytes = 8u;
+    backward.decodeOk = true;
+
+    SctSection section;
+    section.id = {0u, "MAIN"};
+    section.startOffset = 32u;
+    section.endOffset = 48u;
+    section.kind = SctSectionKind::Script;
+    section.instructions = {first, second, backward};
+    section.edges.push_back({SctEdgeType::Fallthrough, SctSemanticConfidence::Known,
+        0u, 4u, 0u, 4u, 125u, "fallthrough"});
+    section.edges.push_back({SctEdgeType::Fallthrough, SctSemanticConfidence::Known,
+        4u, 8u, 4u, 8u, 125u, "fallthrough"});
+    section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known,
+        8u, 0u, 8u, 0u, 10u, "jump"});
+    parsed.file.sections.push_back(std::move(section));
+
+    auto imported = SctDocumentImporter::import(parsed);
+    EXPECT_TRUE(imported.document.has_value());
+    auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    EXPECT_TRUE(evidence.has_value());
+    auto document = std::move(*imported.document);
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    EXPECT_EQ(instructions.size(), 3u);
+    const auto firstId = instructions[0].id;
+    const auto secondId = instructions[1].id;
+    const auto jumpId = instructions[2].id;
+    return {std::move(document), std::move(*evidence), firstId, secondId, jumpId};
+}
+
+ImportedModeledFixture importedUnresolvedFixture() {
+    SctParseResult parsed;
+    parsed.parseOk = true;
+    parsed.file.detectedEndian = "big";
+    parsed.file.originalPayloadBytes.resize(40u, 0u);
+    parsed.file.originalPayloadBytes[11] = 1u;
+    parsed.file.originalPayloadBytes[16] = 'M';
+    parsed.file.originalPayloadBytes[17] = 'A';
+    parsed.file.originalPayloadBytes[18] = 'I';
+    parsed.file.originalPayloadBytes[19] = 'N';
+
+    SctInstruction jump;
+    jump.offset = 0u;
+    jump.payloadOffset = 0u;
+    jump.opcode = 10u;
+    jump.rawWords = {10u, 96u};
+    jump.parameters = {{0u, "offset", SctParameterValueKind::Link,
+        SctSemanticConfidence::Known, {96u}}};
+    jump.sizeBytes = 8u;
+    jump.decodeOk = true;
+
+    SctSection section;
+    section.id = {0u, "MAIN"};
+    section.startOffset = 32u;
+    section.endOffset = 40u;
+    section.kind = SctSectionKind::Script;
+    section.instructions = {jump};
+    section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known,
+        0u, 100u, 0u, 100u, 10u, "unresolved jump"});
+    parsed.file.sections.push_back(std::move(section));
+
+    auto imported = SctDocumentImporter::import(parsed);
+    EXPECT_TRUE(imported.document.has_value());
+    auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    EXPECT_TRUE(evidence.has_value());
+    auto document = std::move(*imported.document);
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    EXPECT_EQ(instructions.size(), 1u);
+    const auto jumpId = instructions[0].id;
+    return {std::move(document), std::move(*evidence), jumpId, jumpId, jumpId};
+}
+
+ImportedModeledFixture importedAllControlKindsFixture() {
+    SctParseResult parsed;
+    parsed.parseOk = true;
+    parsed.file.detectedEndian = "big";
+    parsed.file.originalPayloadBytes.resize(92u, 0u);
+
+    const auto expression = [](const std::uint32_t index) {
+        SctParameter parameter;
+        parameter.index = index;
+        parameter.rawWords = {0x08000100u, 0x1du};
+        parameter.expression = SctExpression{};
+        parameter.expression->hitStopCode = true;
+        parameter.expression->program = SctTypedScptProgram{{
+            SctScptValueOperation{SctScptValueKind::DecimalLiteral, 0x08000100u, {}}}};
+        return parameter;
+    };
+    const auto raw = [](const std::uint32_t index, const std::uint32_t value) {
+        SctParameter parameter;
+        parameter.index = index;
+        parameter.rawWords = {value};
+        return parameter;
+    };
+
+    SctInstruction branchInstruction;
+    branchInstruction.opcode = 0u;
+    branchInstruction.payloadOffset = 0u;
+    branchInstruction.offset = 0u;
+    branchInstruction.sizeBytes = 16u;
+    branchInstruction.decodeOk = true;
+    branchInstruction.parameters = {expression(0u), raw(1u, 0u)};
+    SctInstruction switchValue;
+    switchValue.opcode = 3u;
+    switchValue.payloadOffset = 16u;
+    switchValue.offset = 16u;
+    switchValue.sizeBytes = 24u;
+    switchValue.decodeOk = true;
+    switchValue.parameters = {expression(0u), raw(1u, 1u), raw(2u, 9u), raw(3u, 0u)};
+    SctInstruction call;
+    call.opcode = 11u;
+    call.payloadOffset = 40u;
+    call.offset = 40u;
+    call.sizeBytes = 8u;
+    call.decodeOk = true;
+    call.parameters = {raw(0u, 0u)};
+    SctInstruction ret;
+    ret.opcode = 12u;
+    ret.payloadOffset = 48u;
+    ret.offset = 48u;
+    ret.sizeBytes = 4u;
+    ret.decodeOk = true;
+    SctInstruction jumpValue;
+    jumpValue.opcode = 10u;
+    jumpValue.payloadOffset = 52u;
+    jumpValue.offset = 52u;
+    jumpValue.sizeBytes = 8u;
+    jumpValue.decodeOk = true;
+    jumpValue.parameters = {raw(0u, 0u)};
+
+    SctSection section;
+    section.id.name = "SCRIPT";
+    section.startOffset = 32u;
+    section.endOffset = 92u;
+    section.kind = SctSectionKind::Script;
+    section.instructions = {branchInstruction, switchValue, call, ret, jumpValue};
+    section.edges.push_back({SctEdgeType::BranchFalse, SctSemanticConfidence::Known,
+        {}, {}, 0u, 48u, 0u});
+    section.edges.push_back({SctEdgeType::BranchTrue, SctSemanticConfidence::Known,
+        {}, {}, 0u, 16u, 0u});
+    section.edges.push_back({SctEdgeType::SwitchCase, SctSemanticConfidence::Known,
+        {}, {}, 16u, 48u, 3u});
+    section.edges.push_back({SctEdgeType::CallSubscript, SctSemanticConfidence::Known,
+        {}, {}, 40u, 0u, 11u});
+    section.edges.push_back({SctEdgeType::Jump, SctSemanticConfidence::Known,
+        {}, {}, 52u, 0u, 10u});
+    parsed.file.sections.push_back(std::move(section));
+
+    auto imported = SctDocumentImporter::import(parsed);
+    EXPECT_TRUE(imported.document.has_value());
+    auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    EXPECT_TRUE(evidence.has_value());
+    auto document = std::move(*imported.document);
+    const auto& instructions = std::get<SctScriptSectionContent>(
+        document.sections.front().content).instructions;
+    EXPECT_EQ(instructions.size(), 5u);
+    return {std::move(document), std::move(*evidence), {}, {}, {}};
+}
+
 ImportedGapFixture importedBackwardGapFixture() {
     SctParseResult parsed;
     parsed.parseOk = true;
@@ -650,6 +849,85 @@ TEST(SctStructuredControlFlow, CurrentEdgeWinsWhenImportedOpaqueEvidenceConflict
     ASSERT_EQ(analysis.sections()[0].historicalCandidates.size(), 1u);
     EXPECT_EQ(analysis.sections()[0].historicalCandidates.front().rejectionReason,
         SctStructuredRejectionReason::HistoricalConflict);
+}
+
+TEST(SctStructuredControlFlow, FullyModeledImportedEdgesRemainProvenanceWithoutHistoricalCandidates) {
+    auto fixture = importedFullyModeledFixture();
+    const auto originalControlFlow = SctControlFlowIndex::build(
+        fixture.document, &fixture.evidence);
+    ASSERT_EQ(originalControlFlow.importedEdges().size(), 3u);
+    EXPECT_TRUE(std::ranges::all_of(originalControlFlow.importedEdges(), [](const auto& edge) {
+        return edge.targetInstruction.has_value()
+            && !edge.unresolvedTargetPayloadOffset.has_value()
+            && edge.crossedOpaqueAttachments.empty();
+    }));
+
+    auto& instructions = std::get<SctScriptSectionContent>(
+        fixture.document.sections.front().content).instructions;
+    std::swap(instructions[0], instructions[1]);
+    auto& jumpInstruction = instructions[2];
+    jumpInstruction.fixedParameters = {{0u, SctInstructionReference{fixture.second}}};
+
+    const auto currentOnly = SctStructuredControlFlowAnalysis::build(fixture.document);
+    const auto withHistory = SctStructuredControlFlowAnalysis::build(
+        fixture.document, &fixture.evidence);
+    ASSERT_EQ(currentOnly.sections().size(), 1u);
+    ASSERT_EQ(withHistory.sections().size(), 1u);
+    EXPECT_EQ(withHistory.sections()[0].blocks, currentOnly.sections()[0].blocks);
+    EXPECT_EQ(withHistory.sections()[0].regions, currentOnly.sections()[0].regions);
+    EXPECT_TRUE(withHistory.sections()[0].historicalCandidates.empty());
+    EXPECT_FALSE(std::ranges::any_of(withHistory.sections()[0].issues, [](const auto& issue) {
+        return issue.kind == SctStructureIssueKind::HistoricalEdgeConflict;
+    }));
+
+    const auto editedControlFlow = SctControlFlowIndex::build(
+        fixture.document, &fixture.evidence);
+    EXPECT_EQ(editedControlFlow.importedEdges().size(), 3u);
+}
+
+TEST(SctStructuredControlFlow, RetargetedModeledBranchSwitchCallAndJumpDoNotConflictWithHistory) {
+    auto fixture = importedAllControlKindsFixture();
+    auto& instructions = std::get<SctScriptSectionContent>(
+        fixture.document.sections.front().content).instructions;
+    ASSERT_EQ(instructions.size(), 5u);
+    instructions[0].fixedParameters[1].value = SctInstructionReference{instructions[4].id};
+    instructions[1].repeatedParameterGroups[0].parameters[1].value =
+        SctInstructionReference{instructions[2].id};
+    instructions[2].fixedParameters[0].value = SctInstructionReference{instructions[4].id};
+    instructions[4].fixedParameters[0].value = SctInstructionReference{instructions[3].id};
+    std::swap(instructions[2], instructions[3]);
+
+    const auto currentOnly = SctStructuredControlFlowAnalysis::build(fixture.document);
+    const auto withHistory = SctStructuredControlFlowAnalysis::build(
+        fixture.document, &fixture.evidence);
+    ASSERT_EQ(currentOnly.sections().size(), 1u);
+    ASSERT_EQ(withHistory.sections().size(), 1u);
+    EXPECT_EQ(withHistory.sections()[0].blocks, currentOnly.sections()[0].blocks);
+    EXPECT_EQ(withHistory.sections()[0].regions, currentOnly.sections()[0].regions);
+    EXPECT_TRUE(withHistory.sections()[0].historicalCandidates.empty());
+    EXPECT_FALSE(std::ranges::any_of(withHistory.sections()[0].issues, [](const auto& issue) {
+        return issue.kind == SctStructureIssueKind::HistoricalEdgeConflict;
+    }));
+
+    const auto provenance = SctControlFlowIndex::build(fixture.document, &fixture.evidence);
+    EXPECT_GE(provenance.importedEdges().size(), 5u);
+    EXPECT_TRUE(std::ranges::all_of(provenance.importedEdges(), [](const auto& edge) {
+        return edge.targetInstruction.has_value()
+            && !edge.unresolvedTargetPayloadOffset.has_value()
+            && edge.crossedOpaqueAttachments.empty();
+    }));
+}
+
+TEST(SctStructuredControlFlow, ImportTimeUnresolvedTargetRemainsHistoricalEvidence) {
+    auto fixture = importedUnresolvedFixture();
+    const auto analysis = SctStructuredControlFlowAnalysis::build(
+        fixture.document, &fixture.evidence);
+    ASSERT_EQ(analysis.sections().size(), 1u);
+    ASSERT_EQ(analysis.sections()[0].historicalCandidates.size(), 1u);
+    const auto& candidate = analysis.sections()[0].historicalCandidates.front();
+    EXPECT_EQ(candidate.sourceInstruction, fixture.jump);
+    EXPECT_TRUE(candidate.unresolvedTargetPayloadOffset.has_value());
+    EXPECT_EQ(candidate.rejectionReason, SctStructuredRejectionReason::MissingTarget);
 }
 
 TEST(SctStructuredControlFlow, CrossSectionBranchesRemainUnstructured) {

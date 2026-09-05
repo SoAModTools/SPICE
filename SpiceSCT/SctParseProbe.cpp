@@ -35,7 +35,8 @@ std::string formatParseSummary(const SctParseResult& parseResult) {
         for (const auto& diagnostic : parseResult.diagnostics) {
             if (!diagnostic.section.empty())
                 out << diagnostic.section;
-            out << "  - @" << diagnostic.offset << ": " << diagnostic.message << '\n';
+            out << "  - [" << sctDiagnosticSeverityName(diagnostic.severity) << "] @"
+                << diagnostic.offset << ": " << diagnostic.message << '\n';
         }
     }
 

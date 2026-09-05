@@ -179,8 +179,11 @@ struct SctStructureIssue final {
     auto operator<=>(const SctStructureIssue&) const = default;
 };
 
-// Imported topology can suggest a historical shape, but it never contributes
-// blocks, reachability, dominance, nesting, or regions to the current graph.
+// Imported topology can suggest a historical shape only when it retains an
+// unresolved source target or crosses a recognized opaque control-flow gap.
+// It never contributes blocks, reachability, dominance, nesting, or regions
+// to the current graph. Complete imported edges remain available separately
+// through SctControlFlowIndex even when they are not candidates here.
 struct SctHistoricalStructureCandidate final {
     SctSectionId section;
     SctInstructionId sourceInstruction;

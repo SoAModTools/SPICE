@@ -1154,6 +1154,11 @@ SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::buildFromInde
                 const auto& imported = *importedValue;
                 EffectiveEdge hint{imported, true,
                     qualifyingOpaqueGaps(opaqueContext, imported)};
+                const bool preservesUnresolvedTarget =
+                    imported.unresolvedTargetPayloadOffset.has_value();
+                if (hint.qualifyingOpaqueAttachments.empty() && !preservesUnresolvedTarget) {
+                    continue;
+                }
                 const auto matchingCurrent = std::ranges::find_if(job.currentEdges,
                     [&](const auto& candidate) {
                         return candidate.edge.sourceInstruction == imported.sourceInstruction
@@ -1161,7 +1166,18 @@ SctStructuredControlFlowAnalysis SctStructuredControlFlowAnalysis::buildFromInde
                             && candidate.edge.origin == imported.origin;
                     });
                 if (matchingCurrent != job.currentEdges.end()) {
-                    if (sameTarget(matchingCurrent->edge, imported)) continue;
+                    if (sameTarget(matchingCurrent->edge, imported)) {
+                        if (!preservesUnresolvedTarget) continue;
+                        SctHistoricalStructureCandidate candidate;
+                        candidate.section = section.id;
+                        candidate.sourceInstruction = imported.sourceInstruction;
+                        candidate.unresolvedTargetPayloadOffset = imported.unresolvedTargetPayloadOffset;
+                        candidate.rejectionReason = SctStructuredRejectionReason::MissingTarget;
+                        candidate.evidence.push_back(evidenceFor(
+                            SctStructureEvidenceKind::ImportedControlFlow, hint));
+                        output.historicalCandidates.push_back(std::move(candidate));
+                        continue;
+                    }
                     SctHistoricalStructureCandidate candidate;
                     candidate.section = section.id;
                     candidate.sourceInstruction = imported.sourceInstruction;
