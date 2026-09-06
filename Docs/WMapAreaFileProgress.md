@@ -4,7 +4,7 @@
 
 `SpiceWMap` parses `WMAPAREA.BIN` into an editable three-layer, 24-row, 28-column byte grid. It accepts raw and AKLZ-wrapped input, validates the exact decoded size and the `0..15` cell-ID range, and writes either raw or AKLZ output.
 
-Synthetic tests cover grid ordering, validation, and both storage policies. A compatibility test compares available Dreamcast US, GameCube US, and AKLZ-wrapped GameCube JP files after decoding.
+Synthetic tests cover grid ordering, validation, and both storage policies. Cross-platform compatibility is validated outside this public repository against a private local corpus.
 
 ## Ownership Boundary
 
