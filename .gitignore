@@ -19,6 +19,7 @@
 .codex/
 .codex-remote-attachments/
 graphify-out/
+**/*reference_bundle*/
 tools/ghidra/
 SpiceSCT/validations/
 AGENTS.md

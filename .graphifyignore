@@ -13,6 +13,7 @@ x64/
 **/obj/
 **/x64/
 **/Win32/
+**/*reference_bundle*/
 # Generic vendored dependency internals are noise for the SPICE graph.
 third-party/googletest-1.17.0/
 
