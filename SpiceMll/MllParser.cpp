@@ -1081,12 +1081,14 @@ MllPayloadKind classifyPayload(std::span<const std::uint8_t> payload,
         return MllPayloadKind::PvrTexture;
     }
     const bool memberNameLooksBin = endsWithCaseInsensitive(memberName, ".bin");
+    const bool memberNameLooksMld = endsWithCaseInsensitive(memberName, ".mld");
     const bool indexedBinLooksPlausible = indexedBinProbeLooksPlausible(indexedBinTableProbe);
-    if (indexedBinLooksPlausible && (memberNameLooksBin || !embeddedMldHeader.indexEntryShapePlausible)) {
+    if (indexedBinLooksPlausible &&
+        !memberNameLooksMld &&
+        (memberNameLooksBin || !embeddedMldHeader.indexEntryShapePlausible)) {
         return MllPayloadKind::IndexedBin;
     }
 
-    const bool memberNameLooksMld = endsWithCaseInsensitive(memberName, ".mld");
     const bool hasMldTextureEvidence =
         textureTableProbe.hasTextures ||
         preTextureTableProbe.present ||
