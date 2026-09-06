@@ -1,0 +1,49 @@
+# Keep Graphify local/code-only for this repo.
+#
+# Graphify 0.8.x treats negated directory patterns broadly, so this file uses
+# positive ignores instead of a deny-all/allowlist shape.
+
+# Local/generated/IP-sensitive material.
+.git/
+.codex/
+graphify-out/
+bin/
+x64/
+**/bin/
+**/obj/
+**/x64/
+**/Win32/
+# Generic vendored dependency internals are noise for the SPICE graph.
+third-party/googletest-1.17.0/
+
+# Documentation, prose references, media, schemas, and generated reports.
+*.md
+*.mdx
+*.txt
+*.rst
+*.html
+*.yaml
+*.yml
+*.json
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.pdf
+*.docx
+*.xlsx
+
+# Project/build metadata that Graphify classifies as code but is not source.
+*.sln
+*.slnx
+*.vcxproj
+*.filters
+*.csproj
+*.fsproj
+*.vbproj
+*.props
+*.targets
+*.cmake
+CMakeLists.txt

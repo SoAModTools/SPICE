@@ -1,0 +1,56 @@
+# Build outputs
+.vs/
+**/x64/
+**/Win32/
+**/bin/
+**/obj/
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.obj
+*.tlog
+*.lastbuildstate
+
+# User/local files
+*.vcxproj.user
+*.csproj.user
+.codex/
+.codex-remote-attachments/
+graphify-out/
+tools/ghidra/
+SpiceSCT/validations/
+AGENTS.md
+SpiceTests/fixtures/**/*.mld
+SpiceTrade/*corpus*/
+planning/
+
+# Parser generated outputs
+SpiceGrinder/blender_ir/
+SpiceGrinder/inputs_mld_only/
+SpiceGrinder/parsed*/
+SpiceGrinder/decompressed_inputs/
+SpiceGrinder/inputs/
+SpiceSCT/full_spice_out/
+SpiceBin/research/
+SpiceBin/scripts/
+SpiceEct/research/
+SpiceMll/research/
+SpiceMLD/research/
+SpicePvm/research/
+SpiceSCT/research/
+SpiceSstSml/research/
+SpiceSstSml/requests/
+SpiceMlk/research/
+SpiceStd/research/
+/research/
+SpiceMlk/annotations/
+Sa3Dport/SA3D_CSharp_to_Cpp_Port_Implementation_Plan.md
+SpiceSCT/SALSA_default_instructions_reference.md
+tools/disc_inventory/
+
+
+# Python/cache artifacts
+__pycache__/
+*.pyc

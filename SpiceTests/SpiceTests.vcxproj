@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{D528E9A2-9713-40A7-A7A1-21AF843E559E}</ProjectGuid>
+    <RootNamespace>SpiceTests</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\ThirdParty.props" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)SpiceModeling;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <UseStandardPreprocessor>true</UseStandardPreprocessor>
+      <AdditionalOptions>/FS %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)SpiceModeling;$(SolutionDir)third-party\googletest-1.17.0\googletest\include;$(SolutionDir)third-party\googletest-1.17.0\googletest;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
+    <ClCompile Include="run_tests.cpp" />
+    <ClCompile Include="test_aklz.cpp" />
+    <ClCompile Include="test_bin_parser.cpp" />
+    <ClCompile Include="test_content_graph.cpp" />
+    <ClCompile Include="test_ect_parser.cpp" />
+    <ClCompile Include="test_endian_migration.cpp" />
+    <ClCompile Include="test_gvr_image_ir.cpp" />
+    <ClCompile Include="test_mld_gvr_format_inventory.cpp" />
+    <ClCompile Include="test_pvm.cpp" />
+    <ClCompile Include="test_mld_canonical.cpp" />
+    <ClCompile Include="test_mld_endian.cpp" />
+    <ClCompile Include="test_mld_patching.cpp" />
+    <ClCompile Include="test_mlk_blender_ir_export.cpp" />
+    <ClCompile Include="test_mlk_corpus_export.cpp" />
+    <ClCompile Include="test_mlk_parser.cpp" />
+    <ClCompile Include="test_mlk_scanner.cpp" />
+    <ClCompile Include="test_mll_corpus_export.cpp" />
+    <ClCompile Include="test_mll_parser.cpp" />
+    <ClCompile Include="test_sct_ir.cpp" />
+    <ClCompile Include="test_sct_document.cpp" />
+    <ClCompile Include="test_sct_document_analysis.cpp" />
+    <ClCompile Include="test_sct_structured_control_flow.cpp" />
+    <ClCompile Include="test_sct_string_groups.cpp" />
+    <ClCompile Include="test_sct_contract_hardening.cpp" />
+    <ClCompile Include="test_sct_document_export.cpp" />
+    <ClCompile Include="test_sct_editing_contract.cpp" />
+    <ClCompile Include="test_sct_public_workflow.cpp" />
+    <ClCompile Include="test_sct_document_header.cpp" />
+    <ClCompile Include="test_sct_semantic_text.cpp" />
+    <ClCompile Include="test_sct_text_evidence.cpp" />
+    <ClCompile Include="test_sct_opcode_schema.cpp" />
+    <ClCompile Include="test_sct_opcode_parameter_facts.cpp" />
+    <ClCompile Include="test_sct_performance.cpp" />
+    <ClCompile Include="test_sct_parser_diagnostics.cpp" />
+    <ClCompile Include="test_sct_roundtrip.cpp" />
+    <ClCompile Include="test_sct_scpt_v2.cpp" />
+    <ClCompile Include="test_sst_sml_document.cpp" />
+    <ClCompile Include="test_std_parser.cpp" />
+    <ClCompile Include="test_std_usage.cpp" />
+    <ClCompile Include="test_wmap_area.cpp" />
+    <ClCompile Include="test_spice_trade.cpp" />
+    <ClCompile Include="test_spice_grinder_cli.cpp" />
+    <ClCompile Include="test_spice_mix_documents.cpp" />
+    <ClCompile Include="..\SpiceGrinder\Cli\CliParser.cpp">
+      <Link>SpiceGrinder\CliParser.cpp</Link>
+    </ClCompile>
+    <ClCompile Include="test_spice_modeling_stage1.cpp" />
+    <ClCompile Include="test_spice_modeling_stage2.cpp" />
+    <ClCompile Include="test_spice_modeling_stage3.cpp" />
+    <ClCompile Include="test_spice_modeling_stage4.cpp" />
+    <ClCompile Include="test_spice_modeling_stage5.cpp" />
+    <ClCompile Include="test_spiceroot.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="test_spice_blender_lookup_image_runtime.py" />
+    <None Include="test_spice_blender_ir_importer.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Compression\Compression.vcxproj">
+      <Project>{4F68E37C-185F-4DE8-A4D7-647E6F3659C4}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceRoot\SpiceRoot.vcxproj">
+      <Project>{6F9D8280-6F7B-4237-9D4A-D9A09E7A1B2E}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceMix\SpiceMix.vcxproj">
+      <Project>{92E102AE-65E7-4C12-98B1-3C5EBDCE83A0}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceBin\SpiceBin.vcxproj">
+      <Project>{CADB9B1C-FB06-4BDE-9B5E-2AA1836DEE05}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceWMap\SpiceWMap.vcxproj">
+      <Project>{4CC928FB-328C-48BD-9718-1679B12E7996}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceEct\SpiceEct.vcxproj">
+      <Project>{81EF38D9-DF34-427B-A78A-73E38A14DAD8}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceModeling\SpiceModeling.vcxproj">
+      <Project>{DF6013F5-9B25-4250-A0F7-EAF86E7BE9D7}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceContentGraph\SpiceContentGraph.vcxproj">
+      <Project>{208F502E-EBB9-4AF0-A886-356757A46D41}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceGvm\SpiceGvm.vcxproj">
+      <Project>{A3D377F9-43B8-4A4B-8C78-8F069B98E6F1}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpicePvm\SpicePvm.vcxproj">
+      <Project>{D15CAA0F-8C20-4740-B50E-27A7539B9287}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceMLD\SpiceMLD.vcxproj">
+      <Project>{C44D37F8-61F5-4A1C-B983-16D79FBC9954}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceMlk\SpiceMlk.vcxproj">
+      <Project>{67A98008-8BB7-4BC4-99B9-9517F67C53CC}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceMll\SpiceMll.vcxproj">
+      <Project>{3F9BA4A5-F9B0-4293-97A1-9A7E1F8E7F86}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceSCT\SpiceSCT.vcxproj">
+      <Project>{8EF58CAF-3DFA-46B9-9197-FE71052A15EB}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceSstSml\SpiceSstSml.vcxproj">
+      <Project>{7B2AFA73-419B-4B4C-873D-6B6767308D2F}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceStd\SpiceStd.vcxproj">
+      <Project>{6A8F71C8-5C78-4E31-B40F-A15D5186E2F3}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\SpiceTrade\SpiceTrade.vcxproj">
+      <Project>{B82365CC-8B46-4BD5-AFB7-799B34D6DA19}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

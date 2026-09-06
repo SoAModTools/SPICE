@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="EntryPoint">
+      <UniqueIdentifier>{FC36B4C4-EB22-4979-A4BF-A13D04909D66}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Model">
+      <UniqueIdentifier>{7A8BA7B4-DCCF-439A-91C4-BAD192F303CC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Reader">
+      <UniqueIdentifier>{A9EF5D75-FCD7-4C4F-A57D-30F7849170C8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Typed ALX">
+      <UniqueIdentifier>{E950A2AA-9A2D-48DF-A1E5-48DD0B4924CC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Reference Corpus">
+      <UniqueIdentifier>{724F44D5-78CB-460C-BA8D-0582FF715F63}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AlxImporter.h">
+      <Filter>Typed ALX</Filter>
+    </ClInclude>
+    <ClInclude Include="AlxSha256.h">
+      <Filter>Typed ALX</Filter>
+    </ClInclude>
+    <ClInclude Include="AlxModel.h">
+      <Filter>Typed ALX</Filter>
+    </ClInclude>
+    <ClInclude Include="AlxDerivedView.h">
+      <Filter>Typed ALX</Filter>
+    </ClInclude>
+    <ClInclude Include="SpiceTrade.h">
+      <Filter>EntryPoint</Filter>
+    </ClInclude>
+    <ClInclude Include="CsvModel.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="CsvReader.h">
+      <Filter>Reader</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="AlxImporter.cpp">
+      <Filter>Typed ALX</Filter>
+    </ClCompile>
+    <ClCompile Include="AlxSha256.cpp">
+      <Filter>Typed ALX</Filter>
+    </ClCompile>
+    <ClCompile Include="AlxModel.cpp">
+      <Filter>Typed ALX</Filter>
+    </ClCompile>
+    <ClCompile Include="AlxDerivedView.cpp">
+      <Filter>Typed ALX</Filter>
+    </ClCompile>
+    <ClCompile Include="CsvModel.cpp">
+      <Filter>Model</Filter>
+    </ClCompile>
+    <ClCompile Include="CsvReader.cpp">
+      <Filter>Reader</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" />
+  </ItemGroup>
+</Project>

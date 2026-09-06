@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\third-party\googletest-1.17.0\googletest\src\gtest-all.cc" />
+    <ClCompile Include="run_tests.cpp" />
+    <ClCompile Include="test_aklz.cpp" />
+    <ClCompile Include="test_content_graph.cpp" />
+    <ClCompile Include="test_ect_parser.cpp" />
+    <ClCompile Include="test_endian_migration.cpp" />
+    <ClCompile Include="test_gvr_image_ir.cpp" />
+    <ClCompile Include="test_mld_gvr_format_inventory.cpp" />
+    <ClCompile Include="test_mld_canonical.cpp" />
+    <ClCompile Include="test_mld_endian.cpp" />
+    <ClCompile Include="test_mld_patching.cpp" />
+    <ClCompile Include="test_mlk_blender_ir_export.cpp" />
+    <ClCompile Include="test_mlk_corpus_export.cpp" />
+    <ClCompile Include="test_mlk_parser.cpp" />
+    <ClCompile Include="test_mlk_scanner.cpp" />
+    <ClCompile Include="test_sct_ir.cpp" />
+    <ClCompile Include="test_sct_document.cpp" />
+    <ClCompile Include="test_sct_document_analysis.cpp" />
+    <ClCompile Include="test_sct_structured_control_flow.cpp" />
+    <ClCompile Include="test_sct_string_groups.cpp" />
+    <ClCompile Include="test_sct_contract_hardening.cpp" />
+    <ClCompile Include="test_sct_document_export.cpp" />
+    <ClCompile Include="test_sct_editing_contract.cpp" />
+    <ClCompile Include="test_sct_public_workflow.cpp" />
+    <ClCompile Include="test_sct_document_header.cpp" />
+    <ClCompile Include="test_sct_semantic_text.cpp" />
+    <ClCompile Include="test_sct_text_evidence.cpp" />
+    <ClCompile Include="test_sct_opcode_schema.cpp" />
+    <ClCompile Include="test_sct_opcode_parameter_facts.cpp" />
+    <ClCompile Include="test_sct_performance.cpp" />
+    <ClCompile Include="test_sct_parser_diagnostics.cpp" />
+    <ClCompile Include="test_sct_roundtrip.cpp" />
+    <ClCompile Include="test_sct_scpt_v2.cpp" />
+    <ClCompile Include="test_sst_sml_document.cpp" />
+    <ClCompile Include="test_std_parser.cpp" />
+    <ClCompile Include="test_wmap_area.cpp" />
+    <ClCompile Include="test_spice_modeling_stage1.cpp" />
+    <ClCompile Include="test_spice_modeling_stage2.cpp" />
+    <ClCompile Include="test_spice_modeling_stage3.cpp" />
+    <ClCompile Include="test_spice_modeling_stage4.cpp" />
+    <ClCompile Include="test_spice_modeling_stage5.cpp" />
+    <ClCompile Include="test_spiceroot.cpp" />
+    <ClCompile Include="test_spice_grinder_cli.cpp" />
+    <ClCompile Include="test_spice_mix_documents.cpp" />
+    <ClCompile Include="..\SpiceGrinder\Cli\CliParser.cpp">
+      <Link>SpiceGrinder\CliParser.cpp</Link>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="test_spice_blender_lookup_image_runtime.py" />
+    <None Include="test_spice_blender_ir_importer.py" />
+  </ItemGroup>
+</Project>
