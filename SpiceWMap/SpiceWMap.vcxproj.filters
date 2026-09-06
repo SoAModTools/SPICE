@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="EntryPoint"><UniqueIdentifier>{F56B24E7-4F5F-4213-9F0E-B5478D626505}</UniqueIdentifier></Filter>
+    <Filter Include="Model"><UniqueIdentifier>{6EE2F291-FB3E-4F8C-B53E-AE1260F8CD9D}</UniqueIdentifier></Filter>
+    <Filter Include="Parser"><UniqueIdentifier>{140F7C03-2B66-41BE-920E-B78C96C1B28D}</UniqueIdentifier></Filter>
+    <Filter Include="Writer"><UniqueIdentifier>{58BEAA32-107A-40E3-8F70-5B992D5799A9}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="SpiceWMap.h"><Filter>EntryPoint</Filter></ClInclude>
+    <ClInclude Include="WMapAreaModel.h"><Filter>Model</Filter></ClInclude>
+    <ClInclude Include="WMapAreaParser.h"><Filter>Parser</Filter></ClInclude>
+    <ClInclude Include="WMapAreaFileWriter.h"><Filter>Writer</Filter></ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="WMapAreaModel.cpp"><Filter>Model</Filter></ClCompile>
+    <ClCompile Include="WMapAreaParser.cpp"><Filter>Parser</Filter></ClCompile>
+    <ClCompile Include="WMapAreaFileWriter.cpp"><Filter>Writer</Filter></ClCompile>
+  </ItemGroup>
+</Project>

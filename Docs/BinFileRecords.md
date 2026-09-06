@@ -14,6 +14,4 @@ This document summarizes generally useful record groups. Exact record indexes an
 
 These groups describe observed content, not a universal record numbering scheme. Record meaning depends on the specific file and its active material context.
 
-## Other BIN Records
-
-The world-map area table is a separate fixed-record family. Its entry identities are not public until the record schema is sufficiently established.
+World-map area cells are documented separately in `WMapAreaFileLayout.md`. Encounter-related BIN records remain documented and handled by ALX.

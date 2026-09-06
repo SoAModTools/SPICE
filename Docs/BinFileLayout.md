@@ -1,10 +1,10 @@
 # BIN File Layout
 
-The `.bin` extension is used by more than one format. `SpiceBin` currently recognizes an indexed UI-layout family; files that do not match this structure must remain unclassified until their own layout is known.
+The `.bin` extension is used by more than one format. `SpiceBin` owns only the indexed HRS/UI-layout family described here. Files that do not match this structure are not interpreted by `SpiceBin` merely because they use the `.bin` extension.
 
 ## Encoding
 
-Known indexed UI-layout files use big-endian numeric fields. A file may be stored raw or wrapped in AKLZ; all offsets below refer to the decoded payload.
+Decoded GameCube indexed UI-layout files use big-endian numeric fields. Dreamcast indexed UI-layout files use little-endian numeric fields. A file may be stored raw or wrapped in AKLZ; all offsets below refer to the decoded payload.
 
 ## Indexed UI-Layout Header
 
@@ -65,4 +65,11 @@ The indexed layout does not contain its texture images. The selector is meaningf
 
 ## Other BIN Families
 
-`field/wmaparea.BIN` is a known fixed-size world-map area table and does not use the indexed UI-layout structure. Its per-entry schema is not yet established.
+Other `.bin` families have separate owners:
+
+| Family | Owner |
+| --- | --- |
+| `WMAPAREA.BIN` | `SpiceWMap`; see `WMapAreaFileLayout.md`. |
+| Dreamcast EP/ENP, Area 99 EP container, EPEVENT, and R/TEC encounter files | ALX 5.0.0; see the ownership table in `BinFileProgress.md`. |
+
+Executable, VMU, and unresolved `.bin` payloads are not part of `SpiceBin`.
