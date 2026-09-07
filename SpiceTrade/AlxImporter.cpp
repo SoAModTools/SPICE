@@ -303,6 +303,7 @@ EnemyEncounterImportResult EnemyEncounterCsvImporter::importBytes(std::span<cons
         EnemyEncounterTable table; std::set<EnemyEncounterEntryId> ids; std::set<std::string> closedOwners;
         constexpr std::array<std::string_view, 1> semantic{ "[Filter]" };
         EnemyEncounterGroup* group = nullptr; std::string active;
+        std::uint32_t expectedEntry = 0;
         for (std::size_t i = 0; i < csv.rows.size(); ++i) {
             Row row(csv, csv.rows[i], i + 2, path, result.diagnostics);
             std::string owner = row.text("[Filter]");
@@ -313,15 +314,10 @@ EnemyEncounterImportResult EnemyEncounterCsvImporter::importBytes(std::span<cons
                 if (closedOwners.contains(owner)) diagnostic(result, AlxDiagnosticCode::InvalidGrouping,
                     "Enemy encounter owner rows are not contiguous", path, i + 2);
                 active = owner; group = &detail::AlxModelAccess::appendEncounterGroup(table, owner);
+                expectedEntry = 0;
             }
-            const auto expected = group->records().size() + 1;
-            if (entry == 0) {
-                if (!group->records().empty()) diagnostic(result, AlxDiagnosticCode::InvalidGrouping,
-                    "Enemy encounter placeholder must be the first owner row", path, i + 2);
-                continue;
-            }
-            if (entry != expected) diagnostic(result, AlxDiagnosticCode::InvalidGrouping,
-                "Enemy encounter entry IDs must be contiguous after placeholder 0", path, i + 2);
+            if (entry != expectedEntry) diagnostic(result, AlxDiagnosticCode::InvalidGrouping,
+                "Enemy encounter entry IDs must be contiguous and zero-based within each owner", path, i + 2);
             EnemyEncounterEntryId id{ owner, entry };
             if (!ids.insert(id).second) diagnostic(result, AlxDiagnosticCode::DuplicateIdentity,
                 "Duplicate canonical enemy encounter identity", path, i + 2);
@@ -334,6 +330,7 @@ EnemyEncounterImportResult EnemyEncounterCsvImporter::importBytes(std::span<cons
             }
             detail::AlxModelAccess::appendEncounter(*group, id, std::move(f));
             rememberDerived(result, canonicalIdentity(id), row.derived(semantic));
+            ++expectedEntry;
         }
         const auto count = encounterCount(table); result.table = std::move(table); return count;
     });

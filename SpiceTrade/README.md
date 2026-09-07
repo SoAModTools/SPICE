@@ -28,7 +28,7 @@ Every successful table import also returns source metadata containing the logica
 
 Ordinary records use stable identities of the form `<table>.<entryId>`. Enemy tasks use `enemytask.<ecId>.<entryId>` because their entry IDs are local to an enemy. Enemy encounters use their ENP owner and entry ID. Membership, identity, and order are fixed by import; consumers may edit record fields through each table's `edit` function.
 
-For `enemy.csv` and `enemytask.csv`, only rows whose `[Filter]` cell is exactly `*` are canonical gameplay records. Enemy encounters retain every owner group but discard entry 0 as the ALX placeholder slot; entries 1 and later are published. The encounter `[Filter]` value is the ENP owner key, not wildcard selection metadata.
+For `enemy.csv` and `enemytask.csv`, only rows whose `[Filter]` cell is exactly `*` are canonical gameplay records. Enemy encounters retain every owner group and publish its zero-based entry sequence beginning with entry 0. The encounter `[Filter]` value is the ENP owner key, not wildcard selection metadata.
 
 Bracketed columns are normally read-only derived annotations. European `[Entry GB Name]`, `[GB Descr Str]`, and `[Ship GB Descr Str]` fields are exceptions because ALX imports them as actual localized message text; those values are semantic and editable. Imported derived annotations live in `AlxDerivedContext`, and `AlxDerivedViewBuilder` creates fresh read-only views from the current dataset. Derived mismatches produce warnings without blocking publication.
 
