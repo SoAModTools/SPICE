@@ -523,12 +523,35 @@ InternalBuildResult buildPayload(const SctDocument& document, const SctDocumentE
     const SctOpaqueAnchor documentAnchor{SctDocumentAnchor{}};
     if (!placeAttachments(documentAnchor, SctOpaquePlacement::Before, cursor)) return result;
 
+    // Document-owned fixed gaps are outside indexed sections. Skip a gap at
+    // the section boundary before recording its start, rather than letting
+    // first-fit instruction placement leave the index pointing into the gap.
+    // Section/instruction-owned opaque prefixes must remain inside the section.
+    std::vector<SctDocumentByteSpan> documentFixedSpans;
+    if (const auto found = attachmentsByAnchor.find(documentAnchor); found != attachmentsByAnchor.end()) {
+        for (const auto* attachment : found->second[static_cast<std::size_t>(SctOpaquePlacement::FixedOffset)]) {
+            if (attachment->fixedOffset) {
+                documentFixedSpans.push_back({*attachment->fixedOffset,
+                    static_cast<std::uint32_t>(attachment->bytes.size())});
+            }
+        }
+    }
+    std::ranges::sort(documentFixedSpans, {}, &SctDocumentByteSpan::offset);
+
     for (std::size_t sectionIndex = 0; sectionIndex < document.sections.size(); ++sectionIndex) {
         const auto& section = document.sections[sectionIndex];
         const SctOpaqueAnchor sectionAnchor{section.id};
         if (!placeAttachments(sectionAnchor, SctOpaquePlacement::Before, cursor)) return result;
-        const auto alignedSectionStart = alignUp(cursor, 4u);
+        auto alignedSectionStart = alignUp(cursor, 4u);
         if (!alignedSectionStart) return result;
+        for (const auto& span : documentFixedSpans) {
+            if (span.offset > *alignedSectionStart) break;
+            const auto end = span.offset + span.size;
+            if (end > *alignedSectionStart) {
+                alignedSectionStart = alignUp(end, 4u);
+                if (!alignedSectionStart) return result;
+            }
+        }
         if (!canvas.ensure(*alignedSectionStart)) return result;
         cursor = *alignedSectionStart;
         const auto sectionStart = cursor;

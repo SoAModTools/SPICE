@@ -31,6 +31,12 @@ Each row is `0x14` bytes.
 
 Rows do not store a size. A section normally ends at the next row’s start; the final section ends at the footer boundary or end of file.
 
+The first indexed section need not begin at `dataStart`. Uncovered bytes before
+it are preserved as document-anchored fixed attachments. Preserving export must
+keep those bytes outside the indexed section: retaining the bytes while moving
+the index onto them changes the section's executable content. Section-owned
+opaque bytes remain part of their section, including any opaque leading bytes.
+
 ## Label and String Preamble
 
 Label and string sections can begin with an opcode-9 word, followed by an SCPT expression and the stop word `0x0000001D`. String bytes begin after the stop word. Text and other noninstruction bytes remain part of the section’s raw span.

@@ -66,7 +66,171 @@ std::string diagnosticMessages(const std::vector<SctDocumentDiagnostic>& diagnos
     return messages;
 }
 
+std::vector<std::uint8_t> makeExternalPrefixPayload(SctDocumentOutputByteOrder byteOrder) {
+    std::vector<std::uint8_t> bytes(68u, 0u);
+    const auto writeWord = [&](std::size_t offset, std::uint32_t value) {
+        for (std::size_t i = 0; i < 4u; ++i) {
+            const auto shift = byteOrder == SctDocumentOutputByteOrder::BigEndian
+                ? (3u - i) * 8u : i * 8u;
+            bytes[offset + i] = static_cast<std::uint8_t>(value >> shift);
+        }
+    };
+    writeWord(8u, 1u);
+    writeWord(12u, 32u);
+    const std::string name = "MAIN";
+    std::copy(name.begin(), name.end(), bytes.begin() + 16u);
+    writeWord(32u, 79u);
+    for (std::size_t offset = 36u; offset <= 60u; offset += 4u) writeWord(offset, 0x00800000u);
+    writeWord(64u, 12u);
+    return bytes;
+}
+
 } // namespace
+
+TEST(SctDocumentExporter, PreservesIndexedScriptStartBeyondExternalFixedPrefix) {
+    for (const auto byteOrder : {SctDocumentOutputByteOrder::BigEndian, SctDocumentOutputByteOrder::LittleEndian}) {
+        SCOPED_TRACE(testing::PrintToString(byteOrder));
+        const auto platform = byteOrder == SctDocumentOutputByteOrder::BigEndian
+            ? SctPlatform::GameCube : SctPlatform::Dreamcast;
+        const auto source = makeExternalPrefixPayload(byteOrder);
+        const auto parsed = SctParser{}.parse(source, "external_prefix.sct");
+        ASSERT_TRUE(parsed.parseOk);
+        const SctDocumentImportOptions importOptions{platform};
+        const auto imported = SctDocumentImporter::import(parsed, importOptions);
+        ASSERT_TRUE(imported.document) << diagnosticMessages(imported.diagnostics);
+        ASSERT_EQ(imported.document->sections.size(), 1u);
+        const auto* script = std::get_if<SctScriptSectionContent>(&imported.document->sections[0].content);
+        ASSERT_NE(script, nullptr);
+        ASSERT_EQ(script->instructions.size(), 1u);
+        EXPECT_EQ(script->instructions[0].opcode, 12u);
+        ASSERT_EQ(imported.document->opaqueAttachments.size(), 1u);
+        const auto& prefix = imported.document->opaqueAttachments[0];
+        EXPECT_EQ(prefix.anchor, SctOpaqueAnchor{SctDocumentAnchor{}});
+        EXPECT_EQ(prefix.placement, SctOpaquePlacement::FixedOffset);
+        EXPECT_EQ(prefix.fixedOffset, 32u);
+        EXPECT_EQ(prefix.bytes.size(), 32u);
+        const auto evidence = imported.context.bind(imported.context.revisionProvenance());
+        ASSERT_TRUE(evidence);
+
+        const auto options = rawOptions(byteOrder, platform);
+        const auto exported = SctDocumentExporter::exportDocument(*imported.document, options, &*evidence);
+        ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
+        EXPECT_EQ(exported.bytes, source);
+        EXPECT_EQ(readWord(exported.bytes, 12u, byteOrder), 32u);
+        ASSERT_TRUE(exported.layout);
+        ASSERT_EQ(exported.layout->sections.size(), 1u);
+        EXPECT_EQ(exported.layout->sections[0].payloadSpan, (SctDocumentByteSpan{64u, 4u}));
+        EXPECT_EQ(exported.layout->sections[0].dataRelativeOffset, 32u);
+        ASSERT_EQ(exported.layout->instructions.size(), 1u);
+        EXPECT_EQ(exported.layout->instructions[0].span, (SctDocumentByteSpan{64u, 4u}));
+        ASSERT_EQ(exported.preservation.attachments.size(), 1u);
+        EXPECT_EQ(exported.preservation.attachments[0].span, (SctDocumentByteSpan{32u, 32u}));
+        EXPECT_EQ(exported.preservation.attachments[0].status,
+            SctOpaquePreservationStatus::PreservedByteIdentically);
+        ASSERT_TRUE(exported.preservation.header);
+        EXPECT_EQ(exported.preservation.header->status, SctHeaderMaterializationStatus::PreservedSourceBytes);
+        const auto layoutOnly = SctDocumentLayoutEngine::layout(*imported.document, options, &*evidence);
+        ASSERT_TRUE(layoutOnly.success);
+        ASSERT_TRUE(layoutOnly.layout);
+        ASSERT_EQ(layoutOnly.layout->sections.size(), 1u);
+        EXPECT_EQ(layoutOnly.layout->sections[0].payloadSpan, exported.layout->sections[0].payloadSpan);
+
+        const auto reparsed = SctParser{}.parse(exported.bytes, "external_prefix_roundtrip.sct");
+        ASSERT_TRUE(reparsed.parseOk);
+        const auto reimported = SctDocumentImporter::import(reparsed, importOptions);
+        ASSERT_TRUE(reimported.document) << diagnosticMessages(reimported.diagnostics);
+        ASSERT_EQ(reimported.document->sections.size(), 1u);
+        EXPECT_EQ(reimported.document->sections[0].nameBytes, "MAIN");
+        const auto* reimportedScript = std::get_if<SctScriptSectionContent>(&reimported.document->sections[0].content);
+        ASSERT_NE(reimportedScript, nullptr);
+        ASSERT_EQ(reimportedScript->instructions.size(), 1u);
+        EXPECT_EQ(reimportedScript->instructions[0].opcode, 12u);
+    }
+}
+
+TEST(SctDocumentExporter, KeepsSectionOwnedFixedPrefixInsideIndexedScript) {
+    const auto source = makeExternalPrefixPayload(SctDocumentOutputByteOrder::BigEndian);
+    auto imported = SctDocumentImporter::import(SctParser{}.parse(source, "prefix_owner.sct"),
+        {SctPlatform::GameCube});
+    ASSERT_TRUE(imported.document);
+    ASSERT_EQ(imported.document->opaqueAttachments.size(), 1u);
+    // Explicitly make these bytes section content: they now belong before the
+    // known instruction, so the index must include them rather than skip them.
+    imported.document->opaqueAttachments[0].anchor = imported.document->sections[0].id;
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    ASSERT_TRUE(evidence);
+    const auto exported = SctDocumentExporter::exportDocument(*imported.document, rawOptions(), &*evidence);
+    ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
+    ASSERT_TRUE(exported.layout);
+    EXPECT_EQ(readWord(exported.bytes, 12u, SctDocumentOutputByteOrder::BigEndian), 0u);
+    EXPECT_EQ(exported.layout->sections[0].payloadSpan, (SctDocumentByteSpan{32u, 36u}));
+    EXPECT_EQ(exported.layout->instructions[0].span, (SctDocumentByteSpan{64u, 4u}));
+    EXPECT_TRUE(std::equal(source.begin() + 32u, source.end(), exported.bytes.begin() + 32u));
+}
+
+TEST(SctDocumentExporter, SkipsAdjacentExternalPrefixFragmentsWithoutSkippingLaterAttachments) {
+    const auto source = makeExternalPrefixPayload(SctDocumentOutputByteOrder::BigEndian);
+    auto imported = SctDocumentImporter::import(SctParser{}.parse(source, "prefix_fragments.sct"),
+        {SctPlatform::GameCube});
+    ASSERT_TRUE(imported.document);
+    auto& document = *imported.document;
+    ASSERT_EQ(document.opaqueAttachments.size(), 1u);
+    const auto original = document.opaqueAttachments[0];
+    auto second = original;
+    second.id = document.allocateOpaqueAttachmentId();
+    second.fixedOffset = 48u;
+    second.bytes.erase(second.bytes.begin(), second.bytes.begin() + 16u);
+    document.opaqueAttachments[0].bytes.resize(16u);
+    // Reverse physical order to ensure attachment order does not control layout.
+    document.opaqueAttachments.insert(document.opaqueAttachments.begin(), std::move(second));
+    document.opaqueAttachments.push_back({document.allocateOpaqueAttachmentId(), {0xaa, 0xbb, 0xcc, 0xdd},
+        SctDocumentAnchor{}, SctOpaquePlacement::FixedOffset, 80u, 1u,
+        SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::Gap});
+    const auto evidence = imported.context.bind(imported.context.revisionProvenance());
+    ASSERT_TRUE(evidence);
+    const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &*evidence);
+    ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
+    ASSERT_TRUE(exported.layout);
+    EXPECT_EQ(exported.layout->sections[0].payloadSpan, (SctDocumentByteSpan{64u, 4u}));
+    EXPECT_EQ(readWord(exported.bytes, 12u, SctDocumentOutputByteOrder::BigEndian), 32u);
+    EXPECT_TRUE(std::equal(source.begin(), source.end(), exported.bytes.begin()));
+    EXPECT_EQ(readWord(exported.bytes, 80u, SctDocumentOutputByteOrder::BigEndian), 0xaabbccddu);
+}
+
+TEST(SctDocumentExporter, PreservesExternalPrefixBeforeOpaqueAndIndexedTextSections) {
+    for (const auto kind : {0, 1, 2}) {
+        SCOPED_TRACE(kind);
+        const auto source = makeExternalPrefixPayload(SctDocumentOutputByteOrder::BigEndian);
+        auto imported = SctDocumentImporter::import(SctParser{}.parse(source, "prefix_section_kind.sct"),
+            {SctPlatform::GameCube});
+        ASSERT_TRUE(imported.document);
+        auto& document = *imported.document;
+        auto& section = document.sections[0];
+        if (kind == 0) {
+            section.content = SctOpaqueSectionContent{};
+            document.opaqueAttachments.push_back({document.allocateOpaqueAttachmentId(), {0xff, 0xff, 0xff, 0xff},
+                section.id, SctOpaquePlacement::FixedOffset, 64u, 1u,
+                SctOpaqueRelocationSupport::FixedOnly, SctOpaqueReason::UnknownEncoding});
+        } else if (kind == 1) {
+            section.content = SctStringGroupMarkerSectionContent{};
+        } else {
+            section.content = SctStringSectionContent{
+                SctDocumentString{document.allocateStringId(), SctEmptyIndexedText{}}};
+        }
+        const auto evidence = imported.context.bind(imported.context.revisionProvenance());
+        ASSERT_TRUE(evidence);
+        const auto exported = SctDocumentExporter::exportDocument(document, rawOptions(), &*evidence);
+        ASSERT_TRUE(exported.success) << diagnosticMessages(exported.diagnostics);
+        ASSERT_TRUE(exported.layout);
+        EXPECT_EQ(exported.layout->sections[0].payloadSpan.offset, 64u);
+        EXPECT_EQ(exported.layout->sections[0].payloadSpan.size, kind == 0 ? 4u : 8u);
+        EXPECT_EQ(readWord(exported.bytes, 12u, SctDocumentOutputByteOrder::BigEndian), 32u);
+        EXPECT_TRUE(std::equal(source.begin() + 32u, source.begin() + 64u, exported.bytes.begin() + 32u));
+        EXPECT_EQ(readWord(exported.bytes, 64u, SctDocumentOutputByteOrder::BigEndian),
+            kind == 0 ? 0xffffffffu : 9u);
+        if (kind != 0) EXPECT_EQ(readWord(exported.bytes, 68u, SctDocumentOutputByteOrder::BigEndian), 0x1du);
+    }
+}
 
 TEST(SctDocumentValidationContext, DoesNotInferPlatformFromByteOrderAndRequiresReceiptOnlyForOpaqueData) {
     auto document = makeJumpDocument();
