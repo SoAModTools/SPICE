@@ -156,6 +156,15 @@ struct MldOpaqueMember {
 using MldLayoutItem = std::variant<MldEntryId, MldObjectId, MldMotionId, MldGroundId,
     MldTextureListId, MldTextureArchiveId, MldOpaqueMemberId>;
 
+class MldSourceIdentity {
+public:
+    MldSourceIdentity() = default;
+private:
+    std::shared_ptr<const std::uint8_t> token_{};
+    friend class MldDocumentImporter;
+    friend class MldMotionListProjector;
+};
+
 struct MldDocument {
     std::vector<MldEntry> entries{};
     std::vector<MldObjectResource> objects{};
@@ -165,6 +174,7 @@ struct MldDocument {
     std::vector<MldTextureArchive> textureArchives{};
     std::vector<MldOpaqueMember> opaqueMembers{};
     std::vector<MldLayoutItem> layout{};
+    MldSourceIdentity sourceIdentity{};
 
     [[nodiscard]] MldEntryId allocateEntryId() const noexcept;
     [[nodiscard]] MldObjectId allocateObjectId() const noexcept;

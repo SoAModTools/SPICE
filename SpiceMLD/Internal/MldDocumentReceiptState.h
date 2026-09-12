@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../Model/MldFile.h"
+#include "../MldDocumentImporter.h"
 
 namespace spice::mld::detail {
 
@@ -15,6 +16,16 @@ struct MldImportState {
     // retained by the receipt.
     model::MldFile encodingSkeleton{};
     std::vector<MldPreservedFragment> preservedFragments{};
+    std::shared_ptr<const std::uint8_t> token{};
+    std::array<std::uint8_t, 32U> sourceHash{};
+    std::uint64_t sourceSize{}, decodedSize{};
+    MldPlatform platform{};
+    MldWrapper wrapper{};
+    spice::root::Endian endian{};
+    std::vector<MldEntryId> entryOrder{};
+    std::vector<std::array<std::uint8_t, 32U>> entryHashes{};
 };
+
+[[nodiscard]] std::array<std::uint8_t, 32U> entryBindingHash(const MldEntry& entry);
 
 } // namespace spice::mld::detail

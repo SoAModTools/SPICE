@@ -38,6 +38,7 @@
     <ClCompile Include="test_sct_scpt_v2.cpp" />
     <ClCompile Include="test_sst_sml_document.cpp" />
     <ClCompile Include="test_std_parser.cpp" />
+    <ClCompile Include="test_effect_model_projection.cpp" />
     <ClCompile Include="test_wmap_area.cpp" />
     <ClCompile Include="test_spice_modeling_stage1.cpp" />
     <ClCompile Include="test_spice_modeling_stage2.cpp" />

@@ -371,7 +371,20 @@ MldDocumentImportResult MldDocumentImporter::importBytes(
         result.document.reset();
         return result;
     }
-    result.receipt.state_ = std::make_shared<detail::MldImportState>(makeImportState(std::move(parsed)));
+    auto state = std::make_shared<detail::MldImportState>(makeImportState(std::move(parsed)));
+    state->token = std::make_shared<const std::uint8_t>(0U);
+    result.document->sourceIdentity.token_ = state->token;
+    state->sourceHash = result.receipt.sourceSha256;
+    state->sourceSize = result.receipt.sourceSize;
+    state->decodedSize = result.receipt.decodedSize;
+    state->platform = result.receipt.platform;
+    state->wrapper = result.receipt.wrapper;
+    state->endian = result.receipt.endian;
+    for (const auto& entry : result.document->entries) {
+        state->entryOrder.push_back(entry.id);
+        state->entryHashes.push_back(detail::entryBindingHash(entry));
+    }
+    result.receipt.state_ = std::move(state);
     return result;
 }
 

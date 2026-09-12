@@ -53,6 +53,7 @@ private:
     friend class MldDocumentImporter;
     friend class MldDocumentWriter;
     friend class MldDocumentValidator;
+    friend class MldMotionListProjector;
 };
 
 struct MldDocumentImportResult {

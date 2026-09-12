@@ -20,6 +20,12 @@ The header is `0x14` bytes.
 
 ## Index Entry
 
+Serialized pointers in the index are offsets from the decoded MLD member base.
+A zero counted-list pointer is absent. A nonzero valid pointer to count zero is
+a present empty list; zero values inside a nonempty address list retain their
+unassigned slots. The public receipt-backed query and its bounds/error states
+are described in [Effect-model source semantics](EffectModelSourceSemantics.md).
+
 Each index entry is `0x68` bytes.
 
 | Offset | Size | Field | Meaning |

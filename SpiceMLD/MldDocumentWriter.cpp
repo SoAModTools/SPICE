@@ -345,6 +345,24 @@ MldDocumentWriteResult MldDocumentWriter::write(
     }
 
     auto output = receipt->state_->encodingSkeleton;
+    // The skeleton contains shared lists. Clone them before assigning edited
+    // values so writing cannot mutate immutable source evidence in the receipt.
+    std::unordered_map<const model::U32List*, std::shared_ptr<model::U32List>> clonedLists;
+    const auto cloneList = [&](std::shared_ptr<model::U32List>& list) {
+        if (!list) return;
+        auto& clone = clonedLists[list.get()];
+        if (!clone) clone = std::make_shared<model::U32List>(*list);
+        list = clone;
+    };
+    for (auto& [offset, list] : output.u32Lists) cloneList(list);
+    for (auto& record : output.entries) {
+        cloneList(record.entry.groundLinks);
+        cloneList(record.entry.paramList2);
+        cloneList(record.entry.functionParameters);
+        cloneList(record.entry.objectAddresses);
+        cloneList(record.entry.groundAddresses);
+        cloneList(record.entry.motionAddresses);
+    }
     if (receipt->decodedSize > std::numeric_limits<std::size_t>::max()) {
         result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "The imported decoded MLD size is not representable." });
         return result;

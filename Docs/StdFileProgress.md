@@ -12,6 +12,11 @@ Entry-table output derives record counts, spans, payload sizes, and offsets afte
 
 ## Deliberate Limits
 
+Type53 (`0x00030053`) has a receipt-backed source projection for its model key,
+flags, signed delay, and qualified producer entry ordinal. The payload remains
+opaque for preservation. See [Effect-model source semantics](EffectModelSourceSemantics.md)
+for six-release scope, key decoding, provenance, and downstream binding requirements.
+
 All eleven commands classified by the inspected binary command table have dedicated typed, relocatable payload variants. Genuinely unrecognized command payloads, payload-area gaps, and file trailers remain explicit preservation content and cannot cross byte order. Top-level opaque documents are preservation surfaces rather than semantic editing surfaces.
 
 `StdUsage` remains a source-oriented research utility, and the versioned JSON exporter remains a secondary interchange adapter rather than a version of `StdDocument`. Its schema name is `spice_std_json_export` and its independent numeric `schemaVersion` is 5. Cross-file links to MLD, combatants, actions, or other systems are consumer-owned. Additional payload semantics await evidence and consumer feedback before the mutable contract is considered for freezing.

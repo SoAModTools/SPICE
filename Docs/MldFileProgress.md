@@ -12,6 +12,11 @@ Known fields can be written in either platform byte order while unknown source b
 
 ## Known Limitations
 
+`MldMotionListProjector` now provides explicit imported-entry selection and source
+list state, separating absent, verified present-empty, nonempty, and malformed
+lists. It preserves the stricter action-motion projector contract. See
+[Effect-model source semantics](EffectModelSourceSemantics.md) for scope and receipt/edit rules.
+
 MLD is not yet a complete semantic reassembler. Motion and NJCM model resources are read-only and byte-preserved; there is no motion encoder, runtime motion-selection resolver, ambiguous-animation export, or volume renderer. Same-entry unique bindings are explicitly scoped convenience projections rather than claims about handler or script selection. Decoded NCAM position/target channels project to Blender cameras, and type-56 volume triangles are available as optional non-rendering Blender visualization geometry. Handler-specific meanings are not inferred from entry function names or parameters. GRND and GOBJ support covers the promoted structures only, and several pointer, padding, and texture-control fields remain unnamed. Geometry edits outside the canonical GRND/GOBJ surfaces can therefore require raw preservation.
 
 Triangle selector editing intentionally does not determine whether a selector is meaningful for a particular area or object.

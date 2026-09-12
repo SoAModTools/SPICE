@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -59,7 +60,10 @@ struct StdOpaqueReceiptEvidence {
     std::optional<std::array<std::uint8_t, 32U>> topLevelDecodedSha256{};
 };
 
+namespace detail { struct StdProjectionEvidence; }
+
 struct StdImportReceipt {
+    StdImportReceipt() = default;
     std::optional<std::filesystem::path> path{};
     std::array<std::uint8_t, 32U> sourceSha256{};
     std::uint64_t sourceSize{ 0U };
@@ -68,6 +72,11 @@ struct StdImportReceipt {
     spice::root::Endian byteOrder{ spice::root::Endian::Big };
     StdByteOrderSelection byteOrderSelection{ StdByteOrderSelection::AutoDetected };
     StdOpaqueReceiptEvidence opaqueEvidence{};
+
+private:
+    std::shared_ptr<const detail::StdProjectionEvidence> projectionEvidence_{};
+    friend class StdDocumentImporter;
+    friend class StdType53Projector;
 };
 
 struct StdImportOptions {

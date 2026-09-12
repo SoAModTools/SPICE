@@ -18,3 +18,8 @@ Action rows are grouped by callback index. Broad known families include normal m
 | `0x00030058` | `SYS CAMERA2` | Extended camera request with guarded submodes. |
 
 Several payload families begin with related action-selection keys, but their later fields are specific to the selected type and mode. Unknown combined types remain valid opaque payloads.
+
+`StdType53Projector` exposes the qualified `0x90`-byte type53 key at `+0x08`, flags
+at `+0x10`, and signed delay at `+0x14`, while retaining the original opaque payload.
+See [Effect-model source semantics](EffectModelSourceSemantics.md) for profile,
+resource-name, entry-selection, and preservation contracts.

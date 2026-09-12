@@ -30,6 +30,12 @@
     <ClInclude Include="StdDocumentImporter.h">
       <Filter>Parser</Filter>
     </ClInclude>
+    <ClInclude Include="StdType53Projection.h">
+      <Filter>Model</Filter>
+    </ClInclude>
+    <ClInclude Include="StdProjectionEvidence.h">
+      <Filter>Parser</Filter>
+    </ClInclude>
     <ClInclude Include="StdDocumentValidator.h">
       <Filter>Writer</Filter>
     </ClInclude>
@@ -55,6 +61,9 @@
     </ClCompile>
     <ClCompile Include="StdDocumentImporter.cpp">
       <Filter>Parser</Filter>
+    </ClCompile>
+    <ClCompile Include="StdType53Projection.cpp">
+      <Filter>Model</Filter>
     </ClCompile>
     <ClCompile Include="StdDocumentValidator.cpp">
       <Filter>Writer</Filter>

@@ -101,6 +101,7 @@
     <ClInclude Include="MldDocument.h" />
     <ClInclude Include="MldDocumentImporter.h" />
     <ClInclude Include="MldMotionFrameProjector.h" />
+    <ClInclude Include="MldMotionListProjection.h" />
     <ClInclude Include="MldDocumentValidator.h" />
     <ClInclude Include="MldDocumentWriter.h" />
     <ClInclude Include="Internal\MldDocumentReceiptState.h" />
@@ -142,6 +143,7 @@
     <ClCompile Include="MldDocument.cpp" />
     <ClCompile Include="MldDocumentImporter.cpp" />
     <ClCompile Include="MldMotionFrameProjector.cpp" />
+    <ClCompile Include="MldMotionListProjection.cpp" />
     <ClCompile Include="MldDocumentValidator.cpp" />
     <ClCompile Include="MldDocumentWriter.cpp" />
     <ClCompile Include="Internal\MldSha256.cpp" />

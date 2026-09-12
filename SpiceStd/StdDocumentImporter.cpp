@@ -1,4 +1,6 @@
 #include "StdDocumentImporter.h"
+#include "StdProjectionEvidence.h"
+#include "StdType53Projection.h"
 
 #include "StdSha256.h"
 #include "../Compression/Aklz.h"
@@ -706,6 +708,25 @@ StdDocumentImportResult StdDocumentImporter::importBytes(
     result.document = StdDocument{ selected.content };
     result.diagnostics.insert(result.diagnostics.end(), selected.warnings.begin(), selected.warnings.end());
     collectOpaqueEvidence(*result.document, result.receipt);
+    if (const auto* table = std::get_if<StdEntryTableContent>(&result.document->content);
+        table && std::any_of(table->records.begin(), table->records.end(), [](const auto& record) {
+            return record.combinedType() == kStdType53CombinedType;
+        })) {
+        auto evidence = std::make_shared<detail::StdProjectionEvidence>();
+        evidence->token = std::make_shared<const std::uint8_t>(0U);
+        result.document->sourceIdentity.token_ = evidence->token;
+        evidence->documentHash = detail::projectionDocumentHash(*result.document);
+        evidence->sourceHash = result.receipt.sourceSha256;
+        evidence->sourceSize = result.receipt.sourceSize;
+        evidence->decodedSize = result.receipt.decodedSize;
+        evidence->endian = result.receipt.byteOrder;
+        evidence->compression = result.receipt.compression;
+        evidence->byteOrderSelection = result.receipt.byteOrderSelection;
+        const spice::root::EndianReader reader(decoded, selected.endian);
+        for (std::size_t i = 0; i < table->records.size(); ++i)
+            evidence->payloadOffsets.push_back(0x10ull + reader.read_u32(0x10U + i * 0x10U + 0x0cU));
+        result.receipt.projectionEvidence_ = std::move(evidence);
+    }
     return result;
 }
 

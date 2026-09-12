@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <array>
 #include <bit>
 #include <compare>
@@ -559,8 +561,18 @@ struct StdOpaqueContent {
 
 using StdDocumentContent = std::variant<StdActionRowsContent, StdEntryTableContent, StdOpaqueContent>;
 
+class StdSourceIdentity {
+public:
+    StdSourceIdentity() = default;
+private:
+    std::shared_ptr<const std::uint8_t> token_{};
+    friend class StdDocumentImporter;
+    friend class StdType53Projector;
+};
+
 struct StdDocument {
     StdDocumentContent content{ StdOpaqueContent{} };
+    StdSourceIdentity sourceIdentity{};
 
     [[nodiscard]] StdActionRowId allocateActionRowId() const noexcept;
     [[nodiscard]] StdEntryRecordId allocateEntryRecordId() const noexcept;
@@ -568,7 +580,7 @@ struct StdDocument {
     [[nodiscard]] StdEntryTerminatorId allocateEntryTerminatorId() const noexcept;
     [[nodiscard]] StdOpaqueFragmentId allocateOpaqueFragmentId() const noexcept;
     [[nodiscard]] bool hasOpaqueContent() const noexcept;
-    bool operator==(const StdDocument&) const = default;
+    bool operator==(const StdDocument& other) const { return content == other.content; }
 };
 
 enum class StdCommandKind {

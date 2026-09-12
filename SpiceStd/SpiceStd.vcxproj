@@ -98,6 +98,8 @@
     <ClInclude Include="SpiceStd.h" />
     <ClInclude Include="StdDocument.h" />
     <ClInclude Include="StdDocumentImporter.h" />
+    <ClInclude Include="StdType53Projection.h" />
+    <ClInclude Include="StdProjectionEvidence.h" />
     <ClInclude Include="StdDocumentValidator.h" />
     <ClInclude Include="StdDocumentWriter.h" />
     <ClInclude Include="StdJsonExporter.h" />
@@ -108,6 +110,7 @@
     <ClCompile Include="SpiceStd.cpp" />
     <ClCompile Include="StdDocument.cpp" />
     <ClCompile Include="StdDocumentImporter.cpp" />
+    <ClCompile Include="StdType53Projection.cpp" />
     <ClCompile Include="StdDocumentValidator.cpp" />
     <ClCompile Include="StdDocumentWriter.cpp" />
     <ClCompile Include="StdJsonExporter.cpp" />

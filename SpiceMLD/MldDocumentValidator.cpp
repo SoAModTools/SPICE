@@ -103,6 +103,27 @@ MldDocumentValidationResult MldDocumentValidator::validate(
         error(result, "Opaque MLD resources cannot be converted across platforms in this release.");
     }
     if (receipt != nullptr && receipt->state_) {
+        for (std::size_t i = 0; i < receipt->state_->encodingSkeleton.entries.size(); ++i) {
+            const auto& source = receipt->state_->encodingSkeleton.entries[i].entry;
+            for (const auto& list : {source.groundLinks, source.paramList2, source.functionParameters,
+                source.objectAddresses, source.groundAddresses, source.motionAddresses}) {
+                if (list && !list->valid)
+                    error(result, "An invalid source list cannot be rewritten as an empty MLD list.");
+            }
+            if (i < document.entries.size()) {
+                const auto& current = document.entries[i];
+                const auto checkAbsent = [&](const auto& list, const auto& values) {
+                    if ((!list || list->pointer == 0U) && !values.empty())
+                        error(result, "Adding slots to an absent source list is not supported by preserving output.");
+                };
+                checkAbsent(source.groundLinks, current.groundLinks);
+                checkAbsent(source.paramList2, current.parameterList2);
+                checkAbsent(source.functionParameters, current.functionParameters);
+                checkAbsent(source.objectAddresses, current.objectSlots);
+                checkAbsent(source.groundAddresses, current.groundSlots);
+                checkAbsent(source.motionAddresses, current.motionSlots);
+            }
+        }
         if (document.entries.size() != receipt->state_->encodingSkeleton.entries.size())
             error(result, "This release cannot add or remove MLD index entries during output.");
         const auto receiptCount = [&](const std::size_t variantIndex) {

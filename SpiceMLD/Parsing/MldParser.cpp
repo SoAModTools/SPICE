@@ -1142,7 +1142,7 @@ public:
 };
 
 void appendListIfPresent(model::MldFile& file, std::shared_ptr<model::U32List>& list) {
-    if (!list) {
+    if (!list || list->pointer == 0U || !list->valid) {
         return;
     }
     const auto [existing, inserted] = file.u32Lists.emplace(list->pointer, list);
