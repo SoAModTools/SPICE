@@ -58,25 +58,26 @@ std::vector<std::uint8_t> encodePayload(const StdEntryPayload& payload, const sp
             writer.write_i16(value.setupWord0);
             writer.write_i16(value.setupWord1);
             writer.write_u32(value.childMetadataRaw);
-            writer.write_u32(value.behaviorFlags);
+            writer.write_i16(value.sparcDelayTicks);
+            writer.write_i16(value.effectLifetimeTicks);
             writer.write_i16(value.durationOrActivationCount);
             writer.write_i16(value.childParameterS16);
-            writer.write_u16(value.raw1c);
-            writer.write_u16(value.reserved1e);
             writeFloats(writer, value.positionOrOffset);
             writeFloats(writer, value.velocityVector);
             writer.write_i16(value.spawnCount);
             writer.write_i16(value.randomRange);
             writer.write_i16(value.spawnMode);
-            writer.write_i16(value.raw3e);
+            writer.write_i16(value.raw3a);
             writer.write_u32(value.childDivisorOrParameter.bits);
-            writeFloats(writer, value.childParameters44);
+            writeFloats(writer, value.childParameters40);
             writeFloats(writer, value.vectorMultipliers);
             writeFloats(writer, value.secondaryVector);
             for (const auto& choice : value.choices) {
                 writer.write_i16(choice.value);
                 writer.write_i16(choice.weight);
             }
+            writer.write_i16(value.choiceFirstRaw);
+            writer.write_i16(value.choiceLastRaw);
         } else if constexpr (std::is_same_v<Payload, StdPutModelPayload>) {
             writer.reserve(kStdPutModelPayloadSize);
             writePrefix(writer, value.common);

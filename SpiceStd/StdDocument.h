@@ -124,22 +124,23 @@ struct StdSparcPayload {
     std::int16_t setupWord0{ 0 };
     std::int16_t setupWord1{ 0 };
     std::uint32_t childMetadataRaw{ 0U };
-    std::uint32_t behaviorFlags{ 0U };
+    std::int16_t sparcDelayTicks{ 0 }; // +0x14
+    std::int16_t effectLifetimeTicks{ 0 }; // +0x16
     std::int16_t durationOrActivationCount{ 0 };
     std::int16_t childParameterS16{ 0 };
-    std::uint16_t raw1c{ 0U };
-    std::uint16_t reserved1e{ 0U };
-    std::array<StdFloat32, 3U> positionOrOffset{};
+    std::array<StdFloat32, 3U> positionOrOffset{}; // +0x1c, no preceding padding
     std::array<StdFloat32, 3U> velocityVector{};
-    std::int16_t spawnCount{ 0 };
-    std::int16_t randomRange{ 0 };
+    std::int16_t spawnCount{ 0 }; // +0x34
+    std::int16_t randomRange{ 0 }; // +0x36, random delay divisor
     std::int16_t spawnMode{ 0 };
-    std::int16_t raw3e{ 0 };
+    std::int16_t raw3a{ 0 };
     StdFloat32 childDivisorOrParameter{};
-    std::array<StdFloat32, 2U> childParameters44{};
+    std::array<StdFloat32, 2U> childParameters40{};
     std::array<StdFloat32, 3U> vectorMultipliers{};
     std::array<StdFloat32, 3U> secondaryVector{};
-    std::array<StdSparcChoice, 64U> choices{};
+    std::array<StdSparcChoice, 64U> choices{}; // +0x60..+0x15f
+    std::int16_t choiceFirstRaw{ 0 }; // +0x160, copied separately from the table
+    std::int16_t choiceLastRaw{ 0 }; // +0x162; no runtime range policy imposed here
 
     [[nodiscard]] std::optional<std::string> formattedMldFilename() const;
     bool operator==(const StdSparcPayload&) const = default;
