@@ -152,19 +152,18 @@ StdEntryPayloadContent samplePayload(const std::uint32_t combinedType) {
         value.setupWord0 = -14;
         value.setupWord1 = 15;
         value.childMetadataRaw = 0x16171819U;
-        value.behaviorFlags = 0x20008a0fU;
+        value.sparcDelayTicks = -17;
+        value.effectLifetimeTicks = 19;
         value.durationOrActivationCount = 21;
         value.childParameterS16 = -22;
-        value.raw1c = 23U;
-        value.reserved1e = 24U;
         value.positionOrOffset = sampleFloats<3U>(0x3f800000U);
         value.velocityVector = sampleFloats<3U>(0x40000000U);
         value.spawnCount = 31;
         value.randomRange = 32;
         value.spawnMode = 33;
-        value.raw3e = -34;
+        value.raw3a = -34;
         value.childDivisorOrParameter.bits = 0x40400000U;
-        value.childParameters44 = sampleFloats<2U>(0x40800000U);
+        value.childParameters40 = sampleFloats<2U>(0x40800000U);
         value.vectorMultipliers = sampleFloats<3U>(0x40a00000U);
         value.secondaryVector = sampleFloats<3U>(0x40c00000U);
         for (std::size_t index = 0U; index < value.choices.size(); ++index) {
@@ -173,6 +172,8 @@ StdEntryPayloadContent samplePayload(const std::uint32_t combinedType) {
                 static_cast<std::int16_t>(index < 4U ? index + 1U : 0U),
             };
         }
+        value.choiceFirstRaw = -35;
+        value.choiceLastRaw = 36;
         return value;
     }
     if (combinedType == kStdPutModelCombinedType) {
@@ -747,6 +748,96 @@ TEST(SpiceStdDocumentWriter, PreservesFileTrailerOutsideDeclaredSpan) {
     EXPECT_TRUE(hasCode(crossEndian.diagnostics, StdDiagnosticCode::OpaqueByteOrderMismatch));
 }
 
+// Synthetic, independently positioned bytes: writer/importer agreement alone
+// cannot detect a shared four-byte displacement. See Docs/SparcSourceLayout.md.
+TEST(SpiceStdDocumentImporter, SparcNativeOffsetsAndSeparateTailAreBitExact) {
+    for (const auto endian : { Endian::Big, Endian::Little }) {
+        auto bytes = makeEntryTable(endian, false);
+        bytes.resize(0x30U + kStdSparcPayloadSize);
+        EndianSpanWriter native(bytes, endian);
+        native.write_i16_at(0x10U, 2);
+        native.write_i16_at(0x12U, 3);
+        native.write_u32_at(0x18U, kStdSparcPayloadSize);
+        native.write_u32_at(0x0cU, static_cast<std::uint32_t>(bytes.size() - 0x10U));
+        for (std::uint32_t offset = 0; offset < kStdSparcPayloadSize; offset += 4U) {
+            native.write_u32_at(0x30U + offset, 0x81234000U + offset);
+        }
+        native.write_i16_at(0x30U + 0x14U, -32768);
+        native.write_i16_at(0x30U + 0x16U, 32767);
+        native.write_i16_at(0x30U + 0x34U, 23);
+        native.write_i16_at(0x30U + 0x36U, -9);
+        native.write_i16_at(0x30U + 0x38U, 41);
+        native.write_i16_at(0x30U + 0x3aU, -43);
+        native.write_u32_at(0x30U + 0x1cU, 0x7fc01234U); // preserve NaN payload
+        native.write_u32_at(0x30U + 0x28U, 0x80000000U); // preserve negative zero
+        native.write_i16_at(0x30U + 0x160U, -17);
+        native.write_i16_at(0x30U + 0x162U, 29);
+        const auto imported = StdDocumentImporter::importBytes(bytes);
+        ASSERT_TRUE(imported.ok());
+        EXPECT_EQ(imported.receipt.byteOrder, endian);
+        EXPECT_EQ(imported.receipt.sourceSize, bytes.size());
+        EXPECT_EQ(imported.receipt.decodedSize, bytes.size());
+        const auto& table = std::get<StdEntryTableContent>(imported.document->content);
+        ASSERT_EQ(table.payloads.size(), 1U);
+        const auto& sparc = std::get<StdSparcPayload>(table.payloads[0].content);
+        const EndianReader reader(bytes, endian);
+        EXPECT_EQ(sparc.sparcDelayTicks, -32768);
+        EXPECT_EQ(sparc.effectLifetimeTicks, 32767);
+        EXPECT_EQ(sparc.spawnCount, 23);
+        EXPECT_EQ(sparc.randomRange, -9);
+        EXPECT_EQ(sparc.spawnMode, 41);
+        EXPECT_EQ(sparc.raw3a, -43);
+        const auto checkFloats = [&](const auto& fields, const std::size_t offset) {
+            for (std::size_t i = 0; i < fields.size(); ++i) {
+                EXPECT_EQ(fields[i].bits, reader.read_u32(0x30U + offset + i * 4U));
+            }
+        };
+        checkFloats(sparc.positionOrOffset, 0x1cU);
+        checkFloats(sparc.velocityVector, 0x28U);
+        EXPECT_EQ(sparc.childDivisorOrParameter.bits, reader.read_u32(0x30U + 0x3cU));
+        checkFloats(sparc.childParameters40, 0x40U);
+        checkFloats(sparc.vectorMultipliers, 0x48U);
+        checkFloats(sparc.secondaryVector, 0x54U);
+        for (std::size_t i = 0; i < sparc.choices.size(); ++i) {
+            EXPECT_EQ(sparc.choices[i].value, reader.read_i16(0x30U + 0x60U + i * 4U));
+            EXPECT_EQ(sparc.choices[i].weight, reader.read_i16(0x30U + 0x62U + i * 4U));
+        }
+        EXPECT_EQ(sparc.choiceFirstRaw, -17);
+        EXPECT_EQ(sparc.choiceLastRaw, 29);
+        const auto output = StdDocumentWriter::write(*imported.document,
+            { platformFor(endian), StdCompression::None });
+        ASSERT_TRUE(output.ok());
+        EXPECT_EQ(output.bytes, bytes);
+        auto edited = *imported.document;
+        auto& changed = std::get<StdSparcPayload>(std::get<StdEntryTableContent>(edited.content).payloads[0].content);
+        changed.sparcDelayTicks = 13;
+        changed.effectLifetimeTicks = -15;
+        changed.spawnCount = -3;
+        changed.randomRange = 0;
+        changed.choices[63] = { 71, -73 };
+        changed.choiceFirstRaw = 79;
+        changed.choiceLastRaw = -83;
+        native.write_i16_at(0x30U + 0x14U, 13);
+        native.write_i16_at(0x30U + 0x16U, -15);
+        native.write_i16_at(0x30U + 0x34U, -3);
+        native.write_i16_at(0x30U + 0x36U, 0);
+        native.write_i16_at(0x30U + 0x15cU, 71);
+        native.write_i16_at(0x30U + 0x15eU, -73);
+        native.write_i16_at(0x30U + 0x160U, 79);
+        native.write_i16_at(0x30U + 0x162U, -83);
+        const auto editedOutput = StdDocumentWriter::write(edited,
+            { platformFor(endian), StdCompression::None });
+        ASSERT_TRUE(editedOutput.ok());
+        EXPECT_EQ(editedOutput.bytes, bytes); // only the named native spans changed
+        const auto json = StdJsonExporter{}.toJson(edited);
+        EXPECT_NE(json.find("\"sparcDelayTicks\":13"), std::string::npos);
+        EXPECT_NE(json.find("\"effectLifetimeTicks\":-15"), std::string::npos);
+        EXPECT_NE(json.find("\"choiceLastRaw\":-83"), std::string::npos);
+        EXPECT_EQ(json.find("\"behaviorFlags\""), std::string::npos);
+        EXPECT_EQ(json.find("\"raw1c\""), std::string::npos);
+    }
+}
+
 TEST(SpiceStdDocumentWriter, SparcIsEditableRelocatableAndCrossEndianWithoutReceipt) {
     const auto sourceDocument = sampleTypedDocument(kStdSparcCombinedType);
     const auto source = StdDocumentWriter::write(sourceDocument,
@@ -1009,7 +1100,7 @@ TEST(SpiceStdJsonExporter, SeparatesReceiptFromSemanticDocument) {
     ASSERT_TRUE(imported.ok());
     const auto json = StdJsonExporter{}.toJson(imported);
     EXPECT_NE(json.find("\"schema\": \"spice_std_json_export\""), std::string::npos);
-    EXPECT_NE(json.find("\"schemaVersion\": 5"), std::string::npos);
+    EXPECT_NE(json.find("\"schemaVersion\": 6"), std::string::npos);
     EXPECT_EQ(json.find("spice_std_document_v5"), std::string::npos);
     EXPECT_NE(json.find("\"receipt\""), std::string::npos);
     EXPECT_NE(json.find("\"document\""), std::string::npos);
@@ -1019,10 +1110,10 @@ TEST(SpiceStdJsonExporter, SeparatesReceiptFromSemanticDocument) {
     EXPECT_EQ(json.find("sourceBoundPayloads"), std::string::npos);
 }
 
-TEST(SpiceStdJsonExporter, EmitsStructuredModelAndLightPayloadsInExportSchemaV5) {
+TEST(SpiceStdJsonExporter, EmitsStructuredModelAndLightPayloadsInExportSchemaV6) {
     const auto putModelJson = StdJsonExporter{}.toJson(sampleTypedDocument(kStdPutModelCombinedType));
     EXPECT_NE(putModelJson.find("\"schema\": \"spice_std_json_export\""), std::string::npos);
-    EXPECT_NE(putModelJson.find("\"schemaVersion\": 5"), std::string::npos);
+    EXPECT_NE(putModelJson.find("\"schemaVersion\": 6"), std::string::npos);
     EXPECT_EQ(putModelJson.find("spice_std_document_v5"), std::string::npos);
     EXPECT_NE(putModelJson.find("\"kind\":\"putModel\""), std::string::npos);
     EXPECT_NE(putModelJson.find("\"modelTimeline\""), std::string::npos);

@@ -158,17 +158,17 @@ void writePayload(std::ostringstream& out, const StdEntryPayloadContent& content
             out
                 << ",\"setupWord0\":" << value.setupWord0 << ",\"setupWord1\":" << value.setupWord1
                 << ",\"childMetadataRaw\":" << value.childMetadataRaw
-                << ",\"behaviorFlags\":" << value.behaviorFlags
+                << ",\"sparcDelayTicks\":" << value.sparcDelayTicks
+                << ",\"effectLifetimeTicks\":" << value.effectLifetimeTicks
                 << ",\"durationOrActivationCount\":" << value.durationOrActivationCount
                 << ",\"childParameterS16\":" << value.childParameterS16
-                << ",\"raw1c\":" << value.raw1c
-                << ",\"reserved1e\":" << value.reserved1e << ",\"positionOrOffset\":";
+                << ",\"positionOrOffset\":";
             writeFloatArray(out, value.positionOrOffset); out << ",\"velocityVector\":";
             writeFloatArray(out, value.velocityVector);
             out << ",\"spawnCount\":" << value.spawnCount << ",\"randomRange\":" << value.randomRange
-                << ",\"spawnMode\":" << value.spawnMode << ",\"raw3e\":" << value.raw3e
+                << ",\"spawnMode\":" << value.spawnMode << ",\"raw3a\":" << value.raw3a
                 << ",\"childDivisorOrParameter\":"; writeFloat(out, value.childDivisorOrParameter);
-            out << ",\"childParameters44\":"; writeFloatArray(out, value.childParameters44);
+            out << ",\"childParameters40\":"; writeFloatArray(out, value.childParameters40);
             out << ",\"vectorMultipliers\":"; writeFloatArray(out, value.vectorMultipliers);
             out << ",\"secondaryVector\":"; writeFloatArray(out, value.secondaryVector);
             out << ",\"choices\":[";
@@ -177,7 +177,8 @@ void writePayload(std::ostringstream& out, const StdEntryPayloadContent& content
                 out << "{\"value\":" << value.choices[index].value
                     << ",\"weight\":" << value.choices[index].weight << '}';
             }
-            out << "]}";
+            out << "],\"choiceFirstRaw\":" << value.choiceFirstRaw
+                << ",\"choiceLastRaw\":" << value.choiceLastRaw << '}';
         } else if constexpr (std::is_same_v<Payload, StdPutModelPayload>) {
             out << "{\"kind\":\"putModel\","; writePrefix(out, value.common);
             out << ",\"mldResourceId\":" << value.mldResourceId
@@ -482,7 +483,7 @@ void writeDocument(std::ostringstream& out, const StdDocument& document) {
 
 std::string StdJsonExporter::toJson(const StdDocumentImportResult& imported) const {
     std::ostringstream out;
-    out << "{\n  \"schema\": \"spice_std_json_export\",\n  \"schemaVersion\": 5,\n  \"ok\": "
+    out << "{\n  \"schema\": \"spice_std_json_export\",\n  \"schemaVersion\": 6,\n  \"ok\": "
         << (imported.ok() ? "true" : "false")
         << ",\n  \"receipt\": ";
     writeReceipt(out, imported.receipt);
@@ -497,7 +498,7 @@ std::string StdJsonExporter::toJson(const StdDocumentImportResult& imported) con
 
 std::string StdJsonExporter::toJson(const StdDocument& document) const {
     std::ostringstream out;
-    out << "{\n  \"schema\": \"spice_std_json_export\",\n  \"schemaVersion\": 5,\n  \"document\": ";
+    out << "{\n  \"schema\": \"spice_std_json_export\",\n  \"schemaVersion\": 6,\n  \"document\": ";
     writeDocument(out, document);
     out << "\n}\n";
     return out.str();
