@@ -1,6 +1,6 @@
 #include "TriangleMetadataPatcher.h"
+#include "PatchInternals.h"
 
-#include "../../Compression/Aklz.h"
 
 #include <algorithm>
 #include <limits>
@@ -129,9 +129,9 @@ bool MldPatchApplyResult::ok() const noexcept {
     return !hasErrors(diagnostics);
 }
 
-MldPatchPlan planTriangleSelectorPatches(
+MldPatchPlan detail::planTriangleWords(
     const model::MldFile& file,
-    const std::span<const TriangleSelectorEdit> edits) {
+    const std::span<const TriangleSelectorEdit> edits, const bool retainNoOps) {
     MldPatchPlan result{};
     result.endian = file.endian;
     result.sourceWasCompressedAklz = file.sourceWasCompressedAklz;
@@ -222,9 +222,6 @@ MldPatchPlan planTriangleSelectorPatches(
                 diagnosticOffset(resolved->flagSourceOffset));
             continue;
         }
-        if (replacementWord == resolved->rawFaceWord) {
-            continue;
-        }
 
         MldBytePatch patch{
             .decodedPayloadOffset = resolved->flagSourceOffset,
@@ -243,9 +240,15 @@ MldPatchPlan planTriangleSelectorPatches(
     result.patches.reserve(patchesByOffset.size());
     for (auto& [offset, patch] : patchesByOffset) {
         (void)offset;
-        result.patches.push_back(std::move(patch));
+        if (retainNoOps || patch.expectedBytes != patch.replacementBytes)
+            result.patches.push_back(std::move(patch));
     }
     return result;
+}
+
+MldPatchPlan planTriangleSelectorPatches(
+    const model::MldFile& file, const std::span<const TriangleSelectorEdit> edits) {
+    return detail::planTriangleWords(file, edits, false);
 }
 
 MldPatchPlan planDreamcastTriangleSelectorPatches(
@@ -260,111 +263,33 @@ MldPatchPlan planDreamcastTriangleSelectorPatches(
     return result;
 }
 
-MldPatchApplyResult applyMldPatchPlan(
-    const std::span<std::uint8_t> bytes,
-    const MldPatchPlan& plan) {
-    MldPatchApplyResult result{};
+namespace {
+std::vector<detail::ByteWrite> byteWrites(const MldPatchPlan& plan) {
+    std::vector<detail::ByteWrite> writes;
+    for (const auto& patch : plan.patches)
+        writes.push_back({patch.decodedPayloadOffset,
+            {patch.expectedBytes.begin(), patch.expectedBytes.end()},
+            {patch.replacementBytes.begin(), patch.replacementBytes.end()}, "triangle"});
+    return writes;
+}
+}
+
+MldPatchApplyResult applyMldPatchPlan(std::span<std::uint8_t> bytes, const MldPatchPlan& plan) {
     if (!plan.ok()) {
+        MldPatchApplyResult result;
         addError(result.diagnostics, "Cannot apply an invalid MLD patch plan.");
         return result;
     }
-
-    std::vector<const MldBytePatch*> ordered{};
-    ordered.reserve(plan.patches.size());
-    for (const auto& patch : plan.patches) {
-        ordered.push_back(&patch);
-    }
-    std::sort(ordered.begin(), ordered.end(), [](const auto* lhs, const auto* rhs) {
-        return lhs->decodedPayloadOffset < rhs->decodedPayloadOffset;
-    });
-
-    std::optional<std::size_t> previousEnd{};
-    for (const auto* patch : ordered) {
-        if (patch->decodedPayloadOffset > bytes.size() ||
-            patch->expectedBytes.size() > bytes.size() - patch->decodedPayloadOffset) {
-            addError(result.diagnostics, "An MLD byte patch is out of bounds.",
-                diagnosticOffset(patch->decodedPayloadOffset));
-            continue;
-        }
-        if (previousEnd.has_value() && patch->decodedPayloadOffset < *previousEnd) {
-            addError(result.diagnostics, "MLD byte patches overlap.", diagnosticOffset(patch->decodedPayloadOffset));
-            continue;
-        }
-        previousEnd = patch->decodedPayloadOffset + patch->expectedBytes.size();
-        if (!bytesMatch(bytes, patch->decodedPayloadOffset, patch->expectedBytes)) {
-            addError(result.diagnostics, "The MLD bytes no longer match a patch's expected value.",
-                diagnosticOffset(patch->decodedPayloadOffset));
-        }
-    }
-    if (!result.ok()) {
-        return result;
-    }
-
-    for (const auto* patch : ordered) {
-        bytes[patch->decodedPayloadOffset] = patch->replacementBytes[0];
-        bytes[patch->decodedPayloadOffset + 1U] = patch->replacementBytes[1];
-    }
-    result.appliedPatchCount = ordered.size();
-    return result;
+    return detail::applyWrites(bytes, byteWrites(plan));
 }
 
-MldPatchApplyResult materializeMldPatchPlan(
-    const std::span<const std::uint8_t> sourceBytes,
-    const MldPatchPlan& plan) {
-    MldPatchApplyResult result{};
+MldPatchApplyResult materializeMldPatchPlan(std::span<const std::uint8_t> sourceBytes, const MldPatchPlan& plan) {
     if (!plan.ok()) {
+        MldPatchApplyResult result;
         addError(result.diagnostics, "Cannot materialize an invalid MLD patch plan.");
         return result;
     }
-    if (plan.patches.empty()) {
-        result.bytes.assign(sourceBytes.begin(), sourceBytes.end());
-        return result;
-    }
-
-    std::vector<std::uint8_t> decoded{};
-    if (plan.sourceWasCompressedAklz) {
-        if (!spice::compression::aklz::isAklz(sourceBytes)) {
-            addError(result.diagnostics, "The patch plan expects an AKLZ-wrapped source file.");
-            return result;
-        }
-        auto decompressed = spice::compression::aklz::decompress(sourceBytes);
-        if (!decompressed.ok()) {
-            addError(result.diagnostics, "AKLZ decompression failed while materializing the patch plan.");
-            return result;
-        }
-        decoded = std::move(decompressed.bytes);
-    } else {
-        if (spice::compression::aklz::isAklz(sourceBytes)) {
-            addError(result.diagnostics, "The patch plan expects an uncompressed MLD source file.");
-            return result;
-        }
-        decoded.assign(sourceBytes.begin(), sourceBytes.end());
-    }
-
-    const auto applied = applyMldPatchPlan(decoded, plan);
-    result.appliedPatchCount = applied.appliedPatchCount;
-    result.diagnostics = applied.diagnostics;
-    if (!result.ok()) {
-        return result;
-    }
-
-    if (!plan.sourceWasCompressedAklz) {
-        result.bytes = std::move(decoded);
-        return result;
-    }
-
-    auto compressed = spice::compression::aklz::compress(decoded);
-    if (!compressed.ok()) {
-        addError(result.diagnostics, "AKLZ compression failed while materializing the patch plan.");
-        return result;
-    }
-    auto verified = spice::compression::aklz::decompress(compressed.bytes);
-    if (!verified.ok() || verified.bytes != decoded) {
-        addError(result.diagnostics, "AKLZ patch output failed decoded-payload verification.");
-        return result;
-    }
-    result.bytes = std::move(compressed.bytes);
-    return result;
+    return detail::materializeWrites(sourceBytes, plan.sourceWasCompressedAklz, byteWrites(plan));
 }
 
 } // namespace spice::mld::patching

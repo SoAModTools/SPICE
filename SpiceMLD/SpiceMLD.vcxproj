@@ -126,6 +126,8 @@
     <ClInclude Include="Model\Types.h" />
     <ClInclude Include="Model\U32List.h" />
     <ClInclude Include="Model\WorldModel.h" />
+    <ClInclude Include="Patching\EncounterPatcher.h" />
+    <ClInclude Include="Patching\PatchInternals.h" />
     <ClInclude Include="Patching\DreamcastTrianglePatcher.h" />
     <ClInclude Include="Patching\TriangleMetadataPatcher.h" />
     <ClInclude Include="Parsing\EntryHandlers.h" />
@@ -161,6 +163,8 @@
     <ClCompile Include="Export\MldFileWriter.cpp" />
     <ClCompile Include="Export\MldEntryListJsonExporter.cpp" />
     <ClCompile Include="Model\MldGroundEditing.cpp" />
+    <ClCompile Include="Patching\EncounterPatcher.cpp" />
+    <ClCompile Include="Patching\PatchInternals.cpp" />
     <ClCompile Include="Patching\DreamcastTrianglePatcher.cpp" />
     <ClCompile Include="SpiceMLD.cpp" />
   </ItemGroup>

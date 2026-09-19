@@ -1,4 +1,6 @@
 #include "../SpiceMLD/SpiceMLD.h"
+#include "../SpiceMLD/Internal/MldSha256.h"
+#include "../SpiceMLD/Patching/PatchInternals.h"
 #include "../SpiceMLD/Model/MldGroundEditing.h"
 #include "../SpiceMLD/Model/TriangleMetadata.h"
 #include "../SpiceMLD/Patching/TriangleMetadataPatcher.h"
@@ -742,4 +744,301 @@ TEST(MldPatching, RejectsStaleProvenanceAfterSemanticModelEdits) {
     };
     EXPECT_FALSE(spice::mld::patching::planDreamcastTriangleSelectorPatches(
         file, std::span{ &edit, 1U }).ok());
+}
+
+
+namespace {
+using namespace spice::mld::patching;
+constexpr std::size_t kParameterPointer = 0x200;
+constexpr std::size_t kParameterEntry = 0x20 + 0x68;
+
+std::vector<std::uint8_t> encounterSource(Endian endian, bool compressed = false) {
+    auto bytes = makeMixedFile(endian == Endian::Big ? spice::mld::model::TargetPlatform::GameCube
+        : spice::mld::model::TargetPlatform::Dreamcast, endian, false).sourceBytes;
+    std::fill(bytes.begin(), bytes.begin() + 0x100, 0);
+    writeU32(bytes, 0, 2, endian);
+    writeU32(bytes, 4, 0x20, endian);
+    writeU32(bytes, 8, kParameterPointer, endian);
+    writeU32(bytes, 12, kGrndAddress, endian);
+    writeU32(bytes, 16, static_cast<std::uint32_t>(bytes.size()), endian);
+    for (const auto offset : {std::size_t{0x20}, kParameterEntry})
+        for (std::size_t scale = 0x5c; scale < 0x68; scale += 4) writeF32(bytes, offset + scale, 1, endian);
+    const std::string groundName = "ground", parameterName = "testControl";
+    std::copy(groundName.begin(), groundName.end(), bytes.begin() + 0x20 + 0x24);
+    std::copy(parameterName.begin(), parameterName.end(), bytes.begin() + kParameterEntry + 0x24);
+    writeU32(bytes, 0x20, 11, endian);
+    writeU32(bytes, 0x20 + 0x18, 0x220, endian);
+    writeU32(bytes, 0x220, 2, endian);
+    writeU32(bytes, 0x224, kGrndAddress, endian);
+    writeU32(bytes, 0x228, kGobjAddress, endian);
+    writeU32(bytes, kParameterEntry, 77, endian);
+    writeU32(bytes, kParameterEntry + 4, 123, endian);
+    writeU32(bytes, kParameterEntry + 0x10, kParameterPointer, endian);
+    writeU32(bytes, kParameterPointer, 3, endian);
+    writeU32(bytes, kParameterPointer + 4, 0x11223344, endian);
+    writeU32(bytes, kParameterPointer + 8, 0, endian);
+    writeU32(bytes, kParameterPointer + 12, 0xffffffff, endian);
+    return compressed ? spice::compression::aklz::compress(bytes).bytes : bytes;
+}
+MldFile encounterFile(Endian endian = Endian::Little, bool compressed = false) {
+    return spice::mld::parsing::MldParser{}.parseBytes(encounterSource(endian, compressed));
+}
+MldEncounterPatchRequest encounterRequest(const MldFile& file) {
+    return {.sourceSha256 = spice::mld::detail::sha256(file.sourceBytes), .sourceSize = file.sourceBytes.size()};
+}
+MldFunctionParameterEdit parameterEdit(std::size_t index = 0) {
+    constexpr std::array<std::uint32_t, 3> values{0x11223344, 0, 0xffffffff};
+    return {.entryTableIndex = 1, .expectedEntryId = 77, .expectedTableId = 123,
+        .expectedFunctionName = "testControl", .expectedParameterCount = 3, .parameterIndex = index,
+        .expectedValue = values[index], .replacementValue = 0x89abcdef};
+}
+std::string encounterDiagnostics(const MldEncounterPatchPlan& plan) {
+    std::string text;
+    for (const auto& d : plan.diagnostics()) text += d.message + "\n";
+    return text;
+}
+void expectRejected(const MldFile& file, const MldEncounterPatchRequest& request) {
+    const auto plan = planEncounterPatches(file, request);
+    EXPECT_FALSE(plan.ok());
+    EXPECT_FALSE(plan.diagnostics().empty());
+    const auto result = materializeEncounterPatchPlan(file.sourceBytes, plan);
+    EXPECT_FALSE(result.ok());
+    EXPECT_TRUE(result.bytes.empty());
+    EXPECT_EQ(result.appliedPatchCount, 0);
+}
+}
+
+TEST(MldEncounterPatching, MaterializesAllEditCombinationsAndPreservesEveryOtherByte) {
+    for (int encoding = 0; encoding < 3; ++encoding) {
+        const auto endian = encoding == 0 ? Endian::Little : Endian::Big;
+        const bool compressed = encoding == 2;
+        const auto file = encounterFile(endian, compressed);
+        ASSERT_EQ(file.parseStatus, spice::mld::model::MldParseStatus::Complete);
+        for (int mode = 0; mode < 3; ++mode) {
+            SCOPED_TRACE(std::to_string(encoding) + "/" + std::to_string(mode));
+            auto request = encounterRequest(file);
+            auto expected = file.decodedBytes;
+            if (mode != 0) {
+                request.parameterEdits = {parameterEdit(0), parameterEdit(2)};
+                writeU32(expected, kParameterPointer + 4, 0x89abcdef, endian);
+                writeU32(expected, kParameterPointer + 12, 0x89abcdef, endian);
+            }
+            if (mode != 1) {
+                request.triangleEdits = {{TriangleResourceKind::Grnd, kGrndAddress, {}, 0, 7},
+                    {TriangleResourceKind::Gobj, kGobjAddress, 0, 0, 9}};
+                writeU16(expected, kGrndAddress + kGrndStreamOffset + 10, 0x8046, endian);
+                writeU16(expected, kGobjAddress + kGobjPolyOffset + 10, 0x805a, endian);
+            }
+            const auto plan = planEncounterPatches(file, request);
+            ASSERT_TRUE(plan.ok()) << encounterDiagnostics(plan);
+            const auto result = materializeEncounterPatchPlan(file.sourceBytes, plan);
+            ASSERT_TRUE(result.ok());
+            EXPECT_EQ(result.appliedPatchCount, mode == 2 ? 4 : 2);
+            EXPECT_EQ(spice::compression::aklz::isAklz(result.bytes), compressed);
+            const auto decoded = compressed ? spice::compression::aklz::decompress(result.bytes).bytes : result.bytes;
+            EXPECT_EQ(decoded, expected);
+            EXPECT_EQ(file.sourceBytes, encounterSource(endian, compressed));
+        }
+    }
+}
+
+TEST(MldEncounterPatching, RejectsSourceFingerprintDriftIncludingNoOpsAndEmptyPlans) {
+    for (const bool compressed : {false, true}) {
+        const auto file = encounterFile(Endian::Big, compressed);
+        for (int mode = 0; mode < 3; ++mode) {
+            auto request = encounterRequest(file);
+            if (mode) request.parameterEdits.push_back(parameterEdit());
+            if (mode == 1) request.parameterEdits[0].replacementValue = request.parameterEdits[0].expectedValue;
+            const auto plan = planEncounterPatches(file, request);
+            ASSERT_TRUE(plan.ok()) << encounterDiagnostics(plan);
+            const auto unchanged = materializeEncounterPatchPlan(file.sourceBytes, plan);
+            ASSERT_TRUE(unchanged.ok());
+            if (mode != 2) EXPECT_EQ(unchanged.bytes, file.sourceBytes);
+            auto stale = file.sourceBytes;
+            stale.back() ^= 1;
+            const auto result = materializeEncounterPatchPlan(stale, plan);
+            EXPECT_FALSE(result.ok()); EXPECT_TRUE(result.bytes.empty()); EXPECT_EQ(result.appliedPatchCount, 0);
+            auto wrongHash = request; wrongHash.sourceSha256[0] ^= 1; expectRejected(file, wrongHash);
+            auto wrongSize = request; ++wrongSize.sourceSize; expectRejected(file, wrongSize);
+        }
+    }
+    EXPECT_FALSE(MldEncounterPatchPlan{}.ok());
+    EXPECT_FALSE(materializeEncounterPatchPlan({}, MldEncounterPatchPlan{}).ok());
+}
+
+TEST(MldEncounterPatching, RejectsInvalidParameterIdentitiesCountsIndicesAndValuesAtomically) {
+    const auto file = encounterFile();
+    auto good = encounterRequest(file);
+    good.triangleEdits.push_back({TriangleResourceKind::Grnd, kGrndAddress, {}, 0, 7});
+    good.parameterEdits.push_back(parameterEdit());
+    for (int fault = 0; fault < 7; ++fault) {
+        auto request = good; auto& e = request.parameterEdits[0];
+        switch (fault) {
+        case 0: e.entryTableIndex = 99; break;
+        case 1: ++e.expectedEntryId; break;
+        case 2: ++e.expectedTableId; break;
+        case 3: e.expectedFunctionName = "other"; break;
+        case 4: ++e.expectedParameterCount; break;
+        case 5: e.parameterIndex = 3; break;
+        case 6: ++e.expectedValue; break;
+        }
+        expectRejected(file, request);
+    }
+}
+
+TEST(MldEncounterPatching, DetectsDuplicateConflictsBeforeDiscardingNoOps) {
+    const auto file = encounterFile();
+    auto request = encounterRequest(file);
+    request.parameterEdits = {parameterEdit(), parameterEdit()};
+    request.triangleEdits = {{TriangleResourceKind::Grnd, kGrndAddress, {}, 0, 7},
+        {TriangleResourceKind::Grnd, kGrndAddress, {}, 0, 7}};
+    auto plan = planEncounterPatches(file, request);
+    ASSERT_TRUE(plan.ok()) << encounterDiagnostics(plan);
+    EXPECT_EQ(materializeEncounterPatchPlan(file.sourceBytes, plan).appliedPatchCount, 2);
+    auto bad = request; bad.parameterEdits[1].replacementValue = bad.parameterEdits[1].expectedValue;
+    expectRejected(file, bad);
+    bad = request; bad.triangleEdits[1].selectorDigit = 1; expectRejected(file, bad);
+    bad = request; ++bad.parameterEdits[1].replacementValue; expectRejected(file, bad);
+    bad = request; bad.triangleEdits[1].selectorDigit = 8; expectRejected(file, bad);
+}
+
+TEST(MldEncounterPatching, RejectsEditedParserStateAndRedirectedTriangleProvenance) {
+    for (int fault = 0; fault < 8; ++fault) {
+        auto file = encounterFile();
+        auto request = encounterRequest(file);
+        request.parameterEdits.push_back(parameterEdit());
+        request.triangleEdits.push_back({TriangleResourceKind::Grnd, kGrndAddress, {}, 0, 7});
+        switch (fault) {
+        case 0: file.decodedBytes.back() ^= 1; break;
+        case 1: ++file.header.indexTableOffset; break;
+        case 2: ++file.entries[1].functionParametersPointer; break;
+        case 3: ++file.entries[1].entry.functionParameters->values[0]; break;
+        case 4: ++file.entries[1].entry.functionParameters->declaredCount.value(); break;
+        case 5: file.entries[1].rawBytes[0] ^= 1; break;
+        case 6: file.groundResources.at(kGrndAddress).grnd->mesh.vertices[0].position.x += 1; break;
+        case 7: file.groundResources.at(kGrndAddress).grnd->triangleSources[0].flagSourceOffsets[2] -= 2; break;
+        }
+        expectRejected(file, request);
+    }
+}
+
+TEST(MldEncounterPatching, ResolvesNativeTableIndexAfterParsedVectorReordering) {
+    auto file = encounterFile();
+    auto request = encounterRequest(file); request.parameterEdits.push_back(parameterEdit());
+    std::reverse(file.entries.begin(), file.entries.end());
+    EXPECT_TRUE(planEncounterPatches(file, request).ok());
+}
+
+TEST(MldEncounterPatching, RejectsSharedAndPartiallyOverlappingListsIncludingOtherRoles) {
+    for (const std::size_t field : {0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c}) {
+        for (const std::size_t owner : {std::size_t{0x20}, kParameterEntry}) {
+            if (owner == kParameterEntry && field == 0x10) continue;
+            for (const std::size_t pointer : {kParameterPointer, kParameterPointer + 8}) {
+                auto source = encounterSource(Endian::Little);
+                // The second word is zero, so a pointer into it is a valid empty list overlapping the target.
+                writeU32(source, owner + field, static_cast<std::uint32_t>(pointer));
+                const auto file = spice::mld::parsing::MldParser{}.parseBytes(source);
+                auto request = encounterRequest(file); request.parameterEdits.push_back(parameterEdit());
+                expectRejected(file, request);
+            }
+        }
+    }
+}
+
+TEST(MldEncounterPatching, RejectsAbsentTruncatedAndOutOfBoundsParameterLists) {
+    for (const std::uint32_t pointer : {0U, 0xfffffff0U, 0x201U}) {
+        auto source = encounterSource(Endian::Little);
+        writeU32(source, kParameterEntry + 0x10, pointer);
+        const auto file = spice::mld::parsing::MldParser{}.parseBytes(source);
+        // Malformed documents need not import successfully; fingerprint the actual source directly.
+        auto request = encounterRequest(encounterFile());
+        request.sourceSha256 = spice::mld::detail::sha256(source);
+        request.sourceSize = source.size(); request.parameterEdits.push_back(parameterEdit());
+        expectRejected(file, request);
+    }
+}
+
+TEST(MldEncounterPatching, RejectsParameterListsInsideHeaderEntryAndGroundStorage) {
+    for (const std::uint32_t pointer : {0U, 4U, static_cast<std::uint32_t>(kParameterEntry),
+        static_cast<std::uint32_t>(kGrndAddress + 0xe0 - 8)}) {
+        if (pointer == 0) continue;
+        auto source = encounterSource(Endian::Little);
+        writeU32(source, kParameterEntry + 0x10, pointer);
+        if (pointer >= kGrndAddress) { writeU32(source, pointer, 1); writeU32(source, pointer + 4, 7); }
+        const auto file = spice::mld::parsing::MldParser{}.parseBytes(source);
+        auto request = encounterRequest(file);
+        auto edit = parameterEdit();
+        if (file.entries[1].entry.functionParameters->valid && !file.entries[1].entry.functionParameters->values.empty()) {
+            edit.expectedParameterCount = *file.entries[1].entry.functionParameters->declaredCount;
+            edit.expectedValue = file.entries[1].entry.functionParameters->values[0];
+        }
+        request.parameterEdits.push_back(edit);
+        expectRejected(file, request);
+    }
+}
+
+TEST(MldEncounterPatching, AcceptsTheExistingImportReceiptFingerprint) {
+    for (int encoding = 0; encoding < 3; ++encoding) {
+        const auto file = encounterFile(encoding == 0 ? Endian::Little : Endian::Big, encoding == 2);
+        const auto imported = spice::mld::MldDocumentImporter::importBytes(file.sourceBytes);
+        std::string importDiagnostics;
+        for (const auto& d : imported.diagnostics) importDiagnostics += d.message + "\n";
+        ASSERT_TRUE(imported.ok()) << importDiagnostics;
+        auto request = encounterRequest(file);
+        EXPECT_EQ(request.sourceSha256, imported.receipt.sourceSha256);
+        EXPECT_EQ(request.sourceSize, imported.receipt.sourceSize);
+        request.sourceSha256 = imported.receipt.sourceSha256;
+        request.sourceSize = imported.receipt.sourceSize;
+        request.parameterEdits.push_back(parameterEdit());
+        const auto plan = planEncounterPatches(file, request);
+        ASSERT_TRUE(plan.ok()) << encounterDiagnostics(plan);
+        EXPECT_TRUE(materializeEncounterPatchPlan(file.sourceBytes, plan).ok());
+    }
+}
+
+
+TEST(MldEncounterPatching, RejectsTruncatedCountsValuesAndEnclosingLists) {
+    for (int fault = 0; fault < 4; ++fault) {
+        auto source = encounterSource(Endian::Little);
+        switch (fault) {
+        case 0: writeU32(source, kParameterEntry + 0x10, static_cast<std::uint32_t>(source.size() - 2)); break;
+        case 1: writeU32(source, kParameterPointer, 65537); break;
+        case 2: writeU32(source, kParameterPointer, static_cast<std::uint32_t>(source.size() / 4)); break;
+        case 3:
+            writeU32(source, 0x20 + 0x0c, 0x1f0);
+            writeU32(source, 0x1f0, 10);
+            break;
+        }
+        const auto file = spice::mld::parsing::MldParser{}.parseBytes(source);
+        auto request = encounterRequest(file); request.parameterEdits.push_back(parameterEdit());
+        expectRejected(file, request);
+    }
+}
+
+TEST(MldEncounterPatching, ValidatedPlanOwnsItsWritesAndCanBeReused) {
+    auto file = encounterFile();
+    const auto source = file.sourceBytes;
+    auto request = encounterRequest(file); request.parameterEdits.push_back(parameterEdit());
+    const auto plan = planEncounterPatches(file, request);
+    ASSERT_TRUE(plan.ok());
+    auto expected = source;
+    writeU32(expected, kParameterPointer + 4, 0x89abcdef);
+    request.parameterEdits[0].replacementValue = 0;
+    request.sourceSha256.fill(0);
+    file.sourceBytes.clear(); file.decodedBytes.clear(); file.entries.clear();
+    EXPECT_EQ(materializeEncounterPatchPlan(source, plan).bytes, expected);
+    EXPECT_EQ(materializeEncounterPatchPlan(source, plan).bytes, expected);
+}
+
+TEST(MldEncounterPatching, MixedWidthWriterRejectsPartialOverlapAndLateMismatchAtomically) {
+    using spice::mld::patching::detail::ByteWrite;
+    const std::vector<std::uint8_t> original(12, 0);
+    for (const std::size_t offset : {std::size_t{3}, std::size_t{7}}) {
+        auto bytes = original;
+        std::vector<ByteWrite> writes{{2, {0, 0, 0, 0}, {1, 2, 3, 4}, "parameter[0]"},
+            {offset, {0, 1}, {5, 6}, "triangle[0]"}};
+        const auto result = spice::mld::patching::detail::applyWrites(bytes, writes);
+        EXPECT_FALSE(result.ok()); EXPECT_EQ(result.appliedPatchCount, 0);
+        EXPECT_EQ(bytes, original);
+    }
 }

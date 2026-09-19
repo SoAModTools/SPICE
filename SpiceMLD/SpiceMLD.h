@@ -2,6 +2,7 @@
 
 #include "MldBlenderIrProjector.h"
 #include "MldDocument.h"
+#include "Patching/EncounterPatcher.h"
 #include "MldDocumentImporter.h"
 #include "MldMotionFrameProjector.h"
 #include "MldMotionListProjection.h"

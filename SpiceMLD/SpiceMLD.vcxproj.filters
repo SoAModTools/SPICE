@@ -89,6 +89,8 @@
     <ClInclude Include="Model\WorldModel.h">
       <Filter>Model</Filter>
     </ClInclude>
+    <ClInclude Include="Patching\EncounterPatcher.h" />
+    <ClInclude Include="Patching\PatchInternals.h" />
     <ClInclude Include="Patching\DreamcastTrianglePatcher.h">
       <Filter>Patching</Filter>
     </ClInclude>
@@ -147,6 +149,8 @@
     <ClCompile Include="Model\MldGroundEditing.cpp">
       <Filter>Model</Filter>
     </ClCompile>
+    <ClCompile Include="Patching\EncounterPatcher.cpp" />
+    <ClCompile Include="Patching\PatchInternals.cpp" />
     <ClCompile Include="Patching\DreamcastTrianglePatcher.cpp">
       <Filter>Patching</Filter>
     </ClCompile>
