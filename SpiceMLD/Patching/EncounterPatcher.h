@@ -40,6 +40,7 @@ private:
     friend MldPatchApplyResult materializeEncounterPatchPlan(std::span<const std::uint8_t>, const MldEncounterPatchPlan&);
 };
 
+// Requires the unchanged SPICE parse of the fingerprinted source; keep edits separately.
 [[nodiscard]] MldEncounterPatchPlan planEncounterPatches(
     const model::MldFile& originalParsedMld, const MldEncounterPatchRequest& request);
 [[nodiscard]] MldPatchApplyResult materializeEncounterPatchPlan(

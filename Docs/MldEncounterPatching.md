@@ -2,11 +2,11 @@
 
 `spice::mld::patching::MldEncounterPatchPlan` combines existing GRND/GOBJ triangle selector edits with existing entry function-parameter word edits. Include `SpiceMLD/SpiceMLD.h` or `SpiceMLD/Patching/EncounterPatcher.h`.
 
-This is a native byte-patching path. Planning rechecks native locations against the original source using `MldParser`; neither planning nor materialization invokes document reconstruction or a document writer. No file is installed by these APIs.
+This is a native byte-patching path. Planning uses the supplied original parse to resolve native locations; neither planning nor materialization reparses input or output, reconstructs documents, or compares whole models. No file is installed by these APIs.
 
 ## Request and source identity
 
-Keep the original parsed `model::MldFile`, with its retained source and decoded bytes, alongside the imported document. Copy `MldImportReceipt.sourceSha256` and `sourceSize` into `MldEncounterPatchRequest`. These identify the exact encoded input, including compression; they are not a hash of the decoded document. An independently recompressed copy is a different source and must be imported again before editing.
+**Input contract:** supply the unchanged result of SPICE parsing the fingerprinted source. Keep that original `model::MldFile`, including its retained source and decoded bytes, alongside the imported document, and store edits separately. The patcher validates usable target structure and requested writes; it does not audit how a caller maintained its document. Copy `MldImportReceipt.sourceSha256` and `sourceSize` into `MldEncounterPatchRequest`. These identify the exact encoded input, including compression; they are not a hash of the decoded document. An independently recompressed copy is a different source and must be imported again before editing.
 
 `triangleEdits` uses the existing `TriangleSelectorEdit` identity: resource kind, source resource address, optional GOBJ node index, and triangle index. Selector digits remain 0–9; the caller decides which selectors have encounter meaning.
 
@@ -48,10 +48,10 @@ SKEWER owns `fldEfcontrol` interpretation and lookup-byte packing. Combine all c
 
 ## Validation and preservation
 
-The planner rejects stale fingerprints, inconsistent parsed provenance, invalid identities/counts/indices/pointers, and expected-value mismatches. Parameter storage must be exclusive: shared lists, partial overlaps with other counted lists, and overlaps with unrelated resource storage are rejected. An unresolved referenced allocation also prevents parameter patching because its preservation cannot be established safely. Lists are never merged, inserted, removed, resized, or relocated.
+The planner rejects stale fingerprints, invalid identities/counts/indices/pointers, and expected-value mismatches. Ownership is checked once per affected parameter list and reused across its word edits. Parameter storage must be exclusive: shared lists, partial overlaps with other counted lists, and overlaps with unrelated resource storage are rejected. An unresolved referenced allocation also prevents parameter patching because its preservation cannot be established safely. Lists are never merged, inserted, removed, resized, or relocated.
 
 Both edit kinds participate in one conflict check. Identical writes are deduplicated; conflicting duplicates and partial overlaps are errors. No-op requests participate in validation and conflict detection before being omitted. Diagnostics identify the requested edit and native offset when available. A default-constructed or failed plan cannot be applied, and callers cannot change a plan's resolved writes.
 
-Materialization rechecks the encoded source fingerprint, including for empty plans. All writes are validated before a private decoded buffer is changed. Only the requested parameter words and selector bits change: triangle winding, other metadata, geometry, collision routing, models, textures, and other decoded bytes remain intact. The output preserves platform byte order and wrapper kind. AKLZ is compressed once and its decoded output is verified. A no-op returns the exact original encoded bytes without recompression.
+Materialization rechecks the encoded source fingerprint, including for empty plans. All writes are validated before a private decoded buffer is changed. Only the requested parameter words and selector bits change: triangle winding, other metadata, geometry, collision routing, models, textures, and other decoded bytes remain intact. The output preserves platform byte order and wrapper kind. AKLZ is compressed once. Full decoded-output comparisons, reparsing, and compression round-trip verification are performed in tests rather than during exports. A no-op returns the exact original encoded bytes without recompression.
 
-Success returns complete bytes and `appliedPatchCount`, counting distinct changed native words after deduplication. Failure returns diagnostics, no output bytes, and a count of zero. In-place refers to decoded layout and list allocation; recompression may change encoded file size. Existing triangle-only APIs remain available.
+Success returns complete bytes and `appliedPatchCount`, counting distinct changed native words after deduplication. Failure returns diagnostics, no output bytes, and a count of zero. In-place refers to decoded layout and list allocation; recompression may change encoded file size. Existing triangle-only APIs remain available and use the same unchanged-original-parse contract.

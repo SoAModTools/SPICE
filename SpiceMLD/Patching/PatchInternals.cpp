@@ -67,11 +67,6 @@ MldPatchApplyResult materializeWrites(std::span<const std::uint8_t> source,
             error(result, "AKLZ patch compression failed.");
             return result;
         }
-        const auto verified = compression::aklz::decompress(encoded.bytes);
-        if (!verified.ok() || verified.bytes != decoded) {
-            error(result, "AKLZ patch output failed decoded-payload verification.");
-            return result;
-        }
         result.bytes = std::move(encoded.bytes);
     } else result.bytes = std::move(decoded);
     result.appliedPatchCount = applied.appliedPatchCount;

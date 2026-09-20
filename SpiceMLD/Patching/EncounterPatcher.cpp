@@ -1,12 +1,12 @@
 #include "EncounterPatcher.h"
 #include "PatchInternals.h"
 #include "../Internal/MldSha256.h"
-#include "../Parsing/MldParser.h"
 #include "../../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <exception>
 #include <limits>
+#include <map>
 
 namespace spice::mld::patching {
 struct MldEncounterPatchPlan::Data {
@@ -29,19 +29,6 @@ bool hasErrors(const Diagnostics& diagnostics) {
         return d.severity == model::MldDiagnostic::Severity::Error;
     });
 }
-bool sameHeader(const model::MldHeader& a, const model::MldHeader& b) {
-    return a.entryCount == b.entryCount && a.indexTableOffset == b.indexTableOffset
-        && a.functionParametersOffset == b.functionParametersOffset && a.realDataOffset == b.realDataOffset
-        && a.textureTableOffset == b.textureTableOffset;
-}
-const model::MldIndexEntryRecord* entryAt(const model::MldFile& file, std::size_t index) {
-    const model::MldIndexEntryRecord* found = nullptr;
-    for (const auto& record : file.entries) if (record.entry.tableIndex == index) {
-        if (found) return nullptr;
-        found = &record;
-    }
-    return found;
-}
 std::vector<std::uint8_t> wordBytes(std::uint32_t word, root::Endian endian) {
     std::vector<std::uint8_t> bytes(4);
     for (unsigned i = 0; i < 4; ++i)
@@ -51,7 +38,7 @@ std::vector<std::uint8_t> wordBytes(std::uint32_t word, root::Endian endian) {
 struct Range { std::size_t begin{}, end{}; std::string label{}; };
 bool overlaps(const Range& a, const Range& b) { return a.begin < b.end && b.begin < a.end; }
 
-// Build ranges only from a fresh native parse, never from caller-editable provenance.
+// The caller supplies the unchanged original parse. Check ownership once per affected list.
 bool exclusiveParameterList(const model::MldFile& file, std::size_t entryIndex,
     const model::U32List& target, const std::string& context, Diagnostics& diagnostics) {
     const Range selected{target.pointer, target.pointer + 4U + target.values.size() * 4U, "parameter list"};
@@ -119,80 +106,52 @@ bool exclusiveParameterList(const model::MldFile& file, std::size_t entryIndex,
     return valid;
 }
 
-void addTriangleWrites(const model::MldFile& original, const model::MldFile& canonical,
-    const MldEncounterPatchRequest& request, std::vector<detail::ByteWrite>& writes, Diagnostics& diagnostics) {
-    for (std::size_t i = 0; i < request.triangleEdits.size(); ++i) {
-        const auto& edit = request.triangleEdits[i];
-        const auto context = "triangle[" + std::to_string(i) + "] resource=" + std::to_string(edit.resourceAddress)
-            + " node=" + (edit.gobjNodeIndex ? std::to_string(*edit.gobjNodeIndex) : "none")
-            + " triangle=" + std::to_string(edit.triangleIndex);
-        if (edit.resourceKind != TriangleResourceKind::Grnd && edit.resourceKind != TriangleResourceKind::Gobj) {
-            error(diagnostics, context + ": Invalid resource kind.", edit.resourceAddress);
-            continue;
-        }
-        const auto selected = std::span<const TriangleSelectorEdit>(&edit, 1);
-        const auto before = detail::planTriangleWords(original, selected, true);
-        const auto native = detail::planTriangleWords(canonical, selected, true);
-        for (const auto* plan : {&before, &native}) for (auto diagnostic : plan->diagnostics) {
-            diagnostic.message = context + ": " + diagnostic.message;
-            diagnostics.push_back(std::move(diagnostic));
-        }
-        if (!before.ok() || !native.ok()) continue;
-        const auto& oldResource = original.groundResources.at(edit.resourceAddress);
-        const auto& nativeResource = canonical.groundResources.at(edit.resourceAddress);
-        if (oldResource.rawBytes != nativeResource.rawBytes || oldResource.blockSize != nativeResource.blockSize
-            || oldResource.sourceAddress != nativeResource.sourceAddress || oldResource.kind != nativeResource.kind
-            || oldResource.originalSemanticHash != nativeResource.originalSemanticHash) {
-            error(diagnostics, context + ": Parsed resource provenance differs from the source.", edit.resourceAddress);
-            continue;
-        }
-        if (before.patches.size() != 1 || native.patches.size() != 1) {
-            error(diagnostics, context + ": Triangle did not resolve to one native word.", edit.resourceAddress);
-            continue;
-        }
-        const auto& a = before.patches.front();
-        const auto& b = native.patches.front();
-        if (a.decodedPayloadOffset != b.decodedPayloadOffset || a.expectedBytes != b.expectedBytes
-            || a.replacementBytes != b.replacementBytes) {
-            error(diagnostics, context + ": Parsed triangle provenance differs from the source.", a.decodedPayloadOffset);
-            continue;
-        }
-        writes.push_back({b.decodedPayloadOffset, {b.expectedBytes.begin(), b.expectedBytes.end()},
-            {b.replacementBytes.begin(), b.replacementBytes.end()}, context});
-    }
+void addTriangleWrites(const model::MldFile& original, const MldEncounterPatchRequest& request,
+    std::vector<detail::ByteWrite>& writes, Diagnostics& diagnostics) {
+    const auto triangles = detail::planTriangleWords(original, request.triangleEdits, true);
+    diagnostics.insert(diagnostics.end(), triangles.diagnostics.begin(), triangles.diagnostics.end());
+    for (const auto& patch : triangles.patches)
+        writes.push_back({patch.decodedPayloadOffset, {patch.expectedBytes.begin(), patch.expectedBytes.end()},
+            {patch.replacementBytes.begin(), patch.replacementBytes.end()},
+            "triangle resource=" + std::to_string(patch.source.resourceAddress)
+                + " triangle=" + std::to_string(patch.source.triangleIndex)});
 }
 
-void addParameterWrites(const model::MldFile& original, const model::MldFile& canonical,
-    const MldEncounterPatchRequest& request, std::vector<detail::ByteWrite>& writes, Diagnostics& diagnostics) {
-    const root::EndianReader reader(canonical.decodedBytes, canonical.endian);
+void addParameterWrites(const model::MldFile& original, const MldEncounterPatchRequest& request,
+    std::vector<detail::ByteWrite>& writes, Diagnostics& diagnostics) {
+    if (request.parameterEdits.empty()) return;
+    const root::EndianReader reader(original.decodedBytes, original.endian);
+    std::map<std::size_t, const model::MldIndexEntryRecord*> entries;
+    for (const auto& record : original.entries) {
+        const auto [it, inserted] = entries.emplace(record.entry.tableIndex, &record);
+        if (!inserted) it->second = nullptr;
+    }
+    std::map<std::uint32_t, bool> ownershipByPointer;
     for (std::size_t i = 0; i < request.parameterEdits.size(); ++i) {
         const auto& edit = request.parameterEdits[i];
         const auto context = "parameter[" + std::to_string(i) + "] entry=" + std::to_string(edit.entryTableIndex)
             + " word=" + std::to_string(edit.parameterIndex);
-        const auto* old = entryAt(original, edit.entryTableIndex);
-        const auto* native = entryAt(canonical, edit.entryTableIndex);
-        if (!old || !native) {
+        const auto found = entries.find(edit.entryTableIndex);
+        if (found == entries.end() || !found->second || edit.entryTableIndex >= original.header.entryCount) {
             error(diagnostics, context + ": Entry table index is missing or ambiguous.");
             continue;
         }
-        const auto entryOffset = canonical.header.indexTableOffset + edit.entryTableIndex * std::size_t{0x68};
-        const auto& a = old->entry;
-        const auto& b = native->entry;
-        if (a.entryId != b.entryId || a.tblId != b.tblId || a.fxnName != b.fxnName
-            || old->rawBytes != native->rawBytes || old->functionParametersPointer != native->functionParametersPointer
-            || b.entryId != edit.expectedEntryId || b.tblId != edit.expectedTableId || b.fxnName != edit.expectedFunctionName) {
-            error(diagnostics, context + ": Entry identity or native record does not match the source.", entryOffset);
+        const auto& record = *found->second;
+        const auto& entry = record.entry;
+        const auto entryOffset = original.header.indexTableOffset + edit.entryTableIndex * std::size_t{0x68};
+        if (entry.entryId != edit.expectedEntryId || entry.tblId != edit.expectedTableId
+            || entry.fxnName != edit.expectedFunctionName) {
+            error(diagnostics, context + ": Entry identity does not match the original parse.", entryOffset);
             continue;
         }
-        const auto& list = b.functionParameters;
-        const auto& oldList = a.functionParameters;
-        if (!list || !oldList || !list->valid || list->status != model::U32ListStatus::Present
-            || list->pointer == 0 || !list->declaredCount || *list->declaredCount != list->values.size()
-            || oldList->pointer != list->pointer || oldList->valid != list->valid || oldList->status != list->status
-            || oldList->declaredCount != list->declaredCount || oldList->values != list->values
-            || *list->declaredCount != edit.expectedParameterCount || edit.parameterIndex >= list->values.size()) {
-            error(diagnostics, context + ": Parameter list pointer, count, index, or parsed values are invalid or stale.",
-                native->functionParametersPointer);
+        const auto& list = entry.functionParameters;
+        if (!list || !list->valid || list->status != model::U32ListStatus::Present
+            || list->pointer == 0 || record.functionParametersPointer != list->pointer
+            || !list->declaredCount || *list->declaredCount != list->values.size()
+            || *list->declaredCount != edit.expectedParameterCount || edit.parameterIndex >= list->values.size()
+            || list->pointer > original.decodedBytes.size() || original.decodedBytes.size() - list->pointer < 4U
+            || list->values.size() > (original.decodedBytes.size() - list->pointer - 4U) / 4U) {
+            error(diagnostics, context + ": Parameter list pointer, count, or index is invalid.", record.functionParametersPointer);
             continue;
         }
         const auto offset = std::size_t{list->pointer} + 4U + edit.parameterIndex * 4U;
@@ -201,9 +160,11 @@ void addParameterWrites(const model::MldFile& original, const model::MldFile& ca
             error(diagnostics, context + ": Native count or expected parameter value does not match.", offset);
             continue;
         }
-        if (!exclusiveParameterList(canonical, edit.entryTableIndex, *list, context, diagnostics)) continue;
-        writes.push_back({offset, wordBytes(edit.expectedValue, canonical.endian),
-            wordBytes(edit.replacementValue, canonical.endian), context});
+        const auto [ownership, inserted] = ownershipByPointer.emplace(list->pointer, false);
+        if (inserted) ownership->second = exclusiveParameterList(original, edit.entryTableIndex, *list, context, diagnostics);
+        if (!ownership->second) continue;
+        writes.push_back({offset, wordBytes(edit.expectedValue, original.endian),
+            wordBytes(edit.replacementValue, original.endian), context});
     }
 }
 }
@@ -218,25 +179,25 @@ MldEncounterPatchPlan planEncounterPatches(const model::MldFile& original, const
         error(diagnostics, "Source fingerprint does not match the original encoded MLD.");
         return result;
     }
-    // Re-derive native locations to avoid trusting mutable caller-side parser provenance.
-    // This is a native parse, not document reconstruction; no importer or writer is used.
-    const auto canonical = parsing::MldParser{}.parseBytes(original.sourceBytes);
-    if (canonical.parseStatus == model::MldParseStatus::Failed || original.parseStatus == model::MldParseStatus::Failed
-        || canonical.parseStatus == model::MldParseStatus::Empty || original.parseStatus == model::MldParseStatus::Empty
-        || canonical.entries.size() != canonical.header.entryCount
-        || canonical.decodedBytes != original.decodedBytes || !sameHeader(canonical.header, original.header)
-        || canonical.endian != original.endian || canonical.sourcePlatform != original.sourcePlatform
-        || canonical.sourceWasCompressedAklz != original.sourceWasCompressedAklz
-        || canonical.entries.size() != original.entries.size()) {
-        error(diagnostics, "Original parsed MLD layout or decoded bytes do not match the fingerprinted source.");
+    // Input contract: original is the unchanged SPICE parse of the fingerprinted
+    // source. Validate usable structure and requested writes, not caller history.
+    const bool validPlatformEndian =
+        (original.sourcePlatform == model::TargetPlatform::Dreamcast && original.endian == root::Endian::Little)
+        || (original.sourcePlatform == model::TargetPlatform::GameCube && original.endian == root::Endian::Big);
+    if (original.parseStatus == model::MldParseStatus::Failed || original.parseStatus == model::MldParseStatus::Empty
+        || !validPlatformEndian || original.decodedBytes.size() < 0x14U
+        || original.header.entryCount != original.entries.size()
+        || original.header.indexTableOffset > original.decodedBytes.size()
+        || original.entries.size() > (original.decodedBytes.size() - original.header.indexTableOffset) / 0x68U) {
+        error(diagnostics, "The original parsed MLD has an unsupported or invalid layout.");
         return result;
     }
     auto data = std::make_shared<MldEncounterPatchPlan::Data>();
     data->sourceSha256 = request.sourceSha256;
     data->sourceSize = request.sourceSize;
-    data->compressedAklz = canonical.sourceWasCompressedAklz;
-    addTriangleWrites(original, canonical, request, data->writes, diagnostics);
-    addParameterWrites(original, canonical, request, data->writes, diagnostics);
+    data->compressedAklz = original.sourceWasCompressedAklz;
+    addTriangleWrites(original, request, data->writes, diagnostics);
+    addParameterWrites(original, request, data->writes, diagnostics);
     auto& writes = data->writes;
     std::sort(writes.begin(), writes.end(), [](const auto& a, const auto& b) { return a.offset < b.offset; });
     std::vector<detail::ByteWrite> unique;

@@ -50,6 +50,7 @@ struct MldPatchApplyResult {
     [[nodiscard]] bool ok() const noexcept;
 };
 
+// Requires an unchanged original parse; this validates target words, not whole models.
 [[nodiscard]] MldPatchPlan planTriangleSelectorPatches(
     const model::MldFile& file,
     std::span<const TriangleSelectorEdit> edits);

@@ -1,7 +1,6 @@
 #include "TriangleMetadataPatcher.h"
 #include "PatchInternals.h"
 
-
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -161,34 +160,32 @@ MldPatchPlan detail::planTriangleWords(
     }
 
     std::map<std::size_t, MldBytePatch> patchesByOffset{};
-    std::map<std::uint32_t, bool> unmodifiedResourceByAddress{};
-    for (const auto& edit : edits) {
+    for (std::size_t editIndex = 0; editIndex < edits.size(); ++editIndex) {
+        const auto& edit = edits[editIndex];
+        const auto context = "triangle[" + std::to_string(editIndex) + "] resource=" + std::to_string(edit.resourceAddress)
+            + " node=" + (edit.gobjNodeIndex ? std::to_string(*edit.gobjNodeIndex) : "none")
+            + " triangle=" + std::to_string(edit.triangleIndex) + ": ";
+        const auto fail = [&](std::string message, std::optional<std::uint32_t> offset = {}) {
+            addError(result.diagnostics, context + message, offset);
+        };
+        if (edit.resourceKind != TriangleResourceKind::Grnd && edit.resourceKind != TriangleResourceKind::Gobj) {
+            fail("Invalid resource kind.", edit.resourceAddress);
+            continue;
+        }
         if (edit.selectorDigit > 9U) {
-            addError(result.diagnostics, "A triangle selector digit must be between 0 and 9.", edit.resourceAddress);
+            fail("A triangle selector digit must be between 0 and 9.", edit.resourceAddress);
             continue;
         }
         const auto found = file.groundResources.find(edit.resourceAddress);
         if (found == file.groundResources.end()) {
-            addError(result.diagnostics, "The requested ground resource address was not parsed.", edit.resourceAddress);
+            fail("The requested ground resource address was not parsed.", edit.resourceAddress);
             continue;
         }
         const auto& resource = found->second;
-        const auto [unmodified, cacheInserted] = unmodifiedResourceByAddress.emplace(edit.resourceAddress, false);
-        if (cacheInserted) {
-            if (resource.grnd.has_value()) {
-                unmodified->second = model::semanticHash(*resource.grnd) == resource.originalSemanticHash;
-            } else if (resource.gobj.has_value()) {
-                unmodified->second = model::semanticHash(*resource.gobj) == resource.originalSemanticHash;
-            }
-            if (!unmodified->second) {
-                addError(result.diagnostics, "Patch planning requires an unmodified parsed ground-resource model.",
-                    resource.sourceAddress);
-            }
-        }
-        if (!unmodified->second) {
-            continue;
-        }
+        const auto diagnosticStart = result.diagnostics.size();
         const auto resolved = resolveTriangle(resource, edit, result.diagnostics);
+        for (std::size_t i = diagnosticStart; i < result.diagnostics.size(); ++i)
+            result.diagnostics[i].message = context + result.diagnostics[i].message;
         if (!resolved.has_value()) {
             continue;
         }
@@ -197,7 +194,7 @@ MldPatchPlan detail::planTriangleWords(
         const auto currentDigit = static_cast<std::uint16_t>((rawLow15 / 10U) % 10U);
         const auto replacementLow = static_cast<std::uint32_t>(rawLow15) - currentDigit * 10U + edit.selectorDigit * 10U;
         if (replacementLow > 0x7FFFU) {
-            addError(result.diagnostics, "The requested selector digit would overflow the low 15-bit triangle value.",
+            fail("The requested selector digit would overflow the low 15-bit triangle value.",
                 diagnosticOffset(resolved->flagSourceOffset));
             continue;
         }
@@ -207,18 +204,18 @@ MldPatchPlan detail::planTriangleWords(
         const auto replacement = endianBytes(replacementWord, file.endian);
         if (!bytesMatch(file.decodedBytes, resolved->flagSourceOffset, expected) ||
             (!file.sourceWasCompressedAklz && !bytesMatch(file.sourceBytes, resolved->flagSourceOffset, expected))) {
-            addError(result.diagnostics, "The triangle source bytes do not match the parsed metadata word.",
+            fail("The triangle source bytes do not match the parsed metadata word.",
                 diagnosticOffset(resolved->flagSourceOffset));
             continue;
         }
         if (resolved->flagSourceOffset < resource.sourceAddress) {
-            addError(result.diagnostics, "The triangle source offset precedes its resource.",
+            fail("The triangle source offset precedes its resource.",
                 diagnosticOffset(resolved->flagSourceOffset));
             continue;
         }
         const auto resourceOffset = resolved->flagSourceOffset - resource.sourceAddress;
         if (!bytesMatch(resource.rawBytes, resourceOffset, expected)) {
-            addError(result.diagnostics, "The retained resource bytes do not match the parsed metadata word.",
+            fail("The retained resource bytes do not match the parsed metadata word.",
                 diagnosticOffset(resolved->flagSourceOffset));
             continue;
         }
@@ -232,7 +229,7 @@ MldPatchPlan detail::planTriangleWords(
         const auto [existing, patchInserted] = patchesByOffset.emplace(patch.decodedPayloadOffset, patch);
         if (!patchInserted && (existing->second.expectedBytes != patch.expectedBytes ||
             existing->second.replacementBytes != patch.replacementBytes)) {
-            addError(result.diagnostics, "Conflicting triangle selector edits target the same source word.",
+            fail("Conflicting triangle selector edits target the same source word.",
                 diagnosticOffset(patch.decodedPayloadOffset));
         }
     }

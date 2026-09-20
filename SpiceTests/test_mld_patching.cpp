@@ -15,6 +15,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -76,14 +77,14 @@ void writeTag(std::vector<std::uint8_t>& bytes, const std::size_t offset, const 
     }
 }
 
-std::vector<std::uint8_t> makeDreamcastGrnd(const Endian endian = Endian::Little) {
+std::vector<std::uint8_t> makeDreamcastGrnd(const Endian endian = Endian::Little, const std::size_t triangleCount = 1) {
     constexpr std::size_t innerHeader = 0x10U;
     constexpr std::size_t triangleSetsOffset = 0x40U;
-    constexpr std::size_t vertexOffset = 0x80U;
-    constexpr std::size_t quadRegistryOffset = 0xC8U;
-    constexpr std::size_t quadTableOffset = quadRegistryOffset + 4U;
-    constexpr std::size_t refListOffset = 0xDCU;
-    constexpr std::size_t declaredSize = 0xE0U;
+    const std::size_t vertexOffset = std::max(std::size_t{0x80}, (kGrndStreamOffset + triangleCount * 12 + 15) & ~std::size_t{15});
+    const std::size_t quadRegistryOffset = vertexOffset + 72;
+    const std::size_t quadTableOffset = quadRegistryOffset + 4;
+    const std::size_t refListOffset = quadRegistryOffset + 20;
+    const std::size_t declaredSize = refListOffset + triangleCount * 4;
 
     std::vector<std::uint8_t> bytes(declaredSize, 0U);
     writeTag(bytes, 0U, "GRND");
@@ -101,7 +102,7 @@ std::vector<std::uint8_t> makeDreamcastGrnd(const Endian endian = Endian::Little
         static_cast<std::uint32_t>(vertexOffset - (triangleSetsOffset + 0x0CU)), endian);
     writeU32(bytes, triangleSetsOffset + 0x10U,
         static_cast<std::uint32_t>(kGrndStreamOffset - (triangleSetsOffset + 0x10U)), endian);
-    writeU32(bytes, triangleSetsOffset + 0x14U, 1U, endian);
+    writeU32(bytes, triangleSetsOffset + 0x14U, static_cast<std::uint32_t>(triangleCount), endian);
     constexpr std::array<std::uint16_t, 3> flags{ 1U, 2U, 0x800AU };
     for (std::size_t i = 0; i < 3U; ++i) {
         writeU16(bytes, kGrndStreamOffset + i * 4U, static_cast<std::uint16_t>(i * 6U), endian);
@@ -112,11 +113,15 @@ std::vector<std::uint8_t> makeDreamcastGrnd(const Endian endian = Endian::Little
         writeF32(bytes, vertex + 8U, static_cast<float>(i == 2U), endian);
         writeF32(bytes, vertex + 16U, 1.0F, endian);
     }
-    writeU32(bytes, quadTableOffset, 1U, endian);
+    for (std::size_t triangle = 1; triangle < triangleCount; ++triangle)
+        std::copy_n(bytes.begin() + kGrndStreamOffset, 12, bytes.begin() + kGrndStreamOffset + triangle * 12);
+    writeU32(bytes, quadTableOffset, static_cast<std::uint32_t>(triangleCount), endian);
     writeU32(bytes, quadTableOffset + 4U,
         static_cast<std::uint32_t>(refListOffset - (quadTableOffset + 4U)), endian);
-    writeU16(bytes, refListOffset, 0U, endian);
-    writeU16(bytes, refListOffset + 2U, 0U, endian);
+    for (std::size_t triangle = 0; triangle < triangleCount; ++triangle) {
+        writeU16(bytes, refListOffset + triangle * 4, 0U, endian);
+        writeU16(bytes, refListOffset + triangle * 4 + 2, static_cast<std::uint16_t>(triangle * 3), endian);
+    }
     return bytes;
 }
 
@@ -732,10 +737,10 @@ TEST(MldPatching, RejectsWrongResourceShapeAndOverlappingPatchRecords) {
     EXPECT_EQ(bytes, before);
 }
 
-TEST(MldPatching, RejectsStaleProvenanceAfterSemanticModelEdits) {
+TEST(MldPatching, RejectsTriangleWordThatDoesNotMatchSourceBytes) {
     auto file = makeMixedDreamcastFile();
     auto& grnd = *file.groundResources.at(static_cast<std::uint32_t>(kGrndAddress)).grnd;
-    grnd.mesh.vertices[0].position.x += 1.0F;
+    grnd.mesh.triangleMetadata[0].rawU16[2] ^= 1U;
     const DreamcastTriangleSelectorEdit edit{
         .resourceKind = TriangleResourceKind::Grnd,
         .resourceAddress = static_cast<std::uint32_t>(kGrndAddress),
@@ -902,21 +907,20 @@ TEST(MldEncounterPatching, DetectsDuplicateConflictsBeforeDiscardingNoOps) {
     bad = request; bad.triangleEdits[1].selectorDigit = 8; expectRejected(file, bad);
 }
 
-TEST(MldEncounterPatching, RejectsEditedParserStateAndRedirectedTriangleProvenance) {
-    for (int fault = 0; fault < 8; ++fault) {
+TEST(MldEncounterPatching, RejectsUnusableTargetBoundsAndExpectedBytes) {
+    for (int fault = 0; fault < 7; ++fault) {
         auto file = encounterFile();
         auto request = encounterRequest(file);
         request.parameterEdits.push_back(parameterEdit());
         request.triangleEdits.push_back({TriangleResourceKind::Grnd, kGrndAddress, {}, 0, 7});
         switch (fault) {
-        case 0: file.decodedBytes.back() ^= 1; break;
-        case 1: ++file.header.indexTableOffset; break;
+        case 0: file.decodedBytes[kParameterPointer + 4] ^= 1; break;
+        case 1: file.header.indexTableOffset = 0xffffffff; break;
         case 2: ++file.entries[1].functionParametersPointer; break;
         case 3: ++file.entries[1].entry.functionParameters->values[0]; break;
         case 4: ++file.entries[1].entry.functionParameters->declaredCount.value(); break;
-        case 5: file.entries[1].rawBytes[0] ^= 1; break;
-        case 6: file.groundResources.at(kGrndAddress).grnd->mesh.vertices[0].position.x += 1; break;
-        case 7: file.groundResources.at(kGrndAddress).grnd->triangleSources[0].flagSourceOffsets[2] -= 2; break;
+        case 5: file.groundResources.at(kGrndAddress).grnd->triangleSources[0].flagSourceOffsets[2] = file.decodedBytes.size(); break;
+        case 6: request.triangleEdits[0].resourceKind = static_cast<TriangleResourceKind>(255); break;
         }
         expectRejected(file, request);
     }
@@ -1040,5 +1044,65 @@ TEST(MldEncounterPatching, MixedWidthWriterRejectsPartialOverlapAndLateMismatchA
         const auto result = spice::mld::patching::detail::applyWrites(bytes, writes);
         EXPECT_FALSE(result.ok()); EXPECT_EQ(result.appliedPatchCount, 0);
         EXPECT_EQ(bytes, original);
+    }
+}
+
+
+TEST(MldEncounterPatching, LargeBatchUsesOneGroundResourceAndOneParameterList) {
+    // Time only planning: the source parse and independent output reparse are test work.
+    // Two batch sizes expose per-triangle whole-resource scans without a flaky timing assertion.
+    for (const auto endian : {Endian::Little, Endian::Big}) for (const std::size_t count : {2048U, 8192U}) {
+        constexpr std::size_t parameterCount = 4096;
+        constexpr std::size_t listPointer = 0x120;
+        constexpr std::size_t address = (listPointer + 4 + parameterCount * 4 + 15) & ~std::size_t{15};
+        const auto ground = makeDreamcastGrnd(endian, count);
+        std::vector<std::uint8_t> decoded(address + ground.size(), 0);
+        std::copy(ground.begin(), ground.end(), decoded.begin() + address);
+        writeU32(decoded, 0, 2, endian); writeU32(decoded, 4, 0x20, endian);
+        writeU32(decoded, 8, listPointer, endian); writeU32(decoded, 12, address, endian);
+        writeU32(decoded, 16, static_cast<std::uint32_t>(decoded.size()), endian);
+        writeU32(decoded, 0x20 + 0x18, 0x100, endian);
+        writeU32(decoded, 0x100, 1, endian); writeU32(decoded, 0x104, address, endian);
+        writeU32(decoded, kParameterEntry, 77, endian); writeU32(decoded, kParameterEntry + 4, 123, endian);
+        writeU32(decoded, kParameterEntry + 0x10, listPointer, endian);
+        const std::string groundName = "ground", functionName = "testControl";
+        std::copy(groundName.begin(), groundName.end(), decoded.begin() + 0x20 + 0x24);
+        std::copy(functionName.begin(), functionName.end(), decoded.begin() + kParameterEntry + 0x24);
+        writeU32(decoded, listPointer, parameterCount, endian);
+        for (std::size_t i = 0; i < parameterCount; ++i) writeU32(decoded, listPointer + 4 + 4 * i, static_cast<std::uint32_t>(i), endian);
+        const bool compressed = endian == Endian::Big;
+        const auto source = compressed ? spice::compression::aklz::compress(decoded).bytes : decoded;
+        const auto file = spice::mld::parsing::MldParser{}.parseBytes(source);
+        ASSERT_EQ(file.groundResources.size(), 1);
+        ASSERT_EQ(file.groundResources.at(address).grnd->mesh.triangleMetadata.size(), count);
+        auto request = encounterRequest(file);
+        auto expected = decoded;
+        for (std::size_t i = 0; i < count; ++i) {
+            request.triangleEdits.push_back({TriangleResourceKind::Grnd, address, {}, i, 7});
+            writeU16(expected, address + kGrndStreamOffset + 12 * i + 10, 0x8046, endian);
+        }
+        for (std::size_t i = 0; i < parameterCount; ++i) {
+            auto edit = parameterEdit(); edit.expectedParameterCount = parameterCount;
+            edit.parameterIndex = i; edit.expectedValue = static_cast<std::uint32_t>(i);
+            edit.replacementValue = edit.expectedValue | 0x80000000U;
+            request.parameterEdits.push_back(edit);
+            writeU32(expected, listPointer + 4 + 4 * i, edit.replacementValue, endian);
+        }
+        const auto begin = std::chrono::steady_clock::now();
+        const auto plan = planEncounterPatches(file, request);
+        const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+        std::cout << "Encounter batch triangles=" << count << " parameters=" << parameterCount
+            << " compressed=" << compressed << " planningMs=" << elapsed << '\n';
+        ASSERT_TRUE(plan.ok()) << encounterDiagnostics(plan);
+        const auto result = materializeEncounterPatchPlan(source, plan);
+        ASSERT_TRUE(result.ok()); EXPECT_EQ(result.appliedPatchCount, count + parameterCount);
+        const auto actual = compressed ? spice::compression::aklz::decompress(result.bytes).bytes : result.bytes;
+        EXPECT_EQ(actual, expected);
+        const auto reparsed = spice::mld::parsing::MldParser{}.parseBytes(result.bytes);
+        ASSERT_EQ(reparsed.groundResources.at(address).grnd->mesh.triangleMetadata.size(), count);
+        for (const auto& metadata : reparsed.groundResources.at(address).grnd->mesh.triangleMetadata)
+            EXPECT_EQ(metadata.rawU16[2], 0x8046);
+        EXPECT_EQ(reparsed.entries[1].entry.functionParameters->values.size(), parameterCount);
+        EXPECT_EQ(reparsed.entries[1].entry.functionParameters->values.back(), 0x80000000U | (parameterCount - 1));
     }
 }
