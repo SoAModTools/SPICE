@@ -4,6 +4,7 @@
 #include "Internal/MldDocumentReceiptState.h"
 #include "Internal/MldGroundDocumentConversion.h"
 #include "../SpiceRoot/Binary/EndianWriter.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <array>
@@ -84,18 +85,54 @@ void writeU32(std::vector<std::uint8_t>& bytes, const std::size_t offset,
         payloadSize += name.size() + 1U;
     }
     if (payloadSize > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+    payloadSize = (payloadSize + 3U) & ~std::size_t{3U};
+    if (payloadSize > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
     std::vector<std::uint8_t> bytes(headerSize + payloadSize, 0U);
     const char* tag = endian == spice::root::Endian::Little ? "NJTL" : "GJTL";
     std::copy_n(tag, 4U, bytes.begin());
     writeU32(bytes, 4U, static_cast<std::uint32_t>(payloadSize), endian);
+    writeU32(bytes, headerSize, 8U, endian);
     writeU32(bytes, headerSize + 4U, static_cast<std::uint32_t>(list.names.size()), endian);
     std::size_t nameOffset = payloadHeaderSize + list.names.size() * recordSize;
     for (std::size_t index = 0U; index < list.names.size(); ++index) {
         writeU32(bytes, headerSize + payloadHeaderSize + index * recordSize,
             static_cast<std::uint32_t>(nameOffset), endian);
+        if (index < list.nativeRecordWords.size()) {
+            writeU32(bytes, headerSize + payloadHeaderSize + index * recordSize + 4U, list.nativeRecordWords[index][0], endian);
+            writeU32(bytes, headerSize + payloadHeaderSize + index * recordSize + 8U, list.nativeRecordWords[index][1], endian);
+        }
         std::copy(list.names[index].begin(), list.names[index].end(),
             bytes.begin() + static_cast<std::ptrdiff_t>(headerSize + nameOffset));
         nameOffset += list.names[index].size() + 1U;
+    }
+    // The Ninja loader relocates the list's record pointer and each name pointer.
+    // All deltas fit in one byte: word 0, word 2, then every third word.
+    const auto pofOffset = bytes.size();
+    const auto pofSize = (list.names.size() + 1U + 3U) & ~std::size_t{3U};
+    bytes.resize(pofOffset + 8U + pofSize, 0U);
+    std::copy_n("POF0", 4U, bytes.begin() + pofOffset);
+    writeU32(bytes, pofOffset + 4U, static_cast<std::uint32_t>(pofSize), endian);
+    bytes[pofOffset + 8U] = 0x40U;
+    for (std::size_t i = 0; i < list.names.size(); ++i)
+        bytes[pofOffset + 9U + i] = i == 0U ? 0x42U : 0x43U;
+    return bytes;
+}
+
+// Entry handlers receive a counted NJS texture list with MLD-absolute
+// pointers. Model wrappers receive tagged, payload-relative Ninja chunks.
+[[nodiscard]] std::optional<std::vector<std::uint8_t>> buildEntryTextureList(
+    const MldTextureList& list, const spice::root::Endian endian, const std::size_t address) {
+    const auto chunk = buildTextureList(list, endian);
+    if (!chunk) return std::nullopt;
+    const auto size = spice::root::EndianReader(*chunk, endian).read_u32(4U);
+    if (address > std::numeric_limits<std::uint32_t>::max()
+        || size > std::numeric_limits<std::uint32_t>::max() - address) return std::nullopt;
+    std::vector<std::uint8_t> bytes(chunk->begin() + 8U, chunk->begin() + 8U + size);
+    writeU32(bytes, 0U, static_cast<std::uint32_t>(address + 8U), endian);
+    for (std::size_t slot = 0U; slot < list.names.size(); ++slot) {
+        const auto offset = 8U + slot * 12U;
+        const auto relative = spice::root::EndianReader(bytes, endian).read_u32(offset);
+        writeU32(bytes, offset, static_cast<std::uint32_t>(address + relative), endian);
     }
     return bytes;
 }
@@ -104,6 +141,92 @@ template <typename Value, typename Id>
 [[nodiscard]] const Value* findById(const std::vector<Value>& values, const Id id) {
     const auto found = std::find_if(values.begin(), values.end(), [&](const auto& value) { return value.id == id; });
     return found == values.end() ? nullptr : &*found;
+}
+
+struct EncodedObject {
+    std::vector<std::uint8_t> bytes{};
+    std::optional<std::uint32_t> textureOffset{};
+};
+
+// Ninja model payloads retain their own encoding. Only the MLD wrapper and
+// texture-list numbers are encoded in the destination container's endianness.
+[[nodiscard]] std::optional<EncodedObject> encodeObject(const MldObjectResource& object,
+    const MldDocument& document, const spice::root::Endian endian) {
+    std::vector<std::uint8_t> source{};
+    if (const auto* decoded = std::get_if<std::shared_ptr<const modeling::ModelDocument>>(&object.payload)) {
+        if (!*decoded) return std::nullopt;
+        const auto result = modeling::ModelDocumentCodec::encode(**decoded);
+        if (!result.ok()) return std::nullopt;
+        source = result.bytes;
+    } else source = std::get<MldOpaquePayload>(object.payload).bytes;
+    const auto modelTag = [&](std::size_t offset) {
+        if (offset > source.size() || 4U > source.size() - offset) return false;
+        const std::string tag(reinterpret_cast<const char*>(source.data() + offset), 4U);
+        return tag == "NJCM" || tag == "NJBM" || tag == "GJCM" || tag == "GJBM";
+    };
+    std::size_t modelOffset = 0U;
+    std::size_t end = source.size();
+    std::uint32_t wrapperFlags = 0U;
+    bool recognized = modelTag(0U);
+    if (!recognized && source.size() >= 16U) {
+        for (const auto order : {endian, endian == spice::root::Endian::Big
+            ? spice::root::Endian::Little : spice::root::Endian::Big}) {
+            const spice::root::EndianReader reader(source, order);
+            const auto offset = reader.read_u32(0U);
+            if (offset < 16U || !modelTag(offset)) continue;
+            modelOffset = offset;
+            const auto size = reader.read_u32(4U);
+            if (size >= offset + 8U && size <= source.size()) end = size;
+            wrapperFlags = reader.read_u32(12U);
+            recognized = true;
+            break;
+        }
+    }
+    if (!recognized) {
+        // A legacy extracted object may begin with a texture-list chunk rather
+        // than an MLD wrapper. Walk complete prefix chunks; never scan geometry.
+        std::size_t offset = 0U;
+        while (offset + 8U <= source.size()) {
+            if (modelTag(offset)) { modelOffset = offset; recognized = true; break; }
+            const std::string tag(reinterpret_cast<const char*>(source.data() + offset), 4U);
+            if (tag != "NJTL" && tag != "GJTL" && tag != "POF0") break;
+            const auto size = spice::root::EndianReader(source, endian).read_u32(offset + 4U);
+            if (size > source.size() - offset - 8U) break;
+            offset += 8U + size;
+        }
+    }
+    if (!recognized) {
+        if (object.textureList) return std::nullopt;
+        return EncodedObject{ std::move(source) };
+    }
+    EncodedObject result{ std::vector<std::uint8_t>(16U, 0U) };
+    if (object.textureList) {
+        const auto* list = findById(document.textureLists, *object.textureList);
+        if (!list) return std::nullopt;
+        auto encoded = buildTextureList(*list, endian);
+        if (!encoded) return std::nullopt;
+        // Chunk family follows the model, not the container byte order.
+        (*encoded)[0] = source[modelOffset];
+        result.textureOffset = 16U;
+        result.bytes.insert(result.bytes.end(), encoded->begin(), encoded->end());
+    }
+    result.bytes.resize((result.bytes.size() + 3U) & ~std::size_t{3U}, 0U);
+    const auto newModelOffset = result.bytes.size();
+    if (end - modelOffset > std::numeric_limits<std::uint32_t>::max() - newModelOffset) return std::nullopt;
+    result.bytes.insert(result.bytes.end(), source.begin() + modelOffset, source.begin() + end);
+    writeU32(result.bytes, 0U, static_cast<std::uint32_t>(newModelOffset), endian);
+    writeU32(result.bytes, 4U, static_cast<std::uint32_t>(result.bytes.size()), endian);
+    writeU32(result.bytes, 8U, result.textureOffset.value_or(0U), endian);
+    writeU32(result.bytes, 12U, wrapperFlags, endian);
+    return result;
+}
+
+[[nodiscard]] bool onlyModelsOwnList(const MldDocument& document, const MldTextureListId id) {
+    const bool objectOwns = std::any_of(document.objects.begin(), document.objects.end(),
+        [&](const auto& object) { return object.textureList == id; });
+    const bool entryOwns = std::any_of(document.entries.begin(), document.entries.end(),
+        [&](const auto& entry) { return entry.textureList == id; });
+    return objectOwns && !entryOwns;
 }
 
 [[nodiscard]] std::optional<model::MldFile> buildConstructiveFile(
@@ -145,19 +268,17 @@ template <typename Value, typename Id>
             if constexpr (std::is_same_v<Id, MldObjectId>) {
                 const auto* resource = findById(document.objects, id);
                 if (resource == nullptr) { ok = false; return; }
-                const auto* decoded = std::get_if<std::shared_ptr<const modeling::ModelDocument>>(&resource->payload);
-                if (decoded == nullptr || !*decoded) { ok = false; return; }
-                const auto encoded = modeling::ModelDocumentCodec::encode(**decoded);
-                if (!encoded.ok()) { ok = false; return; }
-                const auto address = appendAligned(file.decodedBytes, encoded.bytes);
+                const auto encoded = encodeObject(*resource, document, file.endian);
+                if (!encoded) { ok = false; return; }
+                const auto address = appendAligned(file.decodedBytes, encoded->bytes);
                 if (address == std::numeric_limits<std::uint32_t>::max()) { ok = false; return; }
                 objectAddresses.emplace(id.value, address);
                 model::MldObjectResource output{};
                 output.status = model::MldResourceStatus::Complete;
                 output.sourceAddress = address;
                 output.blockOffset = address;
-                output.blockSize = encoded.bytes.size();
-                output.rawBytes = encoded.bytes;
+                output.blockSize = encoded->bytes.size();
+                output.rawBytes = encoded->bytes;
                 file.objectResources.emplace(address, std::move(output));
                 noteResource(address);
             } else if constexpr (std::is_same_v<Id, MldMotionId>) {
@@ -204,9 +325,11 @@ template <typename Value, typename Id>
                 file.groundResources.emplace(address, std::move(output));
                 noteResource(address);
             } else if constexpr (std::is_same_v<Id, MldTextureListId>) {
+                if (onlyModelsOwnList(document, id)) return;
                 const auto* resource = findById(document.textureLists, id);
                 if (resource == nullptr) { ok = false; return; }
-                const auto encoded = buildTextureList(*resource, file.endian);
+                const auto encoded = buildEntryTextureList(*resource, file.endian,
+                    (file.decodedBytes.size() + 3U) & ~std::size_t{3U});
                 if (!encoded.has_value()) { ok = false; return; }
                 const auto address = appendAligned(file.decodedBytes, *encoded);
                 if (address == std::numeric_limits<std::uint32_t>::max()) { ok = false; return; }
@@ -228,6 +351,7 @@ template <typename Value, typename Id>
                     .status = model::MldResourceStatus::Complete,
                     .archiveTextureIndex = static_cast<std::uint32_t>(archive.entries.size()),
                     .encoding = texture.encoding,
+                    .declaredBlockSize = static_cast<std::uint32_t>(texture.encodedBytes.size()),
                     .hasGlobalIndex = texture.hasGlobalIndex,
                     .globalIndex = texture.globalIndex,
                     .textureName = texture.name,
@@ -379,48 +503,85 @@ MldDocumentWriteResult MldDocumentWriter::write(
         for (std::size_t index = 0U; index < list->values.size(); ++index)
             writeU32(output.decodedBytes, offset + 4U + index * 4U, list->values[index], output.endian);
     }
-    const auto objectAddresses = addresses<MldObjectId>(receipt->layout);
+    auto objectAddresses = addresses<MldObjectId>(receipt->layout);
     const auto motionAddresses = addresses<MldMotionId>(receipt->layout);
     const auto groundAddresses = addresses<MldGroundId>(receipt->layout);
     auto textureListAddresses = addresses<MldTextureListId>(receipt->layout);
 
     const auto targetEndian = target.platform == MldPlatform::Dreamcast
         ? spice::root::Endian::Little : spice::root::Endian::Big;
-    for (const auto& source : document.textureLists) {
-        const auto layout = std::find_if(receipt->layout.begin(), receipt->layout.end(), [&](const auto& item) {
-            const auto* id = std::get_if<MldTextureListId>(&item.item);
-            return id != nullptr && *id == source.id;
-        });
-        if (layout == receipt->layout.end()) continue;
-        const auto original = output.textureListResources.find(static_cast<std::uint32_t>(layout->encodedReference));
-        std::vector<std::string> originalNames{};
-        if (original != output.textureListResources.end())
-            for (const auto& entry : original->second.entries) originalNames.push_back(entry.name);
-        if (targetEndian == output.endian && source.names == originalNames) continue;
-        const auto encoded = buildTextureList(source, targetEndian);
-        if (!encoded.has_value()) {
-            result.diagnostics.push_back({ MldDiagnosticSeverity::Error,
-                "Failed to encode an edited MLD texture list." });
+    // Object encodings own their embedded lists. Resolve all final addresses
+    // before assigning entry references, including models that grow and relocate.
+    std::map<std::uint32_t, model::MldObjectResource> encodedObjects{};
+    for (const auto& object : document.objects) {
+        const auto encoded = encodeObject(object, document, targetEndian);
+        if (!encoded) {
+            result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Cannot encode model or its texture list." });
             return result;
         }
-        const auto offset = static_cast<std::size_t>(layout->decodedOffset);
-        const auto available = static_cast<std::size_t>(layout->encodedSize);
-        std::uint32_t outputAddress = 0U;
-        if (targetEndian == output.endian && offset <= output.decodedBytes.size()
-            && available <= output.decodedBytes.size() - offset && encoded->size() <= available) {
-            copyAt(output.decodedBytes, offset, *encoded);
-            std::fill(output.decodedBytes.begin() + static_cast<std::ptrdiff_t>(offset + encoded->size()),
-                output.decodedBytes.begin() + static_cast<std::ptrdiff_t>(offset + available), 0U);
-            outputAddress = static_cast<std::uint32_t>(layout->encodedReference);
-        } else {
-            outputAddress = appendAligned(output.decodedBytes, *encoded);
-            if (outputAddress == std::numeric_limits<std::uint32_t>::max()) {
-                result.diagnostics.push_back({ MldDiagnosticSeverity::Error,
-                    "An edited MLD texture list exceeded the 32-bit output address space." });
-                return result;
+        const auto layout = std::find_if(receipt->layout.begin(), receipt->layout.end(), [&](const auto& item) {
+            const auto* id = std::get_if<MldObjectId>(&item.item);
+            return id && *id == object.id;
+        });
+        if (layout == receipt->layout.end()) {
+            result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Object has no source allocation." });
+            return result;
+        }
+        std::uint32_t address = static_cast<std::uint32_t>(layout->decodedOffset);
+        if (encoded->bytes.size() <= layout->encodedSize) copyAt(output.decodedBytes, address, encoded->bytes);
+        else address = appendAligned(output.decodedBytes, encoded->bytes);
+        if (address == std::numeric_limits<std::uint32_t>::max()) {
+            result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Encoded object exceeds the MLD address space." });
+            return result;
+        }
+        objectAddresses[object.id.value] = address;
+        model::MldObjectResource native{};
+        native.sourceAddress = address;
+        native.blockOffset = address;
+        native.blockSize = encoded->bytes.size();
+        native.rawBytes = encoded->bytes;
+        encodedObjects.emplace(address, std::move(native));
+    }
+    output.objectResources = std::move(encodedObjects);
+    for (const auto& source : document.textureLists) {
+        if (onlyModelsOwnList(document, source.id)) continue;
+        const auto layout = std::find_if(receipt->layout.begin(), receipt->layout.end(), [&](const auto& item) {
+            const auto* id = std::get_if<MldTextureListId>(&item.item);
+            return id && *id == source.id;
+        });
+        const bool wasEmbedded = layout != receipt->layout.end()
+            && std::any_of(receipt->state_->encodingSkeleton.objectResources.begin(), receipt->state_->encodingSkeleton.objectResources.end(),
+                [&](const auto& item) { return item.second.textureListOffset == layout->decodedOffset; });
+        if (layout != receipt->layout.end() && targetEndian == output.endian && !wasEmbedded) {
+            const auto original = output.textureListResources.find(static_cast<std::uint32_t>(layout->encodedReference));
+            if (original != output.textureListResources.end()) {
+                // Preserve unchanged native entry lists, including counted/absolute layouts.
+                std::vector<std::string> names{};
+                for (const auto& entry : original->second.entries) names.push_back(entry.name);
+                bool wordsMatch = true;
+                for (std::size_t i = 0U; i < original->second.entries.size(); ++i) {
+                    const auto& entry = original->second.entries[i];
+                    const auto words = i < source.nativeRecordWords.size() ? source.nativeRecordWords[i] : std::array<std::uint32_t, 2U>{};
+                    const spice::root::EndianReader reader(output.decodedBytes, output.endian);
+                    if (entry.recordRange.offset + 12U > output.decodedBytes.size()
+                        || words[0] != reader.read_u32(entry.recordRange.offset + 4U)
+                        || words[1] != reader.read_u32(entry.recordRange.offset + 8U)) wordsMatch = false;
+                }
+                if (names == source.names && wordsMatch) continue;
             }
         }
-        textureListAddresses[source.id.value] = outputAddress;
+        const auto encoded = buildEntryTextureList(source, targetEndian,
+            (output.decodedBytes.size() + 3U) & ~std::size_t{3U});
+        if (!encoded) {
+            result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Cannot encode texture list." });
+            return result;
+        }
+        const auto address = appendAligned(output.decodedBytes, *encoded);
+        if (address == std::numeric_limits<std::uint32_t>::max()) {
+            result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Texture list exceeds the MLD address space." });
+            return result;
+        }
+        textureListAddresses[source.id.value] = address;
     }
 
     for (std::size_t i = 0; i < document.entries.size(); ++i) {
@@ -471,18 +632,6 @@ MldDocumentWriteResult MldDocumentWriter::write(
         return true;
     };
 
-    if (!populateOpaqueOrEncoded(document.objects, objectAddresses, output.objectResources,
-        [&](const MldObjectPayload& payload, std::vector<std::uint8_t>& encoded) {
-            const auto* decoded = std::get_if<std::shared_ptr<const modeling::ModelDocument>>(&payload);
-            if (decoded == nullptr || !*decoded) return false;
-            const auto written = modeling::ModelDocumentCodec::encode(**decoded);
-            if (!written.ok()) return false;
-            encoded = written.bytes;
-            return true;
-        })) {
-        result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Failed to encode an MLD object resource." });
-        return result;
-    }
     if (!populateOpaqueOrEncoded(document.motions, motionAddresses, output.motionResources,
         [&](const MldMotionPayload& payload, std::vector<std::uint8_t>& encoded) {
             const auto* decoded = std::get_if<MldDecodedMotion>(&payload);
@@ -507,32 +656,34 @@ MldDocumentWriteResult MldDocumentWriter::write(
             copyAt(output.decodedBytes, address, opaque->bytes);
         }
     }
-    std::size_t textureListIndex = 0U;
-    for (auto& [address, destination] : output.textureListResources) {
-        (void)address;
-        const auto& source = document.textureLists[textureListIndex++];
-        if (source.names.size() != destination.entries.size()) {
-            result.diagnostics.push_back({ MldDiagnosticSeverity::Error,
-                "This release cannot change the number of names in an encoded MLD texture list." });
+    if (document.textureArchives.empty() && output.textureArchive)
+        output.textureArchive->entries.clear();
+    if (!document.textureArchives.empty() && !output.textureArchive) {
+        const std::array<std::uint8_t, 4U> empty{};
+        const auto address = appendAligned(output.decodedBytes, empty, 32U);
+        if (address == std::numeric_limits<std::uint32_t>::max()) {
+            result.diagnostics.push_back({ MldDiagnosticSeverity::Error, "Texture archive exceeds the MLD address space." });
             return result;
         }
-        for (std::size_t index = 0U; index < source.names.size(); ++index)
-            destination.entries[index].name = source.names[index];
+        output.header.textureTableOffset = address;
+        output.textureArchive = model::MldTextureArchive{};
+        output.textureArchive->tableOffset = address;
+        output.textureArchive->archiveStartOffset = address;
+        output.textureArchive->archiveEndOffset = address + 4U;
     }
     if (!document.textureArchives.empty() && output.textureArchive.has_value()) {
         const auto& sourceTextures = document.textureArchives.front().textures;
-        if (sourceTextures.size() != output.textureArchive->entries.size()) {
-            result.diagnostics.push_back({ MldDiagnosticSeverity::Error,
-                "This release cannot add or remove encoded MLD textures during output." });
-            return result;
-        }
-        for (std::size_t index = 0U; index < sourceTextures.size(); ++index) {
-            const auto& source = sourceTextures[index];
-            auto& destination = output.textureArchive->entries[index];
+        const auto originalEntries = output.textureArchive->entries;
+        output.textureArchive->entries.clear();
+        for (const auto& source : sourceTextures) {
+            model::MldTextureEntry destination{};
+            if (source.id.value > 0U && source.id.value <= originalEntries.size())
+                destination = originalEntries[static_cast<std::size_t>(source.id.value - 1U)];
             destination.encoding = source.encoding;
             destination.textureName = source.name;
             destination.encodedData = source.encodedBytes;
             destination.encodedDataSize = source.encodedBytes.size();
+            destination.declaredBlockSize = static_cast<std::uint32_t>(source.encodedBytes.size());
             destination.hasGlobalIndex = source.hasGlobalIndex;
             destination.globalIndex = source.globalIndex;
             destination.pixelFormat = source.pixelFormat;
@@ -545,6 +696,7 @@ MldDocumentWriteResult MldDocumentWriter::write(
             destination.height = source.height;
             destination.decoded = source.decoded;
             destination.rgba8 = source.rgba8;
+            output.textureArchive->entries.push_back(std::move(destination));
         }
     }
 

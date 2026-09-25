@@ -28,6 +28,12 @@ MldMotionVariantId MldDocument::allocateMotionVariantId() const noexcept {
 }
 MldGroundId MldDocument::allocateGroundId() const noexcept { return nextId<MldGroundId>(grounds); }
 MldTextureListId MldDocument::allocateTextureListId() const noexcept { return nextId<MldTextureListId>(textureLists); }
+MldTextureId MldDocument::allocateTextureId() const noexcept {
+    std::uint64_t maximum = 0U;
+    for (const auto& archive : textureArchives)
+        for (const auto& texture : archive.textures) maximum = std::max(maximum, texture.id.value);
+    return MldTextureId{ maximum + 1U };
+}
 MldTextureArchiveId MldDocument::allocateTextureArchiveId() const noexcept { return nextId<MldTextureArchiveId>(textureArchives); }
 MldOpaqueMemberId MldDocument::allocateOpaqueMemberId() const noexcept { return nextId<MldOpaqueMemberId>(opaqueMembers); }
 

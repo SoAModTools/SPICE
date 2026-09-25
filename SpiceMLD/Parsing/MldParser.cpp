@@ -146,14 +146,23 @@ void resolveObjectNjLayout(
     ExtractedNjBlock& block,
     std::span<const std::uint8_t> payload,
     const std::size_t begin,
-    const std::size_t end) {
+    const std::size_t end, const Endian endian) {
     if (block.kind != ExtractedNjBlock::Kind::Object || begin >= end) {
         return;
     }
 
-    if (auto textureListOffset = findAlignedTag(payload, begin, end, isNjTextureListTag);
-        textureListOffset.has_value()) {
-        block.textureListOffset = *textureListOffset;
+    // Only explicit native relationships establish a model texture list. A tag
+    // elsewhere in the backing range can belong to an unrelated resource.
+    if (block.includesNjtlPrefix && tagAt(payload, begin, isNjTextureListTag))
+        block.textureListOffset = static_cast<std::uint32_t>(begin);
+    const EndianReader reader(payload, endian);
+    if (!tagAt(payload, begin, isNjModelTag) && begin + 16U <= end) {
+        const auto modelRelative = reader.try_read_u32(begin).value_or(0U);
+        const auto listRelative = reader.try_read_u32(begin + 8U).value_or(0U);
+        if (modelRelative > 0U && modelRelative < end - begin
+            && tagAt(payload, begin + modelRelative, isNjModelTag) && listRelative > 0U)
+            block.textureListOffset = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                static_cast<std::uint64_t>(begin) + listRelative, std::numeric_limits<std::uint32_t>::max()));
     }
 
     const auto setModelOffset = [&](const std::uint32_t absoluteOffset, std::string layout) {
@@ -167,7 +176,7 @@ void resolveObjectNjLayout(
         return;
     }
 
-    const auto relativeModelOffset = common::readU32AtBE(payload, begin);
+    const auto relativeModelOffset = EndianReader(payload, endian).try_read_u32(begin);
     if (relativeModelOffset.has_value() && *relativeModelOffset > 0U) {
         const auto absoluteModelOffset = begin + static_cast<std::size_t>(*relativeModelOffset);
         if (absoluteModelOffset < end && tagAt(payload, absoluteModelOffset, isNjModelTag)) {
@@ -192,7 +201,7 @@ void resolveObjectNjLayout(
     std::span<const std::uint8_t> payload,
     const std::unordered_set<std::uint32_t>& objectAddresses,
     const std::unordered_set<std::uint32_t>& motionAddresses,
-    const std::unordered_set<std::uint32_t>& textureAddresses) {
+    const std::unordered_set<std::uint32_t>& textureAddresses, const Endian endian) {
     struct CandidateAddress {
         enum class Kind {
             TextureList,
@@ -271,7 +280,7 @@ void resolveObjectNjLayout(
             // NJCM/GJCM body.  The texture-list address remains an independent
             // resource boundary, but it must not truncate the overlapping object
             // backing view.
-            const auto relativeModelOffset = common::readU32AtBE(payload, begin);
+            const auto relativeModelOffset = EndianReader(payload, endian).try_read_u32(begin);
             const auto extendedEnd = (i + 2U < candidates.size())
                 ? static_cast<std::size_t>(candidates[i + 2U].offset)
                 : payload.size();
@@ -319,7 +328,7 @@ void resolveObjectNjLayout(
         block.bytes.assign(
             payload.begin() + static_cast<std::ptrdiff_t>(begin),
             payload.begin() + static_cast<std::ptrdiff_t>(effectiveEnd));
-        resolveObjectNjLayout(block, payload, begin, effectiveEnd);
+        resolveObjectNjLayout(block, payload, begin, effectiveEnd, endian);
         blocks.push_back(std::move(block));
     }
 
@@ -1583,7 +1592,7 @@ model::MldFile MldParser::parseBytes(
         }
     }
 
-    const auto njBlocks = buildExtractedNjBlocks(payload, objectAddresses, motionAddresses, textureAddresses);
+    const auto njBlocks = buildExtractedNjBlocks(payload, objectAddresses, motionAddresses, textureAddresses, file.endian);
     for (const auto address : textureAddresses)
         file.textureListResources.emplace(address, parseTextureListResource(payload, address, file.endian));
     for (const auto& block : njBlocks) {
@@ -1597,6 +1606,9 @@ model::MldFile MldParser::parseBytes(
             resource.modelBlockOffset = block.modelBlockOffset;
             resource.modelReadOffset = block.modelReadOffset;
             resource.textureListOffset = block.textureListOffset;
+            if (block.textureListOffset.has_value() && !file.textureListResources.contains(*block.textureListOffset))
+                file.textureListResources.emplace(*block.textureListOffset,
+                    parseTextureListResource(payload, *block.textureListOffset, file.endian));
             resource.wrapperLayout = block.wrapperLayout;
             resource.rawBytes = block.bytes;
             resource.originalSemanticHash = hashBytes(resource.rawBytes);
@@ -2111,6 +2123,16 @@ ParseResult MldParser::project(const model::MldFile& file, const ParseOptions& o
                 .wrapperLayout = resource.wrapperLayout,
                 .bytes = resource.rawBytes,
             });
+            auto& projected = result.extractedNjBlocks.back();
+            projected.decodedModel = resource.model;
+            if (resource.textureListOffset.has_value()) {
+                const auto list = file.textureListResources.find(*resource.textureListOffset);
+                if (list != file.textureListResources.end()) {
+                    projected.textureNames.emplace();
+                    projected.textureListValid = list->second.status == model::MldResourceStatus::Complete;
+                    for (const auto& texture : list->second.entries) projected.textureNames->push_back(texture.name);
+                }
+            }
         }
         for (const auto& [address, resource] : file.motionResources) {
             result.extractedNjBlocks.push_back(ExtractedNjBlock{

@@ -1,3 +1,4 @@
+#include "../MldTextureResolver.h"
 #include "Sa3dBlenderIrBuilder.h"
 
 #include "BlenderIrDiagnostics.h"
@@ -266,84 +267,6 @@ using spice::modeling::ObjectData::NodePtr;
     return value;
 }
 
-[[nodiscard]] std::string readFixedAsciiName(std::span<const std::uint8_t> bytes,
-    const std::size_t offset,
-    const std::size_t maxLength) {
-    std::string out{};
-    if (offset >= bytes.size()) {
-        return out;
-    }
-    const auto end = std::min(bytes.size(), offset + maxLength);
-    for (std::size_t i = offset; i < end; ++i) {
-        const auto ch = bytes[i];
-        if (ch == 0U) {
-            break;
-        }
-        if (std::isprint(static_cast<unsigned char>(ch)) == 0) {
-            break;
-        }
-        out.push_back(static_cast<char>(ch));
-    }
-    return out;
-}
-
-[[nodiscard]] std::vector<std::string> parseNjtlTextureNames(const ExtractedNjBlock& block) {
-    std::vector<std::string> names{};
-    if (block.bytes.size() < 16U) {
-        return names;
-    }
-
-    std::size_t njtlOffset = block.textureListOffset.has_value() && *block.textureListOffset >= block.offset
-        ? static_cast<std::size_t>(*block.textureListOffset - block.offset)
-        : 0U;
-    auto tag = common::readU32AtBE(block.bytes, njtlOffset).value_or(0U);
-    if (tag != 0x4E4A544CU && tag != 0x474A544CU && block.bytes.size() >= 0x10U) {
-        const auto wrappedNjtlPointer = common::readU32AtBE(block.bytes, 0x08U).value_or(0U);
-        if (wrappedNjtlPointer == 0U || wrappedNjtlPointer >= block.bytes.size()) {
-            return names;
-        }
-        njtlOffset = wrappedNjtlPointer;
-        tag = common::readU32AtBE(block.bytes, njtlOffset).value_or(0U);
-    }
-    if (tag != 0x4E4A544CU && tag != 0x474A544CU) {
-        return names;
-    }
-    const auto blockSize = common::readU32AtBE(block.bytes, njtlOffset + 4U);
-    const auto count = common::readU32AtBE(block.bytes, njtlOffset + 12U);
-    if (!blockSize.has_value() || !count.has_value() || *count > 4096U) {
-        return names;
-    }
-
-    constexpr std::size_t blockHeaderSize = 8U;
-    constexpr std::size_t textureRecordTableOffset = 8U;
-    constexpr std::size_t textureRecordSize = 12U;
-    const std::size_t payloadStart = njtlOffset + blockHeaderSize;
-    const std::size_t payloadSize = std::min<std::size_t>(*blockSize, block.bytes.size() - payloadStart);
-    const auto payload = std::span<const std::uint8_t>(block.bytes.data() + static_cast<std::ptrdiff_t>(payloadStart), payloadSize);
-    names.reserve(*count);
-    for (std::uint32_t i = 0; i < *count; ++i) {
-        const std::size_t recordOffset = textureRecordTableOffset + (static_cast<std::size_t>(i) * textureRecordSize);
-        const auto namePointer = common::readU32AtBE(payload, recordOffset);
-        if (!namePointer.has_value() || *namePointer >= payload.size()) {
-            names.push_back({});
-            continue;
-        }
-        names.push_back(readFixedAsciiName(payload, *namePointer, payload.size() - *namePointer));
-    }
-    return names;
-}
-
-[[nodiscard]] std::string textureNameForLocalIndex(const std::uint32_t textureIndex,
-    const std::vector<std::string>& localTextureNames) {
-    if (textureIndex == 0xFFFFFFFFu || textureIndex == 0xFFFFu) {
-        return {};
-    }
-    if (textureIndex < localTextureNames.size() && !localTextureNames[textureIndex].empty()) {
-        return localTextureNames[textureIndex];
-    }
-    return "texture_" + std::to_string(textureIndex);
-}
-
 [[nodiscard]] std::uint32_t resolveObjectAddress(const ExtractedNjBlock& block, const ParseResult& parseResult) {
     if (block.sourceObjectAddress.has_value()) {
         return *block.sourceObjectAddress;
@@ -380,6 +303,8 @@ struct ParsedSa3dModel {
 
 [[nodiscard]] std::optional<ParsedSa3dModel> tryReadModel(const ExtractedNjBlock& block,
     std::vector<std::string>& diagnostics) {
+    if (block.decodedModel && block.decodedModel->model)
+        return ParsedSa3dModel{ *block.decodedModel, block.modelReadOffset.value_or(0U) };
     if (block.bytes.empty()) {
         diagnostics.push_back("SA3D adapter skipped empty NJ block at " + std::to_string(block.offset) + ".");
         return std::nullopt;
@@ -571,7 +496,6 @@ struct SourceVertexRecord {
 }
 
 void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
-    const std::vector<std::string>& localTextureNames,
     model::BlenderIrMesh& outMesh,
     std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
     std::unordered_map<std::uint32_t, std::uint32_t>& vertexIndexByKey,
@@ -634,7 +558,6 @@ void appendBufferMeshGeometry(const BufferMesh& bufferMesh,
         material.destinationAlpha = bufferMesh.material.destination_blend_mode;
         material.mipmapDistanceMultiplier = bufferMesh.material.mipmap_distance_multiplier;
         material.textureId = static_cast<std::uint16_t>(std::min<std::uint32_t>(bufferMesh.material.texture_index, 0xFFFFU));
-        material.textureName = textureNameForLocalIndex(bufferMesh.material.texture_index, localTextureNames);
         material.materialHash = materialHash;
         outMesh.materials.push_back(std::move(material));
     }
@@ -897,7 +820,6 @@ void appendType56AuxiliaryGeometry(
     const std::uint32_t objectAddress,
     const std::size_t sourceChunkOffset,
     const std::optional<spice::modeling::Mesh::Converters::ActivePolyChunkList>& activePolyChunks,
-    const std::vector<std::string>& localTextureNames,
     ChunkBufferContext& bufferContext,
     std::unordered_map<std::uint32_t, SourceVertexRecord>& sourceVertexByKey,
     const std::vector<spice::modeling::Structs::Matrix4x4>& worldMatrices,
@@ -928,7 +850,6 @@ void appendType56AuxiliaryGeometry(
     for (const auto& bufferMesh : bufferMeshes) {
         appendBufferMeshGeometry(
             bufferMesh,
-            localTextureNames,
             mesh,
             sourceVertexByKey,
             vertexIndexByKey,
@@ -1041,7 +962,7 @@ void appendTextureArchive(const ParseResult& parseResult, model::BlenderIrScene&
         if (!tx.textureName.empty()) {
             outTexture.textureName = tx.textureName;
         } else {
-            outTexture.textureName = "texture_" + std::to_string(textureId);
+            outTexture.textureName.clear();
         }
 
         const auto decoded = decodeGvrToRgba8(tx);
@@ -1530,11 +1451,6 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
         }
 
         const auto objectAddress = resolveObjectAddress(block, parseResult);
-        const auto localTextureNames = parseNjtlTextureNames(block);
-        if (!localTextureNames.empty()) {
-            out.diagnostics.push_back("SA3D adapter parsed " + std::to_string(localTextureNames.size()) +
-                " NJTL texture name(s) for object " + std::to_string(objectAddress) + ".");
-        }
         const auto nodes = parsed->model.model->tree_nodes();
         const auto activePolyChunks = get_active_poly_chunks(nodes);
         const auto worldMatrices = buildWorldMatrices(nodes);
@@ -1561,7 +1477,6 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
                 objectAddress,
                 tree.sourceChunkOffset,
                 nodeIndex < activePolyChunks.size() ? activePolyChunks[nodeIndex] : std::nullopt,
-                localTextureNames,
                 bufferContext,
                 sourceVertexByKey,
                 worldMatrices,
@@ -1649,6 +1564,47 @@ model::BlenderIrScene Sa3dBlenderIrBuilder::build(const ParseResult& parseResult
     out.diagnostics.push_back("SA3D adapter produced " + std::to_string(out.meshes.size()) + " meshes, " +
         std::to_string(out.objectTrees.size()) + " object trees and " +
         std::to_string(out.indexEntries.size()) + " index entries.");
+    // Use the document resolver for native and document projections alike.
+    // Borrow the projected image payloads by moving them into the query document
+    // and restore them below. Resolution uses the same availability rules without
+    // copying large pixel buffers or decoding images a second time.
+    MldDocument bindings{};
+    MldTextureArchive archive{ .id = MldTextureArchiveId{ 1U } };
+    for (auto& image : out.textures) {
+        MldTexture texture{ .id = MldTextureId{ archive.textures.size() + 1U }, .name = image.textureName };
+        texture.encodedBytes = std::move(image.encodedData);
+        texture.decoded = image.hasDecodedPixels;
+        texture.rgba8 = std::move(image.pixelData);
+        archive.textures.push_back(std::move(texture));
+    }
+    bindings.textureArchives.push_back(std::move(archive));
+    for (const auto& block : parseResult.extractedNjBlocks) {
+        if (block.kind != ExtractedNjBlock::Kind::Object) continue;
+        const auto address = resolveObjectAddress(block, parseResult);
+        MldObjectResource object{ .id = MldObjectId{ address } };
+        if (block.textureNames) {
+            object.textureList = MldTextureListId{ bindings.textureLists.size() + 1U };
+            bindings.textureLists.push_back({ *object.textureList, *block.textureNames, block.textureListValid });
+        }
+        bindings.objects.push_back(std::move(object));
+    }
+    for (auto& mesh : out.meshes) for (auto& material : mesh.materials) {
+        if (!material.useTexture || material.textureId == 0xFFFFU) continue;
+        const auto binding = MldTextureResolver::resolveObjectTexture(bindings,
+            MldObjectId{ mesh.sourceObjectAddress }, material.textureId);
+        material.textureName = binding.name;
+        material.textureBindingStatus = textureBindingStatusName(binding.status);
+        if (!binding.resolved())
+            out.diagnostics.push_back("Object " + std::to_string(mesh.sourceObjectAddress)
+                + " texture slot " + std::to_string(material.textureId) + ": " + material.textureBindingStatus);
+    }
+
+    for (std::size_t index = 0U; index < out.textures.size(); ++index) {
+        auto& image = bindings.textureArchives[0].textures[index];
+        out.textures[index].encodedData = std::move(image.encodedBytes);
+        out.textures[index].pixelData = std::move(image.rgba8);
+    }
+
     return out;
 }
 

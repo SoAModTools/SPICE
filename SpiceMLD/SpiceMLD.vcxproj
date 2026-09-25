@@ -98,6 +98,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="MldBlenderIrProjector.h" />
+    <ClInclude Include="MldTextureResolver.h" />
     <ClInclude Include="MldDocument.h" />
     <ClInclude Include="MldDocumentImporter.h" />
     <ClInclude Include="MldMotionFrameProjector.h" />
@@ -142,6 +143,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="MldBlenderIrProjector.cpp" />
+    <ClCompile Include="MldTextureResolver.cpp" />
     <ClCompile Include="MldDocument.cpp" />
     <ClCompile Include="MldDocumentImporter.cpp" />
     <ClCompile Include="MldMotionFrameProjector.cpp" />

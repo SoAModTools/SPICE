@@ -63,6 +63,7 @@ struct BlenderIrMaterial {
     float mipmapDistanceMultiplier = 1.0f;
     std::uint16_t textureId = 0xFFFFU;
     std::string textureName{};
+    std::string textureBindingStatus{ "not-textured" };
     std::uint64_t materialHash = 0;
 };
 

@@ -51,6 +51,8 @@ Address and parameter lists begin with a U32 count followed by that many U32 val
 
 ## Entry Texture Lists
 
+The editable document exposes entry texture lists and model-embedded texture lists as independent relationships. See [MLD texture relationships](MldTextureBindings.md) for resolution, editing, and native output rules.
+
 Entry texture lists may be direct `NJTL`/`GJTL` chunks, wrappers whose pointer at `+0x08` leads to such a chunk, or simple counted tables of `0x0C`-byte records. In `NJTL`/`GJTL`, the tag is at `+0x00`, payload size at `+0x04`, texture count at `+0x0C`, and each texture record contains a name pointer.
 
 Texture-list pointers are classified independently from object pointers. A shared pointer produces one owning texture-list resource and any number of entry projections. The resource retains its source and resolved ranges, wrapper bytes, raw records, raw name pointers, recovered names, status, and offset-bearing diagnostics. An `NJTL` immediately preceding an `NJCM` may overlap the backing view required by the Ninja model reader, but the object remains keyed only by its actual object address.

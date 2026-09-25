@@ -127,6 +127,9 @@ struct ExtractedNjBlock {
     std::optional<std::uint32_t> textureListOffset{};
     std::string wrapperLayout{};
     std::vector<std::uint8_t> bytes{};
+    std::optional<std::vector<std::string>> textureNames{};
+    bool textureListValid = true;
+    std::shared_ptr<const spice::modeling::File::ModelFile> decodedModel{};
 };
 
 struct BlockOwnerRef {

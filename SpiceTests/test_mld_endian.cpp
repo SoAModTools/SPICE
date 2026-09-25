@@ -574,6 +574,247 @@ std::vector<std::uint8_t> makeDreamcastTexturedMld(
 
 } // namespace
 
+namespace {
+spice::mld::MldDocument makeTextureBindingDocument(const Endian endian) {
+    using namespace spice::mld;
+    auto geometry = makeWrappedObjectMldWithTriangleGeometry();
+    writeU16(geometry, 0x288U, 0x4040U, Endian::Little); // Environment-mapped strip uses texture slot zero.
+    auto imported = MldDocumentImporter::importBytes(geometry);
+    EXPECT_TRUE(imported.ok());
+    MldDocument document{};
+    document.objects.push_back(imported.document->objects.front());
+    document.objects.front().id = MldObjectId{1U};
+    document.objects.front().textureList = MldTextureListId{2U};
+    MldEntry entry{ .id = MldEntryId{1U}, .functionName = "synthetic" };
+    entry.objectSlots = {MldObjectId{1U}, std::nullopt};
+    entry.textureList = MldTextureListId{1U};
+    document.entries.push_back(entry);
+    document.textureLists = {{MldTextureListId{1U}, {"entry"}}, {MldTextureListId{2U}, {"model", "entry", "model"}}};
+    MldTextureArchive archive{ .id = MldTextureArchiveId{1U} };
+    for (const auto name : {"entry", "model"}) {
+        MldTexture image{ .id = MldTextureId{archive.textures.size() + 1U},
+            .encoding = endian == Endian::Little ? model::MldTextureEncoding::Pvr : model::MldTextureEncoding::Gvr,
+            .name = name };
+        image.encodedBytes = endian == Endian::Little ? encodePvrTexture(8U, 1U)
+            : encodeTexture(makeImage(8U, 8U), spice::gvm::model::TextureFormat::RGB565);
+        archive.textures.push_back(std::move(image));
+    }
+    document.textureArchives.push_back(std::move(archive));
+    document.layout = {entry.id, MldObjectId{1U}, MldTextureListId{1U}, MldTextureListId{2U}, MldTextureArchiveId{1U}};
+    return document;
+}
+}
+
+TEST(MldTextureBindings, ImportsAndResolvesIndependentListsAcrossPlatformsAndCompression) {
+    using namespace spice::mld;
+    for (const auto target : {MldWriteTarget{MldPlatform::Dreamcast, MldWrapper::Raw},
+        MldWriteTarget{MldPlatform::GameCube, MldWrapper::Raw}, MldWriteTarget{MldPlatform::GameCube, MldWrapper::Aklz}}) {
+        const auto endian = target.platform == MldPlatform::Dreamcast ? Endian::Little : Endian::Big;
+        auto document = makeTextureBindingDocument(endian);
+        const auto bytes = MldDocumentWriter::write(document, target);
+        ASSERT_TRUE(bytes.ok());
+        const auto imported = MldDocumentImporter::importBytes(bytes.bytes);
+        ASSERT_TRUE(imported.ok());
+        ASSERT_EQ(imported.document->textureLists.size(), 2U);
+        const auto& result = *imported.document;
+        const auto entry = MldTextureResolver::resolveEntryTexture(result, result.entries[0].id, 0U);
+        const auto material = MldTextureResolver::resolveEntryObjectTexture(result, result.entries[0].id, 0U, 0U);
+        ASSERT_TRUE(entry.resolved()); ASSERT_TRUE(material.resolved());
+        EXPECT_EQ(entry.name, "entry"); EXPECT_EQ(material.name, "model"); EXPECT_NE(entry.list, material.list);
+        EXPECT_EQ(MldTextureResolver::resolveObjectTexture(result, result.objects[0].id, 2U).name, "model");
+        const auto projected = MldBlenderIrProjector::project(result);
+        ASSERT_TRUE(projected.scene.has_value());
+        ASSERT_FALSE(projected.scene->meshes.empty());
+        ASSERT_FALSE(projected.scene->meshes[0].materials.empty());
+        EXPECT_EQ(projected.scene->meshes[0].materials[0].textureName, "model");
+        EXPECT_EQ(projected.scene->meshes[0].materials[0].textureBindingStatus, "resolved");
+        const auto native = MldParser{}.parseFile(bytes.bytes);
+        const auto nativeIr = parsing::Sa3dBlenderIrBuilder{}.build(native);
+        ASSERT_FALSE(nativeIr.meshes.empty());
+        EXPECT_EQ(nativeIr.meshes[0].materials[0].textureName, "model");
+    }
+}
+
+TEST(MldTextureBindings, ResolverReportsMissingInvalidAndAmbiguousWithoutFallback) {
+    using namespace spice::mld;
+    auto doc = makeTextureBindingDocument(Endian::Little);
+    const auto resolve = [&](std::size_t slot = 0U) { return MldTextureResolver::resolveObjectTexture(doc, MldObjectId{1U}, slot); };
+    EXPECT_EQ(resolve(3U).status, MldTextureBindingStatus::SlotOutOfRange);
+    EXPECT_EQ(MldTextureResolver::resolveEntryObjectTexture(doc, MldEntryId{1U}, 1U, 0U).status, MldTextureBindingStatus::AbsentObjectSlot);
+    EXPECT_EQ(MldTextureResolver::resolveEntryObjectTexture(doc, MldEntryId{1U}, 2U, 0U).status, MldTextureBindingStatus::ObjectSlotOutOfRange);
+    EXPECT_EQ(MldTextureResolver::resolveEntryTexture(doc, MldEntryId{99U}, 0U).status, MldTextureBindingStatus::OwnerNotFound);
+    doc.objects[0].textureList.reset();
+    EXPECT_EQ(resolve().status, MldTextureBindingStatus::AbsentList);
+    doc.objects[0].textureList = MldTextureListId{99U};
+    EXPECT_EQ(resolve().status, MldTextureBindingStatus::MissingList);
+    doc.objects[0].textureList = MldTextureListId{2U};
+    doc.textureLists[1].complete = false;
+    EXPECT_EQ(resolve().status, MldTextureBindingStatus::InvalidList);
+    doc.textureLists[1].complete = true;
+    doc.textureLists[1].names[0].clear();
+    EXPECT_EQ(resolve().status, MldTextureBindingStatus::EmptyName);
+    doc.textureLists[1].names[0] = "external";
+    EXPECT_EQ(resolve().status, MldTextureBindingStatus::ImageNotFound);
+    doc.textureLists[1].names[0] = "model";
+    doc.textureArchives[0].textures[1].encodedBytes.clear();
+    EXPECT_EQ(resolve().status, MldTextureBindingStatus::ImageDataUnavailable);
+    auto duplicate = doc.textureArchives[0].textures[1]; duplicate.id = doc.allocateTextureId();
+    doc.textureArchives.push_back({MldTextureArchiveId{2U}, {duplicate}});
+    const auto ambiguous = resolve();
+    EXPECT_EQ(ambiguous.status, MldTextureBindingStatus::AmbiguousImage);
+    EXPECT_EQ(ambiguous.texture, nullptr); EXPECT_FALSE(ambiguous.textureId.has_value());
+    EXPECT_EQ(ambiguous.candidates.size(), 2U);
+    const auto projected = MldBlenderIrProjector::project(doc);
+    ASSERT_TRUE(projected.scene.has_value());
+    ASSERT_FALSE(projected.scene->meshes.empty());
+    ASSERT_FALSE(projected.scene->meshes[0].materials.empty());
+    EXPECT_EQ(projected.scene->meshes[0].materials[0].textureBindingStatus, "ambiguous-image");
+    doc.objects[0].textureList.reset();
+    const auto absent = MldBlenderIrProjector::project(doc);
+    EXPECT_TRUE(absent.scene->meshes[0].materials[0].textureName.empty());
+}
+
+TEST(MldTextureBindings, EditsGrowListsReplaceImagesAndReorderArchiveWithoutCrossBinding) {
+    using namespace spice::mld;
+    for (const auto target : {MldWriteTarget{MldPlatform::Dreamcast, MldWrapper::Raw},
+        MldWriteTarget{MldPlatform::GameCube, MldWrapper::Aklz}}) {
+        const auto endian = target.platform == MldPlatform::Dreamcast ? Endian::Little : Endian::Big;
+        auto initial = MldDocumentWriter::write(makeTextureBindingDocument(endian), target);
+        ASSERT_TRUE(initial.ok());
+        auto imported = MldDocumentImporter::importBytes(initial.bytes);
+        ASSERT_TRUE(imported.ok());
+        auto& doc = *imported.document;
+        const auto modelBinding = MldTextureResolver::resolveObjectTexture(doc, doc.objects[0].id, 0U);
+        const auto stableTexture = *modelBinding.textureId;
+        const auto modelList = std::find_if(doc.textureLists.begin(), doc.textureLists.end(), [&](const auto& list) {return list.id == modelBinding.list;});
+        modelList->names = {"entry", "model", "model", std::string(200U, 'x')};
+        std::reverse(doc.textureArchives[0].textures.begin(), doc.textureArchives[0].textures.end());
+        EXPECT_EQ(MldTextureResolver::resolveObjectTexture(doc, doc.objects[0].id, 1U).textureId, stableTexture);
+        auto& replacement = doc.textureArchives[0].textures.front();
+        replacement.encodedBytes = endian == Endian::Little ? encodePvrTexture(16U, 9U, 31U)
+            : encodeTexture(makeImage(16U, 16U, 31U), spice::gvm::model::TextureFormat::RGB565);
+        const auto changed = MldDocumentWriter::write(doc, target, &imported.receipt);
+        ASSERT_TRUE(changed.ok());
+        const auto check = MldDocumentImporter::importBytes(changed.bytes);
+        ASSERT_TRUE(check.ok());
+        EXPECT_EQ(MldTextureResolver::resolveEntryTexture(*check.document, check.document->entries[0].id, 0U).name, "entry");
+        EXPECT_EQ(MldTextureResolver::resolveObjectTexture(*check.document, check.document->objects[0].id, 0U).name, "entry");
+        const auto image = MldTextureResolver::resolveObjectTexture(*check.document, check.document->objects[0].id, 1U);
+        ASSERT_TRUE(image.resolved()); EXPECT_EQ(image.texture->width, 16U);
+        EXPECT_EQ(MldTextureResolver::resolveObjectTexture(*check.document, check.document->objects[0].id, 3U).name, std::string(200U, 'x'));
+        EXPECT_EQ(MldBlenderIrProjector::project(*check.document).scene->meshes[0].vertices.size(), 3U);
+    }
+}
+
+TEST(MldTextureBindings, EntryEditsModelReplacementAndAbsentListsStayIndependent) {
+    using namespace spice::mld;
+    const MldWriteTarget target{MldPlatform::Dreamcast, MldWrapper::Raw};
+    auto doc = makeTextureBindingDocument(Endian::Little);
+    doc.textureLists[1].nativeRecordWords = {{{0x12345678U, 0xABCDEF01U}}};
+    auto initial = MldDocumentWriter::write(doc, target);
+    ASSERT_TRUE(initial.ok());
+    auto imported = MldDocumentImporter::importBytes(initial.bytes);
+    ASSERT_TRUE(imported.ok());
+    auto& edited = *imported.document;
+    const auto binding = MldTextureResolver::resolveObjectTexture(edited, edited.objects[0].id, 0U);
+    const auto originalNames = std::find_if(edited.textureLists.begin(), edited.textureLists.end(), [&](const auto& l) {return l.id == binding.list;})->names;
+    // Replace the model payload while preserving its explicit list reference.
+    auto bytes = makeWrappedObjectMldWithTriangleGeometry();
+    writeF32(bytes, 0x1D0U, 19.0F, Endian::Little);
+    const auto replacement = MldDocumentImporter::importBytes(bytes);
+    ASSERT_TRUE(replacement.ok());
+    edited.objects[0].payload = replacement.document->objects[0].payload;
+    auto& entry = edited.entries[0];
+    const auto extra = edited.allocateTextureListId();
+    edited.textureLists.push_back({extra, {"model", "entry"}});
+    edited.layout.push_back(extra);
+    entry.textureList = extra;
+    auto written = MldDocumentWriter::write(edited, target, &imported.receipt);
+    ASSERT_TRUE(written.ok());
+    auto check = MldDocumentImporter::importBytes(written.bytes);
+    ASSERT_TRUE(check.ok());
+    EXPECT_EQ(MldTextureResolver::resolveEntryTexture(*check.document, check.document->entries[0].id, 0U).name, "model");
+    const auto modelList = check.document->objects[0].textureList;
+    const auto found = std::find_if(check.document->textureLists.begin(), check.document->textureLists.end(), [&](const auto& l) {return l.id == modelList;});
+    ASSERT_NE(found, check.document->textureLists.end());
+    EXPECT_EQ(found->names, originalNames);
+    EXPECT_EQ(found->nativeRecordWords[0][0], 0x12345678U);
+    EXPECT_EQ(found->nativeRecordWords[0][1], 0xABCDEF01U);
+    const auto* model = std::get_if<std::shared_ptr<const spice::modeling::ModelDocument>>(&check.document->objects[0].payload);
+    ASSERT_NE(model, nullptr); EXPECT_EQ((*model)->root()->position.x, 19.0F);
+    edited.objects[0].textureList.reset();
+    written = MldDocumentWriter::write(edited, target, &imported.receipt);
+    ASSERT_TRUE(written.ok());
+    check = MldDocumentImporter::importBytes(written.bytes);
+    EXPECT_FALSE(check.document->objects[0].textureList.has_value());
+    EXPECT_EQ(MldTextureResolver::resolveEntryTexture(*check.document, check.document->entries[0].id, 0U).name, "model");
+}
+
+TEST(MldTextureBindings, PreservesEmptyListsAndRejectsInvalidReferencesBeforeOutput) {
+    using namespace spice::mld;
+    auto doc = makeTextureBindingDocument(Endian::Little);
+    const MldWriteTarget target{MldPlatform::Dreamcast, MldWrapper::Raw};
+    doc.textureLists[1].names.clear();
+    auto written = MldDocumentWriter::write(doc, target);
+    ASSERT_TRUE(written.ok());
+    const auto check = MldDocumentImporter::importBytes(written.bytes);
+    ASSERT_TRUE(check.ok());
+    ASSERT_TRUE(check.document->objects[0].textureList.has_value());
+    EXPECT_EQ(MldTextureResolver::resolveObjectTexture(*check.document, check.document->objects[0].id, 0U).status, MldTextureBindingStatus::SlotOutOfRange);
+    doc.objects[0].textureList = MldTextureListId{999U};
+    EXPECT_TRUE(MldDocumentWriter::write(doc, target).bytes.empty());
+    doc.objects[0].textureList = MldTextureListId{2U};
+    doc.textureArchives[0].textures[1].id = doc.textureArchives[0].textures[0].id;
+    EXPECT_TRUE(MldDocumentWriter::write(doc, target).bytes.empty());
+    auto native = MldParser{}.parseFile(written.bytes);
+    const auto address = native.entries[0].entry.objectAddresses->values[0];
+    writeU32(written.bytes, address + 8U, 0x7FFFFFF0U, Endian::Little);
+    const auto malformed = MldDocumentImporter::importBytes(written.bytes);
+    ASSERT_TRUE(malformed.ok());
+    EXPECT_EQ(MldTextureResolver::resolveObjectTexture(*malformed.document, malformed.document->objects[0].id, 0U).status, MldTextureBindingStatus::InvalidList);
+    EXPECT_TRUE(MldDocumentWriter::write(*malformed.document, target, &malformed.receipt).bytes.empty());
+}
+
+TEST(MldTextureBindings, EqualNamesStayIndependentAndArchiveSizeCanChange) {
+    using namespace spice::mld;
+    const MldWriteTarget target{MldPlatform::Dreamcast, MldWrapper::Raw};
+    auto doc = makeTextureBindingDocument(Endian::Little);
+    doc.textureLists[1].names = doc.textureLists[0].names;
+    auto written = MldDocumentWriter::write(doc, target);
+    ASSERT_TRUE(written.ok());
+    auto imported = MldDocumentImporter::importBytes(written.bytes);
+    ASSERT_TRUE(imported.ok());
+    ASSERT_EQ(imported.document->textureLists.size(), 2U);
+    EXPECT_NE(imported.document->entries[0].textureList, imported.document->objects[0].textureList);
+    auto& edited = *imported.document;
+    auto added = edited.textureArchives[0].textures[0];
+    added.id = edited.allocateTextureId(); added.name = "added";
+    added.encodedBytes = encodePvrTexture(16U, 7U);
+    edited.textureArchives[0].textures.push_back(added);
+    auto entryList = std::find_if(edited.textureLists.begin(), edited.textureLists.end(), [&](const auto& l) {return l.id == edited.entries[0].textureList;});
+    entryList->names = {"added"};
+    written = MldDocumentWriter::write(edited, target, &imported.receipt);
+    ASSERT_TRUE(written.ok());
+    auto check = MldDocumentImporter::importBytes(written.bytes);
+    ASSERT_TRUE(check.ok());
+    EXPECT_EQ(check.document->textureArchives[0].textures.size(), 3U);
+    const auto binding = MldTextureResolver::resolveEntryTexture(*check.document, check.document->entries[0].id, 0U);
+    ASSERT_TRUE(binding.resolved()); EXPECT_EQ(binding.texture->width, 16U);
+    EXPECT_EQ(MldTextureResolver::resolveObjectTexture(*check.document, check.document->objects[0].id, 0U).name, "entry");
+    edited.textureArchives[0].textures.erase(edited.textureArchives[0].textures.begin() + 1);
+    written = MldDocumentWriter::write(edited, target, &imported.receipt);
+    ASSERT_TRUE(written.ok());
+    check = MldDocumentImporter::importBytes(written.bytes);
+    EXPECT_EQ(check.document->textureArchives[0].textures.size(), 2U);
+    // Removing an entry list does not remove the model's list, even when they matched.
+    edited.entries[0].textureList.reset();
+    written = MldDocumentWriter::write(edited, target, &imported.receipt);
+    ASSERT_TRUE(written.ok());
+    check = MldDocumentImporter::importBytes(written.bytes);
+    EXPECT_FALSE(check.document->entries[0].textureList.has_value());
+    EXPECT_EQ(MldTextureResolver::resolveObjectTexture(*check.document, check.document->objects[0].id, 0U).name, "entry");
+}
+
 TEST(MldEndian, ParsesBigAndLittleEndianFixturesToEquivalentIr) {
     MldParser parser;
     const auto be = parser.parseFile(makeMinimalMld(Endian::Big));

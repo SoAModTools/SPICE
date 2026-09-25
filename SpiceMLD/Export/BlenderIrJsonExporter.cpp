@@ -438,6 +438,8 @@ std::string BlenderIrJsonExporter::toJson(const model::BlenderIrScene& scene) co
             out << ",\"textureId\":" << material.textureId
                 << ",\"textureName\":";
             writeJsonString(out, material.textureName);
+            out << ",\"textureBindingStatus\":";
+            writeJsonString(out, material.textureBindingStatus);
             out
                 << ",\"materialHash\":" << material.materialHash
                 << '}';

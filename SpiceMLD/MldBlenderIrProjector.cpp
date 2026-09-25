@@ -37,6 +37,17 @@ template <typename Id>
     file.assetStatus = model::MldResourceStatus::Complete;
     file.header.entryCount = static_cast<std::uint32_t>(document.entries.size());
 
+    for (const auto& list : document.textureLists) {
+        model::MldTextureListResource resource{};
+        resource.sourceAddress = address(list.id, 0x500000U);
+        resource.status = list.complete ? model::MldResourceStatus::Complete : model::MldResourceStatus::Partial;
+        for (const auto& name : list.names) {
+            model::MldTextureListEntry entry{};
+            entry.name = name;
+            resource.entries.push_back(std::move(entry));
+        }
+        file.textureListResources.emplace(resource.sourceAddress, std::move(resource));
+    }
     for (const auto& object : document.objects) {
         model::MldObjectResource resource{};
         resource.status = model::MldResourceStatus::Complete;
@@ -54,6 +65,7 @@ template <typename Id>
         } else {
             resource.rawBytes = std::get<MldOpaquePayload>(object.payload).bytes;
         }
+        if (object.textureList) resource.textureListOffset = address(*object.textureList, 0x500000U);
         resource.blockSize = resource.rawBytes.size();
         file.objectResources.emplace(resource.sourceAddress, std::move(resource));
     }
@@ -118,11 +130,13 @@ template <typename Id>
         record.entry.objectCount = source.objectSlots.size();
         record.entry.motionCount = source.motionSlots.size();
         record.entry.groundCount = source.groundSlots.size();
+        if (source.textureList) record.entry.texturesPointer = address(*source.textureList, 0x500000U);
         file.entries.push_back(std::move(record));
     }
     if (!document.textureArchives.empty()) {
         model::MldTextureArchive archive{ .status = model::MldResourceStatus::Complete };
-        for (const auto& texture : document.textureArchives.front().textures) archive.entries.push_back({
+        for (const auto& sourceArchive : document.textureArchives)
+        for (const auto& texture : sourceArchive.textures) archive.entries.push_back({
             .status = model::MldResourceStatus::Complete,
             .encoding = texture.encoding,
             .hasGlobalIndex = texture.hasGlobalIndex,

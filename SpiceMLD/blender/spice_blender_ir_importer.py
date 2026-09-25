@@ -1523,6 +1523,10 @@ def _read_optional_texture_id(value: Any) -> int | None:
 def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) -> TextureLookup:
     images_by_name: dict[str, Image] = {}
     images_by_id: dict[int, Image] = {}
+    name_counts: dict[str, int] = {}
+    for texture in textures:
+        name = str(texture.get("textureName", ""))
+        name_counts[name] = name_counts.get(name, 0) + 1
 
     for index, texture in enumerate(textures):
         texture_id = _read_optional_texture_id(texture.get("textureId"))
@@ -1560,7 +1564,9 @@ def _build_texture_lookup(textures: list[dict[str, Any]], stats: ImportStats) ->
             field_name=f"textures[{index}].sourceSize",
         )
         image["spice_encoded_format"] = str(texture.get("encodedFormat", ""))
-        images_by_name[texture_name] = image
+        stored_name = str(texture.get("textureName", ""))
+        if stored_name and name_counts[stored_name] == 1:
+            images_by_name[stored_name] = image
         if texture_id is not None:
             images_by_id[texture_id] = image
         stats.texture_count += 1
@@ -1572,15 +1578,12 @@ def _resolve_material_texture(
     material_data: dict[str, Any],
     texture_lookup: TextureLookup,
 ) -> Image | None:
-    texture_name = str(material_data.get("textureName", "")).strip()
-    if texture_name and texture_name in texture_lookup.by_name:
-        return texture_lookup.by_name[texture_name]
-
-    texture_id = _read_optional_texture_id(material_data.get("textureId"))
-    if texture_id is not None and texture_id in texture_lookup.by_id:
-        return texture_lookup.by_id[texture_id]
-
-    return None
+    # A material textureId is a local list slot, not an archive/global ID.
+    # Older IR can still resolve an explicit name, but never an index fallback.
+    if material_data.get("textureBindingStatus", "resolved") != "resolved":
+        return None
+    texture_name = str(material_data.get("textureName", ""))
+    return texture_lookup.by_name.get(texture_name) if texture_name else None
 
 
 def _material_cache_name(material_data: dict[str, Any], *, triangle_metadata: bool = False) -> str:

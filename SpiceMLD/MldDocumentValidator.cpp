@@ -47,6 +47,26 @@ MldDocumentValidationResult MldDocumentValidator::validate(
     validateIds(document.textureArchives, "Texture-archive collection", result);
     validateIds(document.opaqueMembers, "Opaque-member collection", result);
 
+    if (document.textureArchives.size() > 1U)
+        error(result, "Native MLD output has one texture archive; combine document archives explicitly before writing.");
+    std::set<std::uint64_t> textureIds{};
+    for (const auto& archive : document.textureArchives) for (const auto& texture : archive.textures) {
+        if (!texture.id || !textureIds.insert(texture.id.value).second)
+            error(result, "Textures contain a zero or duplicate stable ID.");
+        if (texture.name.size() > 32U || std::any_of(texture.name.begin(), texture.name.end(), [](unsigned char ch) { return ch < 32U || ch > 126U; }))
+            error(result, "Texture archive name must fit a 32-byte ASCII field.");
+    }
+    for (const auto& list : document.textureLists) {
+        if (!list.complete) error(result, "An incomplete imported texture list cannot be encoded as a complete list.");
+        if (list.names.size() > 4096U) error(result, "A texture list exceeds the supported native slot count.");
+        for (const auto& name : list.names)
+            if (std::any_of(name.begin(), name.end(), [](unsigned char ch) { return ch < 32U || ch > 126U; }))
+                error(result, "Texture-list names must be ASCII without embedded nulls.");
+    }
+    for (const auto& object : document.objects)
+        if (object.textureList && !contains(document.textureLists, *object.textureList))
+            error(result, "An object refers to a missing texture-list resource.");
+
     std::set<std::uint64_t> motionVariantIds{};
     for (const auto& motion : document.motions) {
         const auto* decoded = std::get_if<MldDecodedMotion>(&motion.payload);
@@ -134,9 +154,6 @@ MldDocumentValidationResult MldDocumentValidator::validate(
             || document.motions.size() != receiptCount(MldLayoutItem{ MldMotionId{} }.index())
             || document.grounds.size() != receiptCount(MldLayoutItem{ MldGroundId{} }.index()))
             error(result, "This release cannot add or remove encoded MLD resources during output.");
-        if (document.textureLists.size() != receipt->state_->encodingSkeleton.textureListResources.size()) {
-            error(result, "This release cannot add or remove MLD texture lists during output.");
-        }
     }
     result.readiness = result.diagnostics.empty() ? MldWriteReadiness::Ready : MldWriteReadiness::Invalid;
     return result;

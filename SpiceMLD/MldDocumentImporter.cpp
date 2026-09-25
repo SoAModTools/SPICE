@@ -4,6 +4,7 @@
 #include "Internal/MldGroundDocumentConversion.h"
 #include "Internal/MldSha256.h"
 #include "Parsing/MldParser.h"
+#include "../SpiceRoot/Binary/EndianReader.h"
 
 #include <algorithm>
 #include <fstream>
@@ -215,10 +216,26 @@ void preserveFragment(detail::MldImportState& state,
         const auto id = MldTextureListId{ document.textureLists.size() + 1U };
         textureListIds.emplace(address, id);
         MldTextureList output{ .id = id };
-        for (const auto& entry : resource.entries) output.names.push_back(entry.name);
+        output.complete = resource.status == model::MldResourceStatus::Complete;
+        for (const auto& entry : resource.entries) {
+            output.names.push_back(entry.name);
+            std::array<std::uint32_t, 2U> words{};
+            if (entry.rawRecordBytes.size() == 12U) {
+                const spice::root::EndianReader reader(entry.rawRecordBytes, source.endian);
+                words = {reader.read_u32(4U), reader.read_u32(8U)};
+            }
+            output.nativeRecordWords.push_back(words);
+        }
         document.textureLists.push_back(std::move(output));
         ordered.emplace_back(resource.resolvedListOffset, id);
         receipt.layout.push_back({ id, resource.resolvedListOffset, resource.listRange.size, address });
+    }
+
+    for (auto& object : document.objects) {
+        const auto sourceObject = std::find_if(objectIds.begin(), objectIds.end(),
+            [&](const auto& item) { return item.second == object.id; });
+        const auto& native = source.objectResources.at(sourceObject->first);
+        if (native.textureListOffset) object.textureList = resolveSlot(*native.textureListOffset, textureListIds);
     }
 
     for (const auto& record : source.entries) {
@@ -255,6 +272,7 @@ void preserveFragment(detail::MldImportState& state,
         const auto id = MldTextureArchiveId{ 1U };
         MldTextureArchive archive{ .id = id };
         for (const auto& texture : source.textureArchive->entries) archive.textures.push_back({
+            .id = MldTextureId{ archive.textures.size() + 1U },
             .encoding = texture.encoding,
             .name = texture.textureName,
             .encodedBytes = texture.encodedData,

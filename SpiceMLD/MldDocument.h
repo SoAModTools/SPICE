@@ -5,6 +5,7 @@
 #include "../SpiceModeling/ModelDocument.h"
 #include "../SpiceModeling/MotionDocument.h"
 
+#include <array>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,7 @@ using MldMotionId = MldId<struct MldMotionIdTag>;
 using MldMotionVariantId = MldId<struct MldMotionVariantIdTag>;
 using MldGroundId = MldId<struct MldGroundIdTag>;
 using MldTextureListId = MldId<struct MldTextureListIdTag>;
+using MldTextureId = MldId<struct MldTextureIdTag>;
 using MldTextureArchiveId = MldId<struct MldTextureArchiveIdTag>;
 using MldOpaqueMemberId = MldId<struct MldOpaqueMemberIdTag>;
 
@@ -57,6 +59,8 @@ using MldObjectPayload = std::variant<std::shared_ptr<const modeling::ModelDocum
 struct MldObjectResource {
     MldObjectId id{};
     MldObjectPayload payload{ MldOpaquePayload{} };
+    // Independent of any owning entry's texture list.
+    std::optional<MldTextureListId> textureList{};
 };
 
 struct MldMotionVariant {
@@ -122,9 +126,13 @@ struct MldGroundResource {
 struct MldTextureList {
     MldTextureListId id{};
     std::vector<std::string> names{};
+    bool complete{ true }; // False when imported native list data could not be fully decoded.
+    // Non-name native record words, indexed by slot. Missing slots encode as zero.
+    std::vector<std::array<std::uint32_t, 2U>> nativeRecordWords{};
 };
 
 struct MldTexture {
+    MldTextureId id{};
     model::MldTextureEncoding encoding{ model::MldTextureEncoding::Unknown };
     std::string name{};
     std::vector<std::uint8_t> encodedBytes{};
@@ -182,6 +190,7 @@ struct MldDocument {
     [[nodiscard]] MldMotionVariantId allocateMotionVariantId() const noexcept;
     [[nodiscard]] MldGroundId allocateGroundId() const noexcept;
     [[nodiscard]] MldTextureListId allocateTextureListId() const noexcept;
+    [[nodiscard]] MldTextureId allocateTextureId() const noexcept;
     [[nodiscard]] MldTextureArchiveId allocateTextureArchiveId() const noexcept;
     [[nodiscard]] MldOpaqueMemberId allocateOpaqueMemberId() const noexcept;
     [[nodiscard]] bool hasOpaqueContent() const noexcept;
